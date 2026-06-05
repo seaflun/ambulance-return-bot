@@ -18,6 +18,9 @@ services:
       TZ: Asia/Taipei
       WEB_HOST: "0.0.0.0"
       WEB_PORT: "8080"
+      ARTIFACTS_DIR: "artifacts"
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
       SELENIUM_REMOTE_URL: "http://selenium:4444/wd/hub"
       CASE_LOOKUP_INTERVAL_SECONDS: "300"
       CASE_LOOKUP_SCHEDULER_ENABLED: "true"
@@ -28,4 +31,10 @@ services:
     volumes:
       - ./:/app
     command: sh -c "pip install --no-cache-dir -r requirements.txt && python -u app.py"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/status', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
