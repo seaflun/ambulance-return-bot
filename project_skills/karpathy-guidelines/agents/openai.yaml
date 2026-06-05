@@ -1,0 +1,4 @@
+name: karpathy-guidelines
+display_name: Karpathy Guidelines
+short_description: Coding behavior guardrails for simpler, more precise, verifiable changes.
+default_prompt: Use Karpathy Guidelines for this coding task.

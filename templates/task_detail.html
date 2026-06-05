@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <title>&#20219;&#21209; {{ payload.task.task_id }}</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif; background: #f6f8f7; color: #10201d; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f8f7; }
+    main { max-width: 860px; margin: 0 auto; padding: 16px 14px 42px; }
+    h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: 0; }
+    h2 { margin: 0 0 10px; font-size: 18px; }
+    p { margin: 0; color: #4b625d; line-height: 1.45; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .button, button { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; border: 0; border-radius: 6px; padding: 0 12px; background: #0f766e; color: #fff; font: inherit; font-weight: 700; text-decoration: none; white-space: nowrap; }
+    .secondary { background: #e6efec; color: #0f3f3b; }
+    .panel, .site { background: #fff; border: 1px solid #dce5e2; border-radius: 8px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(12, 33, 28, .05); }
+    .summary { white-space: pre-wrap; line-height: 1.5; background: #f0f6f4; border-radius: 6px; padding: 12px; margin: 10px 0; }
+    .status { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #e6efec; color: #0f3f3b; font-size: 13px; font-weight: 700; }
+    .site-header { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+    .site-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .events { padding-left: 18px; color: #4b625d; }
+    .events li { margin: 6px 0; }
+    @media (max-width: 520px) { .topbar { align-items: flex-start; flex-direction: column; } .topbar .button { width: 100%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>&#20219;&#21209; {{ payload.task.task_id }}</h1>
+        <p>&#29376;&#24907;&#65306;<span class="status">{{ payload.overall_status }}</span></p>
+      </div>
+      <a class="button secondary" href="/app">&#26032;&#22686;&#21478;&#19968;&#31558;</a>
+    </div>
+
+    <section class="panel">
+      <h2>&#36039;&#26009;&#25688;&#35201;</h2>
+      <p>&#25353;&#19979;&#12300;&#21855;&#21205;&#22235;&#31449;&#27969;&#31243;&#12301;&#24460;&#65292;&#22235;&#20491;&#32178;&#31449;&#26371;&#22312;&#22519;&#34892;&#24460;&#31471;&#30340;&#26412;&#27231;&#38651;&#33126;&#19978;&#38283;&#21855;&#12290;</p>
+      <div id="summary" class="summary">&#36554;&#36635;&#65306;{{ payload.task.vehicle or '未填' }}
+&#21496;&#27231;&#65306;{{ payload.task.driver or '未填' }}
+&#37324;&#31243;&#65306;{{ payload.task.mileage or '未填' }}
+&#26696;&#20214;&#26178;&#38291;&#65306;{{ payload.task.case_time or '未填' }}
+&#22238;&#31243;&#26178;&#38291;&#65306;{{ payload.task.return_time or '未填' }}
+&#20107;&#30001;&#65306;{{ payload.task.case_reason or '未填' }}
+&#20663;&#30149;&#24739;&#65306;{{ payload.task.patient_summary or '未填' }}
+&#32791;&#26448;&#65306;{% for name, qty in payload.task.consumables.items() %}{{ name }} x{{ qty }}{% if not loop.last %}、{% endif %}{% endfor %}
+&#28040;&#27602;&#65306;{{ payload.task.disinfection }}
+&#24037;&#20316;&#32000;&#37636;&#65306;{{ payload.task.work_note }}</div>
+      <div class="site-actions">
+        <button type="button" onclick="copyText('summary')">&#35079;&#35069;&#25688;&#35201;</button>
+        <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
+          <button type="submit">&#21855;&#21205;&#22235;&#31449;&#27969;&#31243;</button>
+        </form>
+      </div>
+    </section>
+
+    {% for site in payload.site_statuses.values() %}
+    <section class="site">
+      <div class="site-header">
+        <h2>{{ site.name }}</h2>
+        <span class="status">{{ site.status }}</span>
+      </div>
+      <p>{{ site.detail or '尚未執行。' }}</p>
+      <p><a href="{{ site.url }}" target="_blank" rel="noopener">{{ site.url }}</a></p>
+      <div id="copy-{{ site.key }}" class="summary">{{ site.name }}
+&#36554;&#36635;&#65306;{{ payload.task.vehicle or '未填' }}
+&#21496;&#27231;&#65306;{{ payload.task.driver or '未填' }}
+&#37324;&#31243;&#65306;{{ payload.task.mileage or '未填' }}
+&#20107;&#30001;&#65306;{{ payload.task.case_reason or '未填' }}
+&#20663;&#30149;&#24739;&#65306;{{ payload.task.patient_summary or '未填' }}
+&#32791;&#26448;&#65306;{% for name, qty in payload.task.consumables.items() %}{{ name }} x{{ qty }}{% if not loop.last %}、{% endif %}{% endfor %}
+&#28040;&#27602;&#65306;{{ payload.task.disinfection }}
+&#24037;&#20316;&#32000;&#37636;&#65306;{{ payload.task.work_note }}</div>
+      <div class="site-actions">
+        <button type="button" onclick="copyText('copy-{{ site.key }}')">&#35079;&#35069;&#26412;&#31449;&#25991;&#23383;</button>
+        <form method="post" action="/tasks/{{ payload.task.task_id }}/sites/{{ site.key }}/complete">
+          <button type="submit" class="secondary">&#20154;&#24037;&#30906;&#35469;&#23436;&#25104;</button>
+        </form>
+      </div>
+    </section>
+    {% endfor %}
+
+    <section class="panel">
+      <h2>&#32000;&#37636;</h2>
+      <ol class="events">
+        {% for event in payload.events %}
+          <li>{{ event.time }} - {{ event.status }}{% if event.detail %}：{{ event.detail }}{% endif %}</li>
+        {% endfor %}
+      </ol>
+    </section>
+  </main>
+  <script>
+    async function copyText(id) {
+      const text = document.getElementById(id).innerText;
+      try {
+        await navigator.clipboard.writeText(text);
+        alert("已複製");
+      } catch (error) {
+        const area = document.createElement("textarea");
+        area.value = text;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+        alert("已複製");
+      }
+    }
+  </script>
+</body>
+</html>

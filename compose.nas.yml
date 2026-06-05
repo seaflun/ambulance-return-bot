@@ -1,0 +1,31 @@
+services:
+  selenium:
+    image: selenium/standalone-chromium:latest
+    shm_size: "4gb"
+    environment:
+      TZ: Asia/Taipei
+      SE_NODE_SESSION_TIMEOUT: "300"
+      SE_SESSION_REQUEST_TIMEOUT: "300"
+      SE_SESSION_RETRY_INTERVAL: "5"
+      SE_START_XVFB: "false"
+
+  app:
+    image: python:3.12-slim
+    depends_on:
+      - selenium
+    working_dir: /app
+    environment:
+      TZ: Asia/Taipei
+      WEB_HOST: "0.0.0.0"
+      WEB_PORT: "8080"
+      SELENIUM_REMOTE_URL: "http://selenium:4444/wd/hub"
+      CASE_LOOKUP_INTERVAL_SECONDS: "300"
+      CASE_LOOKUP_SCHEDULER_ENABLED: "true"
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./:/app
+    command: sh -c "pip install --no-cache-dir -r requirements.txt && python -u app.py"
+    restart: unless-stopped

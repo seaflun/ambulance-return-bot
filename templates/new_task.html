@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <title>&#25937;&#35703;&#22238;&#31243;&#30331;&#25171;</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif; background: #f6f8f7; color: #10201d; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f8f7; }
+    main { max-width: 760px; margin: 0 auto; padding: 18px 14px 40px; }
+    header { padding: 10px 2px 18px; }
+    h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: 0; }
+    h2 { margin: 0 0 10px; font-size: 18px; }
+    p { margin: 0; color: #4b625d; line-height: 1.45; }
+    form, .panel { background: #fff; border: 1px solid #dce5e2; border-radius: 8px; padding: 14px; box-shadow: 0 1px 2px rgba(12, 33, 28, .05); }
+    label { display: block; margin: 0 0 12px; font-weight: 650; }
+    input, select, textarea { width: 100%; margin-top: 6px; border: 1px solid #b9c9c4; border-radius: 6px; padding: 12px; font: inherit; background: #fff; color: #10201d; }
+    textarea { min-height: 82px; resize: vertical; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button, .button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; border: 0; border-radius: 6px; padding: 0 14px; background: #0f766e; color: #fff; font: inherit; font-weight: 700; text-decoration: none; }
+    .lookup { margin-bottom: 14px; }
+    .lookup-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .case-list { display: grid; gap: 6px; }
+    .case-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid #dce5e2; border-radius: 8px; padding: 8px 10px; background: #fbfdfc; }
+    .case-title { font-weight: 750; line-height: 1.35; overflow-wrap: anywhere; }
+    .case-time { color: #4b625d; font-size: 13px; margin-top: 2px; }
+    .case-card button { min-height: 36px; padding: 0 10px; }
+    .case-card form { padding: 0; border: 0; box-shadow: none; background: transparent; }
+    .recent { margin-top: 18px; }
+    .recent a { display: block; padding: 12px 0; color: #0f766e; text-decoration: none; border-top: 1px solid #e3ebe8; }
+    @media (max-width: 520px) { .grid { grid-template-columns: 1fr 1fr; gap: 8px; } h1 { font-size: 25px; } .lookup-head { align-items: stretch; flex-direction: column; } .lookup-head button { width: 100%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>&#25937;&#35703;&#22238;&#31243;&#30331;&#25171;</h1>
+      <p>&#25163;&#27231;&#32178;&#38913;&#21482;&#36000;&#36012;&#30332;&#36865;&#20219;&#21209;&#65307;&#22235;&#20491;&#32178;&#31449;&#26371;&#22312;&#22519;&#34892; Flask &#30340;&#36889;&#21488;&#38651;&#33126;&#19978;&#38283;&#21855;&#65292;&#19981;&#26371;&#33258;&#21205;&#25353;&#26368;&#24460;&#36865;&#20986;&#12290;</p>
+    </header>
+
+    <section class="panel lookup">
+      <div class="lookup-head">
+        <div>
+          <h2>&#26368;&#36817; 6 &#23567;&#26178;&#26696;&#20214;</h2>
+          <p>{% if case_lookup.detail %}{{ case_lookup.detail }}{% else %}&#26597;&#35426;&#21220;&#21209;&#31995;&#32113;&#12300;&#30001;&#26696;&#20214;&#24118;&#20837;&#12301;&#28165;&#21934;&#65292;&#38928;&#35373;&#31684;&#22285;&#28858;&#29694;&#22312;&#24448;&#21069; 6 &#23567;&#26178;&#12290;{% endif %}</p>
+        </div>
+        <form method="post" action="/cases/query">
+          <button type="submit">&#26597;&#35426;&#26368;&#36817; 6 &#23567;&#26178;</button>
+        </form>
+      </div>
+      {% if case_lookup.cases %}
+        <div class="case-list">
+          {% for case in case_lookup.cases %}
+            <div class="case-card">
+              <div>
+                <div class="case-title">{{ case.category }} - {{ case.address or '未填' }}</div>
+                <div class="case-time">{{ case.case_time_hhmm or '----' }} / {{ case.return_time_hhmm or '----' }}</div>
+                {% if case.personnel %}
+                  <div class="case-time">服勤人員：{{ case.personnel | join('、') }}</div>
+                {% endif %}
+              </div>
+              <form method="post" action="/cases/import">
+                <input type="hidden" name="case_id" value="{{ case.case_id }}">
+                <button type="submit" class="secondary">&#24118;&#20837;&#36889;&#31558;</button>
+              </form>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </section>
+
+    <form method="post" action="/tasks" id="task-form">
+      <label>&#26696;&#30332;&#22320;&#22336;
+        <input name="case_address" autocomplete="off" value="{{ selected_case.address or selected_case.description or '' }}">
+      </label>
+      <div class="grid">
+        <label>&#26696;&#20214;&#26178;&#38291;
+          <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="1420" value="{{ selected_case.case_time_hhmm or '' }}">
+        </label>
+        <label>&#22238;&#31243;&#26178;&#38291;
+          <input name="return_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="1505" value="{{ selected_case.return_time_hhmm or '' }}">
+        </label>
+      </div>
+      <div class="grid">
+        <label>&#20986;&#21220;&#36554;&#36635;
+          <select name="vehicle" required>
+            {% for vehicle in vehicle_options %}
+              <option value="{{ vehicle }}">{{ vehicle }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&#21496;&#27231;
+          <select name="driver" required>
+            {% for number, name in person_options %}
+              <option value="{{ name }}">{{ name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="grid">
+        <label>&#20107;&#30001;
+          <select name="case_reason" required>
+            {% for reason in case_reason_options %}
+              <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&#20663;&#30149;&#24739;
+          <select name="patient_summary" required>
+            <option value="&#30007;&#19968;&#21517;">&#30007;</option>
+            <option value="&#22899;&#19968;&#21517;">&#22899;</option>
+            <option value="&#28961;">&#28961;</option>
+          </select>
+        </label>
+      </div>
+      <label>&#37324;&#31243;
+        <input name="mileage" inputmode="numeric" placeholder="12345">
+      </label>
+      <label>&#32791;&#26448;
+        <input name="consumables" value="&#21475;&#32617;=2,&#25163;&#22871;=2">
+      </label>
+      <label>&#28040;&#27602;&#32000;&#37636;
+        <textarea name="disinfection">&#25937;&#35703;&#36820;&#38538;&#24460;&#36554;&#20839;&#12289;&#25812;&#26550;&#21450;&#25509;&#35320;&#38754;&#23436;&#25104;&#28040;&#27602;&#12290;</textarea>
+      </label>
+      <button type="submit">&#24314;&#31435;&#20219;&#21209;</button>
+    </form>
+
+    {% if recent_tasks %}
+    <section class="panel recent">
+      <h2>&#26368;&#36817;&#20219;&#21209;</h2>
+      {% for item in recent_tasks %}
+        <a href="/tasks/{{ item.task.task_id }}">{{ item.task.task_id }} - {{ item.overall_status }}</a>
+      {% endfor %}
+    </section>
+    {% endif %}
+  </main>
+</body>
+</html>

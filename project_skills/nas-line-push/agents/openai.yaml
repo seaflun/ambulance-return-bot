@@ -1,0 +1,4 @@
+interface:
+  display_name: "NAS LINE Push"
+  short_description: "Run NAS jobs and send LINE push notifications on completion."
+  default_prompt: "Use $nas-line-push to set up or maintain a Synology NAS job that sends LINE push notifications after completion."

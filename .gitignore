@@ -1,0 +1,48 @@
+.env
+!.env.example
+artifacts/
+logs/
+__pycache__/
+*.pyc
+
+# Python
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# local runtime / generated outputs
+tmp/
+temp/
+cache/
+.cache/
+outputs/
+exports/
+reports/generated/
+runtime_outputs/
+screenshots/
+*.log
+
+# secrets
+.env.*
+!.env.example
+*.key
+*.pem
+*.token
+secrets.json
+credentials.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
