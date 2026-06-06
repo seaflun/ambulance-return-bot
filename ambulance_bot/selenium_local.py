@@ -925,8 +925,10 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
 
 
 def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
-    driver.get(SITE_DEFINITIONS[2].url)
-    time.sleep(1.5)
+    current_url = driver.current_url.lower()
+    if "emsdt.tyfd.gov.tw/emmweb" not in current_url:
+        driver.get(SITE_DEFINITIONS[2].url)
+        time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
     if _is_disinfection_login_page(driver):
         raise WebDriverException("消毒系統需要重新登入或驗證碼；請先在 worker Chrome 手動登入一次後再執行。")
