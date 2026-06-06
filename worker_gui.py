@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import worker
 from ambulance_bot.adapters import SITE_DEFINITIONS
 from ambulance_bot.chrome_launcher import open_url_in_worker_chrome
+from ambulance_bot.duty_credentials import load_saved_duty_automation_credential, saved_login_path
 
 
 load_dotenv()
@@ -39,6 +40,7 @@ class WorkerGui(tk.Tk):
         self.profile_email = tk.StringVar(value=os.getenv("CHROME_PROFILE_EMAIL", ""))
         self.duty_account = tk.StringVar(value=os.getenv("DUTY_ACCOUNT", ""))
         self.duty_password = tk.StringVar(value=os.getenv("DUTY_PASSWORD", ""))
+        self.duty_saved_login_path = tk.StringVar(value=str(saved_login_path()))
 
         self._build_ui()
         self.after(250, self._drain_log)
@@ -76,6 +78,8 @@ class WorkerGui(tk.Tk):
         ttk.Label(credentials, text="密碼").grid(row=1, column=0, sticky="w", pady=3)
         ttk.Entry(credentials, textvariable=self.duty_password, show="*").grid(row=1, column=1, sticky="ew", padx=(8, 12), pady=3)
         ttk.Button(credentials, text="儲存到 .env", command=self._save_duty_credentials).grid(row=0, column=2, rowspan=2, sticky="nsew")
+        ttk.Button(credentials, text="載入值班專案帳密", command=self._load_saved_duty_credentials).grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        ttk.Label(credentials, textvariable=self.duty_saved_login_path).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
         credentials.columnconfigure(1, weight=1)
 
         sites = ttk.LabelFrame(root, text="四站入口", padding=12)
@@ -155,6 +159,17 @@ class WorkerGui(tk.Tk):
         os.environ["DUTY_ACCOUNT"] = account
         os.environ["DUTY_PASSWORD"] = password
         self._log("消防勤務帳密已儲存到 .env。")
+
+    def _load_saved_duty_credentials(self) -> None:
+        credential = load_saved_duty_automation_credential()
+        if credential is None:
+            messagebox.showerror("讀取失敗", f"找不到可用帳密：{saved_login_path()}")
+            return
+        self.duty_account.set(credential.user_id)
+        self.duty_password.set(credential.password)
+        os.environ["DUTY_ACCOUNT"] = credential.user_id
+        os.environ["DUTY_PASSWORD"] = credential.password
+        self._log(f"已載入值班勤務系統自動化帳密：{credential.user_id}")
 
     def _open_site(self, site_key: str) -> None:
         site = next((item for item in SITE_DEFINITIONS if item.key == site_key), None)

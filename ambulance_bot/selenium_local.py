@@ -20,6 +20,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITIONS
+from .duty_credentials import load_duty_credential
 from .models import VEHICLE_PPE_NAMES, AmbulanceReturnRequest, clean_case_address
 
 
@@ -907,14 +908,13 @@ def _ensure_duty_login(driver: webdriver.Chrome) -> bool:
     time.sleep(1)
     if _looks_logged_in(driver):
         return True
-    username = os.getenv("DUTY_ACCOUNT", "").strip()
-    password = os.getenv("DUTY_PASSWORD", "").strip()
-    if not username or not password:
+    credential = load_duty_credential()
+    if credential is None:
         return False
     try:
         wait = WebDriverWait(driver, 10)
-        wait.until(EC.presence_of_element_located((By.ID, "_txtUsername"))).send_keys(username)
-        driver.find_element(By.ID, "_txtPassword").send_keys(password)
+        wait.until(EC.presence_of_element_located((By.ID, "_txtUsername"))).send_keys(credential.user_id)
+        driver.find_element(By.ID, "_txtPassword").send_keys(credential.password)
         driver.execute_script(
             """
             if (document.getElementById('hidFlag')) {
