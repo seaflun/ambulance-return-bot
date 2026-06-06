@@ -88,6 +88,7 @@ class WorkerGui(tk.Tk):
         ttk.Button(task_actions, text="刷新任務", command=self._refresh_tasks).pack(side="left")
         ttk.Button(task_actions, text="執行工作紀錄", command=self._run_selected_task).pack(side="left", padx=(8, 0))
         ttk.Button(task_actions, text="執行車輛里程", command=self._run_selected_vehicle_mileage).pack(side="left", padx=(8, 0))
+        ttk.Button(task_actions, text="執行消毒紀錄", command=self._run_selected_disinfection).pack(side="left", padx=(8, 0))
         ttk.Label(task_actions, text="未選任務時會自動使用第一筆").pack(side="left", padx=(12, 0))
         columns = ("status", "vehicle", "driver", "time", "address")
         self.task_tree = ttk.Treeview(tasks, columns=columns, show="tree headings", height=5)
@@ -246,6 +247,15 @@ class WorkerGui(tk.Tk):
         self._log(f"已收到車輛里程指令，開始取任務：{task_id}")
         threading.Thread(target=self._run_selected_vehicle_mileage_background, args=(task_id,), daemon=True).start()
 
+    def _run_selected_disinfection(self) -> None:
+        task_id = self._selected_task_id()
+        if not task_id:
+            return
+        self._apply_server_url()
+        self.worker_status.set(f"手動執行消毒紀錄：{task_id}")
+        self._log(f"已收到消毒紀錄指令，開始取任務：{task_id}")
+        threading.Thread(target=self._run_selected_disinfection_background, args=(task_id,), daemon=True).start()
+
     def _selected_task_id(self) -> str:
         if self.task_tree is None:
             return ""
@@ -305,6 +315,36 @@ class WorkerGui(tk.Tk):
             self._refresh_tasks()
         except Exception as exc:
             self.log_queue.put(f"執行車輛里程失敗：{task_id} {exc}")
+        finally:
+            worker.MANUAL_TASK_ACTIVE.clear()
+
+    def _run_selected_disinfection_background(self, task_id: str) -> None:
+        server_url = self.server_url.get().strip().rstrip("/")
+        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        worker.MANUAL_TASK_ACTIVE.set()
+        started_at = time.monotonic()
+        try:
+            if not _worker_chrome_is_running():
+                self.log_queue.put("消毒紀錄：預先喚起 Chrome...")
+                open_url_in_worker_chrome("about:blank")
+            self.log_queue.put("消毒紀錄：向 NAS 取任務...")
+            task = worker.fetch_task(server_url, task_id)
+            self.log_queue.put(f"消毒紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
+            if not task:
+                self.log_queue.put(f"找不到任務：{task_id}")
+                return
+            self.log_queue.put(f"開始執行消毒紀錄：{task_id}")
+            selenium_started_at = time.monotonic()
+            worker.run_disinfection_worker_task(
+                server_url,
+                worker_id,
+                task,
+                Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
+            )
+            self.log_queue.put(f"消毒紀錄已執行完成：{task_id}，耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
+            self._refresh_tasks()
+        except Exception as exc:
+            self.log_queue.put(f"執行消毒紀錄失敗：{task_id} {exc}")
         finally:
             worker.MANUAL_TASK_ACTIVE.clear()
 

@@ -136,6 +136,40 @@ def run_vehicle_mileage_task(request: AmbulanceReturnRequest, artifacts_dir: Pat
             _release_selenium_session(f"vehicle_mileage {request.task_id}")
 
 
+def run_disinfection_task(request: AmbulanceReturnRequest, artifacts_dir: Path) -> SeleniumRunResult:
+    output_dir = artifacts_dir / "selenium"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = output_dir / f"{request.task_id}.txt"
+    summary_path.write_text(_task_text(request), encoding="utf-8")
+
+    driver = None
+    lock_acquired = False
+    keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+    try:
+        lock_acquired = _acquire_selenium_session(f"disinfection {request.task_id}")
+        debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+        driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
+        _set_window_size_if_enabled(driver, "disinfection")
+        driver.implicitly_wait(2)
+        detail = _open_disinfection_page(driver, request, output_dir)
+        return SeleniumRunResult(True, "disinfection_session_ready", detail, summary_path)
+    except Exception as exc:
+        if driver is not None:
+            _save_artifacts(driver, output_dir, request.task_id, "disinfection_error")
+        return SeleniumRunResult(False, "disinfection_failed", f"消毒紀錄操作失敗：{exc}", summary_path)
+    finally:
+        if not keep_browser_open:
+            _quit_driver(driver)
+        if lock_acquired:
+            _release_selenium_session(f"disinfection {request.task_id}")
+
+
 def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "6h") -> DutyCaseLookupResult:
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -882,6 +916,24 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
             return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u78ba\u8a8d\u8996\u7a97\uff1a{alert_text}"
         return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\u3002"
     return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
+
+
+def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
+    driver.get(SITE_DEFINITIONS[2].url)
+    time.sleep(1.5)
+    _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
+    if _is_disinfection_login_page(driver):
+        raise WebDriverException("消毒系統需要重新登入或驗證碼；請先在 worker Chrome 手動登入一次後再執行。")
+    return f"已進入緊急救護消毒系統，待填消毒紀錄：{request.disinfection}"
+
+
+def _is_disinfection_login_page(driver: webdriver.Chrome) -> bool:
+    url = driver.current_url.lower()
+    if "login" in url or "signin" in url:
+        return True
+    source = driver.page_source
+    login_markers = ["驗證碼", "帳號", "密碼", "登入"]
+    return sum(1 for marker in login_markers if marker in source) >= 3
 
 
 def _accept_alert_if_present(driver: webdriver.Chrome, timeout: float = 4) -> str:

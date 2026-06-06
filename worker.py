@@ -14,7 +14,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from ambulance_bot.models import AmbulanceReturnRequest
-from ambulance_bot.selenium_local import query_duty_emergency_cases, run_local_selenium_task, run_vehicle_mileage_task
+from ambulance_bot.selenium_local import (
+    query_duty_emergency_cases,
+    run_disinfection_task,
+    run_local_selenium_task,
+    run_vehicle_mileage_task,
+)
 
 
 load_dotenv()
@@ -157,6 +162,22 @@ def run_vehicle_task(server_url: str, worker_id: str, task: dict[str, object], a
         site_name="車輛里程",
     )
     print(f"[worker] finished vehicle mileage {request.task_id}: {result.status}", flush=True)
+
+
+def run_disinfection_worker_task(server_url: str, worker_id: str, task: dict[str, object], artifacts_dir: Path) -> None:
+    request = AmbulanceReturnRequest.from_dict(task)
+    print(f"[worker] disinfection task {request.task_id}", flush=True)
+    post_status(server_url, request.task_id, "disinfection_running", f"公務電腦 worker 執行消毒紀錄：{worker_id}")
+    result = run_disinfection_task(request, artifacts_dir)
+    post_status(
+        server_url,
+        request.task_id,
+        result.status,
+        result.detail,
+        site_key="disinfection",
+        site_name="緊急救護消毒",
+    )
+    print(f"[worker] finished disinfection {request.task_id}: {result.status}", flush=True)
 
 
 def request_json(url: str) -> dict[str, object]:
