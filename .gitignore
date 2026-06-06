@@ -1,6 +1,7 @@
 .env
 !.env.example
 artifacts/
+NAS包/
 logs/
 __pycache__/
 *.pyc
