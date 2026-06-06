@@ -340,6 +340,7 @@ class WorkerGui(tk.Tk):
                 worker_id,
                 task,
                 Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
+                captcha_provider=self._ask_disinfection_captcha,
             )
             self.log_queue.put(f"消毒紀錄已執行完成：{task_id}，耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
             self._refresh_tasks()
@@ -362,6 +363,55 @@ class WorkerGui(tk.Tk):
             self.log_queue.put(f"Chrome 已預先啟動：{status}")
         except Exception as exc:
             self.log_queue.put(f"Chrome 預先啟動失敗：{exc}")
+
+    def _ask_disinfection_captcha(self, image_path: Path) -> str:
+        result = {"value": ""}
+        done = threading.Event()
+
+        def show_dialog() -> None:
+            dialog = tk.Toplevel(self)
+            dialog.title("輸入消毒系統驗證碼")
+            dialog.resizable(False, False)
+            dialog.transient(self)
+            dialog.grab_set()
+
+            ttk.Label(dialog, text="請輸入你辨識到的驗證碼數字").pack(padx=16, pady=(14, 8))
+            try:
+                image = tk.PhotoImage(file=str(image_path))
+                image_label = ttk.Label(dialog, image=image)
+                image_label.image = image
+                image_label.pack(padx=16, pady=(0, 10))
+            except Exception as exc:
+                ttk.Label(dialog, text=f"驗證碼圖片讀取失敗：{exc}").pack(padx=16, pady=(0, 10))
+                ttk.Label(dialog, text=str(image_path)).pack(padx=16, pady=(0, 10))
+
+            value = tk.StringVar()
+            entry = ttk.Entry(dialog, textvariable=value, width=18, font=("Microsoft JhengHei UI", 16))
+            entry.pack(padx=16, pady=(0, 12))
+
+            buttons = ttk.Frame(dialog)
+            buttons.pack(padx=16, pady=(0, 14), fill="x")
+
+            def submit() -> None:
+                result["value"] = value.get().strip()
+                done.set()
+                dialog.destroy()
+
+            def cancel() -> None:
+                result["value"] = ""
+                done.set()
+                dialog.destroy()
+
+            ttk.Button(buttons, text="送出", command=submit).pack(side="left", expand=True, fill="x", padx=(0, 6))
+            ttk.Button(buttons, text="取消", command=cancel).pack(side="left", expand=True, fill="x", padx=(6, 0))
+            dialog.protocol("WM_DELETE_WINDOW", cancel)
+            entry.bind("<Return>", lambda _event: submit())
+            entry.focus_set()
+            self.log_queue.put(f"等待輸入消毒驗證碼：{image_path}")
+
+        self.after(0, show_dialog)
+        done.wait()
+        return result["value"]
 
     def _log(self, message: str) -> None:
         self.log_queue.put(f"{time.strftime('%H:%M:%S')} {message}")
