@@ -36,8 +36,6 @@ class WorkerGui(tk.Tk):
         self.server_url = tk.StringVar(value=os.getenv("WORKER_SERVER_URL", NAS_LAN_URL))
         self.worker_status = tk.StringVar(value="未啟動")
         self.worker_id = tk.StringVar(value=os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"))
-        self.profile_dir = tk.StringVar(value=os.getenv("CHROME_PROFILE_DIR", ""))
-        self.profile_email = tk.StringVar(value=os.getenv("CHROME_PROFILE_EMAIL", ""))
         self.duty_account = tk.StringVar(value=os.getenv("DUTY_ACCOUNT", ""))
         self.duty_password = tk.StringVar(value=os.getenv("DUTY_PASSWORD", ""))
         self.duty_saved_login_path = tk.StringVar(value=str(saved_login_path()))
@@ -58,8 +56,6 @@ class WorkerGui(tk.Tk):
         status.pack(fill="x")
         self._row(status, "Worker", self.worker_status, 0)
         self._row(status, "Worker ID", self.worker_id, 1)
-        self._row(status, "Chrome profile", self.profile_dir, 2)
-        self._row(status, "Profile 帳號", self.profile_email, 3)
 
         server = ttk.LabelFrame(root, text="NAS 連線", padding=12)
         server.pack(fill="x", pady=(12, 0))

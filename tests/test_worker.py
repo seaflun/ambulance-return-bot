@@ -83,7 +83,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(last_case_hash, case_hash)
         self.assertEqual(calls["posts"], 1)
 
-    def test_scheduled_lookup_skips_when_previous_lookup_needs_login(self):
+    def test_scheduled_lookup_skips_when_previous_lookup_waits_for_login(self):
         original_fetch = worker_module.fetch_case_lookup_request
         original_query = worker_module.query_duty_emergency_cases
         try:
@@ -95,7 +95,7 @@ class WorkerTests(unittest.TestCase):
                 cases_dir = Path(tmp) / "cases"
                 cases_dir.mkdir()
                 (cases_dir / "latest.json").write_text(
-                    json.dumps({"status": "needs_duty_login", "cases": []}),
+                    json.dumps({"status": "duty_login_failed", "cases": []}),
                     encoding="utf-8",
                 )
                 last_lookup_at, last_case_hash = worker_module.maybe_run_case_lookup(

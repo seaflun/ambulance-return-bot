@@ -133,9 +133,16 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "6h") ->
         driver.implicitly_wait(2)
         if not _ensure_duty_login(driver):
             _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_login")
+            login_error = _login_error_text(driver)
+            status = "duty_login_failed" if login_error else "needs_duty_login"
+            detail = (
+                f"\u6d88\u9632\u52e4\u52d9\u81ea\u52d5\u767b\u5165\u5931\u6557\uff1a{login_error}"
+                if login_error
+                else "\u5df2\u5728\u516c\u52d9\u96fb\u8166 worker Chrome \u958b\u555f\u6d88\u9632\u52e4\u52d9\u767b\u5165\u9801\uff0c\u4f46\u76ee\u524d\u5c1a\u672a\u767b\u5165\uff1b\u8acb\u78ba\u8a8d worker \u53ef\u8b80\u53d6\u6b63\u78ba\u5e33\u5bc6\u3002"
+            )
             payload = _case_lookup_payload(
-                "needs_duty_login",
-                "\u5df2\u5728\u516c\u52d9\u96fb\u8166 worker Chrome \u958b\u555f\u6d88\u9632\u52e4\u52d9\u767b\u5165\u9801\uff0c\u4f46\u76ee\u524d\u5c1a\u672a\u767b\u5165\uff1b\u8acb\u5728 worker GUI \u6309\u300c\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304\u300d\u4e26\u624b\u52d5\u767b\u5165\u4e00\u6b21\u3002",
+                status,
+                detail,
                 [],
             )
             _write_json_atomic(output_path, payload)
@@ -913,28 +920,50 @@ def _ensure_duty_login(driver: webdriver.Chrome) -> bool:
         return False
     try:
         wait = WebDriverWait(driver, 10)
-        wait.until(EC.presence_of_element_located((By.ID, "_txtUsername"))).send_keys(credential.user_id)
-        driver.find_element(By.ID, "_txtPassword").send_keys(credential.password)
-        driver.execute_script(
-            """
-            if (document.getElementById('hidFlag')) {
-              document.getElementById('hidFlag').value = 'APPLICATION';
-            }
-            if (typeof Testlogin === 'function') {
-              Testlogin();
-            } else {
-              document.getElementById('ndppc').submit();
-            }
-            """
-        )
-        deadline = time.time() + 15
+        username = wait.until(EC.presence_of_element_located((By.ID, "_txtUsername")))
+        password = driver.find_element(By.ID, "_txtPassword")
+        username.clear()
+        username.send_keys(credential.user_id)
+        password.clear()
+        password.send_keys(credential.password)
+        driver.find_element(By.NAME, "login").click()
+        deadline = time.time() + 8
         while time.time() < deadline:
             if _looks_logged_in(driver):
                 return True
+            if _login_error_text(driver):
+                return False
             time.sleep(1)
+        driver.get(_ap_url(DUTY_WORK_LOG_AP))
+        time.sleep(1.5)
+        if _login_form_present(driver):
+            return False
+        return True
     except (TimeoutException, WebDriverException):
         return False
-    return _looks_logged_in(driver)
+
+
+def _login_form_present(driver: webdriver.Chrome) -> bool:
+    try:
+        return bool(
+            driver.execute_script(
+                "return !!document.getElementById('_txtUsername') && !!document.getElementById('_txtPassword');"
+            )
+        )
+    except WebDriverException:
+        return False
+
+
+def _login_error_text(driver: webdriver.Chrome) -> str:
+    try:
+        text = driver.execute_script("return document.body ? document.body.innerText : '';") or ""
+    except WebDriverException:
+        return ""
+    markers = [
+        "帳號密碼有誤",
+        "尚未申請帳號權限",
+    ]
+    return text if any(marker in text for marker in markers) else ""
 
 
 def _looks_logged_in(driver: webdriver.Chrome) -> bool:

@@ -76,8 +76,8 @@ def maybe_run_case_lookup(
         lookup_range = str(request_payload.get("lookup_range") or "6h")
         print(f"[worker] manual case lookup requested range={lookup_range}", flush=True)
     elif now - last_lookup_at >= max(interval_seconds, 60):
-        if last_case_lookup_needs_login(artifacts_dir):
-            print("[worker] scheduled case lookup skipped: waiting for duty login", flush=True)
+        if last_case_lookup_waiting_for_login(artifacts_dir):
+            print("[worker] scheduled case lookup skipped: waiting for valid duty login", flush=True)
             return now, last_case_hash
         lookup_range = "today"
         print(f"[worker] scheduled case lookup range={lookup_range}", flush=True)
@@ -196,7 +196,7 @@ def load_last_case_hash(artifacts_dir: Path) -> str:
     return str(payload.get("case_hash") or hash_cases(payload.get("cases") or []))
 
 
-def last_case_lookup_needs_login(artifacts_dir: Path) -> bool:
+def last_case_lookup_waiting_for_login(artifacts_dir: Path) -> bool:
     path = artifacts_dir / "cases" / "latest.json"
     if not path.exists():
         return False
@@ -204,7 +204,7 @@ def last_case_lookup_needs_login(artifacts_dir: Path) -> bool:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return str(payload.get("status") or "") == "needs_duty_login"
+    return str(payload.get("status") or "") in {"needs_duty_login", "duty_login_failed"}
 
 
 def worker_headers() -> dict[str, str]:
