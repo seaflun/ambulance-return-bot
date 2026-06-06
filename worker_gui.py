@@ -37,6 +37,8 @@ class WorkerGui(tk.Tk):
         self.worker_id = tk.StringVar(value=os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"))
         self.profile_dir = tk.StringVar(value=os.getenv("CHROME_PROFILE_DIR", ""))
         self.profile_email = tk.StringVar(value=os.getenv("CHROME_PROFILE_EMAIL", ""))
+        self.duty_account = tk.StringVar(value=os.getenv("DUTY_ACCOUNT", ""))
+        self.duty_password = tk.StringVar(value=os.getenv("DUTY_PASSWORD", ""))
 
         self._build_ui()
         self.after(250, self._drain_log)
@@ -66,6 +68,15 @@ class WorkerGui(tk.Tk):
         ttk.Button(server, text="使用 Tailscale", command=lambda: self._set_server(NAS_TAILSCALE_URL)).grid(row=1, column=1, sticky="ew", padx=6)
         ttk.Button(server, text="測試連線", command=self._test_connection).grid(row=1, column=2, sticky="ew", padx=6)
         ttk.Button(server, text="啟動 / 重啟 Worker", command=self._restart_worker).grid(row=1, column=3, sticky="ew", padx=(6, 0))
+
+        credentials = ttk.LabelFrame(root, text="消防勤務自動登入", padding=12)
+        credentials.pack(fill="x", pady=(12, 0))
+        ttk.Label(credentials, text="帳號").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Entry(credentials, textvariable=self.duty_account).grid(row=0, column=1, sticky="ew", padx=(8, 12), pady=3)
+        ttk.Label(credentials, text="密碼").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Entry(credentials, textvariable=self.duty_password, show="*").grid(row=1, column=1, sticky="ew", padx=(8, 12), pady=3)
+        ttk.Button(credentials, text="儲存到 .env", command=self._save_duty_credentials).grid(row=0, column=2, rowspan=2, sticky="nsew")
+        credentials.columnconfigure(1, weight=1)
 
         sites = ttk.LabelFrame(root, text="四站入口", padding=12)
         sites.pack(fill="x", pady=(12, 0))
@@ -129,6 +140,22 @@ class WorkerGui(tk.Tk):
             return
         self.log_queue.put(f"NAS 連線成功：{data}")
 
+    def _save_duty_credentials(self) -> None:
+        account = self.duty_account.get().strip()
+        password = self.duty_password.get()
+        if not account or not password:
+            messagebox.showerror("缺少資料", "請輸入消防勤務帳號與密碼。")
+            return
+        update_env_values(
+            {
+                "DUTY_ACCOUNT": account,
+                "DUTY_PASSWORD": password,
+            }
+        )
+        os.environ["DUTY_ACCOUNT"] = account
+        os.environ["DUTY_PASSWORD"] = password
+        self._log("消防勤務帳密已儲存到 .env。")
+
     def _open_site(self, site_key: str) -> None:
         site = next((item for item in SITE_DEFINITIONS if item.key == site_key), None)
         if site is None:
@@ -163,6 +190,33 @@ def main() -> None:
     app = WorkerGui()
     app._restart_worker()
     app.mainloop()
+
+
+def update_env_values(values: dict[str, str]) -> None:
+    path = os.getenv("DOTENV_PATH", ".env")
+    lines: list[str] = []
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+
+    seen: set[str] = set()
+    updated: list[str] = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else ""
+        if key in values:
+            updated.append(f"{key}={values[key]}")
+            seen.add(key)
+        else:
+            updated.append(line)
+
+    if updated and updated[-1].strip():
+        updated.append("")
+    for key, value in values.items():
+        if key not in seen:
+            updated.append(f"{key}={value}")
+
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(updated).rstrip() + "\n")
 
 
 if __name__ == "__main__":

@@ -138,6 +138,7 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "6h") ->
                 [],
             )
             _write_json_atomic(output_path, payload)
+            driver = None
             return DutyCaseLookupResult(True, payload["status"], payload["detail"], [], output_path)
 
         _open_case_query(driver, lookup_range=lookup_range)

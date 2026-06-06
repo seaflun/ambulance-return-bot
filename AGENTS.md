@@ -32,6 +32,7 @@ run_worker_forever.bat
 
 - Keep credentials only in `.env`; never commit `.env`, tokens, passwords, cookies, screenshots, or generated task JSON.
 - Do not use `.env.example` for local/NAS/public-duty settings unless the user explicitly asks; edit the real `.env` directly for operational changes.
+- Background duty case lookup must use `DUTY_ACCOUNT` and `DUTY_PASSWORD` from `.env`; do not depend on Chrome Password Manager UI selection for this flow.
 - Do not auto-submit final records on external government sites unless the user explicitly approves that behavior.
 - Prefer small focused edits and run tests before reporting completion.
 - After changing code and completing tests, restart the worker, then state clearly whether the worker was restarted.

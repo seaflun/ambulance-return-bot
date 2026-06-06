@@ -37,6 +37,7 @@ This file records project decisions that another computer or another coding agen
 - Worker APIs use a shared `WORKER_TOKEN`; the same value must be set on NAS and public-duty PC.
 - Four-site portal passwords must not be committed and should not be stored on NAS.
 - For operational configuration, edit the real `.env` directly. Do not keep changing `.env.example` unless the user explicitly asks.
+- Background duty case lookup cannot rely on Chrome Password Manager selection. Set `DUTY_ACCOUNT` and `DUTY_PASSWORD` in the public-duty PC `.env` so Selenium can log in automatically.
 - The intended Chrome profile account is `sinpo666@gmail.com`.
 - Use a local, non-cloud Chrome profile directory such as `C:\Users\User\AppData\Local\ambulance_return_bot\chrome_profile`.
 - Do not put Chrome profile data under Google Drive or another synced project folder.
