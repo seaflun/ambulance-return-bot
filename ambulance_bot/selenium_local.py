@@ -136,14 +136,19 @@ def run_vehicle_mileage_task(request: AmbulanceReturnRequest, artifacts_dir: Pat
             _release_selenium_session(f"vehicle_mileage {request.task_id}")
 
 
-def run_disinfection_task(request: AmbulanceReturnRequest, artifacts_dir: Path) -> SeleniumRunResult:
+def run_disinfection_task(
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path,
+    existing_driver: webdriver.Chrome | None = None,
+) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
 
-    driver = None
+    driver = existing_driver
     lock_acquired = False
+    owns_driver = existing_driver is None
     keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
         "0",
         "false",
@@ -153,8 +158,9 @@ def run_disinfection_task(request: AmbulanceReturnRequest, artifacts_dir: Path) 
 
     try:
         lock_acquired = _acquire_selenium_session(f"disinfection {request.task_id}")
-        debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
-        driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
+        if driver is None:
+            debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+            driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
         _set_window_size_if_enabled(driver, "disinfection")
         driver.implicitly_wait(2)
         detail = _open_disinfection_page(driver, request, output_dir)
@@ -164,7 +170,7 @@ def run_disinfection_task(request: AmbulanceReturnRequest, artifacts_dir: Path) 
             _save_artifacts(driver, output_dir, request.task_id, "disinfection_error")
         return SeleniumRunResult(False, "disinfection_failed", f"消毒紀錄操作失敗：{exc}", summary_path)
     finally:
-        if not keep_browser_open:
+        if owns_driver and not keep_browser_open:
             _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"disinfection {request.task_id}")

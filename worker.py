@@ -164,11 +164,17 @@ def run_vehicle_task(server_url: str, worker_id: str, task: dict[str, object], a
     print(f"[worker] finished vehicle mileage {request.task_id}: {result.status}", flush=True)
 
 
-def run_disinfection_worker_task(server_url: str, worker_id: str, task: dict[str, object], artifacts_dir: Path) -> None:
+def run_disinfection_worker_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+    driver=None,
+) -> None:
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] disinfection task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "disinfection_running", f"公務電腦 worker 執行消毒紀錄：{worker_id}")
-    result = run_disinfection_task(request, artifacts_dir)
+    result = run_disinfection_task(request, artifacts_dir, existing_driver=driver)
     post_status(
         server_url,
         request.task_id,
