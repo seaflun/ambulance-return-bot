@@ -932,8 +932,9 @@ def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRe
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
     if _is_disinfection_login_page(driver):
         raise WebDriverException("消毒系統需要重新登入或驗證碼；請先在 worker Chrome 手動登入一次後再執行。")
+    detail = _prepare_disinfection_record(driver, request, output_dir)
     controls_path = _save_disinfection_probe(driver, output_dir, request.task_id)
-    return f"已進入緊急救護消毒系統，已保存頁面控制項：{controls_path}；待填消毒紀錄：{request.disinfection}"
+    return f"{detail} 已保存頁面控制項：{controls_path}"
 
 
 def _is_disinfection_login_page(driver: webdriver.Chrome) -> bool:
@@ -978,6 +979,136 @@ def _save_disinfection_probe(driver: webdriver.Chrome, output_dir: Path, task_id
     )
     controls_path.write_text(json.dumps(controls, ensure_ascii=False, indent=2), encoding="utf-8")
     return controls_path
+
+
+def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
+    if not _click_text_if_present(driver, ["報表系統"]):
+        raise WebDriverException("找不到左側功能選單：報表系統")
+    if not _click_text_if_present(driver, ["消毒紀錄管理"]):
+        raise WebDriverException("找不到功能選單：消毒紀錄管理")
+    _click_text_if_present(driver, ["查詢", "日期查詢"])
+    time.sleep(1)
+    _set_disinfection_query_date(driver, _disinfection_query_date(request))
+    if not _click_text_if_present(driver, ["查詢"]):
+        raise WebDriverException("找不到消毒紀錄日期查詢按鈕")
+    time.sleep(1.5)
+    _save_artifacts(driver, output_dir, request.task_id, "disinfection_query")
+
+    if not _open_disinfection_detail_for_case(driver, request.case_time):
+        raise WebDriverException(f"找不到報案時間 {request.case_time or '未填'} 對應的消毒紀錄明細")
+    time.sleep(1.5)
+    _save_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
+
+    if request.disinfection_items:
+        updated = _set_disinfection_item_statuses(driver, request.disinfection_items, "已選取區")
+        if updated <= 0:
+            raise WebDriverException(f"找不到可設定的消毒項目：{request.disinfection_items_summary}")
+    else:
+        updated = 0
+    _save_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
+
+    if os.getenv("SAVE_DISINFECTION_RECORD", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        if not _click_text_if_present(driver, ["儲存"]):
+            raise WebDriverException("找不到消毒紀錄儲存按鈕")
+        alert_text = _accept_alert_if_present(driver)
+        return f"已設定消毒項目 {updated} 項並按下儲存。{('確認視窗：' + alert_text) if alert_text else ''}"
+    return f"已設定消毒項目 {updated} 項，未按儲存。"
+
+
+def _set_disinfection_query_date(driver: webdriver.Chrome, date_text: str) -> None:
+    driver.execute_script(
+        """
+        const dateText = arguments[0];
+        const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+        const writable = el => el && !el.disabled && !el.readOnly && visible(el);
+        const inputs = Array.from(document.querySelectorAll('input')).filter(writable);
+        const dateInputs = inputs.filter(el => {
+          const h = [el.id, el.name, el.placeholder, el.title, el.value].map(x => String(x || '')).join(' ');
+          return /date|sdate|edate|日期|時間|起|迄/i.test(h);
+        });
+        const targets = dateInputs.length ? dateInputs : inputs.slice(0, 2);
+        for (const el of targets.slice(0, 2)) {
+          el.focus();
+          el.value = dateText;
+          el.dispatchEvent(new Event('input', {bubbles: true}));
+          el.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        return targets.length;
+        """,
+        date_text,
+    )
+
+
+def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
+    case_hhmm = normalize_hhmm_local(request.case_time)
+    return_hhmm = normalize_hhmm_local(request.return_time)
+    query_date = request.created_at
+    if len(case_hhmm) == 4 and len(return_hhmm) == 4 and int(case_hhmm) > int(return_hhmm):
+        query_date = query_date - timedelta(days=1)
+    return query_date.strftime("%Y/%m/%d")
+
+
+def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str) -> bool:
+    digits = normalize_hhmm_local(case_time)
+    return bool(
+        driver.execute_script(
+            """
+            const hhmm = arguments[0];
+            const variants = hhmm && hhmm.length === 4 ? [hhmm, `${hhmm.slice(0,2)}:${hhmm.slice(2)}`] : [];
+            const rows = Array.from(document.querySelectorAll('tr'));
+            const row = rows.find(tr => {
+              const text = tr.innerText || '';
+              return variants.length === 0 || variants.some(v => text.includes(v));
+            });
+            if (!row) return false;
+            const controls = Array.from(row.querySelectorAll('a, button, input[type=button], input[type=submit]'));
+            const detail = controls.find(el => {
+              const text = [el.innerText, el.value, el.title, el.getAttribute('aria-label')].map(x => String(x || '')).join(' ');
+              return text.includes('明細');
+            }) || controls[controls.length - 1];
+            if (!detail) return false;
+            detail.click();
+            return true;
+            """,
+            digits,
+        )
+    )
+
+
+def _set_disinfection_item_statuses(driver: webdriver.Chrome, items: list[str], status_text: str) -> int:
+    return int(
+        driver.execute_script(
+            """
+            const items = arguments[0];
+            const statusText = arguments[1];
+            const rows = Array.from(document.querySelectorAll('tr'));
+            let updated = 0;
+            const setSelect = (select, text) => {
+              const option = Array.from(select.options || []).find(opt => {
+                return String(opt.text || '').includes(text) || String(opt.value || '').includes(text);
+              });
+              if (!option) return false;
+              select.value = option.value;
+              select.dispatchEvent(new Event('change', {bubbles: true}));
+              return true;
+            };
+            for (const item of items) {
+              const row = rows.find(tr => (tr.innerText || '').includes(item));
+              if (!row) continue;
+              const select = Array.from(row.querySelectorAll('select')).pop();
+              if (select && setSelect(select, statusText)) updated++;
+            }
+            return updated;
+            """,
+            items,
+            status_text,
+        )
+    )
+
+
+def normalize_hhmm_local(value: str) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return digits[:4] if len(digits) >= 4 else digits
 
 
 def _accept_alert_if_present(driver: webdriver.Chrome, timeout: float = 4) -> str:
