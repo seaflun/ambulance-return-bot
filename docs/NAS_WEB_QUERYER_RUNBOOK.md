@@ -62,7 +62,8 @@ WORKER_POLL_SECONDS=10
 CASE_LOOKUP_INTERVAL_SECONDS=300
 WORKER_USE_LOCAL_CHROME=true
 CHROME_PROFILE_EMAIL=sinpo666@gmail.com
-CHROME_PROFILE_DIR=artifacts/chrome_profile
+CHROME_PROFILE_DIR=C:\Users\User\AppData\Local\ambulance_return_bot\chrome_profile
+WORKER_CHROME_DEBUGGER_PORT=9223
 ```
 
 啟動：

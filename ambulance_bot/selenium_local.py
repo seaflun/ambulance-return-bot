@@ -134,7 +134,7 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "6h") ->
             _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_login")
             payload = _case_lookup_payload(
                 "needs_duty_login",
-                "\u5df2\u5728 NAS \u7121\u982d Chrome \u958b\u555f\u6d88\u9632\u52e4\u52d9\u767b\u5165\u9801\uff0c\u4f46\u81ea\u52d5\u767b\u5165\u672a\u901a\u904e\uff1b\u8acb\u6aa2\u67e5 artifacts/selenium/case_lookup-duty_login.png \u8207 HTML\u3002",
+                "\u5df2\u5728\u516c\u52d9\u96fb\u8166 worker Chrome \u958b\u555f\u6d88\u9632\u52e4\u52d9\u767b\u5165\u9801\uff0c\u4f46\u76ee\u524d\u5c1a\u672a\u767b\u5165\uff1b\u8acb\u5728 worker GUI \u6309\u300c\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304\u300d\u4e26\u624b\u52d5\u767b\u5165\u4e00\u6b21\u3002",
                 [],
             )
             _write_json_atomic(output_path, payload)
@@ -444,7 +444,7 @@ def _prepare_duty_work_log_form(
         return SeleniumRunResult(
             ok=True,
             status="needs_duty_login",
-            detail="已在 NAS 無頭 Chrome 開啟消防勤務登入頁，但自動登入未通過；請檢查 duty_login 截圖。",
+            detail="已在公務電腦 worker Chrome 開啟消防勤務登入頁，但目前尚未登入；請在 worker GUI 手動登入一次。",
             summary_path=summary_path,
         )
 

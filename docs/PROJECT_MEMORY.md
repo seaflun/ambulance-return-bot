@@ -38,7 +38,9 @@ This file records project decisions that another computer or another coding agen
 - Four-site portal passwords must not be committed and should not be stored on NAS.
 - For operational configuration, edit the real `.env` directly. Do not keep changing `.env.example` unless the user explicitly asks.
 - The intended Chrome profile account is `sinpo666@gmail.com`.
-- Use `CHROME_PROFILE_DIR=artifacts/chrome_profile`.
+- Use a local, non-cloud Chrome profile directory such as `C:\Users\User\AppData\Local\ambulance_return_bot\chrome_profile`.
+- Do not put Chrome profile data under Google Drive or another synced project folder.
+- The worker GUI opens Chrome with `WORKER_CHROME_DEBUGGER_PORT=9223` so Selenium can attach to the same profile window.
 - Portal passwords are expected to come from Google Password Manager inside that Chrome profile.
 
 ## Data Entry Rules

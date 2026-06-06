@@ -18,6 +18,9 @@ def open_url_in_worker_chrome(url: str) -> str:
         path = Path(profile_dir).expanduser().resolve()
         path.mkdir(parents=True, exist_ok=True)
         args.append(f"--user-data-dir={path}")
+    debugger_port = os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223").strip()
+    if debugger_port:
+        args.append(f"--remote-debugging-port={debugger_port}")
     args.extend(
         [
             "--no-first-run",

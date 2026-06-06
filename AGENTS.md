@@ -58,7 +58,9 @@ py -m unittest discover -s tests -v
 - Phone/tablet "查詢" only creates `case_lookup_requested`; the worker should pick it up on the next poll and post cases back to NAS.
 - Duty case lookup uses the public-duty PC's local Chrome/Selenium and reads emergency cases.
 - Case import may press the duty-system case `select` button to populate the work-log form, but it must not press final save.
-- The worker uses `CHROME_PROFILE_DIR=artifacts/chrome_profile`; the intended Chrome account/profile is `sinpo666@gmail.com`, with portal passwords handled by Google Password Manager rather than `.env`.
+- The worker uses a local AppData `CHROME_PROFILE_DIR`; the intended Chrome account/profile is `sinpo666@gmail.com`, with portal passwords handled by Google Password Manager rather than `.env`.
+- Do not put Chrome profile data in Google Drive.
+- Worker Chrome entry buttons should launch with `WORKER_CHROME_DEBUGGER_PORT=9223` so Selenium can attach instead of starting a second profile instance.
 - CAPTCHA automation must not attempt to bypass or solve protected CAPTCHA. If CAPTCHA blocks a flow, mark the site for manual handoff.
 
 ## Fixed Network Values
