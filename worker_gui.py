@@ -80,7 +80,7 @@ class WorkerGui(tk.Tk):
         ttk.Label(credentials, textvariable=self.duty_saved_login_path).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
         credentials.columnconfigure(1, weight=1)
 
-        sites = ttk.LabelFrame(root, text="四站入口", padding=12)
+        sites = ttk.LabelFrame(root, text="手動開網站入口（不會登打）", padding=12)
         sites.pack(fill="x", pady=(12, 0))
         for index, site in enumerate(SITE_DEFINITIONS):
             button = ttk.Button(sites, text=site.name, command=lambda item=site: self._open_site(item.key))
@@ -90,7 +90,7 @@ class WorkerGui(tk.Tk):
         sites.columnconfigure(0, weight=1)
         sites.columnconfigure(1, weight=1)
 
-        tasks = ttk.LabelFrame(root, text="NAS 任務", padding=12)
+        tasks = ttk.LabelFrame(root, text="NAS 任務自動登打", padding=12)
         tasks.pack(fill="both", expand=True, pady=(12, 0))
         task_actions = ttk.Frame(tasks)
         task_actions.pack(fill="x", pady=(0, 8))
