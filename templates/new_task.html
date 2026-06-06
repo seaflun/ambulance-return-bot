@@ -31,6 +31,9 @@
     .lookup-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; color: #4b625d; font-size: 13px; }
     .lookup-meta span, .debug-link { display: inline-flex; align-items: center; min-height: 28px; border: 1px solid #dce5e2; border-radius: 6px; padding: 0 8px; background: #fbfdfc; color: #35504a; text-decoration: none; }
     .empty-note { border: 1px dashed #b9c9c4; border-radius: 8px; padding: 10px; color: #4b625d; background: #fbfdfc; }
+    .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0 12px; }
+    .check-item { display: flex; align-items: center; gap: 8px; min-height: 42px; margin: 0; padding: 8px 10px; border: 1px solid #dce5e2; border-radius: 6px; background: #fbfdfc; font-weight: 650; }
+    .check-item input { width: auto; margin: 0; transform: scale(1.15); }
     .recent { margin-top: 18px; }
     .recent a { display: block; padding: 12px 0; color: #0f766e; text-decoration: none; border-top: 1px solid #e3ebe8; }
     @media (max-width: 520px) { .grid { grid-template-columns: 1fr 1fr; gap: 8px; } h1 { font-size: 25px; } .lookup-head { align-items: stretch; flex-direction: column; } .lookup-head button { width: 100%; } }
@@ -147,6 +150,18 @@
       </label>
       <label>&#28040;&#27602;&#32000;&#37636;
         <textarea name="disinfection">&#25937;&#35703;&#36820;&#38538;&#24460;&#36554;&#20839;&#12289;&#25812;&#26550;&#21450;&#25509;&#35320;&#38754;&#23436;&#25104;&#28040;&#27602;&#12290;</textarea>
+      </label>
+      <label>消毒項目（勾選後會在消毒紀錄設為已選取區）</label>
+      <div class="check-grid">
+        {% for item in disinfection_item_options %}
+          <label class="check-item">
+            <input type="checkbox" name="disinfection_items" value="{{ item }}"{% if item in default_disinfection_items %} checked{% endif %}>
+            <span>{{ loop.index }}. {{ item }}</span>
+          </label>
+        {% endfor %}
+      </div>
+      <label>其他消毒項目
+        <input name="disinfection_items_custom" placeholder="可用逗號或頓號分隔">
       </label>
       <button type="submit">&#24314;&#31435;&#20219;&#21209;</button>
     </form>

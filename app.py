@@ -13,6 +13,8 @@ from ambulance_bot.line_api import reply_text, verify_signature
 from ambulance_bot.models import (
     CASE_REASON_OPTIONS,
     COMMAND_PREFIX,
+    DEFAULT_DISINFECTION_ITEMS,
+    DISINFECTION_ITEM_OPTIONS,
     PERSON_OPTIONS,
     VEHICLE_OPTIONS,
     example_command,
@@ -59,6 +61,8 @@ def new_task():
         vehicle_options=VEHICLE_OPTIONS,
         person_options=person_options,
         case_reason_options=CASE_REASON_OPTIONS,
+        disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
+        default_disinfection_items=DEFAULT_DISINFECTION_ITEMS,
     )
 
 

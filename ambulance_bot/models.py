@@ -8,6 +8,40 @@ from uuid import uuid4
 
 
 DEFAULT_CONSUMABLES = {"\u53e3\u7f69": 2, "\u624b\u5957": 2}
+DISINFECTION_ITEM_OPTIONS = [
+    "\u6551\u8b77\u8eca\u9ad4",
+    "\u64d4\u67b6\u5e8a",
+    "\u64d4\u67b6\u5e8a\u588a",
+    "\u5152\u7ae5\u64d4\u67b6\u56fa\u5b9a\u5668",
+    "\u5b30\u5152\u64d4\u67b6\u56fa\u5b9a\u5668",
+    "\u642c\u904b\u6905",
+    "\u56fa\u5b9a\u5f0f\u6c27\u6c23\u7d44",
+    "\u81ea\u52d5\u7d66\u6c27\u6a5f",
+    "\u651c\u5e36\u5f0f\u6c27\u6c23\u7d44(\u542b\u5167\u5bb9\u7269)",
+    "\u6025\u6551\u7bb1/\u6025\u6551\u5305",
+    "\u651c\u5e36\u5f0f\u62bd\u5438\u5668",
+    "\u9577\u80cc\u677f(\u542b\u982d\u90e8\u56fa\u5b9a\u5668)",
+    "\u93df\u5f0f\u64d4\u67b6(\u542b\u982d\u90e8\u56fa\u5b9a\u5668)",
+    "\u9aa8\u6298\u56fa\u5b9a\u677f",
+    "\u62bd\u6c23\u5f0f\u8b77\u6728",
+    "\u8ec0\u5e79\u56fa\u5b9a\u5668",
+    "\u8840\u6c27\u6fc3\u5ea6\u5206\u6790\u5100",
+    "\u9ad4\u6eab\u8a08",
+    "\u8840\u58d3\u8a08",
+    "\u8840\u7cd6\u6a5f",
+    "\u5fc3\u81df\u96fb\u64ca\u53bb\u986b\u5668",
+    "\u81ea\u52d5\u5fc3\u80ba\u5fa9\u7526\u6a5f",
+    "\u6210\u4eba\u7526\u9192\u7403",
+    "\u5152\u7ae5\u7526\u9192\u7403",
+    "\u5b30\u5152\u7526\u9192\u7403",
+    "\u6210\u4eba\u9838\u5708",
+    "\u5152\u7ae5\u9838\u5708",
+    "\u6bdb\u6bef/\u88ab\u5b50",
+    "\u88ab\u55ae",
+    "\u9ad8\u6551\u5305(\u542b\u5167\u5bb9\u7269)",
+    "\u5927\u91cf\u50b7\u75c5\u60a3\u4e8b\u4ef6\u5668\u6750\u5305(\u542b\u5167\u5bb9\u7269)",
+]
+DEFAULT_DISINFECTION_ITEMS: list[str] = []
 COMMAND_PREFIX = "\u6551\u8b77\u56de\u7a0b"
 VEHICLE_OPTIONS = ["\u65b0\u576191", "\u65b0\u576192", "\u65b0\u576193"]
 VEHICLE_PPE_NAMES = {
@@ -78,12 +112,17 @@ class AmbulanceReturnRequest:
     patient_summary: str = "\u7537\u4e00\u540d"
     case_reason: str = "\u6025\u75c5"
     disinfection: str = "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002"
+    disinfection_items: list[str] = field(default_factory=lambda: list(DEFAULT_DISINFECTION_ITEMS))
     work_note: str = "\u6551\u8b77\u6848\u4ef6\u8fd4\u968a\u5f8c\u5b8c\u6210\u8eca\u8f1b\u3001\u8017\u6750\u53ca\u6d88\u6bd2\u767b\u6253\u3002"
     consumables: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_CONSUMABLES))
 
     @property
     def consumable_summary(self) -> str:
         return "\u3001".join(f"{name} x{qty}" for name, qty in self.consumables.items() if name and qty > 0)
+
+    @property
+    def disinfection_items_summary(self) -> str:
+        return "\u3001".join(item for item in self.disinfection_items if item)
 
     @property
     def summary(self) -> str:
@@ -100,6 +139,7 @@ class AmbulanceReturnRequest:
             f"\u50b7\u75c5\u60a3\uff1a{self.patient_summary or missing}",
             f"\u8017\u6750\uff1a{self.consumable_summary}",
             f"\u6d88\u6bd2\uff1a{self.disinfection}",
+            f"\u6d88\u6bd2\u9805\u76ee\uff1a{self.disinfection_items_summary or '\u672a\u9078'}",
             f"\u5de5\u4f5c\u7d00\u9304\uff1a{self.work_note}",
         ]
         return "\n".join(rows)
@@ -145,6 +185,7 @@ class AmbulanceReturnRequest:
             patient_summary=str(payload.get("patient_summary") or cls.__dataclass_fields__["patient_summary"].default),
             case_reason=str(payload.get("case_reason") or cls.__dataclass_fields__["case_reason"].default),
             disinfection=str(payload.get("disinfection") or cls.__dataclass_fields__["disinfection"].default),
+            disinfection_items=parse_list(payload.get("disinfection_items") or DEFAULT_DISINFECTION_ITEMS),
             work_note=str(payload.get("work_note") or cls.__dataclass_fields__["work_note"].default),
             consumables={str(k): int(v) for k, v in dict(payload.get("consumables") or DEFAULT_CONSUMABLES).items()},
         )
@@ -180,6 +221,7 @@ def example_command() -> str:
 
 def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
     consumables = parse_consumables(str(form.get("consumables") or "\u53e3\u7f69=2,\u624b\u5957=2"))
+    disinfection_items = parse_disinfection_items_from_form(form)
     return AmbulanceReturnRequest(
         task_id=new_task_id(),
         created_at=datetime.now(),
@@ -194,6 +236,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         case_reason=str(form.get("case_reason") or "").strip() or "\u6025\u75c5",
         disinfection=str(form.get("disinfection") or "").strip()
         or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
+        disinfection_items=disinfection_items,
         work_note=str(form.get("work_note") or "").strip()
         or "\u6551\u8b77\u6848\u4ef6\u8fd4\u968a\u5f8c\u5b8c\u6210\u8eca\u8f1b\u3001\u8017\u6750\u53ca\u6d88\u6bd2\u767b\u6253\u3002",
         consumables=consumables or dict(DEFAULT_CONSUMABLES),
@@ -229,6 +272,8 @@ def parse_request(text: str) -> AmbulanceReturnRequest:
                 request.consumables = parsed
         elif normalized in {"\u6d88\u6bd2", "\u6d88\u6bd2\u7d00\u9304"}:
             request.disinfection = value
+        elif normalized in {"\u6d88\u6bd2\u9805\u76ee", "\u6d88\u6bd2\u57f7\u884c\u9805\u76ee"}:
+            request.disinfection_items = parse_list(value)
         elif normalized in {"\u5de5\u4f5c\u7d00\u9304", "\u52e4\u52d9\u7d00\u9304", "\u7d00\u9304"}:
             request.work_note = value
     return request
@@ -256,6 +301,40 @@ def parse_consumables(value: str) -> dict[str, int]:
         if name and quantity > 0:
             result[name] = quantity
     return result
+
+
+def parse_disinfection_items_from_form(form: dict[str, Any]) -> list[str]:
+    selected = _form_values(form, "disinfection_items")
+    custom = str(form.get("disinfection_items_custom") or "")
+    items = selected + parse_list(custom)
+    return items or list(DEFAULT_DISINFECTION_ITEMS)
+
+
+def parse_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        parts = [str(item or "") for item in value]
+    else:
+        parts = re.split(r"[,，、\n]+", str(value or ""))
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        item = part.strip()
+        if item and item not in seen:
+            result.append(item)
+            seen.add(item)
+    return result
+
+
+def _form_values(form: dict[str, Any], name: str) -> list[str]:
+    getlist = getattr(form, "getlist", None)
+    if callable(getlist):
+        return [str(value or "").strip() for value in getlist(name) if str(value or "").strip()]
+    value = form.get(name)
+    if isinstance(value, list):
+        return [str(item or "").strip() for item in value if str(item or "").strip()]
+    if value:
+        return [str(value).strip()]
+    return []
 
 
 def clean_case_address(value: str) -> str:

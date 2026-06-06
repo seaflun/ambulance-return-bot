@@ -48,6 +48,7 @@
 &#20663;&#30149;&#24739;&#65306;{{ payload.task.patient_summary or '未填' }}
 &#32791;&#26448;&#65306;{% for name, qty in payload.task.consumables.items() %}{{ name }} x{{ qty }}{% if not loop.last %}、{% endif %}{% endfor %}
 &#28040;&#27602;&#65306;{{ payload.task.disinfection }}
+消毒項目：{% if payload.task.disinfection_items %}{{ payload.task.disinfection_items | join('、') }}{% else %}未選{% endif %}
 &#24037;&#20316;&#32000;&#37636;&#65306;{{ payload.task.work_note }}</div>
       <div class="site-actions">
         <button type="button" onclick="copyText('summary')">&#35079;&#35069;&#25688;&#35201;</button>
@@ -73,6 +74,7 @@
 &#20663;&#30149;&#24739;&#65306;{{ payload.task.patient_summary or '未填' }}
 &#32791;&#26448;&#65306;{% for name, qty in payload.task.consumables.items() %}{{ name }} x{{ qty }}{% if not loop.last %}、{% endif %}{% endfor %}
 &#28040;&#27602;&#65306;{{ payload.task.disinfection }}
+消毒項目：{% if payload.task.disinfection_items %}{{ payload.task.disinfection_items | join('、') }}{% else %}未選{% endif %}
 &#24037;&#20316;&#32000;&#37636;&#65306;{{ payload.task.work_note }}</div>
       <div class="site-actions">
         <button type="button" onclick="copyText('copy-{{ site.key }}')">&#35079;&#35069;&#26412;&#31449;&#25991;&#23383;</button>

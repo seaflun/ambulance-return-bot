@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime
 
-from ambulance_bot.models import clean_case_address, parse_consumables, parse_request
+from ambulance_bot.models import clean_case_address, parse_consumables, parse_request, request_from_form
 from ambulance_bot.models import AmbulanceReturnRequest
 
 
@@ -12,6 +12,7 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.vehicle, "91A1")
         self.assertEqual(request.consumables, {"\u53e3\u7f69": 2, "\u624b\u5957": 2})
         self.assertEqual(request.patient_summary, "\u7537\u4e00\u540d")
+        self.assertEqual(request.disinfection_items, [])
 
     def test_parse_full_request(self):
         request = parse_request(
@@ -38,6 +39,18 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.disinfection, "\u5df2\u6d88\u6bd2")
         self.assertEqual(request.work_note, "\u6551\u8b77\u8fd4\u968a")
         self.assertEqual(request.duty_status_text, "1.91A1:\u66fe\u5f65\u7db8\n2.\u7537\u4e00\u540d")
+
+    def test_request_from_form_parses_disinfection_items(self):
+        request = request_from_form(
+            {
+                "vehicle": "\u65b0\u576191",
+                "driver": "\u66fe\u5f65\u7db8",
+                "disinfection_items": ["\u6551\u8b77\u8eca\u9ad4", "\u64d4\u67b6\u5e8a"],
+                "disinfection_items_custom": "\u81ea\u8a02\u9805\u76ee",
+            }
+        )
+
+        self.assertEqual(request.disinfection_items, ["\u6551\u8b77\u8eca\u9ad4", "\u64d4\u67b6\u5e8a", "\u81ea\u8a02\u9805\u76ee"])
 
     def test_return_time_description_uses_mobile_hhmm_with_zero_seconds(self):
         request = AmbulanceReturnRequest(
