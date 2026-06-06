@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -17,6 +18,8 @@ from ambulance_bot.selenium_local import query_duty_emergency_cases, run_local_s
 
 
 load_dotenv()
+
+MANUAL_TASK_ACTIVE = threading.Event()
 
 
 def main() -> None:
@@ -70,6 +73,10 @@ def maybe_run_case_lookup(
     last_case_hash: str,
     interval_seconds: int,
 ) -> tuple[float, str]:
+    if MANUAL_TASK_ACTIVE.is_set():
+        print("[worker] scheduled case lookup skipped: manual task active", flush=True)
+        return last_lookup_at, last_case_hash
+
     request_payload = fetch_case_lookup_request(server_url)
     now = time.time()
     manual_lookup = request_payload is not None

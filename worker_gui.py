@@ -232,6 +232,8 @@ class WorkerGui(tk.Tk):
         if not task_id:
             return
         self._apply_server_url()
+        self.worker_status.set(f"手動執行工作紀錄：{task_id}")
+        self._log(f"已收到工作紀錄指令，開始取任務：{task_id}")
         threading.Thread(target=self._run_selected_task_background, args=(task_id,), daemon=True).start()
 
     def _run_selected_vehicle_mileage(self) -> None:
@@ -239,6 +241,8 @@ class WorkerGui(tk.Tk):
         if not task_id:
             return
         self._apply_server_url()
+        self.worker_status.set(f"手動執行車輛里程：{task_id}")
+        self._log(f"已收到車輛里程指令，開始取任務：{task_id}")
         threading.Thread(target=self._run_selected_vehicle_mileage_background, args=(task_id,), daemon=True).start()
 
     def _selected_task_id(self) -> str:
@@ -259,6 +263,7 @@ class WorkerGui(tk.Tk):
     def _run_selected_task_background(self, task_id: str) -> None:
         server_url = self.server_url.get().strip().rstrip("/")
         worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        worker.MANUAL_TASK_ACTIVE.set()
         try:
             task = worker.fetch_task(server_url, task_id)
             if not task:
@@ -270,10 +275,13 @@ class WorkerGui(tk.Tk):
             self._refresh_tasks()
         except Exception as exc:
             self.log_queue.put(f"執行選取任務失敗：{task_id} {exc}")
+        finally:
+            worker.MANUAL_TASK_ACTIVE.clear()
 
     def _run_selected_vehicle_mileage_background(self, task_id: str) -> None:
         server_url = self.server_url.get().strip().rstrip("/")
         worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        worker.MANUAL_TASK_ACTIVE.set()
         try:
             task = worker.fetch_task(server_url, task_id)
             if not task:
@@ -285,6 +293,8 @@ class WorkerGui(tk.Tk):
             self._refresh_tasks()
         except Exception as exc:
             self.log_queue.put(f"執行車輛里程失敗：{task_id} {exc}")
+        finally:
+            worker.MANUAL_TASK_ACTIVE.clear()
 
     def _log(self, message: str) -> None:
         self.log_queue.put(f"{time.strftime('%H:%M:%S')} {message}")
