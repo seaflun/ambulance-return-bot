@@ -12,7 +12,19 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.vehicle, "91A1")
         self.assertEqual(request.consumables, {"\u53e3\u7f69": 2, "\u624b\u5957": 2})
         self.assertEqual(request.patient_summary, "\u7537\u4e00\u540d")
-        self.assertEqual(request.disinfection_items, [])
+        self.assertEqual(
+            request.disinfection_items,
+            [
+                "救護車體",
+                "擔架床",
+                "擔架床墊",
+                "攜帶式氧氣組(含內容物)",
+                "急救箱/急救包",
+                "血氧濃度分析儀",
+                "體溫計",
+                "血壓計",
+            ],
+        )
 
     def test_parse_full_request(self):
         request = parse_request(

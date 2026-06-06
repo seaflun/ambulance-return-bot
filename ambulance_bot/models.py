@@ -41,7 +41,16 @@ DISINFECTION_ITEM_OPTIONS = [
     "\u9ad8\u6551\u5305(\u542b\u5167\u5bb9\u7269)",
     "\u5927\u91cf\u50b7\u75c5\u60a3\u4e8b\u4ef6\u5668\u6750\u5305(\u542b\u5167\u5bb9\u7269)",
 ]
-DEFAULT_DISINFECTION_ITEMS: list[str] = []
+DEFAULT_DISINFECTION_ITEMS: list[str] = [
+    "救護車體",
+    "擔架床",
+    "擔架床墊",
+    "攜帶式氧氣組(含內容物)",
+    "急救箱/急救包",
+    "血氧濃度分析儀",
+    "體溫計",
+    "血壓計",
+]
 COMMAND_PREFIX = "\u6551\u8b77\u56de\u7a0b"
 VEHICLE_OPTIONS = ["\u65b0\u576191", "\u65b0\u576192", "\u65b0\u576193"]
 VEHICLE_PPE_NAMES = {
