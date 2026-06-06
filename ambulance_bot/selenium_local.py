@@ -8,7 +8,6 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -137,14 +136,7 @@ def run_vehicle_mileage_task(request: AmbulanceReturnRequest, artifacts_dir: Pat
             _release_selenium_session(f"vehicle_mileage {request.task_id}")
 
 
-CaptchaProvider = Callable[[Path], str]
-
-
-def run_disinfection_task(
-    request: AmbulanceReturnRequest,
-    artifacts_dir: Path,
-    captcha_provider: CaptchaProvider | None = None,
-) -> SeleniumRunResult:
+def run_disinfection_task(request: AmbulanceReturnRequest, artifacts_dir: Path) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
@@ -165,7 +157,7 @@ def run_disinfection_task(
         driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
         _set_window_size_if_enabled(driver, "disinfection")
         driver.implicitly_wait(2)
-        detail = _open_disinfection_page(driver, request, output_dir, captcha_provider)
+        detail = _open_disinfection_page(driver, request, output_dir)
         return SeleniumRunResult(True, "disinfection_session_ready", detail, summary_path)
     except Exception as exc:
         if driver is not None:
@@ -926,21 +918,12 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
     return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
 
 
-def _open_disinfection_page(
-    driver: webdriver.Chrome,
-    request: AmbulanceReturnRequest,
-    output_dir: Path,
-    captcha_provider: CaptchaProvider | None,
-) -> str:
+def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
     driver.get(SITE_DEFINITIONS[2].url)
     time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
     if _is_disinfection_login_page(driver):
-        _login_disinfection_with_user_captcha(driver, request, output_dir, captcha_provider)
-        time.sleep(1.5)
-        _save_artifacts(driver, output_dir, request.task_id, "disinfection_after_login")
-        if _is_disinfection_login_page(driver):
-            raise WebDriverException("消毒系統登入後仍停在登入頁；請確認帳密或驗證碼是否正確。")
+        raise WebDriverException("消毒系統需要重新登入或驗證碼；請先在 worker Chrome 手動登入一次後再執行。")
     return f"已進入緊急救護消毒系統，待填消毒紀錄：{request.disinfection}"
 
 
@@ -951,117 +934,6 @@ def _is_disinfection_login_page(driver: webdriver.Chrome) -> bool:
     source = driver.page_source
     login_markers = ["驗證碼", "帳號", "密碼", "登入"]
     return sum(1 for marker in login_markers if marker in source) >= 3
-
-
-def _login_disinfection_with_user_captcha(
-    driver: webdriver.Chrome,
-    request: AmbulanceReturnRequest,
-    output_dir: Path,
-    captcha_provider: CaptchaProvider | None,
-) -> None:
-    credential = load_duty_credential()
-    if credential is None:
-        raise WebDriverException("找不到消毒系統帳密；請先在 worker 面板儲存帳號密碼。")
-    if captcha_provider is None:
-        raise WebDriverException("消毒系統需要驗證碼；目前沒有可用的人工驗證碼輸入視窗。")
-
-    _fill_disinfection_login_credentials(driver, credential.user_id, credential.password)
-    captcha_path = output_dir / f"{request.task_id}-disinfection_captcha.png"
-    _save_disinfection_captcha(driver, captcha_path)
-    captcha = "".join(ch for ch in captcha_provider(captcha_path) if ch.isdigit())
-    if not captcha:
-        raise WebDriverException("未輸入消毒系統驗證碼。")
-    _fill_disinfection_captcha(driver, captcha)
-    if not _click_text_if_present(driver, ["登入", "Login", "登 入"]):
-        raise WebDriverException("找不到消毒系統登入按鈕。")
-    try:
-        WebDriverWait(driver, 8).until(lambda current: not _is_disinfection_login_page(current))
-    except TimeoutException:
-        pass
-
-
-def _save_disinfection_captcha(driver: webdriver.Chrome, path: Path) -> None:
-    captcha = driver.find_elements(By.ID, "capt")
-    if not captcha:
-        captcha = driver.find_elements(
-            By.XPATH,
-            "//img[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'capt') or "
-            "contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'capt') or "
-            "contains(translate(@src,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'capt')]",
-        )
-    if not captcha:
-        raise WebDriverException("找不到消毒系統驗證碼圖片。")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    captcha[0].screenshot(str(path))
-
-
-def _fill_disinfection_login_credentials(driver: webdriver.Chrome, account: str, password: str) -> None:
-    ok = driver.execute_script(
-        """
-        const account = arguments[0];
-        const password = arguments[1];
-        const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-        const writable = el => el && !el.disabled && !el.readOnly && visible(el);
-        const inputs = Array.from(document.querySelectorAll('input')).filter(writable);
-        const haystack = el => [
-          el.id, el.name, el.placeholder, el.title, el.autocomplete,
-          el.getAttribute('aria-label')
-        ].map(x => String(x || '').toLowerCase()).join(' ');
-        const setValue = (el, value) => {
-          el.focus();
-          el.value = value;
-          el.dispatchEvent(new Event('input', {bubbles: true}));
-          el.dispatchEvent(new Event('change', {bubbles: true}));
-          return true;
-        };
-        const passwordInput = inputs.find(el => String(el.type || '').toLowerCase() === 'password');
-        const accountInput = inputs.find(el => {
-          const h = haystack(el);
-          return el !== passwordInput && /account|user|login|id|帳號|使用者/.test(h);
-        }) || inputs.find(el => el !== passwordInput && ['text', 'email', 'tel', ''].includes(String(el.type || '').toLowerCase()));
-        if (!accountInput || !passwordInput) return false;
-        setValue(accountInput, account);
-        setValue(passwordInput, password);
-        return true;
-        """,
-        account,
-        password,
-    )
-    if not ok:
-        raise WebDriverException("找不到消毒系統帳號或密碼欄位。")
-
-
-def _fill_disinfection_captcha(driver: webdriver.Chrome, captcha: str) -> None:
-    ok = driver.execute_script(
-        """
-        const captcha = arguments[0];
-        const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-        const writable = el => el && !el.disabled && !el.readOnly && visible(el);
-        const inputs = Array.from(document.querySelectorAll('input')).filter(writable)
-          .filter(el => !['password', 'submit', 'button', 'hidden'].includes(String(el.type || '').toLowerCase()));
-        const haystack = el => [
-          el.id, el.name, el.placeholder, el.title, el.autocomplete,
-          el.getAttribute('aria-label')
-        ].map(x => String(x || '').toLowerCase()).join(' ');
-        const captImg = document.getElementById('capt') || Array.from(document.querySelectorAll('img')).find(img => haystack(img).includes('capt'));
-        let target = inputs.find(el => /capt|captcha|code|verify|驗證/.test(haystack(el)));
-        if (!target && captImg) {
-          const nodes = Array.from(document.querySelectorAll('img,input'));
-          const index = nodes.indexOf(captImg);
-          target = nodes.slice(index + 1).find(el => el.tagName === 'INPUT' && inputs.includes(el));
-        }
-        target = target || inputs[inputs.length - 1];
-        if (!target) return false;
-        target.focus();
-        target.value = captcha;
-        target.dispatchEvent(new Event('input', {bubbles: true}));
-        target.dispatchEvent(new Event('change', {bubbles: true}));
-        return true;
-        """,
-        captcha,
-    )
-    if not ok:
-        raise WebDriverException("找不到消毒系統驗證碼輸入欄位。")
 
 
 def _accept_alert_if_present(driver: webdriver.Chrome, timeout: float = 4) -> str:

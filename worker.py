@@ -10,7 +10,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Callable
 
 from dotenv import load_dotenv
 
@@ -165,17 +164,11 @@ def run_vehicle_task(server_url: str, worker_id: str, task: dict[str, object], a
     print(f"[worker] finished vehicle mileage {request.task_id}: {result.status}", flush=True)
 
 
-def run_disinfection_worker_task(
-    server_url: str,
-    worker_id: str,
-    task: dict[str, object],
-    artifacts_dir: Path,
-    captcha_provider: Callable[[Path], str] | None = None,
-) -> None:
+def run_disinfection_worker_task(server_url: str, worker_id: str, task: dict[str, object], artifacts_dir: Path) -> None:
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] disinfection task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "disinfection_running", f"公務電腦 worker 執行消毒紀錄：{worker_id}")
-    result = run_disinfection_task(request, artifacts_dir, captcha_provider=captcha_provider)
+    result = run_disinfection_task(request, artifacts_dir)
     post_status(
         server_url,
         request.task_id,
