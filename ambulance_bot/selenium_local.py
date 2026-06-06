@@ -547,16 +547,16 @@ def _match_case_for_request(cases: list[dict[str, str]], request: AmbulanceRetur
 
 def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
     status_text = f"1.{request.vehicle}:{request.driver}  2.{request.patient_summary}"
-    values = {
-        "勤務項目": "救護",
-        "事由": request.case_reason,
-        "處理情形": status_text,
-    }
-    missing = driver.execute_script(
+    item_missing = driver.execute_script(
         """
-        const values = arguments[0];
+        const value = arguments[0];
         function writable(el) {
-          return el && !el.disabled && !el.readOnly && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+          if (!el || el.disabled || el.readOnly) return false;
+          const tag = el.tagName;
+          if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+          if (tag !== 'INPUT') return false;
+          const type = String(el.type || 'text').toLowerCase();
+          return ['text', 'number', 'search', 'tel', 'time'].includes(type);
         }
         function setValue(el, value) {
           if (!writable(el) || value === undefined || value === null || String(value) === '') return false;
@@ -575,50 +575,85 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
           el.dispatchEvent(new Event('change', { bubbles: true }));
           return true;
         }
+        const selected = setValue(document.getElementById('_selList'), value);
+        if (selected) {
+          const reloadButton = document.getElementById('_btnChangeList');
+          if (reloadButton) reloadButton.click();
+        }
+        return selected ? [] : ['勤務項目'];
+        """,
+        "救護",
+    )
+    if not item_missing:
+        try:
+            WebDriverWait(driver, 6).until(
+                lambda current: len(current.find_elements(By.CSS_SELECTOR, "#_selList2 option")) > 1
+            )
+        except TimeoutException:
+            time.sleep(1)
+
+    values = {
+        "事由": request.case_reason,
+        "處理情形": status_text,
+    }
+    missing = driver.execute_script(
+        """
+        const values = arguments[0];
+        function writable(el) {
+          if (!el || el.disabled || el.readOnly) return false;
+          const tag = el.tagName;
+          if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+          if (tag !== 'INPUT') return false;
+          const type = String(el.type || 'text').toLowerCase();
+          return ['text', 'number', 'search', 'tel', 'time'].includes(type);
+        }
+        function setValue(el, value) {
+          if (!writable(el) || value === undefined || value === null || String(value) === '') return false;
+          if (el.tagName === 'SELECT') {
+            const target = String(value || '').trim();
+            const option = Array.from(el.options || []).find(item => {
+              const text = String(item.text || '').trim();
+              const raw = String(item.value || '').trim();
+              return text === target || raw === target || text.includes(target);
+            });
+            if (!option) return false;
+            el.value = option.value;
+          } else {
+            el.value = String(value);
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
         function controlsNear(labelText) {
           const normalizedLabel = labelText.replace(/\\s+/g, '');
-          const labels = Array.from(document.querySelectorAll('label, td, th, div, span'));
-          const label = labels.find(el => String(el.innerText || '').replace(/\\s+/g, '').includes(normalizedLabel));
-          if (!label) return [];
-          const direct = Array.from(label.querySelectorAll('input, textarea, select')).filter(writable);
-          if (direct.length) return direct;
-          const row = label.closest('tr, .form-group, .row');
-          if (row) {
-            const rowControls = Array.from(row.querySelectorAll('input, textarea, select')).filter(writable);
-            if (rowControls.length) return rowControls;
+          const controlsOf = root => Array.from(root.querySelectorAll('input, textarea, select')).filter(writable);
+          const rows = Array.from(document.querySelectorAll('tr'));
+          for (const row of rows) {
+            const cells = Array.from(row.children);
+            const labelIndex = cells.findIndex(cell => String(cell.innerText || '').replace(/\\s+/g, '').includes(normalizedLabel));
+            if (labelIndex < 0) continue;
+            return cells.slice(labelIndex + 1).flatMap(controlsOf);
           }
-          const found = [];
-          let node = label.nextElementSibling;
-          for (let i = 0; node && i < 5; i++, node = node.nextElementSibling) {
-            if (writable(node)) found.push(node);
-            found.push(...Array.from(node.querySelectorAll?.('input, textarea, select') || []).filter(writable));
-            if (found.length) break;
-          }
-          return found;
+          return [];
         }
-        function fallbackControl(labelText) {
-          if (labelText === '處理情形') return document.getElementById('_areStatus');
-          const selects = Array.from(document.querySelectorAll('select')).filter(writable);
-          if (labelText === '勤務項目') {
-            return selects.find(el => Array.from(el.options || []).some(option => String(option.text || '').includes('救護')));
-          }
-          if (labelText === '事由') {
-            const reason = values[labelText];
-            return selects.find(el => Array.from(el.options || []).some(option => String(option.text || '').includes(reason)));
-          }
-          return null;
+        function setNearby(label, value, preferTextarea = false) {
+          const controls = controlsNear(label);
+          const candidates = preferTextarea ? controls.filter(el => el.tagName === 'TEXTAREA') : controls;
+          return candidates.some(el => setValue(el, value));
+        }
+        function setByOptionText(value) {
+          return Array.from(document.querySelectorAll('select')).filter(writable).some(el => setValue(el, value));
         }
         const missing = [];
-        for (const [label, value] of Object.entries(values)) {
-          const controls = controlsNear(label);
-          const control = controls.find(el => setValue(el, value)) || (setValue(fallbackControl(label), value) ? true : null);
-          if (!control) missing.push(label);
-        }
+        if (values['事由'] && !setValue(document.getElementById('_selList2'), values['事由']) && !setNearby('事由', values['事由']) && !setByOptionText(values['事由'])) missing.push('事由');
+        if (!setValue(document.getElementById('_areStatus'), values['處理情形']) && !setNearby('處理情形', values['處理情形'], true)) missing.push('處理情形');
         return missing;
         """,
         values,
     )
-    return [str(item) for item in (missing or [])]
+    all_missing = list(item_missing or []) + list(missing or [])
+    return [str(item) for item in all_missing]
 
 
 def _is_ppe_login_page(driver: webdriver.Chrome) -> bool:
