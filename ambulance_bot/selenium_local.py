@@ -706,6 +706,9 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
           const lines = current ? current.split(/\\r?\\n/) : [];
           const index = lines.findIndex(line => line.trim().startsWith('返隊時間:'));
           if (index >= 0) {
+            const existing = String(lines[index] || '');
+            const afterColon = existing.replace(/^\\s*返隊時間:\\s*/, '').trim();
+            if (afterColon) return true;
             lines[index] = value;
           } else if (lines.length >= 2) {
             lines.splice(2, 0, value);
