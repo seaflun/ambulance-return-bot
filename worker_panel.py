@@ -50,17 +50,6 @@ def open_site(site_key: str):
     return redirect(url_for("panel"))
 
 
-@app.post("/open-all")
-def open_all_sites():
-    delay = float(os.getenv("BROWSER_OPEN_DELAY_SECONDS", "0.4"))
-    for site in SITE_DEFINITIONS:
-        status = open_url_in_worker_chrome(site.url)
-        last_opened[site.key] = f"{time.strftime('%H:%M:%S')} {status}"
-        if delay > 0:
-            time.sleep(delay)
-    return redirect(url_for("panel"))
-
-
 def start_worker_thread() -> None:
     global worker_thread, worker_started_at
     if worker_thread is not None and worker_thread.is_alive():

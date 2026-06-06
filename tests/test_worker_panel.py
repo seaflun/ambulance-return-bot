@@ -25,6 +25,7 @@ class WorkerPanelTests(unittest.TestCase):
         self.assertIn("救護回程 Worker 面板", body)
         self.assertIn("車輛里程", body)
         self.assertIn("消防勤務工作紀錄", body)
+        self.assertNotIn("開啟全部四站", body)
 
     def test_open_site_uses_worker_chrome_launcher(self):
         opened = []
@@ -36,16 +37,6 @@ class WorkerPanelTests(unittest.TestCase):
         self.assertEqual(len(opened), 1)
         self.assertIn("ppe.tyfd.gov.tw", opened[0])
         self.assertIn("vehicle_mileage", worker_panel.last_opened)
-
-    def test_open_all_sites_opens_four_entries(self):
-        opened = []
-        worker_panel.open_url_in_worker_chrome = lambda url: opened.append(url) or "opened_worker_chrome"
-
-        response = self.client.post("/open-all", follow_redirects=False)
-
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(len(opened), 4)
-        self.assertEqual(len(worker_panel.last_opened), 4)
 
 
 if __name__ == "__main__":

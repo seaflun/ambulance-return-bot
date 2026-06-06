@@ -78,13 +78,7 @@ def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path
         _set_window_size_if_enabled(driver, "task")
         driver.implicitly_wait(2)
         result = _prepare_duty_work_log_form(driver, request, output_dir, summary_path)
-        vehicle_detail = _open_vehicle_mileage_page(driver, request, output_dir)
-        return SeleniumRunResult(
-            ok=result.ok,
-            status=result.status,
-            detail=f"{result.detail}\n{vehicle_detail}",
-            summary_path=result.summary_path,
-        )
+        return result
     except Exception as exc:
         if driver is not None:
             _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_error")

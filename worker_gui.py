@@ -80,11 +80,10 @@ class WorkerGui(tk.Tk):
 
         sites = ttk.LabelFrame(root, text="四站入口", padding=12)
         sites.pack(fill="x", pady=(12, 0))
-        ttk.Button(sites, text="開啟全部四站", command=self._open_all_sites).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        for index, site in enumerate(SITE_DEFINITIONS, start=1):
+        for index, site in enumerate(SITE_DEFINITIONS):
             button = ttk.Button(sites, text=site.name, command=lambda item=site: self._open_site(item.key))
-            row = (index + 1) // 2
-            col = (index - 1) % 2
+            row = index // 2
+            col = index % 2
             button.grid(row=row, column=col, sticky="ew", padx=6, pady=6)
         sites.columnconfigure(0, weight=1)
         sites.columnconfigure(1, weight=1)
@@ -174,14 +173,6 @@ class WorkerGui(tk.Tk):
             return
         status = open_url_in_worker_chrome(site.url)
         self._log(f"已開啟 {site.name}: {status}")
-
-    def _open_all_sites(self) -> None:
-        delay = float(os.getenv("BROWSER_OPEN_DELAY_SECONDS", "0.4"))
-        for site in SITE_DEFINITIONS:
-            status = open_url_in_worker_chrome(site.url)
-            self._log(f"已開啟 {site.name}: {status}")
-            if delay > 0:
-                time.sleep(delay)
 
     def _log(self, message: str) -> None:
         self.log_queue.put(f"{time.strftime('%H:%M:%S')} {message}")

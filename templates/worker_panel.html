@@ -97,12 +97,6 @@
       cursor: pointer;
     }
     button:hover { background: var(--primary-dark); }
-    .open-all button {
-      background: #243b53;
-    }
-    .open-all button:hover {
-      background: #182a3c;
-    }
     .site-note {
       margin-top: 6px;
       color: var(--muted);
@@ -171,9 +165,6 @@
 
     <section class="panel">
       <div class="actions">
-        <form class="open-all" method="post" action="{{ url_for('open_all_sites') }}">
-          <button type="submit">開啟全部四站</button>
-        </form>
         {% for site in sites %}
           <div class="site-card">
             <form method="post" action="{{ url_for('open_site', site_key=site.key) }}">
