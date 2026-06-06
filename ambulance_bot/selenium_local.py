@@ -877,8 +877,24 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
     _assert_vehicle_mileage_values_present(driver, values)
     if os.getenv("SAVE_VEHICLE_MILEAGE", "false").strip().lower() in {"1", "true", "yes", "on"}:
         _click_text_if_present(driver, ["\u5132\u5b58"])
+        alert_text = _accept_alert_if_present(driver)
+        if alert_text:
+            return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u78ba\u8a8d\u8996\u7a97\uff1a{alert_text}"
         return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\u3002"
     return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
+
+
+def _accept_alert_if_present(driver: webdriver.Chrome, timeout: float = 4) -> str:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            alert = driver.switch_to.alert
+            text = alert.text
+            alert.accept()
+            return text
+        except Exception:
+            time.sleep(0.2)
+    return ""
 
 
 def _click_text_if_present(driver: webdriver.Chrome, texts: list[str]) -> bool:
