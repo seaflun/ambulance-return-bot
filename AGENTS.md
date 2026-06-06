@@ -36,6 +36,7 @@ run_worker_forever.bat
 - Prefer small focused edits and run tests before reporting completion.
 - After changing code and completing tests, restart the worker, then state clearly whether the worker was restarted.
 - Always list every file changed in the final response.
+- Daily worker launch should be no-console-window mode. Prefer `run_worker_forever.vbs` or `pyw -3 worker_gui.py`; use console launchers only for debugging.
 - Use UTF-8 for Traditional Chinese text. If PowerShell display is garbled, verify file content with Python `encoding="utf-8"` before rewriting.
 - Keep generated runtime files under `artifacts/`, `logs/`, `tmp/`, or another ignored directory.
 
@@ -50,7 +51,7 @@ py -m unittest discover -s tests -v
 
 - NAS runs the Flask task center only. NAS must not run Selenium, store four-site portal passwords, or do final data entry.
 - The public-duty Windows PC runs `worker.py` with WinPython, polls NAS every 10 seconds, queries today's emergency cases every 5 minutes, and deduplicates unchanged case lists.
-- `run_worker_forever.bat` starts `worker_gui.py`, which shows the visible worker program and starts the background worker thread.
+- `run_worker_forever.vbs` starts `worker_gui.py` with no console window; `run_worker_forever.bat` delegates to `pyw` and exits immediately.
 - The GUI can test NAS through Tailscale with `http://100.114.126.58:8080`.
 - `run_worker_web_panel.bat` starts the older local web panel at `http://127.0.0.1:8090/`.
 - Use `run_worker_headless.bat` only when a visible panel is not needed.

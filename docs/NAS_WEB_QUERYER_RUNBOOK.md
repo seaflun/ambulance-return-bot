@@ -68,6 +68,14 @@ CHROME_PROFILE_DIR=artifacts/chrome_profile
 啟動：
 
 ```powershell
+run_worker_forever.vbs
+```
+
+這是無小黑窗模式，適合放到桌面捷徑或開機啟動。
+
+備用啟動：
+
+```powershell
 run_worker_forever.bat
 ```
 

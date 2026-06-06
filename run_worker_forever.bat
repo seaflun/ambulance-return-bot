@@ -2,5 +2,5 @@
 setlocal
 cd /d "%~dp0"
 set WORKER_RUN_ONCE=false
-py -u worker_gui.py
-pause
+start "" pyw -3 worker_gui.py
+exit /b

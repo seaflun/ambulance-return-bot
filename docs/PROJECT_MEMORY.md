@@ -8,7 +8,8 @@ This file records project decisions that another computer or another coding agen
 - NAS runs Flask, stores task JSON, stores the latest case list, serves the phone/tablet web app, and exposes worker APIs.
 - NAS must not run Selenium, open Chrome, store four-site portal credentials, or perform government-site data entry.
 - The public-duty Windows PC runs the worker with WinPython and local Chrome/Selenium.
-- The visible worker entry is `run_worker_forever.bat`, which starts `worker_gui.py`.
+- The visible worker entry should be no-console-window mode. Prefer `run_worker_forever.vbs`, which starts `worker_gui.py` through `pyw`.
+- `run_worker_forever.bat` also starts `worker_gui.py` through `pyw` and exits immediately.
 - The worker GUI can test NAS through Tailscale at `http://100.114.126.58:8080`.
 - `run_worker_web_panel.bat` starts the older local web panel at `http://127.0.0.1:8090/`.
 - Use `run_worker_headless.bat` only if a visible panel is not needed.
