@@ -170,7 +170,7 @@ def run_disinfection_worker_task(
     task: dict[str, object],
     artifacts_dir: Path,
     driver=None,
-) -> None:
+):
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] disinfection task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "disinfection_running", f"公務電腦 worker 執行消毒紀錄：{worker_id}")
@@ -184,6 +184,7 @@ def run_disinfection_worker_task(
         site_name="緊急救護消毒",
     )
     print(f"[worker] finished disinfection {request.task_id}: {result.status}", flush=True)
+    return result
 
 
 def request_json(url: str) -> dict[str, object]:

@@ -21,10 +21,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITIONS
 from .duty_credentials import load_duty_credential
-from .models import VEHICLE_PPE_NAMES, AmbulanceReturnRequest, clean_case_address
+from .models import DEFAULT_DISINFECTION_ITEMS, VEHICLE_PPE_NAMES, AmbulanceReturnRequest, clean_case_address
 
 
 BASE_URL = "https://dutymgt.tyfd.gov.tw/tyfd119"
+EMS_BASE_URL = "https://emsdt.tyfd.gov.tw/EmmWeb"
+EMS_DISINFECTION_AP = "wap119.RPS64101014"
 DUTY_WORK_LOG_AP = "wap119.RPS04060"
 CASE_LOOKUP_DEBUGGER_PORT = 9223
 _SELENIUM_SESSION_LOCK = threading.Lock()
@@ -982,76 +984,81 @@ def _save_disinfection_probe(driver: webdriver.Chrome, output_dir: Path, task_id
 
 
 def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
-    if not _click_disinfection_menu_item(driver, ["????"]):
-        raise WebDriverException("??????????????")
-    if not _click_disinfection_menu_item(driver, ["??????"]):
-        raise WebDriverException("??????????????")
+    driver.switch_to.default_content()
+    driver.get(_ems_ap_url(EMS_DISINFECTION_AP))
+    time.sleep(1.5)
+    _switch_to_disinfection_content_if_present(driver)
+    _save_artifacts(driver, output_dir, request.task_id, "disinfection_entry")
 
-    _switch_to_disinfection_content(driver)
-    _click_text_if_present(driver, ["????", "??"])
-    time.sleep(1)
     _set_disinfection_query_date(driver, _disinfection_query_date(request))
-    if not _click_text_if_present(driver, ["??"]):
-        raise WebDriverException("?????????????")
+    if not _click_text_if_present(driver, ["\u67e5\u8a62"]):
+        raise WebDriverException("missing disinfection query button")
     time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_query")
 
     if not _open_disinfection_detail_for_case(driver, request.case_time):
-        raise WebDriverException(f"??????? {request.case_time or '??'} ?????????")
+        raise WebDriverException(f"missing disinfection detail for case time {request.case_time or 'empty'}")
     time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
 
-    if request.disinfection_items:
-        updated = _set_disinfection_item_statuses(driver, request.disinfection_items, "????")
+    selected_items = _effective_disinfection_items(request.disinfection_items)
+    if selected_items:
+        updated = _set_disinfection_item_statuses(driver, selected_items, "\u5df2\u9078\u53d6\u5340")
         if updated <= 0:
-            raise WebDriverException(f"????????????{request.disinfection_items_summary}")
+            raise WebDriverException(f"missing disinfection item selects: {request.disinfection_items_summary}")
     else:
         updated = 0
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
 
     if os.getenv("SAVE_DISINFECTION_RECORD", "false").strip().lower() in {"1", "true", "yes", "on"}:
-        if not _click_text_if_present(driver, ["??"]):
-            raise WebDriverException("???????????")
+        if not _click_text_if_present(driver, ["\u5132\u5b58"]):
+            raise WebDriverException("missing disinfection save button")
         alert_text = _accept_alert_if_present(driver)
-        return f"??????? {updated} ???????{('?????' + alert_text) if alert_text else ''}"
-    return f"??????? {updated} ???????"
+        return f"disinfection items updated={updated}; saved. {alert_text}"
+    return f"disinfection items updated={updated}; not saved."
 
-
-def _click_disinfection_menu_item(driver: webdriver.Chrome, texts: list[str]) -> bool:
+def _switch_to_disinfection_content_if_present(driver: webdriver.Chrome) -> None:
     driver.switch_to.default_content()
     try:
-        driver.switch_to.frame("L_Sidemenu")
+        driver.switch_to.frame("R_content")
     except Exception:
-        return False
-    return _click_text_if_present(driver, texts)
+        driver.switch_to.default_content()
 
 
-def _switch_to_disinfection_content(driver: webdriver.Chrome) -> None:
-    driver.switch_to.default_content()
-    driver.switch_to.frame("R_content")
+def _ems_ap_url(ap_name: str) -> str:
+    return (
+        f"{EMS_BASE_URL}/ActionControlServlet?id=00&APname={ap_name}"
+        f"&pushButton=load&nextAPname={ap_name}&_txtFirstEntry=TRUE"
+    )
 
 def _set_disinfection_query_date(driver: webdriver.Chrome, date_text: str) -> None:
-    driver.execute_script(
+    from_value = f"{date_text} 00:00:00"
+    to_value = f"{date_text} 23:59:59"
+    changed = driver.execute_script(
         """
-        const dateText = arguments[0];
-        const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-        const writable = el => el && !el.disabled && !el.readOnly && visible(el);
-        const inputs = Array.from(document.querySelectorAll('input')).filter(writable);
-        const dateInputs = inputs.filter(el => {
-          const h = [el.id, el.name, el.placeholder, el.title, el.value].map(x => String(x || '')).join(' ');
-          return /date|sdate|edate|??|??|?|?/i.test(h);
-        });
-        const targets = dateInputs.length ? dateInputs : inputs.slice(0, 2);
-        for (const el of targets.slice(0, 2)) {
-          el.focus();
-          el.value = dateText;
+        const fromValue = arguments[0];
+        const toValue = arguments[1];
+        function setDate(id, value) {
+          const el = document.getElementById(id);
+          if (!el) return false;
+          el.value = value;
+          el.setAttribute('realvalue', value);
+          if ('realValue' in el) el.realValue = value;
           el.dispatchEvent(new Event('input', {bubbles: true}));
           el.dispatchEvent(new Event('change', {bubbles: true}));
+          return true;
         }
-        return targets.length;
+        return [
+          setDate('_txtFromDate', fromValue),
+          setDate('_txtToDate', toValue)
+        ];
         """,
-        date_text,
+        from_value,
+        to_value,
     )
+    if not all(bool(item) for item in changed):
+        raise WebDriverException("missing disinfection date fields _txtFromDate/_txtToDate")
+
 
 def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
     case_hhmm = normalize_hhmm_local(request.case_time)
@@ -1059,8 +1066,7 @@ def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
     query_date = request.created_at
     if len(case_hhmm) == 4 and len(return_hhmm) == 4 and int(case_hhmm) > int(return_hhmm):
         query_date = query_date - timedelta(days=1)
-    return query_date.strftime("%Y/%m/%d")
-
+    return query_date.strftime("%Y-%m-%d")
 
 def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str) -> bool:
     digits = normalize_hhmm_local(case_time)
@@ -1078,7 +1084,7 @@ def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str)
             const controls = Array.from(row.querySelectorAll('a, button, input[type=button], input[type=submit]'));
             const detail = controls.find(el => {
               const text = [el.innerText, el.value, el.title, el.getAttribute('aria-label')].map(x => String(x || '')).join(' ');
-              return text.includes('??');
+              return text.includes('明細');
             }) || controls[controls.length - 1];
             if (!detail) return false;
             detail.click();
@@ -1088,36 +1094,69 @@ def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str)
         )
     )
 
+def _effective_disinfection_items(items: list[str]) -> list[str]:
+    legacy_default = ["\u6551\u8b77\u8eca\u9ad4", "\u64d4\u67b6\u5e8a"]
+    cleaned = [item for item in items if item]
+    if cleaned == legacy_default:
+        return list(DEFAULT_DISINFECTION_ITEMS)
+    return cleaned
+
+
 def _set_disinfection_item_statuses(driver: webdriver.Chrome, items: list[str], status_text: str) -> int:
+    item_ids = {
+        '\u6551\u8b77\u8eca\u9ad4': 1,
+        '\u64d4\u67b6\u5e8a': 2,
+        '\u64d4\u67b6\u5e8a\u588a': 3,
+        '\u5152\u7ae5\u64d4\u67b6\u56fa\u5b9a\u5668': 4,
+        '\u5b30\u5152\u64d4\u67b6\u56fa\u5b9a\u5668': 5,
+        '\u642c\u904b\u6905': 6,
+        '\u56fa\u5b9a\u5f0f\u6c27\u6c23\u7d44': 7,
+        '\u81ea\u52d5\u7d66\u6c27\u6a5f': 8,
+        '\u651c\u5e36\u5f0f\u6c27\u6c23\u7d44(\u542b\u5167\u5bb9\u7269)': 9,
+        '\u6025\u6551\u7bb1/\u6025\u6551\u5305': 10,
+        '\u651c\u5e36\u5f0f\u62bd\u5438\u5668': 11,
+        '\u9577\u80cc\u677f(\u542b\u982d\u90e8\u56fa\u5b9a\u5668)': 12,
+        '\u93df\u5f0f\u64d4\u67b6(\u542b\u982d\u90e8\u56fa\u5b9a\u5668)': 13,
+        '\u9aa8\u6298\u56fa\u5b9a\u677f': 14,
+        '\u62bd\u6c23\u5f0f\u8b77\u6728': 15,
+        '\u8ec0\u5e79\u56fa\u5b9a\u5668': 16,
+        '\u8840\u6c27\u6fc3\u5ea6\u5206\u6790\u5100': 17,
+        '\u9ad4\u6eab\u8a08': 18,
+        '\u8840\u58d3\u8a08': 19,
+        '\u8840\u7cd6\u6a5f': 20,
+        '\u5fc3\u81df\u96fb\u64ca\u53bb\u986b\u5668': 21,
+        '\u81ea\u52d5\u5fc3\u80ba\u5fa9\u7526\u6a5f': 22,
+        '\u6210\u4eba\u7526\u9192\u7403': 23,
+        '\u5152\u7ae5\u7526\u9192\u7403': 24,
+        '\u5b30\u5152\u7526\u9192\u7403': 25,
+        '\u6210\u4eba\u9838\u5708': 26,
+        '\u5152\u7ae5\u9838\u5708': 27,
+        '\u6bdb\u6bef/\u88ab\u5b50': 28,
+        '\u88ab\u55ae': 29,
+        '\u9ad8\u6551\u5305(\u542b\u5167\u5bb9\u7269)': 30,
+        '\u5927\u91cf\u50b7\u75c5\u60a3\u4e8b\u4ef6\u5668\u6750\u5305(\u542b\u5167\u5bb9\u7269)': 31,
+    }
+    selected_ids = [item_ids[item] for item in items if item in item_ids]
+    if not selected_ids:
+        return 0
     return int(
         driver.execute_script(
             """
-            const items = arguments[0];
-            const statusText = arguments[1];
-            const rows = Array.from(document.querySelectorAll('tr'));
+            const selectedIds = arguments[0];
             let updated = 0;
-            const setSelect = (select, text) => {
-              const option = Array.from(select.options || []).find(opt => {
-                return String(opt.text || '').includes(text) || String(opt.value || '').includes(text);
-              });
-              if (!option) return false;
-              select.value = option.value;
+            for (const id of selectedIds) {
+              const select = document.getElementById(`_selIVBALL_${id}`);
+              if (!select) continue;
+              select.value = '1';
+              select.dispatchEvent(new Event('input', {bubbles: true}));
               select.dispatchEvent(new Event('change', {bubbles: true}));
-              return true;
-            };
-            for (const item of items) {
-              const row = rows.find(tr => (tr.innerText || '').includes(item));
-              if (!row) continue;
-              const select = Array.from(row.querySelectorAll('select')).pop();
-              if (select && setSelect(select, statusText)) updated++;
+              updated++;
             }
             return updated;
             """,
-            items,
-            status_text,
+            selected_ids,
         )
     )
-
 
 def normalize_hhmm_local(value: str) -> str:
     digits = "".join(ch for ch in str(value or "") if ch.isdigit())
