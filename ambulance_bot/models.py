@@ -113,6 +113,17 @@ class AmbulanceReturnRequest:
             return f"1.{vehicle}:{driver}\n2.\u7121"
         return f"1.{vehicle}:{driver}\n2.{patient}"
 
+    @property
+    def return_time_hhmm(self) -> str:
+        return normalize_hhmm(self.return_time)
+
+    @property
+    def return_time_description_line(self) -> str:
+        hhmm = self.return_time_hhmm
+        if len(hhmm) != 4:
+            return ""
+        return f"\u8fd4\u968a\u6642\u9593:{self.created_at:%Y/%m/%d} {hhmm[:2]}:{hhmm[2:]}:00"
+
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["created_at"] = self.created_at.isoformat(timespec="seconds")
@@ -141,6 +152,13 @@ class AmbulanceReturnRequest:
 
 def new_task_id() -> str:
     return datetime.now().strftime("%Y%m%d%H%M%S") + "-" + uuid4().hex[:6]
+
+
+def normalize_hhmm(value: str) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) >= 4:
+        return digits[:4]
+    return digits
 
 
 def example_command() -> str:

@@ -660,9 +660,16 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
         except TimeoutException:
             time.sleep(1)
 
+    final_values = {
+        "status": status_text,
+        "return_line": request.return_time_description_line,
+        "return_hour": request.return_time_hhmm[:2],
+        "return_minute": request.return_time_hhmm[2:4],
+        "roc_date": _roc_date(request.created_at),
+    }
     missing = driver.execute_script(
         """
-        const value = arguments[0];
+        const values = arguments[0];
         function writable(el) {
           if (!el || el.disabled || el.readOnly) return false;
           const tag = el.tagName;
@@ -674,6 +681,38 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
         function setValue(el, value) {
           if (!writable(el) || value === undefined || value === null || String(value) === '') return false;
           el.value = String(value);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        function setSelect(el, value) {
+          if (!writable(el) || el.tagName !== 'SELECT' || !value) return false;
+          const option = Array.from(el.options || []).find(item => {
+            const text = String(item.text || '').trim();
+            const raw = String(item.value || '').trim();
+            return text === value || raw === value;
+          });
+          if (!option) return false;
+          el.value = option.value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        function patchReturnLine(value) {
+          if (!value) return true;
+          const el = document.getElementById('_areDescription');
+          if (!writable(el)) return false;
+          const current = String(el.value || '');
+          const lines = current ? current.split(/\\r?\\n/) : [];
+          const index = lines.findIndex(line => line.trim().startsWith('返隊時間:'));
+          if (index >= 0) {
+            lines[index] = value;
+          } else if (lines.length >= 2) {
+            lines.splice(2, 0, value);
+          } else {
+            lines.push(value);
+          }
+          el.value = lines.join('\\n');
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
           return true;
@@ -690,14 +729,24 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
           }
           return [];
         }
+        const missing = [];
+        if (values.roc_date) setValue(document.getElementById('_txtDATE'), values.roc_date);
+        if (values.return_hour && !setSelect(document.getElementById('_selTIMEH'), values.return_hour)) missing.push('時間小時');
+        if (values.return_minute && !setSelect(document.getElementById('_selTIMEM'), values.return_minute)) missing.push('時間分鐘');
+        if (!patchReturnLine(values.return_line)) missing.push('工作概述返隊時間');
         const controls = controlsNear('處理情形').filter(el => el.tagName === 'TEXTAREA');
-        const ok = setValue(document.getElementById('_areStatus'), value) || controls.some(el => setValue(el, value));
-        return ok ? [] : ['處理情形'];
+        const ok = setValue(document.getElementById('_areStatus'), values.status) || controls.some(el => setValue(el, values.status));
+        if (!ok) missing.push('處理情形');
+        return missing;
         """,
-        status_text,
+        final_values,
     )
     all_missing = list(item_missing or []) + list(reason_missing or []) + list(missing or [])
     return [str(item) for item in all_missing]
+
+
+def _roc_date(value: datetime) -> str:
+    return f"{value.year - 1911:03d}{value.month:02d}{value.day:02d}"
 
 
 def _is_ppe_login_page(driver: webdriver.Chrome) -> bool:

@@ -1,6 +1,8 @@
 import unittest
+from datetime import datetime
 
 from ambulance_bot.models import clean_case_address, parse_consumables, parse_request
+from ambulance_bot.models import AmbulanceReturnRequest
 
 
 class ModelParsingTests(unittest.TestCase):
@@ -36,6 +38,17 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.disinfection, "\u5df2\u6d88\u6bd2")
         self.assertEqual(request.work_note, "\u6551\u8b77\u8fd4\u968a")
         self.assertEqual(request.duty_status_text, "1.91A1:\u66fe\u5f65\u7db8\n2.\u7537\u4e00\u540d")
+
+    def test_return_time_description_uses_mobile_hhmm_with_zero_seconds(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=datetime(2026, 6, 6, 18, 7, 0),
+            raw_text="",
+            return_time="1806",
+        )
+
+        self.assertEqual(request.return_time_hhmm, "1806")
+        self.assertEqual(request.return_time_description_line, "\u8fd4\u968a\u6642\u9593:2026/06/06 18:06:00")
 
     def test_parse_consumables_accepts_multiple_separators(self):
         self.assertEqual(
