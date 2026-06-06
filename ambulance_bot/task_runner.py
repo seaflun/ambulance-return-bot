@@ -71,6 +71,15 @@ class TaskRunner:
 
             if selenium_enabled():
                 selenium_result = run_local_selenium_task(request, self.artifacts_dir)
+                self.store.update_site_result(
+                    task_id,
+                    SiteAutomationResult(
+                        "duty_work_log",
+                        "\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304",
+                        selenium_result.status,
+                        selenium_result.detail,
+                    ),
+                )
                 self.store.set_overall_status(
                     task_id,
                     selenium_result.status,

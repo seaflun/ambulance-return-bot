@@ -14,10 +14,10 @@ class WebAppTests(unittest.TestCase):
         os.environ["OPEN_LOCAL_BROWSER_ON_RUN"] = "false"
         os.environ["USE_LOCAL_SELENIUM"] = "false"
         self.tmp = tempfile.TemporaryDirectory()
+        self.original_worker_token = os.environ.get("WORKER_TOKEN")
+        os.environ["WORKER_TOKEN"] = ""
         self.original_artifacts_dir = app_module.artifacts_dir
         app_module.artifacts_dir = Path(self.tmp.name)
-        app_module._case_lookup_running = False
-        app_module._case_lookup_scheduler_started = False
         self.store = JsonTaskStore(Path(self.tmp.name) / "tasks")
         app_module.store = self.store
         app_module.runner = TaskRunner(Path(self.tmp.name), store=self.store)
@@ -27,8 +27,10 @@ class WebAppTests(unittest.TestCase):
     def tearDown(self):
         app_module.runner.wait_for_idle()
         app_module.artifacts_dir = self.original_artifacts_dir
-        app_module._case_lookup_running = False
-        app_module._case_lookup_scheduler_started = False
+        if self.original_worker_token is None:
+            os.environ.pop("WORKER_TOKEN", None)
+        else:
+            os.environ["WORKER_TOKEN"] = self.original_worker_token
         self.tmp.cleanup()
 
     def test_app_page_loads(self):
@@ -72,43 +74,55 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(tasks[0]["task"]["case_reason"], "\u6025\u75c5")
 
     def test_query_cases_redirects_to_app(self):
-        calls = []
-        original = app_module.query_duty_emergency_cases
-        app_module.query_duty_emergency_cases = lambda artifacts_dir: calls.append(artifacts_dir)
-        try:
-            response = self.client.post("/cases/query", follow_redirects=False)
-        finally:
-            app_module.query_duty_emergency_cases = original
+        response = self.client.post("/cases/query", follow_redirects=False)
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["Location"], "/app")
-        self.assertEqual(len(calls), 1)
+        request_payload = app_module.read_case_lookup_request()
+        self.assertEqual(request_payload["status"], "case_lookup_requested")
+        self.assertEqual(request_payload["lookup_range"], "6h")
 
-    def test_app_page_does_not_query_cases(self):
-        calls = []
-        original = app_module.query_duty_emergency_cases
-        app_module.query_duty_emergency_cases = lambda artifacts_dir: calls.append(artifacts_dir)
-        try:
-            response = self.client.get("/app")
-        finally:
-            app_module.query_duty_emergency_cases = original
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(calls, [])
-
-    def test_query_cases_skips_when_lookup_running(self):
-        calls = []
-        original = app_module.query_duty_emergency_cases
-        app_module.query_duty_emergency_cases = lambda artifacts_dir: calls.append(artifacts_dir)
-        app_module._case_lookup_running = True
-        try:
-            response = self.client.post("/cases/query", follow_redirects=False)
-        finally:
-            app_module.query_duty_emergency_cases = original
-            app_module._case_lookup_running = False
+    def test_query_cases_accepts_today_range(self):
+        response = self.client.post("/cases/query", data={"lookup_range": "today"}, follow_redirects=False)
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(calls, [])
+        request_payload = app_module.read_case_lookup_request()
+        self.assertEqual(request_payload["lookup_range"], "today")
+
+    def test_app_page_does_not_query_cases(self):
+        response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_worker_case_lookup_request_and_cases_post(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.client.post("/cases/query", data={"lookup_range": "today"}, follow_redirects=False)
+
+        denied = self.client.get("/worker/case-lookup-request")
+        self.assertEqual(denied.status_code, 403)
+
+        request_response = self.client.get("/worker/case-lookup-request", headers={"X-Worker-Token": "test-token"})
+        self.assertEqual(request_response.status_code, 200)
+        request_payload = request_response.get_json()
+        self.assertEqual(request_payload["request"]["lookup_range"], "today")
+
+        cases_response = self.client.post(
+            "/worker/cases",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "status": "cases_loaded",
+                "detail": "loaded",
+                "lookup_range": "today",
+                "case_hash": "abc123",
+                "cases": [{"case_id": "1", "address": "addr"}],
+            },
+        )
+        self.assertEqual(cases_response.status_code, 200)
+        latest = app_module.read_case_lookup()
+        self.assertEqual(latest["case_hash"], "abc123")
+        self.assertEqual(latest["cases"][0]["case_id"], "1")
+        completed = app_module.read_case_lookup_request()
+        self.assertEqual(completed["status"], "case_lookup_completed")
 
     def test_import_case_redirects_to_app(self):
         cases_dir = app_module.artifacts_dir / "cases"
@@ -157,6 +171,34 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(complete_response.status_code, 302)
         payload = self.store.get(task_id)
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
+
+    def test_run_queues_task_for_worker_and_worker_updates_status(self):
+        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        run_response = self.client.post(f"/tasks/{task_id}/run", follow_redirects=False)
+        self.assertEqual(run_response.status_code, 302)
+        queued = self.store.get(task_id)
+        self.assertEqual(queued["overall_status"], "queued_for_worker")
+
+        next_response = self.client.get("/worker/next-task?worker_id=test-worker")
+        self.assertEqual(next_response.status_code, 200)
+        next_payload = next_response.get_json()
+        self.assertEqual(next_payload["task"]["task_id"], task_id)
+
+        status_response = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            json={
+                "status": "duty_work_log_prefilled",
+                "detail": "prefilled",
+                "site_key": "duty_work_log",
+                "site_name": "\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304",
+            },
+        )
+        self.assertEqual(status_response.status_code, 200)
+        updated = self.store.get(task_id)
+        self.assertEqual(updated["overall_status"], "duty_work_log_prefilled")
+        self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_prefilled")
 
 
 if __name__ == "__main__":

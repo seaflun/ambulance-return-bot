@@ -1,18 +1,6 @@
 services:
-  selenium:
-    image: selenium/standalone-chromium:latest
-    shm_size: "4gb"
-    environment:
-      TZ: Asia/Taipei
-      SE_NODE_SESSION_TIMEOUT: "300"
-      SE_SESSION_REQUEST_TIMEOUT: "300"
-      SE_SESSION_RETRY_INTERVAL: "5"
-      SE_START_XVFB: "false"
-
   app:
     image: python:3.12-slim
-    depends_on:
-      - selenium
     working_dir: /app
     environment:
       TZ: Asia/Taipei
@@ -21,16 +9,15 @@ services:
       ARTIFACTS_DIR: "artifacts"
       PYTHONUNBUFFERED: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      SELENIUM_REMOTE_URL: "http://selenium:4444/wd/hub"
-      CASE_LOOKUP_INTERVAL_SECONDS: "300"
-      CASE_LOOKUP_SCHEDULER_ENABLED: "true"
+      TASK_EXECUTION_MODE: "worker_queue"
+      CASE_LOOKUP_SCHEDULER_ENABLED: "false"
     env_file:
       - .env
     ports:
       - "8080:8080"
     volumes:
       - ./:/app
-    command: sh -c "pip install --no-cache-dir -r requirements.txt && python -u app.py"
+    command: sh -c "pip install --root-user-action=ignore --no-cache-dir -r requirements.txt && echo '[app] dependencies ready, starting web server' && python -u app.py"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/status', timeout=5).read()"]
       interval: 30s

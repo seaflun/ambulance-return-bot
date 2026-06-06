@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -11,7 +12,9 @@ from pathlib import Path
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
+from selenium.webdriver.remote.client_config import ClientConfig
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -23,6 +26,7 @@ from .models import VEHICLE_PPE_NAMES, AmbulanceReturnRequest, clean_case_addres
 BASE_URL = "https://dutymgt.tyfd.gov.tw/tyfd119"
 DUTY_WORK_LOG_AP = "wap119.RPS04060"
 CASE_LOOKUP_DEBUGGER_PORT = 9223
+_SELENIUM_SESSION_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +66,17 @@ def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
 
-    driver = _create_driver(artifacts_dir)
-    driver.set_window_size(1280, 900)
-    driver.implicitly_wait(2)
+    driver = None
+    lock_acquired = False
 
     try:
-        result = _open_duty_work_log_case_picker(driver, request, output_dir, summary_path)
+        lock_acquired = _acquire_selenium_session(f"task {request.task_id}")
+        print(f"[task] creating selenium driver for {request.task_id}", flush=True)
+        driver = _create_driver(artifacts_dir)
+        print(f"[task] selenium driver ready for {request.task_id}", flush=True)
+        _set_window_size_if_enabled(driver, "task")
+        driver.implicitly_wait(2)
+        result = _prepare_duty_work_log_form(driver, request, output_dir, summary_path)
         vehicle_detail = _open_vehicle_mileage_page(driver, request, output_dir)
         return SeleniumRunResult(
             ok=result.ok,
@@ -75,29 +84,42 @@ def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path
             detail=f"{result.detail}\n{vehicle_detail}",
             summary_path=result.summary_path,
         )
-    except WebDriverException as exc:
-        _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_error")
+    except Exception as exc:
+        if driver is not None:
+            _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_error")
         return SeleniumRunResult(
             ok=False,
-            status="selenium_failed",
+            status="chrome_start_failed",
             detail=f"Selenium \u555f\u52d5\u6216\u64cd\u4f5c\u5931\u6557\uff1a{exc}",
             summary_path=summary_path,
         )
+    finally:
+        _quit_driver(driver)
+        if lock_acquired:
+            _release_selenium_session(f"task {request.task_id}")
 
 
-def query_duty_emergency_cases(artifacts_dir: Path) -> DutyCaseLookupResult:
+def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "6h") -> DutyCaseLookupResult:
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "latest.json"
     previous_cases = _previous_case_details(output_path)
+    print(f"[case_lookup] starting duty emergency case lookup range={lookup_range}", flush=True)
+    driver = None
+    lock_acquired = False
     try:
+        lock_acquired = _acquire_selenium_session(f"case_lookup {lookup_range}")
         driver = _create_driver(
             artifacts_dir,
             profile_name="case_lookup_profile",
             debugger_port=CASE_LOOKUP_DEBUGGER_PORT,
             attach_existing=True,
         )
-    except WebDriverException as exc:
+    except Exception as exc:
+        _quit_driver(driver)
+        if lock_acquired:
+            _release_selenium_session(f"case_lookup {lookup_range}")
+            lock_acquired = False
         payload = _case_lookup_payload(
             "chrome_start_failed",
             f"Chrome \u555f\u52d5\u5931\u6557\uff1a{exc}",
@@ -105,30 +127,31 @@ def query_duty_emergency_cases(artifacts_dir: Path) -> DutyCaseLookupResult:
         )
         _write_json_atomic(output_path, payload)
         return DutyCaseLookupResult(False, payload["status"], payload["detail"], [], output_path)
-    driver.set_window_size(1280, 900)
-    driver.implicitly_wait(2)
     try:
+        _set_window_size_if_enabled(driver, "case_lookup")
+        driver.implicitly_wait(2)
         if not _ensure_duty_login(driver):
+            _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_login")
             payload = _case_lookup_payload(
                 "needs_duty_login",
-                "\u5df2\u5728\u672c\u6a5f Chrome \u958b\u555f\u6d88\u9632\u52e4\u52d9\u767b\u5165\u9801\uff1b\u8acb\u767b\u5165\u5f8c\u518d\u56de\u7db2\u9801\u6309\u300c\u67e5\u8a62\u6700\u8fd1 6 \u5c0f\u6642\u300d\u3002",
+                "\u5df2\u5728 NAS \u7121\u982d Chrome \u958b\u555f\u6d88\u9632\u52e4\u52d9\u767b\u5165\u9801\uff0c\u4f46\u81ea\u52d5\u767b\u5165\u672a\u901a\u904e\uff1b\u8acb\u6aa2\u67e5 artifacts/selenium/case_lookup-duty_login.png \u8207 HTML\u3002",
                 [],
             )
             _write_json_atomic(output_path, payload)
             return DutyCaseLookupResult(True, payload["status"], payload["detail"], [], output_path)
 
-        _open_case_query(driver)
+        _open_case_query(driver, lookup_range=lookup_range)
         cases = _extract_all_emergency_cases(driver)
         cases = _attach_case_form_details(driver, cases, artifacts_dir, previous_cases)
         _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_cases")
         payload = _case_lookup_payload(
             "cases_loaded",
-            f"\u5df2\u67e5\u5230 {len(cases)} \u7b46\u6700\u8fd1 6 \u5c0f\u6642\u7684\u7dca\u6025\u6551\u8b77\u6848\u4ef6\uff0c\u4e26\u9810\u5148\u8b80\u53d6\u670d\u52e4\u4eba\u54e1\u3002",
+            f"\u5df2\u67e5\u5230 {len(cases)} \u7b46{_lookup_range_label(lookup_range)}\u7684\u7dca\u6025\u6551\u8b77\u6848\u4ef6\uff0c\u4e26\u9810\u5148\u8b80\u53d6\u670d\u52e4\u4eba\u54e1\u3002",
             cases,
         )
         _write_json_atomic(output_path, payload)
         return DutyCaseLookupResult(True, payload["status"], payload["detail"], cases, output_path)
-    except WebDriverException as exc:
+    except Exception as exc:
         payload = _case_lookup_payload(
             "case_lookup_failed",
             f"\u6848\u4ef6\u67e5\u8a62\u5931\u6557\uff1a{exc}",
@@ -136,6 +159,10 @@ def query_duty_emergency_cases(artifacts_dir: Path) -> DutyCaseLookupResult:
         )
         _write_json_atomic(output_path, payload)
         return DutyCaseLookupResult(False, payload["status"], payload["detail"], [], output_path)
+    finally:
+        _quit_driver(driver)
+        if lock_acquired:
+            _release_selenium_session(f"case_lookup {lookup_range}")
 
 
 def import_duty_case(artifacts_dir: Path, case_id: str) -> DutyCaseImportResult:
@@ -151,7 +178,7 @@ def import_duty_case(artifacts_dir: Path, case_id: str) -> DutyCaseImportResult:
             debugger_port=CASE_LOOKUP_DEBUGGER_PORT,
             attach_existing=True,
         )
-        driver.set_window_size(1280, 900)
+        _set_window_size_if_enabled(driver, "case_import")
         driver.implicitly_wait(2)
         if not _try_switch_to_window_containing(driver, case_id):
             _open_case_query(driver)
@@ -216,11 +243,44 @@ def _previous_case_details(path: Path) -> dict[str, dict[str, object]]:
     return details
 
 
+def _acquire_selenium_session(label: str) -> bool:
+    timeout = int(os.getenv("SELENIUM_SESSION_LOCK_TIMEOUT_SECONDS", "180"))
+    print(f"[selenium] waiting for session lock: {label}", flush=True)
+    if not _SELENIUM_SESSION_LOCK.acquire(timeout=timeout):
+        raise WebDriverException(f"selenium is busy for more than {timeout} seconds: {label}")
+    print(f"[selenium] acquired session lock: {label}", flush=True)
+    return True
+
+
+def _release_selenium_session(label: str) -> None:
+    _SELENIUM_SESSION_LOCK.release()
+    print(f"[selenium] released session lock: {label}", flush=True)
+
+
+def _set_window_size_if_enabled(driver: webdriver.Chrome, label: str) -> None:
+    raw = os.getenv("SELENIUM_SET_WINDOW_SIZE", "false").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return
+    try:
+        driver.set_window_size(1280, 900)
+    except WebDriverException as exc:
+        print(f"[{label}] set_window_size skipped: {exc}", flush=True)
+
+
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}.tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(path)
+
+
+def _quit_driver(driver: webdriver.Chrome | None) -> None:
+    if driver is None:
+        return
+    try:
+        driver.quit()
+    except WebDriverException as exc:
+        print(f"[selenium] driver quit skipped: {exc}", flush=True)
 
 
 def _create_driver(
@@ -232,15 +292,13 @@ def _create_driver(
     remote_url = os.getenv("SELENIUM_REMOTE_URL", "").strip()
     if remote_url:
         _wait_for_remote_selenium(remote_url)
-        options = Options()
-        options.add_argument("--headless=new")
-        options.add_argument("--window-size=1280,900")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--no-first-run")
-        options.add_argument("--no-default-browser-check")
-        return webdriver.Remote(command_executor=remote_url, options=options)
+        options = _remote_browser_options()
+        page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
+        command_timeout = int(os.getenv("SELENIUM_REMOTE_COMMAND_TIMEOUT_SECONDS", "120"))
+        driver = _create_remote_driver_with_retry(remote_url, options, command_timeout)
+        driver.set_page_load_timeout(page_timeout)
+        driver.set_script_timeout(page_timeout)
+        return driver
 
     if attach_existing and debugger_port:
         existing = _connect_existing_chrome(debugger_port)
@@ -259,6 +317,49 @@ def _create_driver(
     if os.getenv("SELENIUM_DETACH", "true").strip().lower() not in {"0", "false", "no", "off"}:
         options.add_experimental_option("detach", True)
     return webdriver.Chrome(options=options)
+
+
+def _remote_browser_options() -> Options | FirefoxOptions:
+    browser = os.getenv("SELENIUM_BROWSER", "chromium").strip().lower()
+    headless = os.getenv("SELENIUM_HEADLESS", "true").strip().lower() not in {"0", "false", "no", "off"}
+    if browser == "firefox":
+        options = FirefoxOptions()
+        if headless:
+            options.add_argument("-headless")
+        options.add_argument("--width=1280")
+        options.add_argument("--height=900")
+        return options
+
+    options = Options()
+    if headless:
+        options.add_argument(os.getenv("SELENIUM_HEADLESS_ARG", "--headless=new"))
+    options.add_argument("--window-size=1280,900")
+    options.add_argument("--disable-popup-blocking")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    return options
+
+
+def _create_remote_driver_with_retry(remote_url: str, options: Options | FirefoxOptions, command_timeout: int) -> webdriver.Chrome:
+    attempts = int(os.getenv("SELENIUM_REMOTE_SESSION_ATTEMPTS", "2"))
+    browser = os.getenv("SELENIUM_BROWSER", "chromium").strip().lower()
+    last_error: Exception | None = None
+    for attempt in range(1, max(attempts, 1) + 1):
+        try:
+            print(
+                f"[selenium] creating remote {browser} session attempt {attempt}/{attempts} timeout={command_timeout}",
+                flush=True,
+            )
+            client_config = ClientConfig(remote_server_addr=remote_url, timeout=command_timeout)
+            return webdriver.Remote(command_executor=remote_url, options=options, client_config=client_config)
+        except Exception as exc:
+            last_error = exc
+            print(f"[selenium] remote {browser} session attempt {attempt} failed: {exc}", flush=True)
+            if attempt < attempts:
+                time.sleep(5)
+    raise WebDriverException(f"remote {browser} session failed after {attempts} attempts: {last_error}")
 
 
 def _wait_for_remote_selenium(remote_url: str) -> None:
@@ -290,6 +391,11 @@ def _connect_existing_chrome(debugger_port: int) -> webdriver.Chrome | None:
 
 
 def _profile_dir(profile_name: str) -> Path:
+    configured = os.getenv("CHROME_PROFILE_DIR", "").strip()
+    if configured:
+        path = Path(configured).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
     root = Path(os.getenv("SELENIUM_PROFILE_ROOT") or os.getenv("LOCALAPPDATA") or Path.home())
     profile_root = root / "ambulance_return_bot"
     profile_root.mkdir(parents=True, exist_ok=True)
@@ -316,7 +422,7 @@ def _open_duty_work_log_case_picker(
     _click_by_text_or_id(driver, ["_btnInsert"], ["\u65b0\u589e"])
     time.sleep(1.5)
     _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
-    _switch_to_newest_window(driver)
+    _switch_to_window_containing(driver, "_txtSDATE")
     time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "duty_case_picker")
     return SeleniumRunResult(
@@ -325,6 +431,62 @@ def _open_duty_work_log_case_picker(
         detail="\u5df2\u5728\u672c\u6a5f Chrome \u958b\u5230\u6848\u4ef6\u8cc7\u6599\u67e5\u8a62\uff1b\u8acb\u4eba\u5de5\u78ba\u8a8d\u6848\u4ef6\u5f8c\u6309\u8a72\u5217\u300c\u9078\u64c7\u300d\u3002\u9078\u5b8c\u5f8c\u7a0b\u5f0f\u4e0b\u4e00\u6b65\u6703\u88dc\u586b\u52e4\u52d9\u9805\u76ee\u3001\u4e8b\u7531\u8207\u8655\u7406\u60c5\u5f62\u3002",
         summary_path=summary_path,
     )
+
+
+def _prepare_duty_work_log_form(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    output_dir: Path,
+    summary_path: Path,
+) -> SeleniumRunResult:
+    if not _ensure_duty_login(driver):
+        _save_artifacts(driver, output_dir, request.task_id, "duty_login")
+        return SeleniumRunResult(
+            ok=True,
+            status="needs_duty_login",
+            detail="已在 NAS 無頭 Chrome 開啟消防勤務登入頁，但自動登入未通過；請檢查 duty_login 截圖。",
+            summary_path=summary_path,
+        )
+
+    driver.get(_ap_url(DUTY_WORK_LOG_AP))
+    time.sleep(1)
+    _click_by_text_or_id(driver, ["_btnInsert"], ["\u65b0\u589e"])
+    time.sleep(1.5)
+    _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
+    _switch_to_window_containing(driver, "_txtSDATE")
+    time.sleep(1.5)
+    _set_case_query_date_range(driver, lookup_range="today")
+    _click_query_if_present(driver)
+    time.sleep(1)
+    cases = _extract_all_emergency_cases(driver)
+    case = _match_case_for_request(cases, request)
+    if not case:
+        _save_artifacts(driver, output_dir, request.task_id, "duty_case_picker")
+        return SeleniumRunResult(
+            ok=False,
+            status="duty_case_not_found",
+            detail=f"未在今日案件清單找到符合時間={request.case_time}、地址={request.case_address} 的案件；已保存查詢頁截圖。",
+            summary_path=summary_path,
+        )
+    if not _click_case_choose(driver, case["case_id"]):
+        _save_artifacts(driver, output_dir, request.task_id, "duty_case_picker")
+        return SeleniumRunResult(
+            ok=False,
+            status="duty_case_choose_failed",
+            detail=f"找到案件但無法按選擇：{case.get('category')} {case.get('address')}",
+            summary_path=summary_path,
+        )
+    time.sleep(1.5)
+    _switch_to_work_log_form_for_case(driver, case)
+    fill_result = _fill_duty_work_log_values(driver, request)
+    _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_prefilled")
+    if fill_result:
+        detail = f"消防勤務工作紀錄已預填但有欄位未確認：{', '.join(fill_result)}。已保存截圖，不會自動儲存。"
+        status = "duty_work_log_prefill_partial"
+    else:
+        detail = "消防勤務工作紀錄已預填勤務項目、事由與處理情形，已保存截圖，不會自動儲存。"
+        status = "duty_work_log_prefilled"
+    return SeleniumRunResult(ok=True, status=status, detail=detail, summary_path=summary_path)
 
 
 def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
@@ -354,6 +516,100 @@ def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceRetur
         raise
 
     return detail
+
+
+def _match_case_for_request(cases: list[dict[str, str]], request: AmbulanceReturnRequest) -> dict[str, str] | None:
+    address = clean_case_address(request.case_address)
+    case_time = str(request.case_time or "").strip()
+    for case in cases:
+        if case_time and case.get("case_time_hhmm") != case_time:
+            continue
+        if address and address not in clean_case_address(case.get("address", "")):
+            continue
+        return case
+    for case in cases:
+        if case_time and case.get("case_time_hhmm") == case_time:
+            return case
+    for case in cases:
+        if address and address in clean_case_address(case.get("address", "")):
+            return case
+    return None
+
+
+def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
+    status_text = f"1.{request.vehicle}:{request.driver}  2.{request.patient_summary}"
+    values = {
+        "勤務項目": "救護",
+        "事由": request.case_reason,
+        "處理情形": status_text,
+    }
+    missing = driver.execute_script(
+        """
+        const values = arguments[0];
+        function writable(el) {
+          return el && !el.disabled && !el.readOnly && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+        }
+        function setValue(el, value) {
+          if (!writable(el) || value === undefined || value === null || String(value) === '') return false;
+          if (el.tagName === 'SELECT') {
+            const option = Array.from(el.options || []).find(item => {
+              const text = String(item.text || '').trim();
+              const raw = String(item.value || '').trim();
+              return text === value || text.includes(value) || raw === value;
+            });
+            if (!option) return false;
+            el.value = option.value;
+          } else {
+            el.value = String(value);
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        function controlsNear(labelText) {
+          const normalizedLabel = labelText.replace(/\\s+/g, '');
+          const labels = Array.from(document.querySelectorAll('label, td, th, div, span'));
+          const label = labels.find(el => String(el.innerText || '').replace(/\\s+/g, '').includes(normalizedLabel));
+          if (!label) return [];
+          const direct = Array.from(label.querySelectorAll('input, textarea, select')).filter(writable);
+          if (direct.length) return direct;
+          const row = label.closest('tr, .form-group, .row');
+          if (row) {
+            const rowControls = Array.from(row.querySelectorAll('input, textarea, select')).filter(writable);
+            if (rowControls.length) return rowControls;
+          }
+          const found = [];
+          let node = label.nextElementSibling;
+          for (let i = 0; node && i < 5; i++, node = node.nextElementSibling) {
+            if (writable(node)) found.push(node);
+            found.push(...Array.from(node.querySelectorAll?.('input, textarea, select') || []).filter(writable));
+            if (found.length) break;
+          }
+          return found;
+        }
+        function fallbackControl(labelText) {
+          if (labelText === '處理情形') return document.getElementById('_areStatus');
+          const selects = Array.from(document.querySelectorAll('select')).filter(writable);
+          if (labelText === '勤務項目') {
+            return selects.find(el => Array.from(el.options || []).some(option => String(option.text || '').includes('救護')));
+          }
+          if (labelText === '事由') {
+            const reason = values[labelText];
+            return selects.find(el => Array.from(el.options || []).some(option => String(option.text || '').includes(reason)));
+          }
+          return null;
+        }
+        const missing = [];
+        for (const [label, value] of Object.entries(values)) {
+          const controls = controlsNear(label);
+          const control = controls.find(el => setValue(el, value)) || (setValue(fallbackControl(label), value) ? true : null);
+          if (!control) missing.push(label);
+        }
+        return missing;
+        """,
+        values,
+    )
+    return [str(item) for item in (missing or [])]
 
 
 def _is_ppe_login_page(driver: webdriver.Chrome) -> bool:
@@ -632,15 +888,15 @@ def _today_yyyymmdd() -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
-def _open_case_query(driver: webdriver.Chrome) -> None:
+def _open_case_query(driver: webdriver.Chrome, lookup_range: str = "6h") -> None:
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
     time.sleep(1)
     _click_by_text_or_id(driver, ["_btnInsert"], ["\u65b0\u589e"])
     time.sleep(1)
     _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
-    _switch_to_newest_window(driver)
+    _switch_to_window_containing(driver, "_txtSDATE")
     time.sleep(1.5)
-    _set_case_query_date_range(driver)
+    _set_case_query_date_range(driver, lookup_range=lookup_range)
     _click_query_if_present(driver)
     time.sleep(1)
 
@@ -670,7 +926,11 @@ def _ensure_duty_login(driver: webdriver.Chrome) -> bool:
             }
             """
         )
-        time.sleep(2)
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if _looks_logged_in(driver):
+                return True
+            time.sleep(1)
     except (TimeoutException, WebDriverException):
         return False
     return _looks_logged_in(driver)
@@ -707,12 +967,21 @@ def _click_by_text_or_id(driver: webdriver.Chrome, ids: list[str], texts: list[s
     script = """
     const ids = arguments[0];
     const texts = arguments[1];
+    function isClickable(el) {
+      if (!el || el.disabled) return false;
+      if (String(el.type || '').toLowerCase() === 'hidden') return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      return true;
+    }
     for (const id of ids) {
-      const el = document.getElementById(id);
+      const matches = Array.from(document.querySelectorAll(`[id="${CSS.escape(id)}"]`));
+      const el = matches.find(isClickable);
       if (el) { el.click(); return {ok: true, via: id}; }
     }
     const controls = Array.from(document.querySelectorAll('input, button, a'));
     const target = controls.find(el => {
+      if (!isClickable(el)) return false;
       const haystack = [el.value, el.innerText, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
       return texts.some(text => haystack.includes(text));
     });
@@ -768,6 +1037,36 @@ def _switch_to_work_log_form(driver: webdriver.Chrome) -> None:
     raise WebDriverException("work log form not found after case choose")
 
 
+def _switch_to_work_log_form_for_case(driver: webdriver.Chrome, case: dict[str, str]) -> None:
+    address = case.get("address", "")
+    return_time = case.get("return_time", "")
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        for handle in driver.window_handles:
+            driver.switch_to.window(handle)
+            try:
+                matched = driver.execute_script(
+                    """
+                    const address = arguments[0];
+                    const returnTime = arguments[1];
+                    const description = String(document.getElementById('_areDescription')?.value || '');
+                    const hasForm = !!document.getElementById('_areMan') || !!document.getElementById('_areStatus');
+                    if (!hasForm) return false;
+                    if (address && description.includes(address)) return true;
+                    if (returnTime && description.includes(returnTime)) return true;
+                    return false;
+                    """,
+                    address,
+                    return_time,
+                )
+                if matched:
+                    return
+            except WebDriverException:
+                continue
+        time.sleep(0.3)
+    raise WebDriverException("matching work log form not found after case choose")
+
+
 def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
     script = """
     const caseId = arguments[0];
@@ -777,7 +1076,8 @@ def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
       const controls = Array.from(row.querySelectorAll('input, button, a'));
       const target = controls.find(el => {
         const text = [el.value, el.innerText, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
-        return text.includes('選擇');
+        const onclick = String(el.getAttribute('onclick') || '');
+        return text.includes('選擇') && onclick.includes(caseId);
       });
       if (target) { target.click(); return true; }
     }
@@ -829,6 +1129,9 @@ def _attach_case_form_details(
         case_id = case.get("case_id", "")
         if not case_id:
             continue
+        if case.get("personnel") or case.get("personnel_raw") or case.get("personnel_hidden_raw"):
+            case["detail_status"] = "case_detail_from_choose_data"
+            continue
         previous = previous_cases.get(case_id)
         if previous and (
             previous.get("personnel") or previous.get("personnel_raw") or previous.get("personnel_hidden_raw")
@@ -846,7 +1149,7 @@ def _attach_case_form_details(
             if not _click_case_choose(driver, case_id):
                 continue
             time.sleep(1.5)
-            _switch_to_work_log_form(driver)
+            _switch_to_work_log_form_for_case(driver, case)
             selected = _extract_selected_case_form(driver)
             case.update(selected)
             _save_artifacts(driver, artifacts_dir / "selenium", case_id, "selected_case")
@@ -862,9 +1165,12 @@ def _click_query_if_present(driver: webdriver.Chrome) -> None:
         return
 
 
-def _set_case_query_date_range(driver: webdriver.Chrome) -> None:
+def _set_case_query_date_range(driver: webdriver.Chrome, lookup_range: str = "6h") -> None:
     end_at = datetime.now()
-    start_at = end_at - timedelta(hours=6)
+    if lookup_range == "today":
+        start_at = end_at.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        start_at = end_at - timedelta(hours=6)
     start_date = _roc_date(start_at)
     end_date = _roc_date(end_at)
     driver.execute_script(
@@ -903,6 +1209,12 @@ def _roc_date(value: datetime) -> str:
     return f"{value.year - 1911:03d}{value.month:02d}{value.day:02d}"
 
 
+def _lookup_range_label(lookup_range: str) -> str:
+    if lookup_range == "today":
+        return "\u4eca\u5929"
+    return "\u6700\u8fd1 6 \u5c0f\u6642"
+
+
 def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
     script = """
     function textOf(el) {
@@ -926,9 +1238,12 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
         const haystack = [el.value, el.innerText, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
         return haystack.includes('選擇');
       });
+      const chooseDataMatch = String(choose ? (choose.getAttribute('onclick') || '') : '').match(/choose\\('([\\s\\S]*)'\\)/);
+      const chooseParts = chooseDataMatch ? chooseDataMatch[1].split('(^w^)') : [];
       const category = cells.find(cell => cell.includes('緊急救護')) || '';
       if (!category.startsWith('緊急救護')) continue;
       const reason = category.includes('-') ? category.split('-').slice(1).join('-').trim() : '';
+      const personnelRaw = chooseParts[34] || '';
       cases.push({
         row_index: String(rowIndex),
         case_id: caseId,
@@ -941,6 +1256,13 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
         address: cells[4] || '',
         choose_id: choose ? (choose.id || '') : '',
         choose_name: choose ? (choose.name || '') : '',
+        case_date: chooseParts[1] || '',
+        case_time_h: chooseParts[2] || '',
+        case_time_m: chooseParts[3] || '',
+        description: chooseParts.length ? ['119案件', chooseParts[5] || '', `返隊時間:${chooseParts[35] || ''}`, `地點:${chooseParts[8] || ''}`].join('\\n') : '',
+        personnel_raw: personnelRaw,
+        personnel_hidden_raw: chooseParts[33] || '',
+        personnel: personnelRaw ? Array.from(new Set(personnelRaw.split(/[\\n,，、\\s]+/).map(x => x.trim()).filter(Boolean))) : [],
       });
     }
     return cases;
@@ -948,7 +1270,16 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
     cases = driver.execute_script(script)
     if not isinstance(cases, list):
         return []
-    return [{str(key): str(value or "") for key, value in dict(item).items()} for item in cases]
+    normalized = []
+    for item in cases:
+        row = {}
+        for key, value in dict(item).items():
+            if isinstance(value, list):
+                row[str(key)] = [str(part or "") for part in value]
+            else:
+                row[str(key)] = str(value or "")
+        normalized.append(row)
+    return normalized
 
 
 def _extract_all_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:

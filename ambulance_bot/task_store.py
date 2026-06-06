@@ -64,6 +64,32 @@ class JsonTaskStore:
             paths = sorted(self.tasks_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
             return [json.loads(path.read_text(encoding="utf-8")) for path in paths[:limit]]
 
+    def queue_for_worker(self, task_id: str) -> dict[str, Any]:
+        with self._lock:
+            payload = self.get(task_id)
+            payload["overall_status"] = "queued_for_worker"
+            self.add_event_to_payload(payload, "queued_for_worker", "任務已排隊，等待公務電腦 worker 執行。")
+            self.save_payload(task_id, payload)
+            return payload
+
+    def claim_next_for_worker(self, worker_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            paths = sorted(self.tasks_dir.glob("*.json"), key=lambda item: item.stat().st_mtime)
+            for path in paths:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if payload.get("overall_status") != "queued_for_worker":
+                    continue
+                task_id = payload["task"]["task_id"]
+                payload["overall_status"] = "claimed_by_worker"
+                payload["worker"] = {
+                    "id": worker_id,
+                    "claimed_at": now_text(),
+                }
+                self.add_event_to_payload(payload, "claimed_by_worker", f"公務電腦 worker 已領取：{worker_id}")
+                self.save_payload(task_id, payload)
+                return payload
+        return None
+
     def set_overall_status(self, task_id: str, status: str, detail: str = "") -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)

@@ -38,7 +38,7 @@
 
     <section class="panel">
       <h2>&#36039;&#26009;&#25688;&#35201;</h2>
-      <p>&#25353;&#19979;&#12300;&#21855;&#21205;&#22235;&#31449;&#27969;&#31243;&#12301;&#24460;&#65292;&#22235;&#20491;&#32178;&#31449;&#26371;&#22312;&#22519;&#34892;&#24460;&#31471;&#30340;&#26412;&#27231;&#38651;&#33126;&#19978;&#38283;&#21855;&#12290;</p>
+      <p>按下「送到公務電腦」後，NAS 會把任務排隊；公務電腦 worker 會領取任務並在該電腦開啟瀏覽器預填，不會自動按最後送出。</p>
       <div id="summary" class="summary">&#36554;&#36635;&#65306;{{ payload.task.vehicle or '未填' }}
 &#21496;&#27231;&#65306;{{ payload.task.driver or '未填' }}
 &#37324;&#31243;&#65306;{{ payload.task.mileage or '未填' }}
@@ -52,7 +52,7 @@
       <div class="site-actions">
         <button type="button" onclick="copyText('summary')">&#35079;&#35069;&#25688;&#35201;</button>
         <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
-          <button type="submit">&#21855;&#21205;&#22235;&#31449;&#27969;&#31243;</button>
+          <button type="submit">送到公務電腦</button>
         </form>
       </div>
     </section>

@@ -1,150 +1,111 @@
-# NAS 網頁查詢器操作手冊
+# NAS 任務中心操作手冊
 
-## 目標
+目標架構是 NAS 當任務中心，公務電腦 worker 負責查詢案件與開本機 Chrome 預填四個網站。
 
-在 Synology NAS 的 Container Manager 啟動 `ambulance_return_bot`，用內網網址操作救護回程網頁查詢器：
+## 固定入口
 
-```text
-http://NAS_IP:8080/app
-```
+- 手機/平板入口：`http://100.114.126.58:8080/app`
+- 公務電腦 worker 連 NAS：`http://10.30.65.30:8080`
+- NAS LAN IP：`10.30.65.30`
+- NAS Tailscale IP：`100.114.126.58`
 
-第一階段只使用內網，不設定外網公開、HTTPS、DSM 反向代理或 Cloudflare Tunnel。
+## NAS 責任
 
-## 部署前檢查
+NAS 只負責：
 
-1. NAS 專案資料夾內要有這些檔案：
-   - `app.py`
-   - `compose.nas.yml`
-   - `requirements.txt`
-   - `.env.example`
-   - `ambulance_bot/`
-   - `templates/`
-2. 專案若用 Git 同步，確認目前版本至少包含 baseline commit：
-   - `a4a76c1 Initial ambulance return bot baseline`
-3. `.env` 不進 Git；實際帳密只放 NAS 專案資料夾的 `.env`。
+- Flask 網頁。
+- 任務 JSON。
+- 最新案件清單。
+- worker API。
+- LINE 通知與狀態查詢，若有設定。
 
-## .env 設定
+NAS 不負責：
 
-在 NAS 專案資料夾把 `.env.example` 複製成 `.env`，至少填：
+- 不跑 Selenium。
+- 不啟動 Chrome。
+- 不保存四站帳密。
+- 不做政府網站登打。
 
-```dotenv
+## NAS `.env`
+
+NAS 專案資料夾內 `.env` 至少需要：
+
+```env
 WEB_HOST=0.0.0.0
 WEB_PORT=8080
 ARTIFACTS_DIR=artifacts
+TASK_EXECUTION_MODE=worker_queue
+CASE_LOOKUP_SCHEDULER_ENABLED=false
+WORKER_TOKEN=同公務電腦worker
+```
 
-DUTY_ACCOUNT=你的消防勤務帳號
-DUTY_PASSWORD=你的消防勤務密碼
+不要把四站帳密、OpenAI API key、Chrome profile 放 NAS `.env`。
 
+## DSM Container Manager
+
+1. 開 DSM。
+2. 開 Container Manager。
+3. 進「專案」。
+4. 使用專案內 `compose.nas.yml` 建立或更新 Stack。
+5. 啟動後看 app log，應看到 Flask/Waitress 啟動。
+
+新版 `compose.nas.yml` 只有 app service，沒有 selenium service。
+
+## 公務電腦 Worker
+
+公務電腦 `.env` 至少需要：
+
+```env
+WORKER_SERVER_URL=http://10.30.65.30:8080
+WORKER_TOKEN=同NAS
+WORKER_POLL_SECONDS=10
 CASE_LOOKUP_INTERVAL_SECONDS=300
-CASE_LOOKUP_SCHEDULER_ENABLED=true
+WORKER_USE_LOCAL_CHROME=true
+CHROME_PROFILE_EMAIL=sinpo666@gmail.com
+CHROME_PROFILE_DIR=artifacts/chrome_profile
 ```
 
-如需 LINE 通知，再填：
+啟動：
 
-```dotenv
-LINE_CHANNEL_ACCESS_TOKEN=你的 LINE Messaging API token
-LINE_CHANNEL_SECRET=你的 LINE channel secret
-LINE_TO_USER_IDS=Uxxxxxxxx,Uyyyyyyyy
+```powershell
+run_worker_forever.bat
 ```
 
-NAS 使用 `compose.nas.yml` 時，`SELENIUM_REMOTE_URL` 由 compose 設成 `http://selenium:4444/wd/hub`，不需要在 `.env` 重複填。
+單次測試：
 
-## Container Manager 啟動
-
-1. DSM 開啟 Container Manager。
-2. 建立 Project，路徑選 `ambulance_return_bot` 專案資料夾。
-3. Compose 檔選 `compose.nas.yml`。
-4. 啟動後應有兩個服務：
-   - `selenium`
-   - `app`
-5. 確認 port mapping：
-   - NAS `8080` 對 container `8080`
-
-啟動後先看 log：
-
-- `selenium` log 應看到 Selenium Grid / Chromium ready。
-- `app` log 應看到 pip install 完成，接著進入 `python -u app.py`。
-- 如果 app log 只有 pip 訊息但沒有服務啟動，優先檢查 command 是否被 DSM 改壞。
-
-## Web 驗證
-
-用同一個內網的電腦或手機開：
-
-```text
-http://NAS_IP:8080/status
+```powershell
+run_worker_once.bat
 ```
-
-應回傳 JSON，包含：
-
-```json
-{"ok": true}
-```
-
-再開：
-
-```text
-http://NAS_IP:8080/app
-```
-
-應看到救護回程網頁表單。
 
 ## 日常操作
 
-1. 開 `http://NAS_IP:8080/app`。
-2. 等背景查詢完成，或按「查詢最近 6 小時」。
-3. 案件清單應顯示：
-   - `緊急救護-事由 - 地址`
-4. 按案件右側「帶入這筆」。
-5. 確認表單自動帶入：
-   - 案發地址
-   - 案件時間
-   - 回程時間
-   - 事由
-   - 服勤人員/司機下拉選項
-6. 補里程、傷病患、耗材、消毒紀錄。
+1. 手機或平板開 `http://100.114.126.58:8080/app`。
+2. 案件列表由公務電腦 worker 回傳。
+3. 若要立即更新，按「查詢」；NAS 會記錄 `case_lookup_requested`。
+4. worker 下一輪輪詢會查詢案件並回傳 NAS。
+5. 選案件「帶入這筆」。
+6. 補里程、車輛、司機、傷病患、耗材、消毒資料。
 7. 建立任務。
+8. 任務進入 `queued_for_worker`。
+9. 公務電腦 worker 領取任務後開本機 Chrome 預填。
 
-注意：系統可開頁與預填，但外部網站最後儲存/送出仍需人工確認。
+## 驗證
 
-## 檔案驗證
-
-案件查詢成功後，NAS 專案資料夾會更新：
-
-```text
-artifacts/cases/latest.json
-```
-
-帶入案件後會更新：
+NAS：
 
 ```text
-artifacts/cases/selected.json
+http://100.114.126.58:8080/status
+http://10.30.65.30:8080/status
 ```
 
-建立任務後會新增：
+Worker：
 
-```text
-artifacts/tasks/<task_id>.json
-```
+- 無任務時 `run_worker_once.bat` 應顯示 no queued task，除非剛好有手動查詢要求。
+- 手機按查詢後，worker log 應出現 manual case lookup requested。
+- 案件成功回傳後，NAS 會更新 `artifacts/cases/latest.json`。
 
-這些都是 runtime 產物，不應提交到 Git。
+## 注意
 
-## 常見問題
-
-- `http://NAS_IP:8080/app` 打不開：
-  - 確認 Container Manager 的 `app` 服務是 Running。
-  - 確認 NAS 防火牆允許 8080。
-  - 確認 port mapping 是 `8080:8080`。
-
-- `/status` 打得開，但查不到案件：
-  - 看 `app` log 是否有 Selenium connection error。
-  - 看 `selenium` log 是否 ready。
-  - 確認 `.env` 的 `DUTY_ACCOUNT` / `DUTY_PASSWORD` 正確。
-
-- app log 顯示 Selenium ready 但 session 建立失敗：
-  - 等 1-2 分鐘再查一次。
-  - 確認 `selenium` 服務沒有重啟循環。
-  - 確認 `shm_size` 保持 `4gb`。
-
-- LINE 沒通知：
-  - 確認 `.env` 有 `LINE_CHANNEL_ACCESS_TOKEN` 和 `LINE_TO_USER_IDS`。
-  - LINE 失敗不應影響網頁查詢器，先以 `/app` 和 artifacts 驗證主流程。
+- 四站第一版只預填，不按最後儲存/送出。
+- 驗證碼不要破解或繞過；遇到驗證碼時改人工接手。
+- 每次改程式並完成測試後，要重開 worker，並在回覆中說明是否已重開。

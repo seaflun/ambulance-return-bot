@@ -28,6 +28,9 @@
     .case-time { color: #4b625d; font-size: 13px; margin-top: 2px; }
     .case-card button { min-height: 36px; padding: 0 10px; }
     .case-card form { padding: 0; border: 0; box-shadow: none; background: transparent; }
+    .lookup-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; color: #4b625d; font-size: 13px; }
+    .lookup-meta span, .debug-link { display: inline-flex; align-items: center; min-height: 28px; border: 1px solid #dce5e2; border-radius: 6px; padding: 0 8px; background: #fbfdfc; color: #35504a; text-decoration: none; }
+    .empty-note { border: 1px dashed #b9c9c4; border-radius: 8px; padding: 10px; color: #4b625d; background: #fbfdfc; }
     .recent { margin-top: 18px; }
     .recent a { display: block; padding: 12px 0; color: #0f766e; text-decoration: none; border-top: 1px solid #e3ebe8; }
     @media (max-width: 520px) { .grid { grid-template-columns: 1fr 1fr; gap: 8px; } h1 { font-size: 25px; } .lookup-head { align-items: stretch; flex-direction: column; } .lookup-head button { width: 100%; } }
@@ -43,11 +46,30 @@
     <section class="panel lookup">
       <div class="lookup-head">
         <div>
-          <h2>&#26368;&#36817; 6 &#23567;&#26178;&#26696;&#20214;</h2>
-          <p>{% if case_lookup.detail %}{{ case_lookup.detail }}{% else %}&#26597;&#35426;&#21220;&#21209;&#31995;&#32113;&#12300;&#30001;&#26696;&#20214;&#24118;&#20837;&#12301;&#28165;&#21934;&#65292;&#38928;&#35373;&#31684;&#22285;&#28858;&#29694;&#22312;&#24448;&#21069; 6 &#23567;&#26178;&#12290;{% endif %}</p>
+          <h2>&#21220;&#21209;&#26696;&#20214;</h2>
+          <p>{% if case_lookup.detail %}{{ case_lookup.detail }}{% else %}&#26597;&#35426;&#21220;&#21209;&#31995;&#32113;&#12300;&#30001;&#26696;&#20214;&#24118;&#20837;&#12301;&#28165;&#21934;&#65292;&#21487;&#26597;&#26368;&#36817; 6 &#23567;&#26178;&#25110;&#20170;&#22825;&#12290;{% endif %}</p>
+          {% if case_lookup.status or case_lookup.updated_at %}
+            <div class="lookup-meta">
+              {% if case_lookup.status %}<span>狀態：{{ case_lookup.status }}</span>{% endif %}
+              <span>案件：{{ case_lookup.case_count or 0 }} 筆</span>
+              {% if case_lookup.updated_at %}<span>更新：{{ case_lookup.updated_at }}</span>{% endif %}
+            </div>
+          {% endif %}
+          {% if case_lookup.debug_artifacts %}
+            <div class="lookup-meta">
+              {% for artifact in case_lookup.debug_artifacts %}
+                <a class="debug-link" href="/artifacts/{{ artifact.href }}" target="_blank">{{ artifact.name }}</a>
+              {% endfor %}
+            </div>
+          {% endif %}
         </div>
         <form method="post" action="/cases/query">
+          <input type="hidden" name="lookup_range" value="6h">
           <button type="submit">&#26597;&#35426;&#26368;&#36817; 6 &#23567;&#26178;</button>
+        </form>
+        <form method="post" action="/cases/query">
+          <input type="hidden" name="lookup_range" value="today">
+          <button type="submit">&#26597;&#20170;&#22825;</button>
         </form>
       </div>
       {% if case_lookup.cases %}
@@ -68,6 +90,8 @@
             </div>
           {% endfor %}
         </div>
+      {% elif case_lookup.status %}
+        <div class="empty-note">目前查詢結果沒有可帶入的案件。若上方截圖有案件，代表解析規則需要再調整。</div>
       {% endif %}
     </section>
 
