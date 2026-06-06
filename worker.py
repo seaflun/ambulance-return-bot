@@ -161,7 +161,7 @@ def run_vehicle_task(server_url: str, worker_id: str, task: dict[str, object], a
 
 def request_json(url: str) -> dict[str, object]:
     req = urllib.request.Request(url, headers=worker_headers())
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -186,7 +186,7 @@ def post_status(
         headers={**worker_headers(), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
         response.read()
 
 
@@ -213,8 +213,12 @@ def post_cases(
         headers={**worker_headers(), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
         response.read()
+
+
+def worker_api_timeout() -> int:
+    return int(os.getenv("WORKER_API_TIMEOUT_SECONDS", "8"))
 
 
 def hash_cases(cases: list[dict[str, object]]) -> str:

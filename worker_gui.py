@@ -44,6 +44,7 @@ class WorkerGui(tk.Tk):
 
         self._build_ui()
         self.after(250, self._drain_log)
+        self.after(750, self._warm_worker_chrome)
 
     def _build_ui(self) -> None:
         root = ttk.Frame(self, padding=14)
@@ -264,14 +265,18 @@ class WorkerGui(tk.Tk):
         server_url = self.server_url.get().strip().rstrip("/")
         worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
         worker.MANUAL_TASK_ACTIVE.set()
+        started_at = time.monotonic()
         try:
+            self.log_queue.put("工作紀錄：向 NAS 取任務...")
             task = worker.fetch_task(server_url, task_id)
+            self.log_queue.put(f"工作紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
             if not task:
                 self.log_queue.put(f"找不到任務：{task_id}")
                 return
             self.log_queue.put(f"開始執行選取任務：{task_id}")
+            selenium_started_at = time.monotonic()
             worker.run_task(server_url, worker_id, task, Path(os.getenv("ARTIFACTS_DIR", "artifacts")))
-            self.log_queue.put(f"選取任務已執行完成：{task_id}")
+            self.log_queue.put(f"選取任務已執行完成：{task_id}，登打耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
             self._refresh_tasks()
         except Exception as exc:
             self.log_queue.put(f"執行選取任務失敗：{task_id} {exc}")
@@ -282,19 +287,41 @@ class WorkerGui(tk.Tk):
         server_url = self.server_url.get().strip().rstrip("/")
         worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
         worker.MANUAL_TASK_ACTIVE.set()
+        started_at = time.monotonic()
         try:
+            if not _worker_chrome_is_running():
+                self.log_queue.put("車輛里程：預先喚起 Chrome...")
+                open_url_in_worker_chrome("about:blank")
+            self.log_queue.put("車輛里程：向 NAS 取任務...")
             task = worker.fetch_task(server_url, task_id)
+            self.log_queue.put(f"車輛里程：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
             if not task:
                 self.log_queue.put(f"找不到任務：{task_id}")
                 return
             self.log_queue.put(f"開始執行車輛里程：{task_id}")
+            selenium_started_at = time.monotonic()
             worker.run_vehicle_task(server_url, worker_id, task, Path(os.getenv("ARTIFACTS_DIR", "artifacts")))
-            self.log_queue.put(f"車輛里程已執行完成：{task_id}")
+            self.log_queue.put(f"車輛里程已執行完成：{task_id}，登打耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
             self._refresh_tasks()
         except Exception as exc:
             self.log_queue.put(f"執行車輛里程失敗：{task_id} {exc}")
         finally:
             worker.MANUAL_TASK_ACTIVE.clear()
+
+    def _warm_worker_chrome(self) -> None:
+        if os.getenv("WORKER_WARM_CHROME_ON_START", "true").strip().lower() in {"0", "false", "no", "off"}:
+            return
+        threading.Thread(target=self._warm_worker_chrome_background, daemon=True).start()
+
+    def _warm_worker_chrome_background(self) -> None:
+        try:
+            if _worker_chrome_is_running():
+                self.log_queue.put("Chrome 已在背景待命。")
+                return
+            status = open_url_in_worker_chrome("about:blank")
+            self.log_queue.put(f"Chrome 已預先啟動：{status}")
+        except Exception as exc:
+            self.log_queue.put(f"Chrome 預先啟動失敗：{exc}")
 
     def _log(self, message: str) -> None:
         self.log_queue.put(f"{time.strftime('%H:%M:%S')} {message}")
@@ -322,6 +349,19 @@ def task_row_values(payload: dict[str, object]) -> tuple[str, tuple[str, str, st
     address = str(task_dict.get("case_address") or "")
     time_text = f"{case_time}/{return_time}".strip("/")
     return task_id, (status, vehicle, driver, time_text, address)
+
+
+def _worker_chrome_is_running() -> bool:
+    try:
+        import urllib.request
+
+        port = os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223").strip()
+        if not port:
+            return False
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
+            return response.status == 200
+    except Exception:
+        return False
 
 
 def main() -> None:
