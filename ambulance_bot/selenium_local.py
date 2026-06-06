@@ -924,7 +924,8 @@ def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRe
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
     if _is_disinfection_login_page(driver):
         raise WebDriverException("消毒系統需要重新登入或驗證碼；請先在 worker Chrome 手動登入一次後再執行。")
-    return f"已進入緊急救護消毒系統，待填消毒紀錄：{request.disinfection}"
+    controls_path = _save_disinfection_probe(driver, output_dir, request.task_id)
+    return f"已進入緊急救護消毒系統，已保存頁面控制項：{controls_path}；待填消毒紀錄：{request.disinfection}"
 
 
 def _is_disinfection_login_page(driver: webdriver.Chrome) -> bool:
@@ -934,6 +935,41 @@ def _is_disinfection_login_page(driver: webdriver.Chrome) -> bool:
     source = driver.page_source
     login_markers = ["驗證碼", "帳號", "密碼", "登入"]
     return sum(1 for marker in login_markers if marker in source) >= 3
+
+
+def _save_disinfection_probe(driver: webdriver.Chrome, output_dir: Path, task_id: str) -> Path:
+    probe_dir = output_dir / "disinfection_probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+
+    html_path = probe_dir / f"{task_id}-after_login.html"
+    png_path = probe_dir / f"{task_id}-after_login.png"
+    controls_path = probe_dir / f"{task_id}-controls.json"
+
+    html_path.write_text(driver.page_source, encoding="utf-8")
+    driver.save_screenshot(str(png_path))
+
+    controls = driver.execute_script(
+        """
+        const textOf = el => [
+          el.innerText, el.value, el.title, el.name, el.id,
+          el.placeholder, el.getAttribute('aria-label'), el.href
+        ].map(x => String(x || '').trim()).filter(Boolean).join(' | ');
+        return Array.from(document.querySelectorAll('a, button, input, select, textarea'))
+          .filter(el => el.offsetParent !== null || el.tagName === 'INPUT')
+          .map((el, index) => ({
+            index,
+            tag: el.tagName,
+            type: el.type || '',
+            id: el.id || '',
+            name: el.name || '',
+            value: el.value || '',
+            text: textOf(el),
+            href: el.href || ''
+          }));
+        """
+    )
+    controls_path.write_text(json.dumps(controls, ensure_ascii=False, indent=2), encoding="utf-8")
+    return controls_path
 
 
 def _accept_alert_if_present(driver: webdriver.Chrome, timeout: float = 4) -> str:
