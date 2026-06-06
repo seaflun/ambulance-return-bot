@@ -206,16 +206,16 @@ class WebAppTests(unittest.TestCase):
         status_response = self.client.post(
             f"/worker/tasks/{task_id}/status",
             json={
-                "status": "duty_work_log_prefilled",
-                "detail": "prefilled",
+                "status": "duty_work_log_saved",
+                "detail": "saved",
                 "site_key": "duty_work_log",
                 "site_name": "\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304",
             },
         )
         self.assertEqual(status_response.status_code, 200)
         updated = self.store.get(task_id)
-        self.assertEqual(updated["overall_status"], "duty_work_log_prefilled")
-        self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_prefilled")
+        self.assertEqual(updated["overall_status"], "duty_work_log_saved")
+        self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
 
 
 if __name__ == "__main__":

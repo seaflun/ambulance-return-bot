@@ -495,8 +495,15 @@ def _prepare_duty_work_log_form(
         detail = f"消防勤務工作紀錄已預填但有欄位未確認：{', '.join(fill_result)}。已保存截圖，不會自動儲存。"
         status = "duty_work_log_prefill_partial"
     else:
-        detail = "消防勤務工作紀錄已預填勤務項目、事由與處理情形，已保存截圖，不會自動儲存。"
-        status = "duty_work_log_prefilled"
+        save_result = _click_duty_work_log_save(driver)
+        time.sleep(1.5)
+        _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_saved")
+        if save_result.get("ok"):
+            detail = "消防勤務工作紀錄已預填勤務項目、事由、處理情形並按下儲存。"
+            status = "duty_work_log_saved"
+        else:
+            detail = f"消防勤務工作紀錄已預填，但儲存按鈕未成功點擊：{save_result.get('reason', 'unknown')}。"
+            status = "duty_work_log_save_failed"
     return SeleniumRunResult(ok=True, status=status, detail=detail, summary_path=summary_path)
 
 
@@ -727,6 +734,43 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
     )
     all_missing = list(item_missing or []) + list(reason_missing or []) + list(missing or [])
     return [str(item) for item in all_missing]
+
+
+def _click_duty_work_log_save(driver: webdriver.Chrome) -> dict[str, object]:
+    result = driver.execute_script(
+        """
+        const controls = Array.from(document.querySelectorAll('input, button, a'));
+        function visible(el) {
+          if (!el || el.disabled) return false;
+          if (String(el.type || '').toLowerCase() === 'hidden') return false;
+          const style = window.getComputedStyle(el);
+          return style.display !== 'none' && style.visibility !== 'hidden';
+        }
+        const target = controls.find(el => {
+          if (!visible(el)) return false;
+          const text = [el.id, el.name, el.value, el.title, el.innerText].map(x => String(x || '')).join(' ');
+          return /_btnSave|儲存|存檔|Save/i.test(text);
+        });
+        if (!target) return {ok: false, reason: 'save control not found'};
+        target.click();
+        return {
+          ok: true,
+          id: target.id || '',
+          name: target.name || '',
+          value: target.value || '',
+          text: target.innerText || ''
+        };
+        """
+    )
+    try:
+        alert = driver.switch_to.alert
+        text = alert.text
+        alert.accept()
+        if isinstance(result, dict):
+            result["alert"] = text
+    except Exception:
+        pass
+    return dict(result or {"ok": False, "reason": "empty save result"})
 
 
 def _is_ppe_login_page(driver: webdriver.Chrome) -> bool:
