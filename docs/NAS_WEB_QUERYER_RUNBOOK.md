@@ -71,13 +71,13 @@ CHROME_PROFILE_DIR=artifacts/chrome_profile
 run_worker_forever.bat
 ```
 
-啟動後會開本機 worker 面板：
+啟動後會開 Windows worker 程式視窗。視窗會同時啟動背景 worker，並提供四個入口按鈕讓你測試各站登入與 Google Password Manager。
+
+在個人電腦測試時，如果不在公務內網，可以在視窗中切換成 Tailscale：
 
 ```text
-http://127.0.0.1:8090/
+http://100.114.126.58:8080
 ```
-
-面板會同時啟動背景 worker，並提供四個入口按鈕讓你測試各站登入與 Google Password Manager。
 
 單次測試：
 
@@ -89,6 +89,12 @@ run_worker_once.bat
 
 ```powershell
 run_worker_headless.bat
+```
+
+需要舊版本機網頁面板時使用：
+
+```powershell
+run_worker_web_panel.bat
 ```
 
 ## 日常操作
