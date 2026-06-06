@@ -51,7 +51,7 @@ class WorkerGui(tk.Tk):
 
         title = ttk.Label(root, text="救護回程 Worker", font=("Microsoft JhengHei UI", 20, "bold"))
         title.pack(anchor="w")
-        desc = ttk.Label(root, text="背景 worker 查詢案件；登打任務先在下方選取後手動執行，不會按最後儲存或送出。")
+        desc = ttk.Label(root, text="先刷新 NAS 任務，再按工作紀錄或車輛里程登打；沒選任務時會自動使用清單第一筆。")
         desc.pack(anchor="w", pady=(4, 14))
 
         status = ttk.LabelFrame(root, text="狀態", padding=12)
@@ -80,23 +80,14 @@ class WorkerGui(tk.Tk):
         ttk.Label(credentials, textvariable=self.duty_saved_login_path).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
         credentials.columnconfigure(1, weight=1)
 
-        sites = ttk.LabelFrame(root, text="手動開網站入口（不會登打）", padding=12)
-        sites.pack(fill="x", pady=(12, 0))
-        for index, site in enumerate(SITE_DEFINITIONS):
-            button = ttk.Button(sites, text=site.name, command=lambda item=site: self._open_site(item.key))
-            row = index // 2
-            col = index % 2
-            button.grid(row=row, column=col, sticky="ew", padx=6, pady=6)
-        sites.columnconfigure(0, weight=1)
-        sites.columnconfigure(1, weight=1)
-
-        tasks = ttk.LabelFrame(root, text="NAS 任務自動登打", padding=12)
+        tasks = ttk.LabelFrame(root, text="主要操作：NAS 任務自動登打", padding=12)
         tasks.pack(fill="both", expand=True, pady=(12, 0))
         task_actions = ttk.Frame(tasks)
         task_actions.pack(fill="x", pady=(0, 8))
         ttk.Button(task_actions, text="刷新任務", command=self._refresh_tasks).pack(side="left")
         ttk.Button(task_actions, text="執行工作紀錄", command=self._run_selected_task).pack(side="left", padx=(8, 0))
         ttk.Button(task_actions, text="執行車輛里程", command=self._run_selected_vehicle_mileage).pack(side="left", padx=(8, 0))
+        ttk.Label(task_actions, text="未選任務時會自動使用第一筆").pack(side="left", padx=(12, 0))
         columns = ("status", "vehicle", "driver", "time", "address")
         self.task_tree = ttk.Treeview(tasks, columns=columns, show="tree headings", height=5)
         self.task_tree.heading("#0", text="任務 ID")
@@ -112,6 +103,16 @@ class WorkerGui(tk.Tk):
         self.task_tree.column("time", width=95, stretch=False)
         self.task_tree.column("address", width=330, stretch=True)
         self.task_tree.pack(fill="both", expand=True)
+
+        sites = ttk.LabelFrame(root, text="除錯用：只開網站入口（不讀取任務、不登打）", padding=12)
+        sites.pack(fill="x", pady=(12, 0))
+        for index, site in enumerate(SITE_DEFINITIONS):
+            button = ttk.Button(sites, text=f"只開：{site.name}", command=lambda item=site: self._open_site(item.key))
+            row = index // 2
+            col = index % 2
+            button.grid(row=row, column=col, sticky="ew", padx=6, pady=6)
+        sites.columnconfigure(0, weight=1)
+        sites.columnconfigure(1, weight=1)
 
         log_frame = ttk.LabelFrame(root, text="Log", padding=8)
         log_frame.pack(fill="both", expand=True, pady=(12, 0))
@@ -221,6 +222,10 @@ class WorkerGui(tk.Tk):
             task_id, values = task_row_values(payload)
             if task_id:
                 self.task_tree.insert("", "end", iid=task_id, text=task_id, values=values)
+        first = self.task_tree.get_children()
+        if first:
+            self.task_tree.selection_set(first[0])
+            self.task_tree.focus(first[0])
 
     def _run_selected_task(self) -> None:
         task_id = self._selected_task_id()
@@ -241,7 +246,13 @@ class WorkerGui(tk.Tk):
             return ""
         selected = self.task_tree.selection()
         if not selected:
-            messagebox.showerror("未選任務", "請先在 NAS 任務清單選一筆任務。")
+            first = self.task_tree.get_children()
+            if first:
+                self.task_tree.selection_set(first[0])
+                self.task_tree.focus(first[0])
+                self._log(f"未選任務，自動使用第一筆：{first[0]}")
+                return str(first[0])
+            messagebox.showerror("沒有任務", "任務清單是空的，請先按「刷新任務」。")
             return ""
         return str(selected[0])
 
