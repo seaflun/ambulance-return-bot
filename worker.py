@@ -25,6 +25,7 @@ def main() -> None:
     poll_seconds = int(os.getenv("WORKER_POLL_SECONDS", "10"))
     lookup_interval_seconds = int(os.getenv("CASE_LOOKUP_INTERVAL_SECONDS", "300"))
     run_once = os.getenv("WORKER_RUN_ONCE", "false").strip().lower() in {"1", "true", "yes", "on"}
+    auto_claim_tasks = os.getenv("WORKER_AUTO_CLAIM_TASKS", "false").strip().lower() in {"1", "true", "yes", "on"}
     artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
     last_case_lookup_at = time.time()
     last_case_hash = load_last_case_hash(artifacts_dir)
@@ -43,7 +44,7 @@ def main() -> None:
                 last_case_hash,
                 lookup_interval_seconds,
             )
-            task = fetch_next_task(server_url, worker_id)
+            task = fetch_next_task(server_url, worker_id) if auto_claim_tasks else None
             if task is None:
                 if run_once:
                     print("[worker] no queued task", flush=True)
@@ -97,6 +98,19 @@ def fetch_next_task(server_url: str, worker_id: str) -> dict[str, object] | None
     url = f"{server_url}/worker/next-task?worker_id={urllib.parse.quote(worker_id)}"
     data = request_json(url)
     return data.get("task") if data.get("ok") else None
+
+
+def fetch_task(server_url: str, task_id: str) -> dict[str, object] | None:
+    url = f"{server_url}/worker/tasks/{urllib.parse.quote(task_id)}"
+    data = request_json(url)
+    return data.get("task") if data.get("ok") else None
+
+
+def fetch_recent_tasks(server_url: str, limit: int = 20) -> list[dict[str, object]]:
+    url = f"{server_url}/worker/tasks?limit={int(limit)}"
+    data = request_json(url)
+    tasks = data.get("tasks") if data.get("ok") else []
+    return tasks if isinstance(tasks, list) else []
 
 
 def fetch_case_lookup_request(server_url: str) -> dict[str, object] | None:

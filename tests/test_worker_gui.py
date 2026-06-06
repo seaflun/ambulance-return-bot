@@ -7,6 +7,24 @@ import worker_gui
 
 
 class WorkerGuiEnvTests(unittest.TestCase):
+    def test_task_row_values_formats_payload(self):
+        task_id, values = worker_gui.task_row_values(
+            {
+                "overall_status": "queued_for_worker",
+                "task": {
+                    "task_id": "task-1",
+                    "vehicle": "新坡91",
+                    "driver": "曾彥綸",
+                    "case_time": "1420",
+                    "return_time": "1505",
+                    "case_address": "桃園市觀音區",
+                },
+            }
+        )
+
+        self.assertEqual(task_id, "task-1")
+        self.assertEqual(values, ("queued_for_worker", "新坡91", "曾彥綸", "1420/1505", "桃園市觀音區"))
+
     def test_update_env_values_replaces_and_appends(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"

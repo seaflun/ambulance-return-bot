@@ -124,6 +124,23 @@ class WebAppTests(unittest.TestCase):
         completed = app_module.read_case_lookup_request()
         self.assertEqual(completed["status"], "case_lookup_completed")
 
+    def test_worker_tasks_api_requires_token_and_returns_recent_tasks(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191", "driver": "\u66fe\u5f65\u7db8"})
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        denied = self.client.get("/worker/tasks")
+        self.assertEqual(denied.status_code, 403)
+
+        list_response = self.client.get("/worker/tasks", headers={"X-Worker-Token": "test-token"})
+        self.assertEqual(list_response.status_code, 200)
+        list_payload = list_response.get_json()
+        self.assertEqual(list_payload["tasks"][0]["task"]["task_id"], task_id)
+
+        task_response = self.client.get(f"/worker/tasks/{task_id}", headers={"X-Worker-Token": "test-token"})
+        self.assertEqual(task_response.status_code, 200)
+        self.assertEqual(task_response.get_json()["task"]["driver"], "\u66fe\u5f65\u7db8")
+
     def test_import_case_redirects_to_app(self):
         cases_dir = app_module.artifacts_dir / "cases"
         cases_dir.mkdir(parents=True)

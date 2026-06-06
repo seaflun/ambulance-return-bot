@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from dotenv import load_dotenv
@@ -26,8 +27,8 @@ class WorkerGui(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("救護回程 Worker")
-        self.geometry("760x620")
-        self.minsize(680, 560)
+        self.geometry("900x760")
+        self.minsize(780, 680)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.worker_thread: threading.Thread | None = None
@@ -39,6 +40,7 @@ class WorkerGui(tk.Tk):
         self.duty_account = tk.StringVar(value=os.getenv("DUTY_ACCOUNT", ""))
         self.duty_password = tk.StringVar(value=os.getenv("DUTY_PASSWORD", ""))
         self.duty_saved_login_path = tk.StringVar(value=str(saved_login_path()))
+        self.task_tree: ttk.Treeview | None = None
 
         self._build_ui()
         self.after(250, self._drain_log)
@@ -49,7 +51,7 @@ class WorkerGui(tk.Tk):
 
         title = ttk.Label(root, text="救護回程 Worker", font=("Microsoft JhengHei UI", 20, "bold"))
         title.pack(anchor="w")
-        desc = ttk.Label(root, text="這個程式會啟動背景 worker，並提供四個入口按鈕；不會按最後儲存或送出。")
+        desc = ttk.Label(root, text="背景 worker 查詢案件；登打任務先在下方選取後手動執行，不會按最後儲存或送出。")
         desc.pack(anchor="w", pady=(4, 14))
 
         status = ttk.LabelFrame(root, text="狀態", padding=12)
@@ -87,6 +89,28 @@ class WorkerGui(tk.Tk):
             button.grid(row=row, column=col, sticky="ew", padx=6, pady=6)
         sites.columnconfigure(0, weight=1)
         sites.columnconfigure(1, weight=1)
+
+        tasks = ttk.LabelFrame(root, text="NAS 任務", padding=12)
+        tasks.pack(fill="both", expand=True, pady=(12, 0))
+        task_actions = ttk.Frame(tasks)
+        task_actions.pack(fill="x", pady=(0, 8))
+        ttk.Button(task_actions, text="刷新任務", command=self._refresh_tasks).pack(side="left")
+        ttk.Button(task_actions, text="執行選取任務", command=self._run_selected_task).pack(side="left", padx=(8, 0))
+        columns = ("status", "vehicle", "driver", "time", "address")
+        self.task_tree = ttk.Treeview(tasks, columns=columns, show="tree headings", height=5)
+        self.task_tree.heading("#0", text="任務 ID")
+        self.task_tree.heading("status", text="狀態")
+        self.task_tree.heading("vehicle", text="車輛")
+        self.task_tree.heading("driver", text="司機")
+        self.task_tree.heading("time", text="時間")
+        self.task_tree.heading("address", text="地址")
+        self.task_tree.column("#0", width=155, stretch=False)
+        self.task_tree.column("status", width=130, stretch=False)
+        self.task_tree.column("vehicle", width=70, stretch=False)
+        self.task_tree.column("driver", width=80, stretch=False)
+        self.task_tree.column("time", width=95, stretch=False)
+        self.task_tree.column("address", width=330, stretch=True)
+        self.task_tree.pack(fill="both", expand=True)
 
         log_frame = ttk.LabelFrame(root, text="Log", padding=8)
         log_frame.pack(fill="both", expand=True, pady=(12, 0))
@@ -174,6 +198,55 @@ class WorkerGui(tk.Tk):
         status = open_url_in_worker_chrome(site.url)
         self._log(f"已開啟 {site.name}: {status}")
 
+    def _refresh_tasks(self) -> None:
+        self._apply_server_url()
+        threading.Thread(target=self._refresh_tasks_background, daemon=True).start()
+
+    def _refresh_tasks_background(self) -> None:
+        try:
+            tasks = worker.fetch_recent_tasks(self.server_url.get().strip().rstrip("/"), limit=20)
+        except Exception as exc:
+            self.log_queue.put(f"刷新任務失敗：{exc}")
+            return
+        self.after(0, lambda: self._set_task_rows(tasks))
+        self.log_queue.put(f"已刷新 NAS 任務：{len(tasks)} 筆")
+
+    def _set_task_rows(self, tasks: list[dict[str, object]]) -> None:
+        if self.task_tree is None:
+            return
+        for item in self.task_tree.get_children():
+            self.task_tree.delete(item)
+        for payload in tasks:
+            task_id, values = task_row_values(payload)
+            if task_id:
+                self.task_tree.insert("", "end", iid=task_id, text=task_id, values=values)
+
+    def _run_selected_task(self) -> None:
+        if self.task_tree is None:
+            return
+        selected = self.task_tree.selection()
+        if not selected:
+            messagebox.showerror("未選任務", "請先在 NAS 任務清單選一筆任務。")
+            return
+        task_id = str(selected[0])
+        self._apply_server_url()
+        threading.Thread(target=self._run_selected_task_background, args=(task_id,), daemon=True).start()
+
+    def _run_selected_task_background(self, task_id: str) -> None:
+        server_url = self.server_url.get().strip().rstrip("/")
+        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        try:
+            task = worker.fetch_task(server_url, task_id)
+            if not task:
+                self.log_queue.put(f"找不到任務：{task_id}")
+                return
+            self.log_queue.put(f"開始執行選取任務：{task_id}")
+            worker.run_task(server_url, worker_id, task, Path(os.getenv("ARTIFACTS_DIR", "artifacts")))
+            self.log_queue.put(f"選取任務已執行完成：{task_id}")
+            self._refresh_tasks()
+        except Exception as exc:
+            self.log_queue.put(f"執行選取任務失敗：{task_id} {exc}")
+
     def _log(self, message: str) -> None:
         self.log_queue.put(f"{time.strftime('%H:%M:%S')} {message}")
 
@@ -186,6 +259,20 @@ class WorkerGui(tk.Tk):
             self.log_text.insert("end", message + "\n")
             self.log_text.see("end")
         self.after(250, self._drain_log)
+
+
+def task_row_values(payload: dict[str, object]) -> tuple[str, tuple[str, str, str, str, str]]:
+    task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+    task_dict = task if isinstance(task, dict) else {}
+    task_id = str(task_dict.get("task_id") or "")
+    status = str(payload.get("overall_status") or "")
+    vehicle = str(task_dict.get("vehicle") or "")
+    driver = str(task_dict.get("driver") or "")
+    case_time = str(task_dict.get("case_time") or "")
+    return_time = str(task_dict.get("return_time") or "")
+    address = str(task_dict.get("case_address") or "")
+    time_text = f"{case_time}/{return_time}".strip("/")
+    return task_id, (status, vehicle, driver, time_text, address)
 
 
 def main() -> None:

@@ -69,11 +69,18 @@ def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path
 
     driver = None
     lock_acquired = False
+    keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
     try:
         lock_acquired = _acquire_selenium_session(f"task {request.task_id}")
         print(f"[task] creating selenium driver for {request.task_id}", flush=True)
-        driver = _create_driver(artifacts_dir)
+        debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+        driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
         print(f"[task] selenium driver ready for {request.task_id}", flush=True)
         _set_window_size_if_enabled(driver, "task")
         driver.implicitly_wait(2)
@@ -89,7 +96,8 @@ def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path
             summary_path=summary_path,
         )
     finally:
-        _quit_driver(driver)
+        if not keep_browser_open:
+            _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"task {request.task_id}")
 

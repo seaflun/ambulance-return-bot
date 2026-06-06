@@ -138,6 +138,29 @@ def worker_next_task():
     return jsonify({"ok": True, "task": payload["task"], "payload": payload})
 
 
+@app.get("/worker/tasks")
+def worker_tasks():
+    if not worker_authorized():
+        abort(403)
+    limit_text = str(request.args.get("limit") or "20").strip()
+    try:
+        limit = max(1, min(int(limit_text), 50))
+    except ValueError:
+        limit = 20
+    return jsonify({"ok": True, "tasks": store.list_recent(limit)})
+
+
+@app.get("/worker/tasks/<task_id>")
+def worker_task(task_id: str):
+    if not worker_authorized():
+        abort(403)
+    try:
+        payload = store.get(task_id)
+    except FileNotFoundError:
+        abort(404)
+    return jsonify({"ok": True, "payload": payload, "task": payload["task"]})
+
+
 @app.post("/worker/tasks/<task_id>/status")
 def worker_task_status(task_id: str):
     if not worker_authorized():
