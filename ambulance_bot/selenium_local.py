@@ -102,6 +102,40 @@ def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path
             _release_selenium_session(f"task {request.task_id}")
 
 
+def run_vehicle_mileage_task(request: AmbulanceReturnRequest, artifacts_dir: Path) -> SeleniumRunResult:
+    output_dir = artifacts_dir / "selenium"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = output_dir / f"{request.task_id}.txt"
+    summary_path.write_text(_task_text(request), encoding="utf-8")
+
+    driver = None
+    lock_acquired = False
+    keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+    try:
+        lock_acquired = _acquire_selenium_session(f"vehicle_mileage {request.task_id}")
+        debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+        driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
+        _set_window_size_if_enabled(driver, "vehicle_mileage")
+        driver.implicitly_wait(2)
+        detail = _open_vehicle_mileage_page(driver, request, output_dir)
+        return SeleniumRunResult(True, "vehicle_mileage_prefilled", detail, summary_path)
+    except Exception as exc:
+        if driver is not None:
+            _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_error")
+        return SeleniumRunResult(False, "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}", summary_path)
+    finally:
+        if not keep_browser_open:
+            _quit_driver(driver)
+        if lock_acquired:
+            _release_selenium_session(f"vehicle_mileage {request.task_id}")
+
+
 def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "6h") -> DutyCaseLookupResult:
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -510,8 +544,7 @@ def _prepare_duty_work_log_form(
 def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
     driver.get(SITE_DEFINITIONS[0].url)
     time.sleep(1)
-    username = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
-    password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
+    username, password = _ppe_credentials()
     try:
         has_login = driver.execute_script("return !!document.getElementById('Account') && !!document.getElementById('Password');")
         if has_login and username and password:
@@ -519,8 +552,8 @@ def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceRetur
             driver.find_element(By.ID, "Account").send_keys(username)
             driver.find_element(By.ID, "Password").clear()
             driver.find_element(By.ID, "Password").send_keys(password)
-            driver.find_element(By.ID, "btnSubmit").click()
-            time.sleep(2)
+            _click_ppe_login(driver)
+            WebDriverWait(driver, 8).until(lambda current: not _is_ppe_login_page(current))
         if has_login and not (username and password):
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
             return "\u5df2\u958b\u555f\u8eca\u8f1b\u91cc\u7a0b\u767b\u5165\u9801\uff1b\u8acb\u5148\u767b\u5165 PPE \u7cfb\u7d71\u3002"
@@ -534,6 +567,37 @@ def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceRetur
         raise
 
     return detail
+
+
+def _ppe_credentials() -> tuple[str, str]:
+    username = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
+    password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
+    if username and password:
+        return username, password
+    saved = load_duty_credential()
+    if saved is None:
+        return "", ""
+    return saved.user_id, saved.password
+
+
+def _click_ppe_login(driver: webdriver.Chrome) -> None:
+    clicked = driver.execute_script(
+        """
+        const candidates = [
+          document.getElementById('btnSubmit'),
+          ...Array.from(document.querySelectorAll('button,input[type=submit],input[type=button]'))
+        ].filter(Boolean);
+        const target = candidates.find(el => {
+          const text = [el.id, el.name, el.value, el.innerText, el.title].map(x => String(x || '')).join(' ');
+          return /btnSubmit|確定|登入|Login|Submit/i.test(text);
+        });
+        if (!target) return false;
+        target.click();
+        return true;
+        """
+    )
+    if not clicked:
+        driver.find_element(By.ID, "Password").submit()
 
 
 def _match_case_for_request(cases: list[dict[str, str]], request: AmbulanceReturnRequest) -> dict[str, str] | None:

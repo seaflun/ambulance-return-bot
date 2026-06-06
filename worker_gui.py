@@ -95,7 +95,8 @@ class WorkerGui(tk.Tk):
         task_actions = ttk.Frame(tasks)
         task_actions.pack(fill="x", pady=(0, 8))
         ttk.Button(task_actions, text="刷新任務", command=self._refresh_tasks).pack(side="left")
-        ttk.Button(task_actions, text="執行選取任務", command=self._run_selected_task).pack(side="left", padx=(8, 0))
+        ttk.Button(task_actions, text="執行工作紀錄", command=self._run_selected_task).pack(side="left", padx=(8, 0))
+        ttk.Button(task_actions, text="執行車輛里程", command=self._run_selected_vehicle_mileage).pack(side="left", padx=(8, 0))
         columns = ("status", "vehicle", "driver", "time", "address")
         self.task_tree = ttk.Treeview(tasks, columns=columns, show="tree headings", height=5)
         self.task_tree.heading("#0", text="任務 ID")
@@ -222,15 +223,27 @@ class WorkerGui(tk.Tk):
                 self.task_tree.insert("", "end", iid=task_id, text=task_id, values=values)
 
     def _run_selected_task(self) -> None:
-        if self.task_tree is None:
+        task_id = self._selected_task_id()
+        if not task_id:
             return
+        self._apply_server_url()
+        threading.Thread(target=self._run_selected_task_background, args=(task_id,), daemon=True).start()
+
+    def _run_selected_vehicle_mileage(self) -> None:
+        task_id = self._selected_task_id()
+        if not task_id:
+            return
+        self._apply_server_url()
+        threading.Thread(target=self._run_selected_vehicle_mileage_background, args=(task_id,), daemon=True).start()
+
+    def _selected_task_id(self) -> str:
+        if self.task_tree is None:
+            return ""
         selected = self.task_tree.selection()
         if not selected:
             messagebox.showerror("未選任務", "請先在 NAS 任務清單選一筆任務。")
-            return
-        task_id = str(selected[0])
-        self._apply_server_url()
-        threading.Thread(target=self._run_selected_task_background, args=(task_id,), daemon=True).start()
+            return ""
+        return str(selected[0])
 
     def _run_selected_task_background(self, task_id: str) -> None:
         server_url = self.server_url.get().strip().rstrip("/")
@@ -246,6 +259,21 @@ class WorkerGui(tk.Tk):
             self._refresh_tasks()
         except Exception as exc:
             self.log_queue.put(f"執行選取任務失敗：{task_id} {exc}")
+
+    def _run_selected_vehicle_mileage_background(self, task_id: str) -> None:
+        server_url = self.server_url.get().strip().rstrip("/")
+        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        try:
+            task = worker.fetch_task(server_url, task_id)
+            if not task:
+                self.log_queue.put(f"找不到任務：{task_id}")
+                return
+            self.log_queue.put(f"開始執行車輛里程：{task_id}")
+            worker.run_vehicle_task(server_url, worker_id, task, Path(os.getenv("ARTIFACTS_DIR", "artifacts")))
+            self.log_queue.put(f"車輛里程已執行完成：{task_id}")
+            self._refresh_tasks()
+        except Exception as exc:
+            self.log_queue.put(f"執行車輛里程失敗：{task_id} {exc}")
 
     def _log(self, message: str) -> None:
         self.log_queue.put(f"{time.strftime('%H:%M:%S')} {message}")
