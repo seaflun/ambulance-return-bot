@@ -982,38 +982,53 @@ def _save_disinfection_probe(driver: webdriver.Chrome, output_dir: Path, task_id
 
 
 def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
-    if not _click_text_if_present(driver, ["報表系統"]):
-        raise WebDriverException("找不到左側功能選單：報表系統")
-    if not _click_text_if_present(driver, ["消毒紀錄管理"]):
-        raise WebDriverException("找不到功能選單：消毒紀錄管理")
-    _click_text_if_present(driver, ["查詢", "日期查詢"])
+    if not _click_disinfection_menu_item(driver, ["????"]):
+        raise WebDriverException("??????????????")
+    if not _click_disinfection_menu_item(driver, ["??????"]):
+        raise WebDriverException("??????????????")
+
+    _switch_to_disinfection_content(driver)
+    _click_text_if_present(driver, ["????", "??"])
     time.sleep(1)
     _set_disinfection_query_date(driver, _disinfection_query_date(request))
-    if not _click_text_if_present(driver, ["查詢"]):
-        raise WebDriverException("找不到消毒紀錄日期查詢按鈕")
+    if not _click_text_if_present(driver, ["??"]):
+        raise WebDriverException("?????????????")
     time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_query")
 
     if not _open_disinfection_detail_for_case(driver, request.case_time):
-        raise WebDriverException(f"找不到報案時間 {request.case_time or '未填'} 對應的消毒紀錄明細")
+        raise WebDriverException(f"??????? {request.case_time or '??'} ?????????")
     time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
 
     if request.disinfection_items:
-        updated = _set_disinfection_item_statuses(driver, request.disinfection_items, "已選取區")
+        updated = _set_disinfection_item_statuses(driver, request.disinfection_items, "????")
         if updated <= 0:
-            raise WebDriverException(f"找不到可設定的消毒項目：{request.disinfection_items_summary}")
+            raise WebDriverException(f"????????????{request.disinfection_items_summary}")
     else:
         updated = 0
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
 
     if os.getenv("SAVE_DISINFECTION_RECORD", "false").strip().lower() in {"1", "true", "yes", "on"}:
-        if not _click_text_if_present(driver, ["儲存"]):
-            raise WebDriverException("找不到消毒紀錄儲存按鈕")
+        if not _click_text_if_present(driver, ["??"]):
+            raise WebDriverException("???????????")
         alert_text = _accept_alert_if_present(driver)
-        return f"已設定消毒項目 {updated} 項並按下儲存。{('確認視窗：' + alert_text) if alert_text else ''}"
-    return f"已設定消毒項目 {updated} 項，未按儲存。"
+        return f"??????? {updated} ???????{('?????' + alert_text) if alert_text else ''}"
+    return f"??????? {updated} ???????"
 
+
+def _click_disinfection_menu_item(driver: webdriver.Chrome, texts: list[str]) -> bool:
+    driver.switch_to.default_content()
+    try:
+        driver.switch_to.frame("L_Sidemenu")
+    except Exception:
+        return False
+    return _click_text_if_present(driver, texts)
+
+
+def _switch_to_disinfection_content(driver: webdriver.Chrome) -> None:
+    driver.switch_to.default_content()
+    driver.switch_to.frame("R_content")
 
 def _set_disinfection_query_date(driver: webdriver.Chrome, date_text: str) -> None:
     driver.execute_script(
@@ -1024,7 +1039,7 @@ def _set_disinfection_query_date(driver: webdriver.Chrome, date_text: str) -> No
         const inputs = Array.from(document.querySelectorAll('input')).filter(writable);
         const dateInputs = inputs.filter(el => {
           const h = [el.id, el.name, el.placeholder, el.title, el.value].map(x => String(x || '')).join(' ');
-          return /date|sdate|edate|日期|時間|起|迄/i.test(h);
+          return /date|sdate|edate|??|??|?|?/i.test(h);
         });
         const targets = dateInputs.length ? dateInputs : inputs.slice(0, 2);
         for (const el of targets.slice(0, 2)) {
@@ -1037,7 +1052,6 @@ def _set_disinfection_query_date(driver: webdriver.Chrome, date_text: str) -> No
         """,
         date_text,
     )
-
 
 def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
     case_hhmm = normalize_hhmm_local(request.case_time)
@@ -1064,7 +1078,7 @@ def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str)
             const controls = Array.from(row.querySelectorAll('a, button, input[type=button], input[type=submit]'));
             const detail = controls.find(el => {
               const text = [el.innerText, el.value, el.title, el.getAttribute('aria-label')].map(x => String(x || '')).join(' ');
-              return text.includes('明細');
+              return text.includes('??');
             }) || controls[controls.length - 1];
             if (!detail) return false;
             detail.click();
@@ -1073,7 +1087,6 @@ def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str)
             digits,
         )
     )
-
 
 def _set_disinfection_item_statuses(driver: webdriver.Chrome, items: list[str], status_text: str) -> int:
     return int(
