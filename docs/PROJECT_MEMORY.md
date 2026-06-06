@@ -8,6 +8,9 @@ This file records project decisions that another computer or another coding agen
 - NAS runs Flask, stores task JSON, stores the latest case list, serves the phone/tablet web app, and exposes worker APIs.
 - NAS must not run Selenium, open Chrome, store four-site portal credentials, or perform government-site data entry.
 - The public-duty Windows PC runs the worker with WinPython and local Chrome/Selenium.
+- The visible worker entry is `run_worker_forever.bat`, which starts `worker_panel.py`.
+- Worker panel URL: `http://127.0.0.1:8090/`.
+- Use `run_worker_headless.bat` only if a visible panel is not needed.
 - The development PC and public-duty PC are separate. Do not copy `.env`, `artifacts/`, or Chrome profile data between them unless the user explicitly asks.
 
 ## Fixed URLs And Network Values
@@ -25,6 +28,7 @@ This file records project decisions that another computer or another coding agen
 - If phone/tablet user presses "查詢", NAS writes `case_lookup_requested`; worker should query immediately on the next poll and post the latest cases back to NAS.
 - After a web task is submitted, NAS marks it `queued_for_worker`; worker claims it and updates status through worker APIs.
 - Worker artifacts such as Selenium screenshots and HTML remain on the public-duty PC under `artifacts/selenium/`.
+- The worker panel has four entrance buttons for vehicle mileage, one-stop consumables, EMS disinfection, and duty work log. These buttons only open pages in the worker Chrome profile.
 
 ## Credentials And Chrome Profile
 

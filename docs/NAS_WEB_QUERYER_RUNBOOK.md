@@ -71,10 +71,24 @@ CHROME_PROFILE_DIR=artifacts/chrome_profile
 run_worker_forever.bat
 ```
 
+啟動後會開本機 worker 面板：
+
+```text
+http://127.0.0.1:8090/
+```
+
+面板會同時啟動背景 worker，並提供四個入口按鈕讓你測試各站登入與 Google Password Manager。
+
 單次測試：
 
 ```powershell
 run_worker_once.bat
+```
+
+不需要面板時才使用：
+
+```powershell
+run_worker_headless.bat
 ```
 
 ## 日常操作
