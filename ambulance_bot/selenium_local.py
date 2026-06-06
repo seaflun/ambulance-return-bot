@@ -594,13 +594,9 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
         except TimeoutException:
             time.sleep(1)
 
-    values = {
-        "事由": request.case_reason,
-        "處理情形": status_text,
-    }
-    missing = driver.execute_script(
+    reason_missing = driver.execute_script(
         """
-        const values = arguments[0];
+        const value = arguments[0];
         function writable(el) {
           if (!el || el.disabled || el.readOnly) return false;
           const tag = el.tagName;
@@ -648,13 +644,59 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
           return Array.from(document.querySelectorAll('select')).filter(writable).some(el => setValue(el, value));
         }
         const missing = [];
-        if (values['事由'] && !setValue(document.getElementById('_selList2'), values['事由']) && !setNearby('事由', values['事由']) && !setByOptionText(values['事由'])) missing.push('事由');
-        if (!setValue(document.getElementById('_areStatus'), values['處理情形']) && !setNearby('處理情形', values['處理情形'], true)) missing.push('處理情形');
+        if (value && !setValue(document.getElementById('_selList2'), value) && !setNearby('事由', value) && !setByOptionText(value)) missing.push('事由');
         return missing;
         """,
-        values,
+        request.case_reason,
     )
-    all_missing = list(item_missing or []) + list(missing or [])
+    if not reason_missing:
+        time.sleep(1.2)
+        try:
+            WebDriverWait(driver, 6).until(
+                lambda current: current.execute_script(
+                    "return document.readyState === 'complete' && !!document.getElementById('_areStatus');"
+                )
+            )
+        except TimeoutException:
+            time.sleep(1)
+
+    missing = driver.execute_script(
+        """
+        const value = arguments[0];
+        function writable(el) {
+          if (!el || el.disabled || el.readOnly) return false;
+          const tag = el.tagName;
+          if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+          if (tag !== 'INPUT') return false;
+          const type = String(el.type || 'text').toLowerCase();
+          return ['text', 'number', 'search', 'tel', 'time'].includes(type);
+        }
+        function setValue(el, value) {
+          if (!writable(el) || value === undefined || value === null || String(value) === '') return false;
+          el.value = String(value);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        function controlsNear(labelText) {
+          const normalizedLabel = labelText.replace(/\\s+/g, '');
+          const controlsOf = root => Array.from(root.querySelectorAll('input, textarea, select')).filter(writable);
+          const rows = Array.from(document.querySelectorAll('tr'));
+          for (const row of rows) {
+            const cells = Array.from(row.children);
+            const labelIndex = cells.findIndex(cell => String(cell.innerText || '').replace(/\\s+/g, '').includes(normalizedLabel));
+            if (labelIndex < 0) continue;
+            return cells.slice(labelIndex + 1).flatMap(controlsOf);
+          }
+          return [];
+        }
+        const controls = controlsNear('處理情形').filter(el => el.tagName === 'TEXTAREA');
+        const ok = setValue(document.getElementById('_areStatus'), value) || controls.some(el => setValue(el, value));
+        return ok ? [] : ['處理情形'];
+        """,
+        status_text,
+    )
+    all_missing = list(item_missing or []) + list(reason_missing or []) + list(missing or [])
     return [str(item) for item in all_missing]
 
 
