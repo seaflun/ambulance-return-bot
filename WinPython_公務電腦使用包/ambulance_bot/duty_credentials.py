@@ -147,9 +147,21 @@ def list_saved_duty_automation_credentials(path: Path | None = None) -> list[Dut
 
 def saved_login_path() -> Path:
     configured = os.getenv("DUTY_SAVED_LOGIN_PATH", "").strip()
+    override = os.getenv("DUTY_SAVED_LOGIN_PATH_OVERRIDE", "").strip().lower() in {"1", "true", "yes", "on"}
+    if configured and override:
+        return Path(configured).expanduser()
+    return default_saved_login_path()
+
+
+def default_saved_login_path() -> Path:
+    return Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "DutyAutomation" / "saved_login.json"
+
+
+def legacy_configured_saved_login_path() -> Path | None:
+    configured = os.getenv("DUTY_SAVED_LOGIN_PATH", "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "DutyAutomation" / "saved_login.json"
+    return None
 
 
 def _select_account(accounts: list[object], last_selected: str) -> dict | None:

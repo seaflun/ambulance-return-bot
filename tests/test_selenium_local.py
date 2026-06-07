@@ -99,10 +99,12 @@ class SeleniumLocalTests(unittest.TestCase):
     def test_ppe_credentials_prefers_synced_worker_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
             previous_account = os.environ.get("DUTY_ACCOUNT")
             previous_password = os.environ.get("DUTY_PASSWORD")
             try:
                 os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
                 os.environ["DUTY_ACCOUNT"] = "env-user"
                 os.environ["DUTY_PASSWORD"] = "env-pass"
                 save_duty_automation_credentials(
@@ -116,6 +118,10 @@ class SeleniumLocalTests(unittest.TestCase):
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
                 else:
                     os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
                 if previous_account is None:
                     os.environ.pop("DUTY_ACCOUNT", None)
                 else:

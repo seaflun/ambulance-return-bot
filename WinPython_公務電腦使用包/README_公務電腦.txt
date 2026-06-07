@@ -8,6 +8,7 @@
 4. 執行 `SETUP_WINPYTHON.bat` 安裝套件、檢查環境，並建立開機自動啟動捷徑。
 5. 平常用 `RUN_WORKER_GUI_WINPYTHON.vbs` 啟動，沒有黑色命令列視窗。
 6. 在另一邊專案匯出帳密同步 JSON 檔，再回 GUI 按 `匯入同步` 選取該 JSON；不要把入口帳密寫進 `.env`。
+7. 帳密會存到該台公務電腦自己的 Windows 本機儲存；舊 `.env` 裡的 `DUTY_SAVED_LOGIN_PATH` 預設會被忽略。
 
 ## GitHub 更新
 

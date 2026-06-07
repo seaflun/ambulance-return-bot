@@ -21,6 +21,7 @@ import worker
 from ambulance_bot.chrome_launcher import open_url_in_worker_chrome
 from ambulance_bot.duty_credentials import (
     DutyCredential,
+    legacy_configured_saved_login_path,
     list_saved_duty_automation_credentials,
     load_saved_duty_automation_credential,
     save_duty_automation_credentials,
@@ -414,25 +415,40 @@ class WorkerGui(tk.Tk):
         try:
             payload = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as exc:
+            self.credential_sync_status.set(f"匯入同步失敗：{exc}")
+            self._log(f"匯入同步 JSON 讀取失敗：{exc}")
             messagebox.showerror("匯入同步失敗", f"同步 JSON 讀取失敗：{exc}")
             return
         if not isinstance(payload, dict):
+            self.credential_sync_status.set("匯入同步失敗：同步 JSON 內容不是帳密同步物件。")
             messagebox.showerror("匯入同步失敗", "同步 JSON 內容不是帳密同步物件。")
             return
-        result = save_credential_sync_payload(payload)
+        try:
+            result = save_credential_sync_payload(payload)
+        except Exception as exc:
+            self.credential_sync_status.set(f"匯入同步失敗：{exc}")
+            self._log(f"匯入同步失敗：{exc}")
+            messagebox.showerror("匯入同步失敗", f"同步資料儲存失敗：{exc}")
+            return
         if result is None:
+            self.credential_sync_status.set("匯入同步失敗：同步資料缺少帳號或密碼。")
             messagebox.showerror("匯入同步失敗", "同步資料缺少帳號或密碼。")
             return
         user_id, password, path, count = result
         self._apply_credential_sync_result(user_id, password, path, count)
+        messagebox.showinfo("匯入同步完成", f"已匯入 {count} 筆帳號，目前套用 {user_id}。")
 
     def _apply_credential_sync_result(self, user_id: str, password: str, path: Path, count: int) -> None:
         self.duty_account.set(user_id)
         self.duty_password.set(password)
         self.duty_saved_login_path.set(str(path))
         self._refresh_credential_choices()
-        self.credential_sync_status.set(f"已接收帳密同步：{count} 筆；目前套用 {user_id}，已寫入本機 Windows 儲存。")
-        self._log(f"帳密同步完成：{count} 筆；目前套用 {user_id}，已寫入本機 Windows 儲存。")
+        legacy_path = legacy_configured_saved_login_path()
+        path_note = ""
+        if legacy_path and legacy_path != path:
+            path_note = f"；已忽略 .env 舊路徑 {legacy_path}"
+        self.credential_sync_status.set(f"已匯入帳密同步：{count} 筆；目前套用 {user_id}；儲存於 {path}{path_note}")
+        self._log(f"帳密同步完成：{count} 筆；目前套用 {user_id}；儲存於 {path}{path_note}")
 
     def _refresh_tasks(self) -> None:
         self._apply_server_url()
