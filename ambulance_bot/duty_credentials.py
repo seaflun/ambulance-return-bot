@@ -324,15 +324,73 @@ def encrypt_dpapi(password: str) -> str:
 
         encrypted = win32crypt.CryptProtectData(password.encode("utf-8"), "SinpoSmart credential sync", None, None, None, 0)
     except Exception:
-        return ""
+        encrypted = _encrypt_dpapi_ctypes(password.encode("utf-8"))
+        if not encrypted:
+            return ""
     return base64.b64encode(encrypted).decode("ascii")
 
 
 def decrypt_dpapi(encrypted_password: str) -> str:
+    encrypted = base64.b64decode(encrypted_password)
     try:
         import win32crypt
 
-        _, decrypted = win32crypt.CryptUnprotectData(base64.b64decode(encrypted_password), None, None, None, 0)
+        _, decrypted = win32crypt.CryptUnprotectData(encrypted, None, None, None, 0)
     except Exception:
-        return ""
+        decrypted = _decrypt_dpapi_ctypes(encrypted)
+        if not decrypted:
+            return ""
     return decrypted.decode("utf-8")
+
+
+def _encrypt_dpapi_ctypes(data: bytes) -> bytes:
+    return _crypt_dpapi_ctypes(data, protect=True)
+
+
+def _decrypt_dpapi_ctypes(data: bytes) -> bytes:
+    return _crypt_dpapi_ctypes(data, protect=False)
+
+
+def _crypt_dpapi_ctypes(data: bytes, protect: bool) -> bytes:
+    if os.name != "nt":
+        return b""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class DATA_BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        source = ctypes.create_string_buffer(data)
+        blob_in = DATA_BLOB(len(data), ctypes.cast(source, ctypes.POINTER(ctypes.c_byte)))
+        blob_out = DATA_BLOB()
+        if protect:
+            ok = crypt32.CryptProtectData(
+                ctypes.byref(blob_in),
+                "Ambulance return credential sync",
+                None,
+                None,
+                None,
+                0,
+                ctypes.byref(blob_out),
+            )
+        else:
+            ok = crypt32.CryptUnprotectData(
+                ctypes.byref(blob_in),
+                None,
+                None,
+                None,
+                None,
+                0,
+                ctypes.byref(blob_out),
+            )
+        if not ok:
+            return b""
+        try:
+            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        finally:
+            kernel32.LocalFree(blob_out.pbData)
+    except Exception:
+        return b""

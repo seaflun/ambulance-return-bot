@@ -2,9 +2,12 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from ambulance_bot.duty_credentials import (
+    decrypt_dpapi,
+    encrypt_dpapi,
     list_saved_duty_automation_credentials,
     load_duty_credential,
     load_saved_duty_automation_credential,
@@ -145,6 +148,22 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertIsNotNone(credential)
         assert credential is not None
         self.assertEqual(credential.password, "new-pass")
+
+    @unittest.skipIf(os.name != "nt", "Windows DPAPI fallback only runs on Windows")
+    def test_dpapi_falls_back_when_win32crypt_is_missing(self):
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "win32crypt":
+                raise ImportError("missing win32crypt")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", fake_import):
+            encrypted = encrypt_dpapi("secret-pass")
+            decrypted = decrypt_dpapi(encrypted)
+
+        self.assertTrue(encrypted)
+        self.assertEqual(decrypted, "secret-pass")
 
     def test_saved_login_path_ignores_env_without_override(self):
         with tempfile.TemporaryDirectory() as tmp:
