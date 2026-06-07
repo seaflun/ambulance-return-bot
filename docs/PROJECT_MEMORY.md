@@ -25,7 +25,7 @@ This file records project decisions that another computer or another coding agen
 ## Worker Behavior
 
 - Worker polls NAS every 10 seconds.
-- Worker automatically queries today's emergency cases every 5 minutes.
+- Worker automatically queries the previous 24 hours of emergency cases every 5 minutes.
 - If the case list hash is unchanged, worker must not repost the same case list.
 - If phone/tablet user presses "查詢", NAS writes `case_lookup_requested`; worker should query immediately on the next poll and post the latest cases back to NAS.
 - After a web task is submitted, NAS marks it `queued_for_worker`; worker claims it and updates status through worker APIs.

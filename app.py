@@ -3,22 +3,27 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, url_for
 
 from ambulance_bot.adapters import SiteAutomationResult, default_adapters
+from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.line_api import reply_text, verify_signature
 from ambulance_bot.models import (
     CASE_REASON_OPTIONS,
     COMMAND_PREFIX,
     DEFAULT_DISINFECTION_ITEMS,
+    DEFAULT_CONSUMABLES,
     DISINFECTION_ITEM_OPTIONS,
     PERSON_OPTIONS,
     VEHICLE_OPTIONS,
     example_command,
     clean_case_address,
+    normalize_hhmm,
+    parse_case_date,
     parse_request,
     request_from_form,
 )
@@ -41,7 +46,7 @@ def index():
 
 @app.get("/app")
 def new_task():
-    selected_case = read_selected_case()
+    selected_case = pop_selected_case()
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
@@ -61,6 +66,8 @@ def new_task():
         vehicle_options=VEHICLE_OPTIONS,
         person_options=person_options,
         case_reason_options=CASE_REASON_OPTIONS,
+        consumable_options=consumable_inventory_options(),
+        default_consumables=DEFAULT_CONSUMABLES,
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS,
     )
@@ -68,9 +75,9 @@ def new_task():
 
 @app.post("/cases/query")
 def query_cases():
-    lookup_range = str(request.form.get("lookup_range") or "6h").strip()
-    if lookup_range not in {"6h", "today"}:
-        lookup_range = "6h"
+    lookup_range = str(request.form.get("lookup_range") or "24h").strip()
+    if lookup_range not in {"24h", "6h", "today"}:
+        lookup_range = "24h"
     write_case_lookup_request(lookup_range)
     return redirect(url_for("new_task"))
 
@@ -338,7 +345,7 @@ def write_case_lookup_request(lookup_range: str) -> dict:
         "status": "case_lookup_requested",
         "lookup_range": lookup_range,
         "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "detail": "手機端已要求公務電腦 worker 重新查詢案件。",
+        "detail": "手機端已要求公務電腦 worker 重新查詢前 24 小時案件。",
     }
     write_json_atomic(case_lookup_request_path(), payload)
     return payload
@@ -363,6 +370,202 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     tmp_path = path.with_name(f"{path.name}.tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(path)
+
+
+def status_label(status: str) -> str:
+    value = str(status or "")
+    if value in {"not_started", ""}:
+        return "未執行"
+    if value in {"completed_by_user"} or value.endswith("_saved"):
+        return "完成"
+    if "running" in value or value in {"queued_for_worker", "claimed_by_worker"}:
+        return "執行中"
+    if "failed" in value or "error" in value:
+        return "失敗"
+    if "captcha" in value or "ready" in value or "prefilled" in value:
+        return "待確認"
+    return "其他"
+
+
+def status_class(status: str) -> str:
+    value = str(status or "")
+    if value in {"completed_by_user"} or value.endswith("_saved"):
+        return "complete"
+    if "failed" in value or "error" in value:
+        return "failed"
+    if "running" in value or value in {"queued_for_worker", "claimed_by_worker"}:
+        return "running"
+    if "captcha" in value or "ready" in value or "prefilled" in value:
+        return "waiting"
+    return "idle"
+
+
+def effective_task_status(payload: dict) -> str:
+    sites = list(dict(payload.get("site_statuses") or {}).values())
+    if any(status_class(str(site.get("status") or "")) == "failed" for site in sites):
+        return "failed"
+    if any(status_class(str(site.get("status") or "")) == "waiting" for site in sites):
+        return "manual_captcha_required"
+    if sites and all(status_class(str(site.get("status") or "")) == "complete" for site in sites):
+        return "completed_by_user"
+    return str(payload.get("overall_status") or "")
+
+
+def task_title(task: dict) -> str:
+    reason = str(task.get("case_reason") or "救護").strip()
+    address = display_case_address(task).strip()
+    if address:
+        return f"緊急救護-{reason} - {address}"
+    vehicle = str(task.get("vehicle") or "").strip()
+    driver = str(task.get("driver") or "").strip()
+    if vehicle or driver:
+        return f"{vehicle} {driver}".strip()
+    return str(task.get("task_id") or "未命名任務")
+
+
+def site_short_name(site: dict) -> str:
+    key = str(site.get("key") or "")
+    return {
+        "vehicle_mileage": "里程",
+        "consumables": "耗材",
+        "disinfection": "消毒",
+        "duty_work_log": "工作",
+    }.get(key, str(site.get("name") or "站台"))
+
+
+def display_case_title(case: dict) -> str:
+    category = str(case.get("category") or "緊急救護").strip()
+    return f"{category} - {display_case_address(case) or '未填地址'}"
+
+
+def display_case_address(case: dict) -> str:
+    direct = clean_case_address(str(case.get("address") or case.get("case_address") or ""))
+    if direct:
+        return direct
+    description = str(case.get("description") or "")
+    for marker in ("地點:", "地點："):
+        if marker in description:
+            return clean_case_address(description.split(marker, 1)[1])
+    return ""
+
+
+def task_datetime_display(task: dict, date_key: str, time_key: str) -> str:
+    date_text = short_date(task.get(date_key) or task.get("case_date") or "")
+    hhmm = normalize_hhmm(str(task.get(time_key) or ""))
+    if date_text and hhmm:
+        return f"{date_text} {hhmm}"
+    return hhmm or date_text or "未填"
+
+
+def case_time_range(case: dict) -> str:
+    start_date = short_date(case.get("report_time") or case.get("case_date") or "")
+    end_date = short_date(case.get("return_time") or "") or start_date
+    start_time = normalize_hhmm(str(case.get("case_time_hhmm") or _time_from_text(case.get("report_time"))))
+    end_time = normalize_hhmm(str(case.get("return_time_hhmm") or _time_from_text(case.get("return_time"))))
+    start = f"{start_date} {start_time}".strip() if start_date or start_time else "未填"
+    if not end_time:
+        return start
+    end = f"{end_date} {end_time}".strip() if end_date or end_time else ""
+    return f"{start} - {end}" if end else start
+
+
+def selected_case_address(case: dict) -> str:
+    return display_case_address(case)
+
+
+def selected_case_date_input(case: dict) -> str:
+    return date_input_value(case.get("case_date") or case.get("report_time") or "")
+
+
+def selected_return_date_input(case: dict) -> str:
+    if not normalize_hhmm(str(case.get("return_time_hhmm") or _time_from_text(case.get("return_time")))):
+        return ""
+    return date_input_value(case.get("return_time") or case.get("case_date") or case.get("report_time") or "")
+
+
+def date_input_value(value: object) -> str:
+    parsed = parse_datetime_text(value) or parse_case_date(str(value or ""))
+    return parsed.strftime("%Y-%m-%d") if parsed else ""
+
+
+def short_date(value: object) -> str:
+    parsed = parse_datetime_text(value) or parse_case_date(str(value or ""))
+    return parsed.strftime("%m/%d") if parsed else ""
+
+
+def parse_datetime_text(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _time_from_text(value: object) -> str:
+    parsed = parse_datetime_text(value)
+    return parsed.strftime("%H%M") if parsed else ""
+
+
+def visible_events(events: list[dict]) -> list[dict]:
+    important: list[dict] = []
+    for event in events:
+        status = str(event.get("status") or "")
+        if status in {"created", "running", "queued_for_worker", "claimed_by_worker"}:
+            continue
+        if status in {"local_pc_ready", "manual_captcha_required"}:
+            continue
+        important.append(event)
+    return important[-5:] if important else events[-3:]
+
+
+def event_detail_text(event: dict) -> str:
+    status = str(event.get("status") or "")
+    detail = str(event.get("detail") or "").strip()
+    if status in {"completed_by_user"} or status.endswith("_saved"):
+        return "已完成"
+    if "failed" in status or "error" in status:
+        return detail[:80] or "執行失敗"
+    if "captcha" in status or "ready" in status or "prefilled" in status:
+        return "待確認"
+    return detail[:80] or status_label(status)
+
+
+def event_site_name(event: dict) -> str:
+    status = str(event.get("status") or "")
+    detail = str(event.get("detail") or "")
+    if status.startswith("vehicle_mileage") or "車輛里程" in detail:
+        return "里程"
+    if status.startswith("consumables") or "一站通耗材" in detail or "耗材" in detail:
+        return "耗材"
+    if status.startswith("disinfection") or "緊急救護消毒" in detail or "消毒" in detail:
+        return "消毒"
+    if status.startswith("duty_work_log") or "消防勤務工作紀錄" in detail or "工作紀錄" in detail:
+        return "工作"
+    return "任務"
+
+
+@app.context_processor
+def template_helpers() -> dict:
+    return {
+        "case_time_range": case_time_range,
+        "display_case_title": display_case_title,
+        "effective_task_status": effective_task_status,
+        "event_detail_text": event_detail_text,
+        "event_site_name": event_site_name,
+        "selected_case_date_input": selected_case_date_input,
+        "selected_case_address": selected_case_address,
+        "selected_return_date_input": selected_return_date_input,
+        "site_short_name": site_short_name,
+        "status_class": status_class,
+        "status_label": status_label,
+        "task_datetime_display": task_datetime_display,
+        "task_title": task_title,
+        "visible_events": visible_events,
+    }
 
 
 def write_selected_case_from_lookup(case_id: str) -> bool:
@@ -402,6 +605,16 @@ def read_selected_case() -> dict:
         selected["person_options"] = [(name, name) for name in people]
     selected["status"] = payload.get("status", "")
     selected["detail"] = payload.get("detail", "")
+    return selected
+
+
+def pop_selected_case() -> dict:
+    selected = read_selected_case()
+    if selected:
+        try:
+            (artifacts_dir / "cases" / "selected.json").unlink()
+        except OSError:
+            pass
     return selected
 
 

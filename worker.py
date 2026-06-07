@@ -86,13 +86,13 @@ def maybe_run_case_lookup(
     now = time.time()
     manual_lookup = request_payload is not None
     if manual_lookup:
-        lookup_range = str(request_payload.get("lookup_range") or "6h")
+        lookup_range = str(request_payload.get("lookup_range") or "24h")
         print(f"[worker] manual case lookup requested range={lookup_range}", flush=True)
     elif now - last_lookup_at >= max(interval_seconds, 60):
         if last_case_lookup_waiting_for_login(artifacts_dir):
             print("[worker] scheduled case lookup skipped: waiting for valid duty login", flush=True)
             return now, last_case_hash
-        lookup_range = "today"
+        lookup_range = "24h"
         print(f"[worker] scheduled case lookup range={lookup_range}", flush=True)
     else:
         return last_lookup_at, last_case_hash
@@ -132,11 +132,29 @@ def fetch_case_lookup_request(server_url: str) -> dict[str, object] | None:
     return request_payload if isinstance(request_payload, dict) else None
 
 
-def run_task(server_url: str, worker_id: str, task: dict[str, object], artifacts_dir: Path) -> None:
+def run_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+    profile_name: str = "chrome_profile",
+    debugger_port: int | None = None,
+    use_session_lock: bool = True,
+    tile_name: str = "",
+    force_new_driver: bool = False,
+) -> object:
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] claimed task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "worker_running", f"公務電腦 worker 執行中：{worker_id}")
-    result = run_local_selenium_task(request, artifacts_dir)
+    result = run_local_selenium_task(
+        request,
+        artifacts_dir,
+        profile_name=profile_name,
+        debugger_port=debugger_port,
+        use_session_lock=use_session_lock,
+        tile_name=tile_name,
+        force_new_driver=force_new_driver,
+    )
     post_status(
         server_url,
         request.task_id,
@@ -146,13 +164,32 @@ def run_task(server_url: str, worker_id: str, task: dict[str, object], artifacts
         site_name="消防勤務工作紀錄",
     )
     print(f"[worker] finished task {request.task_id}: {result.status}", flush=True)
+    return result
 
 
-def run_vehicle_task(server_url: str, worker_id: str, task: dict[str, object], artifacts_dir: Path) -> None:
+def run_vehicle_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+    profile_name: str = "chrome_profile",
+    debugger_port: int | None = None,
+    use_session_lock: bool = True,
+    tile_name: str = "",
+    force_new_driver: bool = False,
+) -> object:
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] vehicle mileage task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "vehicle_mileage_running", f"公務電腦 worker 執行車輛里程：{worker_id}")
-    result = run_vehicle_mileage_task(request, artifacts_dir)
+    result = run_vehicle_mileage_task(
+        request,
+        artifacts_dir,
+        profile_name=profile_name,
+        debugger_port=debugger_port,
+        use_session_lock=use_session_lock,
+        tile_name=tile_name,
+        force_new_driver=force_new_driver,
+    )
     post_status(
         server_url,
         request.task_id,
@@ -162,6 +199,7 @@ def run_vehicle_task(server_url: str, worker_id: str, task: dict[str, object], a
         site_name="車輛里程",
     )
     print(f"[worker] finished vehicle mileage {request.task_id}: {result.status}", flush=True)
+    return result
 
 
 def run_disinfection_worker_task(
@@ -170,11 +208,25 @@ def run_disinfection_worker_task(
     task: dict[str, object],
     artifacts_dir: Path,
     driver=None,
+    profile_name: str = "chrome_profile",
+    debugger_port: int | None = None,
+    use_session_lock: bool = True,
+    tile_name: str = "",
+    force_new_driver: bool = False,
 ):
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] disinfection task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "disinfection_running", f"公務電腦 worker 執行消毒紀錄：{worker_id}")
-    result = run_disinfection_task(request, artifacts_dir, existing_driver=driver)
+    result = run_disinfection_task(
+        request,
+        artifacts_dir,
+        existing_driver=driver,
+        profile_name=profile_name,
+        debugger_port=debugger_port,
+        use_session_lock=use_session_lock,
+        tile_name=tile_name,
+        force_new_driver=force_new_driver,
+    )
     post_status(
         server_url,
         request.task_id,

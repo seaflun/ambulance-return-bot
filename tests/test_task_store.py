@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ambulance_bot.adapters import SiteAutomationResult
@@ -32,6 +33,29 @@ class JsonTaskStoreTests(unittest.TestCase):
             store.mark_site_completed("task-1", "vehicle_mileage")
             completed = store.get("task-1")
             self.assertEqual(completed["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
+
+    def test_cleanup_removes_old_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="old-task", created_at=datetime.now(), raw_text="")
+            payload = store.create(request)
+            payload["updated_at"] = (datetime.now() - timedelta(hours=25)).isoformat(timespec="seconds")
+            store.path_for("old-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
+
+            self.assertEqual(store.list_recent(), [])
+            self.assertFalse((Path(tmp) / "old-task.json").exists())
+
+    def test_cleanup_removes_fully_done_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="done-task", created_at=datetime.now(), raw_text="")
+            payload = store.create(request)
+            for site in payload["site_statuses"].values():
+                site["status"] = "completed_by_user"
+            store.save_payload("done-task", payload)
+
+            self.assertEqual(store.list_recent(), [])
+            self.assertFalse((Path(tmp) / "done-task.json").exists())
 
 
 if __name__ == "__main__":

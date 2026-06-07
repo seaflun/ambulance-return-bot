@@ -4,75 +4,175 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f766e">
-  <title>&#25937;&#35703;&#22238;&#31243;&#30331;&#25171;</title>
+  <title>救護返隊登打事項</title>
   <style>
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif; background: #f6f8f7; color: #10201d; }
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
+      background: #fafaf8;
+      color: #202522;
+      --bg: #fafaf8;
+      --surface: #ffffff;
+      --ink: #202522;
+      --muted: #6f7772;
+      --line: #e8e4dc;
+      --line-strong: #d8d2c7;
+      --accent: #b86b5b;
+      --accent-soft: #f6e9e5;
+      --complete: #5f8a70;
+      --complete-bg: #edf6ef;
+      --failed: #b75c55;
+      --failed-bg: #fae9e7;
+      --waiting: #b88a44;
+      --waiting-bg: #fbf2df;
+      --running: #557a95;
+      --running-bg: #e8f1f6;
+      --idle-bg: #f3f1ed;
+      --shadow: 0 16px 36px rgba(39, 49, 43, .07);
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #f6f8f7; }
-    main { max-width: 760px; margin: 0 auto; padding: 18px 14px 40px; }
-    header { padding: 10px 2px 18px; }
-    h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: 0; }
-    h2 { margin: 0 0 10px; font-size: 18px; }
-    p { margin: 0; color: #4b625d; line-height: 1.45; }
-    form, .panel { background: #fff; border: 1px solid #dce5e2; border-radius: 8px; padding: 14px; box-shadow: 0 1px 2px rgba(12, 33, 28, .05); }
-    label { display: block; margin: 0 0 12px; font-weight: 650; }
-    input, select, textarea { width: 100%; margin-top: 6px; border: 1px solid #b9c9c4; border-radius: 6px; padding: 12px; font: inherit; background: #fff; color: #10201d; }
-    textarea { min-height: 82px; resize: vertical; }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    main { max-width: 780px; margin: 0 auto; padding: 24px 16px 44px; }
+    header { padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+    h1 {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
+      font-size: 30px;
+      line-height: 1.25;
+      font-weight: 800;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+    h2 { margin: 0 0 12px; font-size: 17px; line-height: 1.35; font-weight: 760; color: var(--ink); }
+    h3 { margin: 0 0 4px; font-size: 15px; }
+    form, .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+    label { display: block; margin: 0 0 13px; color: var(--ink); font-size: 14px; font-weight: 720; }
+    input, select {
+      width: 100%;
+      margin-top: 6px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      padding: 12px;
+      font: inherit;
+      font-size: 15px;
+      background: #fff;
+      color: var(--ink);
+    }
+    input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    button, .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 0 16px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 760;
+      text-decoration: none;
+      box-shadow: 0 8px 18px rgba(184, 107, 91, .18);
+    }
+    .secondary { background: transparent; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    button, .button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; border: 0; border-radius: 6px; padding: 0 14px; background: #0f766e; color: #fff; font: inherit; font-weight: 700; text-decoration: none; }
-    .lookup { margin-bottom: 14px; }
-    .lookup-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-    .case-list { display: grid; gap: 6px; }
-    .case-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid #dce5e2; border-radius: 8px; padding: 8px 10px; background: #fbfdfc; }
-    .case-title { font-weight: 750; line-height: 1.35; overflow-wrap: anywhere; }
-    .case-time { color: #4b625d; font-size: 13px; margin-top: 2px; }
-    .case-card button { min-height: 36px; padding: 0 10px; }
+    .lookup { margin-bottom: 16px; }
+    .lookup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .case-list { display: grid; gap: 8px; }
+    .case-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 12px 12px 14px;
+      background: #fff;
+    }
+    .case-title { font-weight: 780; line-height: 1.4; overflow-wrap: anywhere; }
+    .case-meta { color: var(--muted); font-size: 13px; margin-top: 3px; }
     .case-card form { padding: 0; border: 0; box-shadow: none; background: transparent; }
-    .lookup-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; color: #4b625d; font-size: 13px; }
-    .lookup-meta span, .debug-link { display: inline-flex; align-items: center; min-height: 28px; border: 1px solid #dce5e2; border-radius: 6px; padding: 0 8px; background: #fbfdfc; color: #35504a; text-decoration: none; }
-    .empty-note { border: 1px dashed #b9c9c4; border-radius: 8px; padding: 10px; color: #4b625d; background: #fbfdfc; }
-    .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0 12px; }
-    .check-item { display: flex; align-items: center; gap: 8px; min-height: 42px; margin: 0; padding: 8px 10px; border: 1px solid #dce5e2; border-radius: 6px; background: #fbfdfc; font-weight: 650; }
-    .check-item input { width: auto; margin: 0; transform: scale(1.15); }
+    .case-card button { min-height: 36px; padding: 0 12px; box-shadow: none; }
+    .time-field { display: grid; grid-template-columns: 1fr 94px; gap: 8px; align-items: end; }
+    .return-time-field { grid-template-columns: 1fr 84px 40px; }
+    .clock-button { width: 40px; min-width: 40px; min-height: 46px; margin-top: 6px; padding: 0; border: 1px solid var(--line-strong); background: #fff; color: var(--accent); box-shadow: none; }
+    .clock-glyph { width: 18px; height: 18px; border: 2px solid currentColor; border-radius: 50%; position: relative; display: inline-block; }
+    .clock-glyph::before { content: ""; position: absolute; left: 7px; top: 3px; width: 2px; height: 6px; background: currentColor; }
+    .clock-glyph::after { content: ""; position: absolute; left: 7px; top: 8px; width: 5px; height: 2px; background: currentColor; }
+    .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0 14px; }
+    .check-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      margin: 0;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      font-weight: 650;
+    }
+    .check-item input { width: auto; margin: 0; transform: scale(1.12); accent-color: var(--accent); }
+    .consumables { margin: 0 0 14px; padding-top: 4px; }
+    .consumable-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; font-weight: 780; }
+    .consumable-list { display: grid; gap: 8px; }
+    .consumable-row { display: grid; grid-template-columns: 120px minmax(0, 1fr) 128px 44px; gap: 8px; align-items: end; }
+    .consumable-row input, .consumable-row select { margin-top: 0; }
+    .qty-control { display: grid; grid-template-columns: 36px minmax(44px, 1fr) 36px; gap: 4px; }
+    .qty-button { min-width: 36px; min-height: 44px; padding: 0; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; }
+    .icon-button { min-width: 44px; padding: 0; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
     .recent { margin-top: 18px; }
-    .recent a { display: block; padding: 12px 0; color: #0f766e; text-decoration: none; border-top: 1px solid #e3ebe8; }
-    @media (max-width: 520px) { .grid { grid-template-columns: 1fr 1fr; gap: 8px; } h1 { font-size: 25px; } .lookup-head { align-items: stretch; flex-direction: column; } .lookup-head button { width: 100%; } }
+    .recent-list { display: grid; gap: 8px; }
+    .recent-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      color: inherit;
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+    .recent-title { font-weight: 780; overflow-wrap: anywhere; }
+    .status { min-width: 62px; text-align: center; border-radius: 999px; padding: 5px 10px; font-size: 13px; font-weight: 760; background: var(--idle-bg); color: var(--muted); }
+    .status.complete { background: var(--complete-bg); color: var(--complete); }
+    .status.failed { background: var(--failed-bg); color: var(--failed); }
+    .status.running { background: var(--running-bg); color: var(--running); }
+    .status.waiting { background: var(--waiting-bg); color: var(--waiting); }
+    @media (max-width: 560px) {
+      h1 { font-size: 25px; }
+      .lookup-head { align-items: stretch; flex-direction: column; }
+      .lookup-head button { width: 100%; }
+      .grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .time-field { grid-template-columns: 1fr 82px; }
+      .return-time-field { grid-template-columns: 1fr 74px 38px; }
+      .consumable-row { grid-template-columns: 1fr 1fr 128px 44px; }
+      .consumable-category { grid-column: 1 / 2; }
+      .consumable-name { grid-column: 2 / 5; }
+    }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <h1>&#25937;&#35703;&#22238;&#31243;&#30331;&#25171;</h1>
-      <p>&#25163;&#27231;&#32178;&#38913;&#21482;&#36000;&#36012;&#30332;&#36865;&#20219;&#21209;&#65307;&#22235;&#20491;&#32178;&#31449;&#26371;&#22312;&#22519;&#34892; Flask &#30340;&#36889;&#21488;&#38651;&#33126;&#19978;&#38283;&#21855;&#65292;&#19981;&#26371;&#33258;&#21205;&#25353;&#26368;&#24460;&#36865;&#20986;&#12290;</p>
+      <h1>救護返隊登打事項</h1>
     </header>
 
     <section class="panel lookup">
       <div class="lookup-head">
-        <div>
-          <h2>&#21220;&#21209;&#26696;&#20214;</h2>
-          <p>{% if case_lookup.detail %}{{ case_lookup.detail }}{% else %}&#26597;&#35426;&#21220;&#21209;&#31995;&#32113;&#12300;&#30001;&#26696;&#20214;&#24118;&#20837;&#12301;&#28165;&#21934;&#65292;&#21487;&#26597;&#26368;&#36817; 6 &#23567;&#26178;&#25110;&#20170;&#22825;&#12290;{% endif %}</p>
-          {% if case_lookup.status or case_lookup.updated_at %}
-            <div class="lookup-meta">
-              {% if case_lookup.status %}<span>狀態：{{ case_lookup.status }}</span>{% endif %}
-              <span>案件：{{ case_lookup.case_count or 0 }} 筆</span>
-              {% if case_lookup.updated_at %}<span>更新：{{ case_lookup.updated_at }}</span>{% endif %}
-            </div>
-          {% endif %}
-          {% if case_lookup.debug_artifacts %}
-            <div class="lookup-meta">
-              {% for artifact in case_lookup.debug_artifacts %}
-                <a class="debug-link" href="/artifacts/{{ artifact.href }}" target="_blank">{{ artifact.name }}</a>
-              {% endfor %}
-            </div>
-          {% endif %}
-        </div>
+        <h2>勤務案件</h2>
         <form method="post" action="/cases/query">
-          <input type="hidden" name="lookup_range" value="6h">
-          <button type="submit">&#26597;&#35426;&#26368;&#36817; 6 &#23567;&#26178;</button>
-        </form>
-        <form method="post" action="/cases/query">
-          <input type="hidden" name="lookup_range" value="today">
-          <button type="submit">&#26597;&#20170;&#22825;</button>
+          <input type="hidden" name="lookup_range" value="24h">
+          <button type="submit">查詢前 24 小時</button>
         </form>
       </div>
       {% if case_lookup.cases %}
@@ -80,46 +180,54 @@
           {% for case in case_lookup.cases %}
             <div class="case-card">
               <div>
-                <div class="case-title">{{ case.category }} - {{ case.address or '未填' }}</div>
-                <div class="case-time">{{ case.case_time_hhmm or '----' }} / {{ case.return_time_hhmm or '----' }}</div>
+                <div class="case-title">{{ display_case_title(case) }}</div>
+                <div class="case-meta">{{ case_time_range(case) }}</div>
                 {% if case.personnel %}
-                  <div class="case-time">服勤人員：{{ case.personnel | join('、') }}</div>
+                  <div class="case-meta">服勤人員：{{ case.personnel | join('、') }}</div>
                 {% endif %}
               </div>
               <form method="post" action="/cases/import">
                 <input type="hidden" name="case_id" value="{{ case.case_id }}">
-                <button type="submit" class="secondary">&#24118;&#20837;&#36889;&#31558;</button>
+                <button type="submit">帶入</button>
               </form>
             </div>
           {% endfor %}
         </div>
-      {% elif case_lookup.status %}
-        <div class="empty-note">目前查詢結果沒有可帶入的案件。若上方截圖有案件，代表解析規則需要再調整。</div>
       {% endif %}
     </section>
 
     <form method="post" action="/tasks" id="task-form">
-      <label>&#26696;&#30332;&#22320;&#22336;
-        <input name="case_address" autocomplete="off" value="{{ selected_case.address or selected_case.description or '' }}">
+      <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
+      <label>案發地址
+        <input name="case_address" autocomplete="off" value="{{ selected_case_address(selected_case) }}">
       </label>
       <div class="grid">
-        <label>&#26696;&#20214;&#26178;&#38291;
-          <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="1420" value="{{ selected_case.case_time_hhmm or '' }}">
+        <label>案件時間
+          <div class="time-field">
+            <input type="date" name="case_date" value="{{ selected_case_date_input(selected_case) }}">
+            <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_case.case_time_hhmm or '' }}">
+          </div>
         </label>
-        <label>&#22238;&#31243;&#26178;&#38291;
-          <input name="return_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="1505" value="{{ selected_case.return_time_hhmm or '' }}">
+        <label>返隊時間
+          <div class="time-field return-time-field">
+            <input type="date" name="return_date" id="return-date" value="{{ selected_return_date_input(selected_case) }}">
+            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_case.return_time_hhmm or '' }}">
+            <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
+          </div>
         </label>
       </div>
       <div class="grid">
-        <label>&#20986;&#21220;&#36554;&#36635;
+        <label>出動車輛
           <select name="vehicle" required>
+            <option value="">請選擇</option>
             {% for vehicle in vehicle_options %}
               <option value="{{ vehicle }}">{{ vehicle }}</option>
             {% endfor %}
           </select>
         </label>
-        <label>&#21496;&#27231;
+        <label>司機
           <select name="driver" required>
+            <option value="">請選擇</option>
             {% for number, name in person_options %}
               <option value="{{ name }}">{{ name }}</option>
             {% endfor %}
@@ -127,31 +235,37 @@
         </label>
       </div>
       <div class="grid">
-        <label>&#20107;&#30001;
+        <label>事由
           <select name="case_reason" required>
+            <option value="">請選擇</option>
             {% for reason in case_reason_options %}
               <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
             {% endfor %}
           </select>
         </label>
-        <label>&#20663;&#30149;&#24739;
+        <label>傷病患
           <select name="patient_summary" required>
-            <option value="&#30007;&#19968;&#21517;">&#30007;</option>
-            <option value="&#22899;&#19968;&#21517;">&#22899;</option>
-            <option value="&#28961;">&#28961;</option>
+            <option value="">請選擇</option>
+            <option value="男一名">男</option>
+            <option value="女一名">女</option>
+            <option value="無">無</option>
           </select>
         </label>
       </div>
-      <label>&#37324;&#31243;
-        <input name="mileage" inputmode="numeric" placeholder="12345">
+      <label>里程
+        <input name="mileage" inputmode="numeric">
       </label>
-      <label>&#32791;&#26448;
-        <input name="consumables" value="&#21475;&#32617;=2,&#25163;&#22871;=2">
-      </label>
-      <label>&#28040;&#27602;&#32000;&#37636;
-        <textarea name="disinfection">&#25937;&#35703;&#36820;&#38538;&#24460;&#36554;&#20839;&#12289;&#25812;&#26550;&#21450;&#25509;&#35320;&#38754;&#23436;&#25104;&#28040;&#27602;&#12290;</textarea>
-      </label>
-      <label>消毒項目（勾選後會在消毒紀錄設為已選取區）</label>
+
+      <section class="consumables">
+        <input type="hidden" name="consumables" id="consumables-value">
+        <div class="consumable-head">
+          <span>使用耗材</span>
+          <button type="button" class="secondary" id="add-consumable">新增耗材</button>
+        </div>
+        <div class="consumable-list" id="consumable-list"></div>
+      </section>
+
+      <label>消毒項目</label>
       <div class="check-grid">
         {% for item in disinfection_item_options %}
           <label class="check-item">
@@ -160,20 +274,132 @@
           </label>
         {% endfor %}
       </div>
-      <label>其他消毒項目
-        <input name="disinfection_items_custom" placeholder="可用逗號或頓號分隔">
-      </label>
-      <button type="submit">&#24314;&#31435;&#20219;&#21209;</button>
+      <button type="submit">建立任務</button>
     </form>
 
     {% if recent_tasks %}
     <section class="panel recent">
-      <h2>&#26368;&#36817;&#20219;&#21209;</h2>
-      {% for item in recent_tasks %}
-        <a href="/tasks/{{ item.task.task_id }}">{{ item.task.task_id }} - {{ item.overall_status }}</a>
-      {% endfor %}
+      <h2>最近任務</h2>
+      <div class="recent-list">
+        {% for item in recent_tasks %}
+          <a class="recent-card" href="/tasks/{{ item.task.task_id }}">
+            <span class="recent-title">{{ task_title(item.task) }}</span>
+            <span class="status {{ status_class(effective_task_status(item)) }}">{{ status_label(effective_task_status(item)) }}</span>
+          </a>
+        {% endfor %}
+      </div>
     </section>
     {% endif %}
   </main>
+  <script>
+    const consumableOptions = {{ consumable_options | tojson }};
+    const defaultConsumables = {{ default_consumables | tojson }};
+    const consumableList = document.getElementById("consumable-list");
+    const consumablesValue = document.getElementById("consumables-value");
+    const categories = [...new Set(consumableOptions.map((item) => item.category || "未分類"))].sort();
+    const categoryHtml = categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("");
+    const optionHtml = consumableOptions.map((item) => {
+      return `<option value="${escapeHtml(item.name)}" data-category="${escapeHtml(item.category || "未分類")}">${escapeHtml(item.name)}</option>`;
+    }).join("");
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+
+    function addConsumableRow(name = "", qty = 1) {
+      const row = document.createElement("div");
+      row.className = "consumable-row";
+      row.innerHTML = `
+        <select class="consumable-category" aria-label="耗材分類">${categoryHtml}</select>
+        <select class="consumable-name" required>${optionHtml}</select>
+        <div class="qty-control">
+          <button type="button" class="qty-button qty-minus" aria-label="減少數量">-</button>
+          <input class="consumable-qty" type="number" min="1" step="1" inputmode="numeric" value="${Number(qty) || 1}" aria-label="耗材數量">
+          <button type="button" class="qty-button qty-plus" aria-label="增加數量">+</button>
+        </div>
+        <button type="button" class="icon-button" aria-label="刪除耗材">×</button>
+      `;
+      const category = row.querySelector(".consumable-category");
+      const select = row.querySelector(".consumable-name");
+      if (name && !Array.from(select.options).some((option) => option.value === name)) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        option.dataset.category = "其他";
+        select.prepend(option);
+        if (!Array.from(category.options).some((option) => option.value === "其他")) {
+          category.prepend(new Option("其他", "其他"));
+        }
+      }
+      const matchedOption = Array.from(select.options).find((option) => option.value === name) || select.options[0];
+      if (matchedOption) {
+        category.value = matchedOption.dataset.category || "未分類";
+        filterConsumableOptions(row);
+        select.value = matchedOption.value;
+      }
+      row.querySelector(".icon-button").addEventListener("click", () => {
+        row.remove();
+        syncConsumables();
+      });
+      row.querySelector(".qty-minus").addEventListener("click", () => changeQuantity(row, -1));
+      row.querySelector(".qty-plus").addEventListener("click", () => changeQuantity(row, 1));
+      category.addEventListener("change", () => {
+        filterConsumableOptions(row);
+        syncConsumables();
+      });
+      row.querySelectorAll("select,input").forEach((element) => {
+        element.addEventListener("change", syncConsumables);
+        element.addEventListener("input", syncConsumables);
+      });
+      consumableList.appendChild(row);
+      syncConsumables();
+    }
+
+    function changeQuantity(row, delta) {
+      const input = row.querySelector(".consumable-qty");
+      const current = parseInt(input.value, 10) || 1;
+      input.value = Math.max(1, current + delta);
+      syncConsumables();
+    }
+
+    function filterConsumableOptions(row) {
+      const category = row.querySelector(".consumable-category").value;
+      const select = row.querySelector(".consumable-name");
+      let firstVisible = "";
+      Array.from(select.options).forEach((option) => {
+        const visible = (option.dataset.category || "未分類") === category;
+        option.hidden = !visible;
+        option.disabled = !visible;
+        if (visible && !firstVisible) firstVisible = option.value;
+      });
+      if (select.selectedOptions[0]?.disabled && firstVisible) {
+        select.value = firstVisible;
+      }
+    }
+
+    function syncConsumables() {
+      const values = Array.from(consumableList.querySelectorAll(".consumable-row")).map((row) => {
+        const name = row.querySelector(".consumable-name").value.trim();
+        const qty = parseInt(row.querySelector(".consumable-qty").value, 10) || 0;
+        return name && qty > 0 ? `${name}=${qty}` : "";
+      }).filter(Boolean);
+      consumablesValue.value = values.join(",");
+    }
+
+    function pad2(value) {
+      return String(value).padStart(2, "0");
+    }
+
+    document.getElementById("return-now").addEventListener("click", () => {
+      const now = new Date();
+      document.getElementById("return-date").value = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+      document.getElementById("return-time").value = `${pad2(now.getHours())}${pad2(now.getMinutes())}`;
+    });
+
+    Object.entries(defaultConsumables).forEach(([name, qty]) => addConsumableRow(name, qty));
+    document.getElementById("add-consumable").addEventListener("click", () => addConsumableRow());
+  </script>
 </body>
 </html>

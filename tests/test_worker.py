@@ -23,7 +23,7 @@ class WorkerTests(unittest.TestCase):
             cases = [{"case_id": "1"}]
             case_hash = worker_module.hash_cases(cases)
             worker_module.fetch_case_lookup_request = lambda server_url: None
-            worker_module.query_duty_emergency_cases = lambda artifacts_dir, lookup_range="today": DutyCaseLookupResult(
+            worker_module.query_duty_emergency_cases = lambda artifacts_dir, lookup_range="24h": DutyCaseLookupResult(
                 True,
                 "cases_loaded",
                 "loaded",
@@ -57,8 +57,8 @@ class WorkerTests(unittest.TestCase):
         try:
             cases = [{"case_id": "1"}]
             case_hash = worker_module.hash_cases(cases)
-            worker_module.fetch_case_lookup_request = lambda server_url: {"lookup_range": "today"}
-            worker_module.query_duty_emergency_cases = lambda artifacts_dir, lookup_range="today": DutyCaseLookupResult(
+            worker_module.fetch_case_lookup_request = lambda server_url: {"lookup_range": "24h"}
+            worker_module.query_duty_emergency_cases = lambda artifacts_dir, lookup_range="24h": DutyCaseLookupResult(
                 True,
                 "cases_loaded",
                 "loaded",
@@ -88,7 +88,7 @@ class WorkerTests(unittest.TestCase):
         original_query = worker_module.query_duty_emergency_cases
         try:
             worker_module.fetch_case_lookup_request = lambda server_url: None
-            worker_module.query_duty_emergency_cases = lambda artifacts_dir, lookup_range="today": self.fail(
+            worker_module.query_duty_emergency_cases = lambda artifacts_dir, lookup_range="24h": self.fail(
                 "scheduled lookup should skip while waiting for login"
             )
             with tempfile.TemporaryDirectory() as tmp:

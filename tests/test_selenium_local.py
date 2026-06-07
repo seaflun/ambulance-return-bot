@@ -2,12 +2,18 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
+from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
     _attach_case_form_details,
+    _disinfection_query_date,
     _previous_case_details,
+    _profile_dir,
     _resolve_end_mileage,
+    _save_disinfection_record_enabled,
+    _save_vehicle_mileage_enabled,
     _write_json_atomic,
     selenium_enabled,
 )
@@ -20,9 +26,53 @@ class SeleniumLocalTests(unittest.TestCase):
         os.environ["USE_LOCAL_SELENIUM"] = "false"
         self.assertFalse(selenium_enabled())
 
+    def test_save_flags_read_environment(self):
+        previous_vehicle = os.environ.get("SAVE_VEHICLE_MILEAGE")
+        previous_disinfection = os.environ.get("SAVE_DISINFECTION_RECORD")
+        try:
+            os.environ["SAVE_VEHICLE_MILEAGE"] = "true"
+            os.environ["SAVE_DISINFECTION_RECORD"] = "1"
+            self.assertTrue(_save_vehicle_mileage_enabled())
+            self.assertTrue(_save_disinfection_record_enabled())
+        finally:
+            if previous_vehicle is None:
+                os.environ.pop("SAVE_VEHICLE_MILEAGE", None)
+            else:
+                os.environ["SAVE_VEHICLE_MILEAGE"] = previous_vehicle
+            if previous_disinfection is None:
+                os.environ.pop("SAVE_DISINFECTION_RECORD", None)
+            else:
+                os.environ["SAVE_DISINFECTION_RECORD"] = previous_disinfection
+
     def test_resolve_end_mileage_accepts_delta(self):
         self.assertEqual(_resolve_end_mileage("123400", "+50"), "123450")
         self.assertEqual(_resolve_end_mileage("123400", "123456"), "123456")
+
+    def test_disinfection_query_date_uses_case_date(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=datetime(2026, 6, 7, 1, 0),
+            raw_text="",
+            case_date="1150606",
+            case_time="2350",
+            return_time="0010",
+        )
+
+        self.assertEqual(_disinfection_query_date(request), "2026-06-06")
+
+    def test_named_profile_uses_sibling_of_configured_profile_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = os.environ.get("CHROME_PROFILE_DIR")
+            try:
+                os.environ["CHROME_PROFILE_DIR"] = str(Path(tmp) / "chrome_profile")
+
+                self.assertEqual(_profile_dir("chrome_profile"), Path(tmp) / "chrome_profile")
+                self.assertEqual(_profile_dir("vehicle_mileage_profile_task1"), Path(tmp) / "vehicle_mileage_profile_task1")
+            finally:
+                if previous is None:
+                    os.environ.pop("CHROME_PROFILE_DIR", None)
+                else:
+                    os.environ["CHROME_PROFILE_DIR"] = previous
 
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]

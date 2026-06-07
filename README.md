@@ -99,6 +99,6 @@ docs/NAS_WEB_QUERYER_RUNBOOK.md
 
 - `GET /status` 回傳 `ok: true`
 - `GET /app` 可以開啟手機網頁表單
-- 按「查詢最近 6 小時」後 `artifacts/cases/latest.json` 更新
+- 按「查詢前 24 小時案件」後 `artifacts/cases/latest.json` 更新
 - 按「帶入這筆」後 `artifacts/cases/selected.json` 更新
 - LINE 傳 `範例` 會收到格式

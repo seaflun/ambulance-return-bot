@@ -7,7 +7,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 
-DEFAULT_CONSUMABLES = {"\u53e3\u7f69": 2, "\u624b\u5957": 2}
+DEFAULT_CONSUMABLES = {"桃-口罩(片)": 2, "桃-9吋手套-XL(雙)": 2}
 DISINFECTION_ITEM_OPTIONS = [
     "\u6551\u8b77\u8eca\u9ad4",
     "\u64d4\u67b6\u5e8a",
@@ -115,7 +115,10 @@ class AmbulanceReturnRequest:
     vehicle: str = ""
     driver: str = ""
     mileage: str = ""
+    case_id: str = ""
+    case_date: str = ""
     case_time: str = ""
+    return_date: str = ""
     return_time: str = ""
     case_address: str = ""
     patient_summary: str = "\u7537\u4e00\u540d"
@@ -159,7 +162,7 @@ class AmbulanceReturnRequest:
         driver = self.driver or "\u672a\u586b\u53f8\u6a5f"
         patient = self.patient_summary or "\u7537\u4e00\u540d"
         if patient == "\u7121":
-            return f"1.{vehicle}:{driver}\n2.\u7121"
+            return f"{vehicle};{driver}"
         return f"1.{vehicle}:{driver}\n2.{patient}"
 
     @property
@@ -171,7 +174,30 @@ class AmbulanceReturnRequest:
         hhmm = self.return_time_hhmm
         if len(hhmm) != 4:
             return ""
-        return f"\u8fd4\u968a\u6642\u9593:{self.created_at:%Y/%m/%d} {hhmm[:2]}:{hhmm[2:]}:00"
+        value_date = self.service_return_date()
+        return f"\u8fd4\u968a\u6642\u9593:{value_date:%Y/%m/%d} {hhmm[:2]}:{hhmm[2:]}:00"
+
+    def service_case_date(self) -> datetime:
+        parsed = parse_case_date(self.case_date)
+        if parsed:
+            return parsed
+        value = self.created_at
+        case_hhmm = normalize_hhmm(self.case_time)
+        return_hhmm = self.return_time_hhmm
+        if len(case_hhmm) == 4 and len(return_hhmm) == 4 and int(case_hhmm) > int(return_hhmm):
+            value = value - __import__("datetime").timedelta(days=1)
+        return value
+
+    def service_return_date(self) -> datetime:
+        parsed = parse_case_date(self.return_date)
+        if parsed:
+            return parsed
+        value = self.service_case_date()
+        case_hhmm = normalize_hhmm(self.case_time)
+        return_hhmm = self.return_time_hhmm
+        if len(case_hhmm) == 4 and len(return_hhmm) == 4 and int(return_hhmm) < int(case_hhmm):
+            value = value + __import__("datetime").timedelta(days=1)
+        return value
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -188,7 +214,10 @@ class AmbulanceReturnRequest:
             vehicle=str(payload.get("vehicle") or ""),
             driver=str(payload.get("driver") or ""),
             mileage=str(payload.get("mileage") or ""),
+            case_id=str(payload.get("case_id") or ""),
+            case_date=str(payload.get("case_date") or ""),
             case_time=str(payload.get("case_time") or ""),
+            return_date=str(payload.get("return_date") or ""),
             return_time=str(payload.get("return_time") or ""),
             case_address=clean_case_address(str(payload.get("case_address") or "")),
             patient_summary=str(payload.get("patient_summary") or cls.__dataclass_fields__["patient_summary"].default),
@@ -211,6 +240,26 @@ def normalize_hhmm(value: str) -> str:
     return digits
 
 
+def parse_case_date(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    formats = ["%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"]
+    if len(digits) == 7:
+        try:
+            year = int(digits[:3]) + 1911
+            return datetime(year, int(digits[3:5]), int(digits[5:7]))
+        except ValueError:
+            return None
+    if len(digits) == 8:
+        raw = digits
+    for fmt in formats:
+        try:
+            return datetime.strptime(raw[:10], fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def example_command() -> str:
     return (
         "\u6551\u8b77\u56de\u7a0b\n"
@@ -229,7 +278,7 @@ def example_command() -> str:
 
 
 def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
-    consumables = parse_consumables(str(form.get("consumables") or "\u53e3\u7f69=2,\u624b\u5957=2"))
+    consumables = parse_consumables(str(form.get("consumables") or "桃-口罩(片)=2,桃-9吋手套-XL(雙)=2"))
     disinfection_items = parse_disinfection_items_from_form(form)
     return AmbulanceReturnRequest(
         task_id=new_task_id(),
@@ -238,7 +287,10 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         vehicle=str(form.get("vehicle") or "").strip(),
         driver=str(form.get("driver") or "").strip(),
         mileage=str(form.get("mileage") or "").strip(),
+        case_id=str(form.get("case_id") or "").strip(),
+        case_date=str(form.get("case_date") or "").strip(),
         case_time=str(form.get("case_time") or "").strip(),
+        return_date=str(form.get("return_date") or "").strip(),
         return_time=str(form.get("return_time") or "").strip(),
         case_address=clean_case_address(str(form.get("case_address") or "")),
         patient_summary=str(form.get("patient_summary") or "").strip() or "\u7537\u4e00\u540d",

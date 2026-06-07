@@ -3,113 +3,334 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f766e">
-  <title>&#20219;&#21209; {{ payload.task.task_id }}</title>
+  <meta name="theme-color" content="#fafaf8">
+  <title>{{ task_title(payload.task) }}</title>
   <style>
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif; background: #f6f8f7; color: #10201d; }
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
+      background: #fafaf8;
+      color: #202522;
+      --bg: #fafaf8;
+      --surface: #ffffff;
+      --ink: #202522;
+      --muted: #6f7772;
+      --line: #e8e4dc;
+      --line-strong: #d8d2c7;
+      --accent: #b86b5b;
+      --accent-soft: #f6e9e5;
+      --complete: #5f8a70;
+      --complete-bg: #edf6ef;
+      --failed: #b75c55;
+      --failed-bg: #fae9e7;
+      --waiting: #b88a44;
+      --waiting-bg: #fbf2df;
+      --running: #557a95;
+      --running-bg: #e8f1f6;
+      --idle-bg: #f3f1ed;
+      --shadow: 0 16px 36px rgba(39, 49, 43, .07);
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #f6f8f7; }
-    main { max-width: 860px; margin: 0 auto; padding: 16px 14px 42px; }
-    h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: 0; }
-    h2 { margin: 0 0 10px; font-size: 18px; }
-    p { margin: 0; color: #4b625d; line-height: 1.45; }
-    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-    .button, button { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; border: 0; border-radius: 6px; padding: 0 12px; background: #0f766e; color: #fff; font: inherit; font-weight: 700; text-decoration: none; white-space: nowrap; }
-    .secondary { background: #e6efec; color: #0f3f3b; }
-    .panel, .site { background: #fff; border: 1px solid #dce5e2; border-radius: 8px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(12, 33, 28, .05); }
-    .summary { white-space: pre-wrap; line-height: 1.5; background: #f0f6f4; border-radius: 6px; padding: 12px; margin: 10px 0; }
-    .status { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #e6efec; color: #0f3f3b; font-size: 13px; font-weight: 700; }
-    .site-header { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
-    .site-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-    .events { padding-left: 18px; color: #4b625d; }
-    .events li { margin: 6px 0; }
-    @media (max-width: 520px) { .topbar { align-items: flex-start; flex-direction: column; } .topbar .button { width: 100%; } }
+    body { margin: 0; background: var(--bg); }
+    main { max-width: 940px; margin: 0 auto; padding: 24px 16px 44px; }
+    a { color: inherit; }
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
+      font-size: 28px;
+      line-height: 1.25;
+      font-weight: 800;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+    h2 {
+      font-size: 17px;
+      line-height: 1.35;
+      font-weight: 750;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+    h3 {
+      font-size: 18px;
+      line-height: 1.25;
+      font-weight: 780;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+    .page-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .page-title { min-width: 0; flex: 1; }
+    .head-actions { flex: 0 0 auto; }
+    .button, button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 0 16px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 750;
+      text-decoration: none;
+      white-space: nowrap;
+      box-shadow: 0 8px 18px rgba(184, 107, 91, .18);
+    }
+    .secondary {
+      background: transparent;
+      color: var(--ink);
+      border-color: var(--line-strong);
+      box-shadow: none;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 26px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: var(--idle-bg);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+    .status.complete { background: var(--complete-bg); color: var(--complete); }
+    .status.failed { background: var(--failed-bg); color: var(--failed); }
+    .status.running { background: var(--running-bg); color: var(--running); }
+    .status.waiting { background: var(--waiting-bg); color: var(--waiting); }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 12px;
+    }
+    .task-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 22px;
+    }
+    .task-submit { margin: 10px 0 20px; }
+    .task-card {
+      position: relative;
+      min-height: 188px;
+      padding: 18px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .task-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: var(--line-strong);
+    }
+    .task-card.complete::before { background: var(--complete); }
+    .task-card.failed::before { background: var(--failed); }
+    .task-card.running::before { background: var(--running); }
+    .task-card.waiting::before { background: var(--waiting); }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .line-list {
+      display: grid;
+      gap: 9px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .line-list li {
+      display: grid;
+      grid-template-columns: 74px minmax(0, 1fr);
+      gap: 10px;
+      align-items: baseline;
+      font-size: 15px;
+      line-height: 1.45;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .value {
+      color: var(--ink);
+      font-weight: 680;
+      overflow-wrap: anywhere;
+    }
+    .timeline {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+    }
+    .events {
+      display: grid;
+      gap: 0;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .events li {
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 52px;
+      border-top: 1px solid var(--line);
+    }
+    .events li:first-child { border-top: 0; }
+    .event-mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--idle-bg);
+      color: var(--muted);
+      font-weight: 800;
+    }
+    .event-mark.complete { background: var(--complete-bg); color: var(--complete); }
+    .event-mark.failed { background: var(--failed-bg); color: var(--failed); }
+    .event-mark.running { background: var(--running-bg); color: var(--running); }
+    .event-mark.waiting { background: var(--waiting-bg); color: var(--waiting); }
+    .event-main { min-width: 0; }
+    .event-site { font-weight: 760; color: var(--ink); }
+    .event-detail { margin-top: 2px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .event-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .muted { color: var(--muted); }
+    @media (max-width: 720px) {
+      main { padding: 18px 12px 36px; }
+      .page-head { align-items: stretch; }
+      .head-actions { flex: 0 0 auto; }
+      .head-actions .button { width: auto; }
+      .task-submit button { width: 100%; }
+      .task-grid { grid-template-columns: 1fr; }
+      .events li { grid-template-columns: 38px minmax(0, 1fr); }
+      .event-time { grid-column: 2; }
+    }
   </style>
 </head>
 <body>
   <main>
-    <div class="topbar">
-      <div>
-        <h1>&#20219;&#21209; {{ payload.task.task_id }}</h1>
-        <p>&#29376;&#24907;&#65306;<span class="status">{{ payload.overall_status }}</span></p>
+    <header class="page-head">
+      <div class="page-title">
+        <h1>{{ task_title(payload.task) }}</h1>
       </div>
-      <a class="button secondary" href="/app">&#26032;&#22686;&#21478;&#19968;&#31558;</a>
-    </div>
+      <div class="head-actions">
+        <a class="button secondary" href="/app">回到上一頁</a>
+      </div>
+    </header>
 
-    <section class="panel">
-      <h2>&#36039;&#26009;&#25688;&#35201;</h2>
-      <p>按下「送到公務電腦」後，NAS 會把任務排隊；公務電腦 worker 會領取任務並在該電腦開啟瀏覽器預填，不會自動按最後送出。</p>
-      <div id="summary" class="summary">&#36554;&#36635;&#65306;{{ payload.task.vehicle or '未填' }}
-&#21496;&#27231;&#65306;{{ payload.task.driver or '未填' }}
-&#37324;&#31243;&#65306;{{ payload.task.mileage or '未填' }}
-&#26696;&#20214;&#26178;&#38291;&#65306;{{ payload.task.case_time or '未填' }}
-&#22238;&#31243;&#26178;&#38291;&#65306;{{ payload.task.return_time or '未填' }}
-&#20107;&#30001;&#65306;{{ payload.task.case_reason or '未填' }}
-&#20663;&#30149;&#24739;&#65306;{{ payload.task.patient_summary or '未填' }}
-&#32791;&#26448;&#65306;{% for name, qty in payload.task.consumables.items() %}{{ name }} x{{ qty }}{% if not loop.last %}、{% endif %}{% endfor %}
-&#28040;&#27602;&#65306;{{ payload.task.disinfection }}
-消毒項目：{% if payload.task.disinfection_items %}{{ payload.task.disinfection_items | join('、') }}{% else %}未選{% endif %}
-&#24037;&#20316;&#32000;&#37636;&#65306;{{ payload.task.work_note }}</div>
-      <div class="site-actions">
-        <button type="button" onclick="copyText('summary')">&#35079;&#35069;&#25688;&#35201;</button>
-        <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
-          <button type="submit">送到公務電腦</button>
-        </form>
+    <section aria-label="任務內容">
+      <div class="section-head">
+        <h2>任務內容</h2>
+        <span class="status {{ status_class(effective_task_status(payload)) }}">{{ status_label(effective_task_status(payload)) }}</span>
+      </div>
+      <form class="task-submit" method="post" action="/tasks/{{ payload.task.task_id }}/run">
+        <button type="submit">送到公務電腦</button>
+      </form>
+      <div class="task-grid">
+        {% set duty_site = payload.site_statuses.get('duty_work_log', {}) %}
+        <article class="task-card {{ status_class(duty_site.status) }}">
+          <div class="card-head">
+            <h3>工作</h3>
+            <span class="status {{ status_class(duty_site.status) }}">{{ status_label(duty_site.status) }}</span>
+          </div>
+          <ul class="line-list">
+            <li><span class="label">事由</span><span class="value">{{ payload.task.case_reason or '未填' }}</span></li>
+            <li><span class="label">傷病患</span><span class="value">{{ payload.task.patient_summary or '未填' }}</span></li>
+            <li><span class="label">地址</span><span class="value">{{ payload.task.case_address or '未填' }}</span></li>
+          </ul>
+        </article>
+
+        {% set mileage_site = payload.site_statuses.get('vehicle_mileage', {}) %}
+        <article class="task-card {{ status_class(mileage_site.status) }}">
+          <div class="card-head">
+            <h3>里程</h3>
+            <span class="status {{ status_class(mileage_site.status) }}">{{ status_label(mileage_site.status) }}</span>
+          </div>
+          <ul class="line-list">
+            <li><span class="label">車輛</span><span class="value">{{ payload.task.vehicle or '未填' }}</span></li>
+            <li><span class="label">司機</span><span class="value">{{ payload.task.driver or '未填' }}</span></li>
+            <li><span class="label">里程</span><span class="value">{{ payload.task.mileage or '未填' }}</span></li>
+            <li><span class="label">出動</span><span class="value">{{ task_datetime_display(payload.task, 'case_date', 'case_time') }}</span></li>
+            <li><span class="label">返隊</span><span class="value">{{ task_datetime_display(payload.task, 'return_date', 'return_time') }}</span></li>
+          </ul>
+        </article>
+
+        {% set disinfection_site = payload.site_statuses.get('disinfection', {}) %}
+        <article class="task-card {{ status_class(disinfection_site.status) }}">
+          <div class="card-head">
+            <h3>消毒</h3>
+            <span class="status {{ status_class(disinfection_site.status) }}">{{ status_label(disinfection_site.status) }}</span>
+          </div>
+          <ul class="line-list">
+            {% if payload.task.disinfection_items %}
+              {% for item in payload.task.disinfection_items %}
+                <li><span class="label">項目</span><span class="value">{{ item }}</span></li>
+              {% endfor %}
+            {% else %}
+              <li><span class="label">項目</span><span class="value">未選</span></li>
+            {% endif %}
+          </ul>
+        </article>
+
+        {% set consumables_site = payload.site_statuses.get('consumables', {}) %}
+        <article class="task-card {{ status_class(consumables_site.status) }}">
+          <div class="card-head">
+            <h3>耗材</h3>
+            <span class="status {{ status_class(consumables_site.status) }}">{{ status_label(consumables_site.status) }}</span>
+          </div>
+          <ul class="line-list">
+            {% for name, qty in payload.task.consumables.items() %}
+              <li><span class="label">項目</span><span class="value">{{ name }} x{{ qty }}</span></li>
+            {% else %}
+              <li><span class="label">項目</span><span class="value">未填</span></li>
+            {% endfor %}
+          </ul>
+        </article>
       </div>
     </section>
 
-    {% for site in payload.site_statuses.values() %}
-    <section class="site">
-      <div class="site-header">
-        <h2>{{ site.name }}</h2>
-        <span class="status">{{ site.status }}</span>
+    <section class="timeline" aria-label="執行紀錄">
+      <div class="section-head">
+        <h2>執行紀錄</h2>
       </div>
-      <p>{{ site.detail or '尚未執行。' }}</p>
-      <p><a href="{{ site.url }}" target="_blank" rel="noopener">{{ site.url }}</a></p>
-      <div id="copy-{{ site.key }}" class="summary">{{ site.name }}
-&#36554;&#36635;&#65306;{{ payload.task.vehicle or '未填' }}
-&#21496;&#27231;&#65306;{{ payload.task.driver or '未填' }}
-&#37324;&#31243;&#65306;{{ payload.task.mileage or '未填' }}
-&#20107;&#30001;&#65306;{{ payload.task.case_reason or '未填' }}
-&#20663;&#30149;&#24739;&#65306;{{ payload.task.patient_summary or '未填' }}
-&#32791;&#26448;&#65306;{% for name, qty in payload.task.consumables.items() %}{{ name }} x{{ qty }}{% if not loop.last %}、{% endif %}{% endfor %}
-&#28040;&#27602;&#65306;{{ payload.task.disinfection }}
-消毒項目：{% if payload.task.disinfection_items %}{{ payload.task.disinfection_items | join('、') }}{% else %}未選{% endif %}
-&#24037;&#20316;&#32000;&#37636;&#65306;{{ payload.task.work_note }}</div>
-      <div class="site-actions">
-        <button type="button" onclick="copyText('copy-{{ site.key }}')">&#35079;&#35069;&#26412;&#31449;&#25991;&#23383;</button>
-        <form method="post" action="/tasks/{{ payload.task.task_id }}/sites/{{ site.key }}/complete">
-          <button type="submit" class="secondary">&#20154;&#24037;&#30906;&#35469;&#23436;&#25104;</button>
-        </form>
-      </div>
-    </section>
-    {% endfor %}
-
-    <section class="panel">
-      <h2>&#32000;&#37636;</h2>
-      <ol class="events">
-        {% for event in payload.events %}
-          <li>{{ event.time }} - {{ event.status }}{% if event.detail %}：{{ event.detail }}{% endif %}</li>
+      <ul class="events">
+        {% for event in visible_events(payload.events) %}
+          <li>
+            <span class="event-mark {{ status_class(event.status) }}">{{ '✓' if status_class(event.status) == 'complete' else '!' if status_class(event.status) == 'failed' else '•' }}</span>
+            <div class="event-main">
+              <div class="event-site">{{ event_site_name(event) }}：{{ status_label(event.status) }}</div>
+              <div class="event-detail">{{ event_detail_text(event) }}</div>
+            </div>
+            <time class="event-time">{{ event.time }}</time>
+          </li>
+        {% else %}
+          <li class="muted">尚無紀錄</li>
         {% endfor %}
-      </ol>
+      </ul>
     </section>
   </main>
-  <script>
-    async function copyText(id) {
-      const text = document.getElementById(id).innerText;
-      try {
-        await navigator.clipboard.writeText(text);
-        alert("已複製");
-      } catch (error) {
-        const area = document.createElement("textarea");
-        area.value = text;
-        document.body.appendChild(area);
-        area.select();
-        document.execCommand("copy");
-        area.remove();
-        alert("已複製");
-      }
-    }
-  </script>
 </body>
 </html>

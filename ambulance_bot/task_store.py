@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .models import AmbulanceReturnRequest
+
+
+SUCCESS_SITE_STATUSES = {
+    "completed_by_user",
+    "duty_work_log_saved",
+    "vehicle_mileage_saved",
+    "disinfection_saved",
+    "consumables_saved",
+}
 
 
 def now_text() -> str:
@@ -61,6 +70,7 @@ class JsonTaskStore:
 
     def list_recent(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
+            self.cleanup()
             paths = sorted(self.tasks_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
             return [json.loads(path.read_text(encoding="utf-8")) for path in paths[:limit]]
 
@@ -74,6 +84,7 @@ class JsonTaskStore:
 
     def claim_next_for_worker(self, worker_id: str) -> dict[str, Any] | None:
         with self._lock:
+            self.cleanup()
             paths = sorted(self.tasks_dir.glob("*.json"), key=lambda item: item.stat().st_mtime)
             for path in paths:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -142,3 +153,34 @@ class JsonTaskStore:
                 "detail": detail,
             }
         )
+
+    def cleanup(self, max_age_hours: int = 24) -> None:
+        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        for path in self.tasks_dir.glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if self._is_expired(payload, cutoff) or self._is_fully_done(payload):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+    def _is_expired(self, payload: dict[str, Any], cutoff: datetime) -> bool:
+        raw_time = str(payload.get("updated_at") or payload.get("created_at") or "")
+        try:
+            updated_at = datetime.fromisoformat(raw_time)
+        except ValueError:
+            return False
+        return updated_at < cutoff
+
+    def _is_fully_done(self, payload: dict[str, Any]) -> bool:
+        site_statuses = payload.get("site_statuses")
+        if not isinstance(site_statuses, dict) or not site_statuses:
+            return False
+        for site in site_statuses.values():
+            status = str(site.get("status") or "")
+            if status not in SUCCESS_SITE_STATUSES and not status.endswith("_saved"):
+                return False
+        return True

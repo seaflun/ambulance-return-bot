@@ -51,7 +51,7 @@ py -m unittest discover -s tests -v
 ## Current Automation Scope
 
 - NAS runs the Flask task center only. NAS must not run Selenium, store four-site portal passwords, or do final data entry.
-- The public-duty Windows PC runs `worker.py` with WinPython, polls NAS every 10 seconds, queries today's emergency cases every 5 minutes, and deduplicates unchanged case lists.
+- The public-duty Windows PC runs `worker.py` with WinPython, polls NAS every 10 seconds, queries the previous 24 hours of emergency cases every 5 minutes, and deduplicates unchanged case lists.
 - `run_worker_forever.vbs` starts `worker_gui.py` with no console window; `run_worker_forever.bat` delegates to `pyw` and exits immediately.
 - The GUI can test NAS through Tailscale with `http://100.114.126.58:8080`.
 - `run_worker_web_panel.bat` starts the older local web panel at `http://127.0.0.1:8090/`.

@@ -22,6 +22,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from .adapters import SITE_DEFINITIONS
 from .duty_credentials import load_duty_credential
 from .models import DEFAULT_DISINFECTION_ITEMS, VEHICLE_PPE_NAMES, AmbulanceReturnRequest, clean_case_address
+from .window_layout import apply_tile
 
 
 BASE_URL = "https://dutymgt.tyfd.gov.tw/tyfd119"
@@ -63,7 +64,27 @@ def selenium_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path) -> SeleniumRunResult:
+def _env_enabled(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _save_vehicle_mileage_enabled() -> bool:
+    return _env_enabled("SAVE_VEHICLE_MILEAGE")
+
+
+def _save_disinfection_record_enabled() -> bool:
+    return _env_enabled("SAVE_DISINFECTION_RECORD")
+
+
+def run_local_selenium_task(
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path,
+    profile_name: str = "chrome_profile",
+    debugger_port: int | None = None,
+    use_session_lock: bool = True,
+    tile_name: str = "",
+    force_new_driver: bool = False,
+) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
@@ -79,10 +100,18 @@ def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path
     }
 
     try:
-        lock_acquired = _acquire_selenium_session(f"task {request.task_id}")
+        if use_session_lock:
+            lock_acquired = _acquire_selenium_session(f"task {request.task_id}")
         print(f"[task] creating selenium driver for {request.task_id}", flush=True)
-        debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
-        driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
+        if debugger_port is None and not force_new_driver:
+            debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+        driver = _create_driver(
+            artifacts_dir,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            attach_existing=not force_new_driver,
+        )
+        apply_tile(driver, tile_name)
         print(f"[task] selenium driver ready for {request.task_id}", flush=True)
         _set_window_size_if_enabled(driver, "task")
         driver.implicitly_wait(2)
@@ -104,7 +133,15 @@ def run_local_selenium_task(request: AmbulanceReturnRequest, artifacts_dir: Path
             _release_selenium_session(f"task {request.task_id}")
 
 
-def run_vehicle_mileage_task(request: AmbulanceReturnRequest, artifacts_dir: Path) -> SeleniumRunResult:
+def run_vehicle_mileage_task(
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path,
+    profile_name: str = "chrome_profile",
+    debugger_port: int | None = None,
+    use_session_lock: bool = True,
+    tile_name: str = "",
+    force_new_driver: bool = False,
+) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
@@ -120,13 +157,22 @@ def run_vehicle_mileage_task(request: AmbulanceReturnRequest, artifacts_dir: Pat
     }
 
     try:
-        lock_acquired = _acquire_selenium_session(f"vehicle_mileage {request.task_id}")
-        debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
-        driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
+        if use_session_lock:
+            lock_acquired = _acquire_selenium_session(f"vehicle_mileage {request.task_id}")
+        if debugger_port is None and not force_new_driver:
+            debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+        driver = _create_driver(
+            artifacts_dir,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            attach_existing=not force_new_driver,
+        )
+        apply_tile(driver, tile_name)
         _set_window_size_if_enabled(driver, "vehicle_mileage")
         driver.implicitly_wait(2)
         detail = _open_vehicle_mileage_page(driver, request, output_dir)
-        return SeleniumRunResult(True, "vehicle_mileage_prefilled", detail, summary_path)
+        status = "vehicle_mileage_saved" if _save_vehicle_mileage_enabled() else "vehicle_mileage_prefilled"
+        return SeleniumRunResult(True, status, detail, summary_path)
     except Exception as exc:
         if driver is not None:
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_error")
@@ -142,6 +188,11 @@ def run_disinfection_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
     existing_driver: webdriver.Chrome | None = None,
+    profile_name: str = "chrome_profile",
+    debugger_port: int | None = None,
+    use_session_lock: bool = True,
+    tile_name: str = "",
+    force_new_driver: bool = False,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,14 +210,23 @@ def run_disinfection_task(
     }
 
     try:
-        lock_acquired = _acquire_selenium_session(f"disinfection {request.task_id}")
+        if use_session_lock:
+            lock_acquired = _acquire_selenium_session(f"disinfection {request.task_id}")
         if driver is None:
-            debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
-            driver = _create_driver(artifacts_dir, debugger_port=debugger_port, attach_existing=True)
+            if debugger_port is None and not force_new_driver:
+                debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+            driver = _create_driver(
+                artifacts_dir,
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                attach_existing=not force_new_driver,
+            )
+        apply_tile(driver, tile_name)
         _set_window_size_if_enabled(driver, "disinfection")
         driver.implicitly_wait(2)
         detail = _open_disinfection_page(driver, request, output_dir)
-        return SeleniumRunResult(True, "disinfection_session_ready", detail, summary_path)
+        status = "disinfection_saved" if _save_disinfection_record_enabled() else "disinfection_session_ready"
+        return SeleniumRunResult(True, status, detail, summary_path)
     except Exception as exc:
         if driver is not None:
             _save_artifacts(driver, output_dir, request.task_id, "disinfection_error")
@@ -178,7 +238,7 @@ def run_disinfection_task(
             _release_selenium_session(f"disinfection {request.task_id}")
 
 
-def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "6h") -> DutyCaseLookupResult:
+def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -> DutyCaseLookupResult:
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "latest.json"
@@ -192,7 +252,8 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "6h") ->
             artifacts_dir,
             profile_name="case_lookup_profile",
             debugger_port=CASE_LOOKUP_DEBUGGER_PORT,
-            attach_existing=True,
+            attach_existing=False,
+            headless=True,
         )
     except Exception as exc:
         _quit_driver(driver)
@@ -375,6 +436,7 @@ def _create_driver(
     profile_name: str = "chrome_profile",
     debugger_port: int | None = None,
     attach_existing: bool = False,
+    headless: bool = False,
 ) -> webdriver.Chrome:
     remote_url = os.getenv("SELENIUM_REMOTE_URL", "").strip()
     if remote_url:
@@ -387,21 +449,27 @@ def _create_driver(
         driver.set_script_timeout(page_timeout)
         return driver
 
-    if attach_existing and debugger_port:
+    if attach_existing and debugger_port and not headless:
         existing = _connect_existing_chrome(debugger_port)
         if existing:
             return existing
 
     options = Options()
-    options.add_argument("--start-maximized")
+    if headless:
+        options.add_argument(os.getenv("SELENIUM_HEADLESS_ARG", "--headless=new"))
+        options.add_argument("--window-size=1280,900")
+    else:
+        options.add_argument("--start-maximized")
     options.add_argument("--disable-popup-blocking")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     user_data_dir = _profile_dir(profile_name)
     options.add_argument(f"--user-data-dir={user_data_dir}")
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
-    if debugger_port:
+    if debugger_port and not headless:
         options.add_argument(f"--remote-debugging-port={debugger_port}")
-    if os.getenv("SELENIUM_DETACH", "true").strip().lower() not in {"0", "false", "no", "off"}:
+    if not headless and os.getenv("SELENIUM_DETACH", "true").strip().lower() not in {"0", "false", "no", "off"}:
         options.add_experimental_option("detach", True)
     return webdriver.Chrome(options=options)
 
@@ -480,13 +548,16 @@ def _connect_existing_chrome(debugger_port: int) -> webdriver.Chrome | None:
 def _profile_dir(profile_name: str) -> Path:
     configured = os.getenv("CHROME_PROFILE_DIR", "").strip()
     if configured:
-        path = Path(configured).expanduser().resolve()
+        configured_path = Path(configured).expanduser().resolve()
+        path = configured_path if profile_name == "chrome_profile" else configured_path.parent / profile_name
         path.mkdir(parents=True, exist_ok=True)
         return path
     root = Path(os.getenv("SELENIUM_PROFILE_ROOT") or os.getenv("LOCALAPPDATA") or Path.home())
     profile_root = root / "ambulance_return_bot"
     profile_root.mkdir(parents=True, exist_ok=True)
-    return profile_root / profile_name
+    path = profile_root / profile_name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _open_duty_work_log_case_picker(
@@ -542,7 +613,7 @@ def _prepare_duty_work_log_form(
     _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
     _switch_to_window_containing(driver, "_txtSDATE")
     time.sleep(1.5)
-    _set_case_query_date_range(driver, lookup_range="today")
+    _set_case_query_date_range(driver, lookup_range="24h")
     _click_query_if_present(driver)
     time.sleep(1)
     cases = _extract_all_emergency_cases(driver)
@@ -552,7 +623,7 @@ def _prepare_duty_work_log_form(
         return SeleniumRunResult(
             ok=False,
             status="duty_case_not_found",
-            detail=f"未在今日案件清單找到符合時間={request.case_time}、地址={request.case_address} 的案件；已保存查詢頁截圖。",
+            detail=f"未在前 24 小時案件清單找到符合時間={request.case_time}、地址={request.case_address} 的案件；已保存查詢頁截圖。",
             summary_path=summary_path,
         )
     if not _click_case_choose(driver, case["case_id"]):
@@ -602,6 +673,8 @@ def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceRetur
         if _is_ppe_login_page(driver):
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
             return "\u8eca\u8f1b\u91cc\u7a0b PPE \u81ea\u52d5\u767b\u5165\u672a\u901a\u904e\uff1b\u8acb\u624b\u52d5\u767b\u5165\u5f8c\u518d\u57f7\u884c\u3002"
+        driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
+        time.sleep(1.5)
         detail = _prepare_vehicle_mileage_form(driver, request)
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
     except WebDriverException:
@@ -900,8 +973,8 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
     _add_vehicle_mileage_row(driver)
     time.sleep(1)
 
-    start_date = _today_yyyymmdd()
-    end_date = start_date
+    start_date = request.service_case_date().strftime("%Y%m%d")
+    end_date = request.service_return_date().strftime("%Y%m%d")
     start_mileage = latest_end_mileage
     end_mileage = _resolve_end_mileage(start_mileage, request.mileage)
     values = {
@@ -917,12 +990,15 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
     }
     _fill_vehicle_grid_values(driver, values)
     _assert_vehicle_mileage_values_present(driver, values)
-    if os.getenv("SAVE_VEHICLE_MILEAGE", "false").strip().lower() in {"1", "true", "yes", "on"}:
+    if _save_vehicle_mileage_enabled():
         _click_text_if_present(driver, ["\u5132\u5b58"])
         alert_text = _accept_alert_if_present(driver)
-        if alert_text:
-            return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u78ba\u8a8d\u8996\u7a97\uff1a{alert_text}"
-        return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\u3002"
+        sweetalert_text = _confirm_sweetalert_if_present(driver)
+        final_alert_text = _accept_alert_if_present(driver, timeout=1)
+        confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
+        if confirmations:
+            return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
+        return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u5617\u8a66\u78ba\u8a8d\u3002"
     return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
 
 
@@ -1010,7 +1086,7 @@ def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceRet
         updated = 0
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
 
-    if os.getenv("SAVE_DISINFECTION_RECORD", "false").strip().lower() in {"1", "true", "yes", "on"}:
+    if _save_disinfection_record_enabled():
         if not _click_text_if_present(driver, ["\u5132\u5b58"]):
             raise WebDriverException("missing disinfection save button")
         alert_text = _accept_alert_if_present(driver)
@@ -1061,12 +1137,7 @@ def _set_disinfection_query_date(driver: webdriver.Chrome, date_text: str) -> No
 
 
 def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
-    case_hhmm = normalize_hhmm_local(request.case_time)
-    return_hhmm = normalize_hhmm_local(request.return_time)
-    query_date = request.created_at
-    if len(case_hhmm) == 4 and len(return_hhmm) == 4 and int(case_hhmm) > int(return_hhmm):
-        query_date = query_date - timedelta(days=1)
-    return query_date.strftime("%Y-%m-%d")
+    return request.service_case_date().strftime("%Y-%m-%d")
 
 def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str) -> bool:
     digits = normalize_hhmm_local(case_time)
@@ -1173,6 +1244,34 @@ def _accept_alert_if_present(driver: webdriver.Chrome, timeout: float = 4) -> st
             return text
         except Exception:
             time.sleep(0.2)
+    return ""
+
+
+def _confirm_sweetalert_if_present(driver: webdriver.Chrome, timeout: float = 4) -> str:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = driver.execute_script(
+            """
+            const overlay = document.querySelector('.swal-overlay--show-modal');
+            if (!overlay) return {clicked: false, text: ''};
+            const modal = overlay.querySelector('.swal-modal') || overlay;
+            const content = Array.from(modal.querySelectorAll('.swal-title, .swal-text, .swal-content'))
+              .map(el => String(el.innerText || el.textContent || '').trim())
+              .filter(Boolean)
+              .join(' ');
+            const buttons = Array.from(modal.querySelectorAll('button'));
+            const target = modal.querySelector('.swal-button--confirm') ||
+              buttons.find(button => /^(是|確定|OK|Yes)$/i.test(String(button.innerText || button.textContent || button.value || '').trim()));
+            if (!target) return {clicked: false, text: content};
+            target.click();
+            return {clicked: true, text: content};
+            """
+        )
+        if isinstance(result, dict) and result.get("clicked"):
+            text = str(result.get("text") or "")
+            time.sleep(1)
+            return text
+        time.sleep(0.2)
     return ""
 
 
@@ -1408,7 +1507,7 @@ def _today_yyyymmdd() -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
-def _open_case_query(driver: webdriver.Chrome, lookup_range: str = "6h") -> None:
+def _open_case_query(driver: webdriver.Chrome, lookup_range: str = "24h") -> None:
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
     time.sleep(1)
     _click_by_text_or_id(driver, ["_btnInsert"], ["\u65b0\u589e"])
@@ -1706,12 +1805,14 @@ def _click_query_if_present(driver: webdriver.Chrome) -> None:
         return
 
 
-def _set_case_query_date_range(driver: webdriver.Chrome, lookup_range: str = "6h") -> None:
+def _set_case_query_date_range(driver: webdriver.Chrome, lookup_range: str = "24h") -> None:
     end_at = datetime.now()
     if lookup_range == "today":
         start_at = end_at.replace(hour=0, minute=0, second=0, microsecond=0)
-    else:
+    elif lookup_range == "6h":
         start_at = end_at - timedelta(hours=6)
+    else:
+        start_at = end_at - timedelta(hours=24)
     start_date = _roc_date(start_at)
     end_date = _roc_date(end_at)
     driver.execute_script(
@@ -1753,7 +1854,9 @@ def _roc_date(value: datetime) -> str:
 def _lookup_range_label(lookup_range: str) -> str:
     if lookup_range == "today":
         return "\u4eca\u5929"
-    return "\u6700\u8fd1 6 \u5c0f\u6642"
+    if lookup_range == "6h":
+        return "\u6700\u8fd1 6 \u5c0f\u6642"
+    return "\u524d 24 \u5c0f\u6642"
 
 
 def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:

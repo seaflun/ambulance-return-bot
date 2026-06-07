@@ -8,7 +8,8 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
-
+from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
+from disinfect import login_and_get_driver
 from dotenv import load_dotenv
 
 import worker
@@ -31,6 +32,8 @@ class WorkerGui(tk.Tk):
         self.minsize(780, 680)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self.log_path = Path(os.getenv("ARTIFACTS_DIR", "artifacts")) / "worker_gui.log"
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.worker_thread: threading.Thread | None = None
         self.worker_started_at = ""
 
@@ -44,7 +47,6 @@ class WorkerGui(tk.Tk):
 
         self._build_ui()
         self.after(250, self._drain_log)
-        self.after(750, self._warm_worker_chrome)
 
     def _build_ui(self) -> None:
         root = ttk.Frame(self, padding=14)
@@ -89,6 +91,8 @@ class WorkerGui(tk.Tk):
         ttk.Button(task_actions, text="執行工作紀錄", command=self._run_selected_task).pack(side="left", padx=(8, 0))
         ttk.Button(task_actions, text="執行車輛里程", command=self._run_selected_vehicle_mileage).pack(side="left", padx=(8, 0))
         ttk.Button(task_actions, text="執行消毒紀錄", command=self._run_selected_disinfection).pack(side="left", padx=(8, 0))
+        ttk.Button(task_actions, text="執行耗材", command=self._run_selected_consumables).pack(side="left", padx=(8, 0))
+        ttk.Button(task_actions, text="四站登打", command=self._run_selected_all_sites).pack(side="left", padx=(8, 0))
         ttk.Label(task_actions, text="未選任務時會自動使用第一筆").pack(side="left", padx=(12, 0))
         columns = ("status", "vehicle", "driver", "time", "address")
         self.task_tree = ttk.Treeview(tasks, columns=columns, show="tree headings", height=5)
@@ -256,6 +260,24 @@ class WorkerGui(tk.Tk):
         self._log(f"已收到消毒紀錄指令，開始取任務：{task_id}")
         threading.Thread(target=self._run_selected_disinfection_background, args=(task_id,), daemon=True).start()
 
+    def _run_selected_consumables(self) -> None:
+        task_id = self._selected_task_id()
+        if not task_id:
+            return
+        self._apply_server_url()
+        self.worker_status.set(f"正在執行耗材：{task_id}")
+        self._log(f"開始執行耗材：{task_id}")
+        threading.Thread(target=self._run_selected_consumables_background, args=(task_id,), daemon=True).start()
+
+    def _run_selected_all_sites(self) -> None:
+        task_id = self._selected_task_id()
+        if not task_id:
+            return
+        self._apply_server_url()
+        self.worker_status.set(f"四站登打：{task_id}")
+        self._log(f"四站登打啟動：{task_id}")
+        threading.Thread(target=self._run_selected_all_sites_background, args=(task_id,), daemon=True).start()
+
     def _selected_task_id(self) -> str:
         if self.task_tree is None:
             return ""
@@ -271,7 +293,15 @@ class WorkerGui(tk.Tk):
             return ""
         return str(selected[0])
 
-    def _run_selected_task_background(self, task_id: str) -> None:
+    def _run_selected_task_background(
+        self,
+        task_id: str,
+        profile_name: str = "chrome_profile",
+        debugger_port: int | None = None,
+        use_session_lock: bool = True,
+        tile_name: str = "",
+        force_new_driver: bool = False,
+    ) -> None:
         server_url = self.server_url.get().strip().rstrip("/")
         worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
         worker.MANUAL_TASK_ACTIVE.set()
@@ -285,7 +315,19 @@ class WorkerGui(tk.Tk):
                 return
             self.log_queue.put(f"開始執行選取任務：{task_id}")
             selenium_started_at = time.monotonic()
-            worker.run_task(server_url, worker_id, task, Path(os.getenv("ARTIFACTS_DIR", "artifacts")))
+            result = worker.run_task(
+                server_url,
+                worker_id,
+                task,
+                Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                use_session_lock=use_session_lock,
+                tile_name=tile_name,
+                force_new_driver=force_new_driver,
+            )
+            if result is not None:
+                self.log_queue.put(f"工作紀錄結果：{result.status}；{result.detail}")
             self.log_queue.put(f"選取任務已執行完成：{task_id}，登打耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
             self._refresh_tasks()
         except Exception as exc:
@@ -293,13 +335,21 @@ class WorkerGui(tk.Tk):
         finally:
             worker.MANUAL_TASK_ACTIVE.clear()
 
-    def _run_selected_vehicle_mileage_background(self, task_id: str) -> None:
+    def _run_selected_vehicle_mileage_background(
+        self,
+        task_id: str,
+        profile_name: str = "chrome_profile",
+        debugger_port: int | None = None,
+        use_session_lock: bool = True,
+        tile_name: str = "",
+        force_new_driver: bool = False,
+    ) -> None:
         server_url = self.server_url.get().strip().rstrip("/")
         worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
         worker.MANUAL_TASK_ACTIVE.set()
         started_at = time.monotonic()
         try:
-            if not _worker_chrome_is_running():
+            if use_session_lock and not _worker_chrome_is_running():
                 self.log_queue.put("車輛里程：預先喚起 Chrome...")
                 open_url_in_worker_chrome("about:blank")
             self.log_queue.put("車輛里程：向 NAS 取任務...")
@@ -310,7 +360,19 @@ class WorkerGui(tk.Tk):
                 return
             self.log_queue.put(f"開始執行車輛里程：{task_id}")
             selenium_started_at = time.monotonic()
-            worker.run_vehicle_task(server_url, worker_id, task, Path(os.getenv("ARTIFACTS_DIR", "artifacts")))
+            result = worker.run_vehicle_task(
+                server_url,
+                worker_id,
+                task,
+                Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                use_session_lock=use_session_lock,
+                tile_name=tile_name,
+                force_new_driver=force_new_driver,
+            )
+            if result is not None:
+                self.log_queue.put(f"車輛里程結果：{result.status}；{result.detail}")
             self.log_queue.put(f"車輛里程已執行完成：{task_id}，登打耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
             self._refresh_tasks()
         except Exception as exc:
@@ -318,35 +380,128 @@ class WorkerGui(tk.Tk):
         finally:
             worker.MANUAL_TASK_ACTIVE.clear()
 
-    def _run_selected_disinfection_background(self, task_id: str) -> None:
+    def _run_selected_disinfection_background(
+        self,
+        task_id: str,
+        profile_name: str = "disinfection_profile",
+        debugger_port: int | None = None,
+        use_session_lock: bool = True,
+        tile_name: str = "",
+        force_new_driver: bool = False,
+    ) -> None:
         server_url = self.server_url.get().strip().rstrip("/")
         worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
         worker.MANUAL_TASK_ACTIVE.set()
         started_at = time.monotonic()
         try:
-            if not _worker_chrome_is_running():
-                self.log_queue.put("消毒紀錄：預先喚起 Chrome...")
-                open_url_in_worker_chrome("about:blank")
+            # 💡 註解掉舊的預喚起 Chrome 邏輯，因為我們會用 login_and_get_driver() 精準喚起
+            # if not _worker_chrome_is_running():
+            #     self.log_queue.put("消毒紀錄：預先喚起 Chrome...")
+            #     open_url_in_worker_chrome("about:blank")
+            
             self.log_queue.put("消毒紀錄：向 NAS 取任務...")
             task = worker.fetch_task(server_url, task_id)
             self.log_queue.put(f"消毒紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
+            
             if not task:
                 self.log_queue.put(f"找不到任務：{task_id}")
                 return
+                
             self.log_queue.put(f"開始執行消毒紀錄：{task_id}")
             selenium_started_at = time.monotonic()
-            worker.run_disinfection_worker_task(
+            
+            # 🚀 方案 B 核心改動：先呼叫自動化登入，拿到已經登入成功的瀏覽器 driver
+            self.log_queue.put("消毒紀錄：正在啟動 Chrome 並進行 AI 驗證碼登入...")
+            active_driver = login_and_get_driver(profile_name=profile_name, debugger_port=debugger_port, tile_name=tile_name)
+            
+            # 將這個登入好的 active_driver 餵給原本的 worker 任務執行後續動作
+            # (備註：請確保你的 worker.run_disinfection_worker_task 支援傳入自訂 driver 參數)
+            result = worker.run_disinfection_worker_task(
                 server_url,
                 worker_id,
                 task,
                 Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
+                driver=active_driver,
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                use_session_lock=use_session_lock,
+                tile_name=tile_name,
+                force_new_driver=force_new_driver,
             )
-            self.log_queue.put(f"消毒紀錄已執行完成：{task_id}，耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
+            elapsed = time.monotonic() - selenium_started_at
+            if result is not None:
+                self.log_queue.put(f"???????{result.status}??? {elapsed:.1f} ?")
+                self.log_queue.put(f"???????{result.detail}")
+            else:
+                self.log_queue.put(f"??????????{task_id}??? {elapsed:.1f} ?")
             self._refresh_tasks()
+            
         except Exception as exc:
             self.log_queue.put(f"執行消毒紀錄失敗：{task_id} {exc}")
         finally:
             worker.MANUAL_TASK_ACTIVE.clear()
+
+    def _run_selected_consumables_background(
+        self,
+        task_id: str,
+        profile_name: str = "consumables_profile",
+        debugger_port: int | None = None,
+        use_session_lock: bool = True,
+        tile_name: str = "",
+        force_new_driver: bool = False,
+    ) -> None:
+        server_url = self.server_url.get().strip().rstrip("/")
+        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        worker.MANUAL_TASK_ACTIVE.set()
+        started_at = time.monotonic()
+        try:
+            self.log_queue.put("耗材：向 NAS 取任務...")
+            task = worker.fetch_task(server_url, task_id)
+            if not task:
+                self.log_queue.put(f"找不到任務：{task_id}")
+                return
+            self.log_queue.put("耗材：正在啟動 Chrome 並登入一站通...")
+            driver = login_acs_and_get_driver(profile_name=profile_name, debugger_port=debugger_port, tile_name=tile_name)
+            detail = open_consumable_record_for_task(driver, task)
+            worker.post_status(
+                server_url,
+                task_id,
+                "consumables_saved",
+                detail,
+                site_key="consumables",
+                site_name="一站通耗材",
+            )
+            self.log_queue.put(f"耗材系統已開啟案件內容：{detail}，耗時 {time.monotonic() - started_at:.1f} 秒")
+            self._refresh_tasks()
+        except Exception as exc:
+            self.log_queue.put(f"執行耗材失敗：{task_id} {exc}")
+        finally:
+            worker.MANUAL_TASK_ACTIVE.clear()
+
+    def _run_selected_all_sites_background(self, task_id: str) -> None:
+        profile_suffix = task_id.replace("-", "_")
+        runners = [
+            ("工作紀錄", self._run_selected_task_background, f"duty_work_log_profile_{profile_suffix}", None, "duty_work_log"),
+            ("車輛里程", self._run_selected_vehicle_mileage_background, f"vehicle_mileage_profile_{profile_suffix}", None, "vehicle_mileage"),
+            ("消毒紀錄", self._run_selected_disinfection_background, f"disinfection_profile_{profile_suffix}", None, "disinfection"),
+            ("耗材", self._run_selected_consumables_background, f"consumables_profile_{profile_suffix}", None, "consumables"),
+        ]
+        threads: list[threading.Thread] = []
+        for name, target, profile_name, debugger_port, tile_name in runners:
+            thread = threading.Thread(
+                target=target,
+                args=(task_id, profile_name, debugger_port, False, tile_name, True),
+                name=f"all-sites-{name}",
+                daemon=True,
+            )
+            thread.start()
+            threads.append(thread)
+            self.log_queue.put(f"四站登打已啟動：{name}")
+            time.sleep(0.5)
+        for thread in threads:
+            thread.join()
+        self.log_queue.put(f"四站登打流程結束：{task_id}")
+        self._refresh_tasks()
 
     def _warm_worker_chrome(self) -> None:
         if os.getenv("WORKER_WARM_CHROME_ON_START", "true").strip().lower() in {"0", "false", "no", "off"}:
@@ -374,6 +529,11 @@ class WorkerGui(tk.Tk):
                 break
             self.log_text.insert("end", message + "\n")
             self.log_text.see("end")
+            try:
+                with self.log_path.open("a", encoding="utf-8") as f:
+                    f.write(message + "\n")
+            except Exception:
+                pass
         self.after(250, self._drain_log)
 
 

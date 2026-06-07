@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime
 
-from ambulance_bot.models import clean_case_address, parse_consumables, parse_request, request_from_form
+from ambulance_bot.models import clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_form
 from ambulance_bot.models import AmbulanceReturnRequest
 
 
@@ -10,7 +10,7 @@ class ModelParsingTests(unittest.TestCase):
         request = parse_request("\u6551\u8b77\u56de\u7a0b\n\u8eca\u8f1b:91A1")
 
         self.assertEqual(request.vehicle, "91A1")
-        self.assertEqual(request.consumables, {"\u53e3\u7f69": 2, "\u624b\u5957": 2})
+        self.assertEqual(request.consumables, {"桃-口罩(片)": 2, "桃-9吋手套-XL(雙)": 2})
         self.assertEqual(request.patient_summary, "\u7537\u4e00\u540d")
         self.assertEqual(
             request.disinfection_items,
@@ -55,6 +55,7 @@ class ModelParsingTests(unittest.TestCase):
     def test_request_from_form_parses_disinfection_items(self):
         request = request_from_form(
             {
+                "case_id": "20260602011652012",
                 "vehicle": "\u65b0\u576191",
                 "driver": "\u66fe\u5f65\u7db8",
                 "disinfection_items": ["\u6551\u8b77\u8eca\u9ad4", "\u64d4\u67b6\u5e8a"],
@@ -62,6 +63,7 @@ class ModelParsingTests(unittest.TestCase):
             }
         )
 
+        self.assertEqual(request.case_id, "20260602011652012")
         self.assertEqual(request.disinfection_items, ["\u6551\u8b77\u8eca\u9ad4", "\u64d4\u67b6\u5e8a", "\u81ea\u8a02\u9805\u76ee"])
 
     def test_return_time_description_uses_mobile_hhmm_with_zero_seconds(self):
@@ -74,6 +76,35 @@ class ModelParsingTests(unittest.TestCase):
 
         self.assertEqual(request.return_time_hhmm, "1806")
         self.assertEqual(request.return_time_description_line, "\u8fd4\u968a\u6642\u9593:2026/06/06 18:06:00")
+
+    def test_case_date_parses_roc_date_and_return_cross_day(self):
+        request = request_from_form({"case_date": "1150606", "case_time": "2350", "return_time": "0010"})
+
+        self.assertEqual(parse_case_date("1150606").strftime("%Y-%m-%d"), "2026-06-06")
+        self.assertEqual(request.service_case_date().strftime("%Y-%m-%d"), "2026-06-06")
+        self.assertEqual(request.service_return_date().strftime("%Y-%m-%d"), "2026-06-07")
+        self.assertIn("2026/06/07 00:10:00", request.return_time_description_line)
+
+    def test_explicit_return_date_overrides_cross_day_guess(self):
+        request = request_from_form({"case_date": "2026-06-06", "return_date": "2026-06-06", "case_time": "2350", "return_time": "0010"})
+
+        self.assertEqual(request.service_return_date().strftime("%Y-%m-%d"), "2026-06-06")
+
+    def test_no_patient_uses_short_duty_status_text(self):
+        request = request_from_form({"vehicle": "\u65b0\u576191", "driver": "\u66fe\u5f65\u7db8", "patient_summary": "\u7121"})
+
+        self.assertEqual(request.duty_status_text, "\u65b0\u576191;\u66fe\u5f65\u7db8")
+
+    def test_missing_case_date_falls_back_to_cross_day_created_at(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=datetime(2026, 6, 7, 1, 0),
+            raw_text="",
+            case_time="2350",
+            return_time="0010",
+        )
+
+        self.assertEqual(request.service_case_date().strftime("%Y-%m-%d"), "2026-06-06")
 
     def test_parse_consumables_accepts_multiple_separators(self):
         self.assertEqual(
