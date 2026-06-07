@@ -57,7 +57,7 @@ def new_task():
     lookup_request = read_case_lookup_request()
     if lookup_request.get("status") == "case_lookup_requested":
         current_detail = str(case_lookup.get("detail") or "").strip()
-        suffix = "已要求公務電腦重新查詢，等待 worker 回傳。"
+        suffix = "正在查詢案件，請稍候。"
         case_lookup["detail"] = f"{current_detail} {suffix}".strip()
         case_lookup["is_running"] = True
     case_lookup.setdefault("cases", [])
@@ -453,11 +453,12 @@ def read_case_lookup_request() -> dict:
 def write_case_lookup_request(lookup_range: str) -> dict:
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
+    range_label = {"24h": "最近 24 小時", "6h": "最近 6 小時", "today": "今日"}.get(lookup_range, "最近 24 小時")
     payload = {
         "status": "case_lookup_requested",
         "lookup_range": lookup_range,
         "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "detail": "手機端已要求公務電腦 worker 重新查詢前 24 小時案件。",
+        "detail": f"已送出案件查詢，正在查詢{range_label}案件。",
     }
     write_json_atomic(case_lookup_request_path(), payload)
     return payload

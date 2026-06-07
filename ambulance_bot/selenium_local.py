@@ -252,8 +252,7 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
             artifacts_dir,
             profile_name="case_lookup_profile",
             debugger_port=CASE_LOOKUP_DEBUGGER_PORT,
-            attach_existing=False,
-            headless=True,
+            attach_existing=True,
         )
     except Exception as exc:
         _quit_driver(driver)
