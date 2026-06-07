@@ -40,6 +40,7 @@ class WebAppTests(unittest.TestCase):
         self.original_desktop_fast_mode = os.environ.get("DESKTOP_FAST_MODE")
         self.original_task_execution_mode = os.environ.get("TASK_EXECUTION_MODE")
         self.original_start_local_case_lookup = app_module.start_local_case_lookup
+        self.original_local_host_candidates = app_module.local_host_candidates
         self.original_query_duty_emergency_cases = selenium_local_module.query_duty_emergency_cases
         os.environ["WORKER_TOKEN"] = ""
         os.environ["DESKTOP_FAST_MODE"] = "0"
@@ -70,6 +71,7 @@ class WebAppTests(unittest.TestCase):
         else:
             os.environ["TASK_EXECUTION_MODE"] = self.original_task_execution_mode
         app_module.start_local_case_lookup = self.original_start_local_case_lookup
+        app_module.local_host_candidates = self.original_local_host_candidates
         selenium_local_module.query_duty_emergency_cases = self.original_query_duty_emergency_cases
         self.tmp.cleanup()
 
@@ -165,6 +167,22 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(calls, ["6h"])
+
+    def test_local_ip_query_cases_starts_local_lookup_when_fast_mode_auto(self):
+        calls = []
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        app_module.local_host_candidates = lambda: {"192.168.50.23"}
+        app_module.start_local_case_lookup = lambda lookup_range: calls.append(lookup_range)
+
+        response = self.client.post(
+            "/cases/query",
+            base_url="http://192.168.50.23:8091",
+            data={"lookup_range": "24h"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(calls, ["24h"])
 
     def test_query_cases_does_not_start_local_lookup_when_fast_mode_disabled(self):
         calls = []

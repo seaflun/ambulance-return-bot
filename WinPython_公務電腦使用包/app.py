@@ -87,7 +87,9 @@ def query_cases():
     if lookup_range not in {"24h", "6h", "today"}:
         lookup_range = "24h"
     write_case_lookup_request(lookup_range)
-    if effective_task_execution_mode() == "desktop_fast":
+    mode = effective_task_execution_mode()
+    print(f"[case_lookup] query requested host={request.host} range={lookup_range} mode={mode}", flush=True)
+    if mode == "desktop_fast":
         start_local_case_lookup(lookup_range)
     return redirect(url_for("new_task"))
 
@@ -334,14 +336,34 @@ def effective_task_execution_mode() -> str:
 
 def request_is_local_host() -> bool:
     host = _host_without_port(request.host)
+    return host.lower() in local_host_candidates()
+
+
+def local_host_candidates() -> set[str]:
     local_hosts = {"localhost", "127.0.0.1", "::1"}
     try:
-        local_hosts.add(socket.gethostname().lower())
-        local_hosts.add(socket.getfqdn().lower())
-        local_hosts.add(socket.gethostbyname(socket.gethostname()))
+        names = {socket.gethostname(), socket.getfqdn()}
+        for name in list(names):
+            if not name:
+                continue
+            local_hosts.add(name)
+            try:
+                hostname, aliases, addresses = socket.gethostbyname_ex(name)
+                local_hosts.add(hostname)
+                local_hosts.update(aliases)
+                local_hosts.update(addresses)
+            except OSError:
+                pass
+            try:
+                for item in socket.getaddrinfo(name, None):
+                    sockaddr = item[4]
+                    if sockaddr:
+                        local_hosts.add(str(sockaddr[0]))
+            except OSError:
+                pass
     except OSError:
         pass
-    return host.lower() in {item.lower() for item in local_hosts if item}
+    return {item.lower() for item in local_hosts if item}
 
 
 def _host_without_port(value: str) -> str:
