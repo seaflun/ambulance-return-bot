@@ -66,6 +66,25 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.case_id, "20260602011652012")
         self.assertEqual(request.disinfection_items, ["\u6551\u8b77\u8eca\u9ad4", "\u64d4\u67b6\u5e8a", "\u81ea\u8a02\u9805\u76ee"])
 
+    def test_request_from_form_keeps_empty_consumables_and_disinfection_items(self):
+        request = request_from_form({"vehicle": "\u65b0\u576191", "consumables": ""})
+
+        self.assertEqual(request.consumables, {})
+        self.assertEqual(request.disinfection_items, [])
+
+    def test_request_from_form_keeps_personnel_accounts_by_type(self):
+        request = request_from_form(
+            {
+                "personnel": "Alice,Bob",
+                "personnel_accounts": "B123017532,tyfd02317,L124961260",
+            }
+        )
+
+        self.assertEqual(request.personnel, ["Alice", "Bob"])
+        self.assertEqual(request.personnel_accounts, ["B123017532", "tyfd02317", "L124961260"])
+        self.assertEqual(request.tyfd_personnel_accounts, ["tyfd02317"])
+        self.assertEqual(request.consumables_account_candidates, ["B123017532", "L124961260"])
+
     def test_return_time_description_uses_mobile_hhmm_with_zero_seconds(self):
         request = AmbulanceReturnRequest(
             task_id="task-1",
@@ -120,6 +139,10 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(
             clean_case_address("\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4fdd\u969c\u4e8c\u8def-\u6848\u4ef6\u91cd\u8907"),
             "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4fdd\u969c\u4e8c\u8def",
+        )
+        self.assertEqual(
+            clean_case_address("\u6843\u5712\u5e02\u89c0\u97f3\u5340\u89c0\u97f3\u9ad8\u4e2d(\u4e2d\u5c71\u8def\u4e8c\u6bb5\u5074)-\u8eca\u798d\u62d2\u9001"),
+            "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u89c0\u97f3\u9ad8\u4e2d(\u4e2d\u5c71\u8def\u4e8c\u6bb5\u5074)",
         )
 
 

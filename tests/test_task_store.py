@@ -34,6 +34,18 @@ class JsonTaskStoreTests(unittest.TestCase):
             completed = store.get("task-1")
             self.assertEqual(completed["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
 
+    def test_delete_removes_task_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="delete-me", created_at=datetime.now(), raw_text="")
+            store.create(request)
+
+            store.delete("delete-me")
+
+            self.assertFalse((Path(tmp) / "delete-me.json").exists())
+            with self.assertRaises(FileNotFoundError):
+                store.get("delete-me")
+
     def test_cleanup_removes_old_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
@@ -45,7 +57,7 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(store.list_recent(), [])
             self.assertFalse((Path(tmp) / "old-task.json").exists())
 
-    def test_cleanup_removes_fully_done_tasks(self):
+    def test_cleanup_keeps_fully_done_tasks_until_expired(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
             request = AmbulanceReturnRequest(task_id="done-task", created_at=datetime.now(), raw_text="")
@@ -54,8 +66,8 @@ class JsonTaskStoreTests(unittest.TestCase):
                 site["status"] = "completed_by_user"
             store.save_payload("done-task", payload)
 
-            self.assertEqual(store.list_recent(), [])
-            self.assertFalse((Path(tmp) / "done-task.json").exists())
+            self.assertEqual(len(store.list_recent()), 1)
+            self.assertTrue((Path(tmp) / "done-task.json").exists())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+﻿{
+  "remoteVersionUrl": "https://github.com/seaflun/ambulance-return-bot/releases/latest/download/ambulance-return-version.txt",
+  "remoteZipUrl": "https://github.com/seaflun/ambulance-return-bot/releases/latest/download/ambulance-return-public-package.zip",
+  "remoteSha256Url": "https://github.com/seaflun/ambulance-return-bot/releases/latest/download/ambulance-return-public-package.zip.sha256.txt"
+}

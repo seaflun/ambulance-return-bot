@@ -2,6 +2,7 @@
 !.env.example
 artifacts/
 NAS包/
+UPDATE/
 logs/
 __pycache__/
 *.pyc
@@ -47,3 +48,17 @@ credentials.json
 Thumbs.db
 .vscode/
 .idea/
+
+# public computer package runtime/local-only files
+WinPython_公務電腦使用包/.env
+WinPython_公務電腦使用包/.env.*
+!WinPython_公務電腦使用包/.env.example
+WinPython_公務電腦使用包/logs/
+WinPython_公務電腦使用包/runtime_outputs/
+WinPython_公務電腦使用包/tmp/
+WinPython_公務電腦使用包/temp/
+WinPython_公務電腦使用包/cache/
+WinPython_公務電腦使用包/.cache/
+WinPython_公務電腦使用包/snapshots/
+WinPython_公務電腦使用包/__pycache__/
+WinPython_公務電腦使用包/**/*.pyc

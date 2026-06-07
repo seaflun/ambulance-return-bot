@@ -74,6 +74,26 @@ class SeleniumLocalTests(unittest.TestCase):
                 else:
                     os.environ["CHROME_PROFILE_DIR"] = previous
 
+    def test_configured_profile_dir_expands_environment_variables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_profile = os.environ.get("CHROME_PROFILE_DIR")
+            previous_root = os.environ.get("AMBULANCE_TEST_PROFILE_ROOT")
+            try:
+                os.environ["AMBULANCE_TEST_PROFILE_ROOT"] = tmp
+                os.environ["CHROME_PROFILE_DIR"] = r"%AMBULANCE_TEST_PROFILE_ROOT%\chrome_profile"
+
+                self.assertEqual(_profile_dir("chrome_profile"), Path(tmp) / "chrome_profile")
+                self.assertEqual(_profile_dir("disinfection_profile_task1"), Path(tmp) / "disinfection_profile_task1")
+            finally:
+                if previous_profile is None:
+                    os.environ.pop("CHROME_PROFILE_DIR", None)
+                else:
+                    os.environ["CHROME_PROFILE_DIR"] = previous_profile
+                if previous_root is None:
+                    os.environ.pop("AMBULANCE_TEST_PROFILE_ROOT", None)
+                else:
+                    os.environ["AMBULANCE_TEST_PROFILE_ROOT"] = previous_root
+
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]
         previous = {
