@@ -226,10 +226,7 @@ class WorkerGui(tk.Tk):
             self._log(f"本機網頁已可使用：{self.local_web_url.get()}")
             self._open_local_web_app()
             return
-        env = os.environ.copy()
-        env["WEB_HOST"] = local_web_host()
-        env["WEB_PORT"] = str(local_web_port())
-        env.setdefault("DESKTOP_FAST_MODE", "auto")
+        env = local_web_process_env()
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.local_web_process = subprocess.Popen(
             [local_web_python_executable(), "-u", str(Path(__file__).with_name("app.py"))],
@@ -906,6 +903,14 @@ def local_web_base_url() -> str:
 
 def local_web_url() -> str:
     return f"{local_web_base_url()}/app"
+
+
+def local_web_process_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["WEB_HOST"] = local_web_host()
+    env["WEB_PORT"] = str(local_web_port())
+    env["DESKTOP_FAST_MODE"] = "auto"
+    return env
 
 
 def local_web_python_executable() -> str:

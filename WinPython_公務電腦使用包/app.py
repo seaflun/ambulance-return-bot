@@ -217,7 +217,16 @@ def complete_site(task_id: str, site_key: str):
 
 @app.get("/status")
 def status():
-    return jsonify({"ok": True, "status": runner.latest_status_text()})
+    return jsonify(
+        {
+            "ok": True,
+            "status": runner.latest_status_text(),
+            "version": package_version(),
+            "host": request.host,
+            "desktop_fast_mode": os.getenv("DESKTOP_FAST_MODE", "auto"),
+            "effective_mode": effective_task_execution_mode(),
+        }
+    )
 
 
 @app.get("/worker/next-task")
@@ -321,6 +330,20 @@ def artifact_file(filename: str):
 
 def task_execution_mode() -> str:
     return os.getenv("TASK_EXECUTION_MODE", "worker_queue").strip().lower()
+
+
+def package_version() -> str:
+    candidates = [
+        Path(__file__).with_name("VERSION.txt"),
+        Path(__file__).with_name("WinPython_公務電腦使用包") / "VERSION.txt",
+    ]
+    for path in candidates:
+        try:
+            if path.exists():
+                return path.read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            pass
+    return ""
 
 
 def effective_task_execution_mode() -> str:

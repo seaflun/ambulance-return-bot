@@ -56,6 +56,20 @@ class WorkerGuiEnvTests(unittest.TestCase):
             else:
                 os.environ["DESKTOP_WEB_PORT"] = old_port
 
+    def test_local_web_process_env_forces_fast_mode_auto(self):
+        old_fast_mode = os.environ.get("DESKTOP_FAST_MODE")
+        try:
+            os.environ["DESKTOP_FAST_MODE"] = "0"
+
+            env = worker_gui.local_web_process_env()
+        finally:
+            if old_fast_mode is None:
+                os.environ.pop("DESKTOP_FAST_MODE", None)
+            else:
+                os.environ["DESKTOP_FAST_MODE"] = old_fast_mode
+
+        self.assertEqual(env["DESKTOP_FAST_MODE"], "auto")
+
     @unittest.skipIf(os.name != "nt", "Windows mutex only runs on Windows")
     def test_single_instance_lock_blocks_duplicate(self):
         name = f"Local\\AmbulanceReturnBotWorkerGuiTest-{uuid.uuid4()}"
