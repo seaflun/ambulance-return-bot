@@ -20,7 +20,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITIONS
-from .duty_credentials import load_duty_credential
+from .duty_credentials import load_duty_credential, load_synced_worker_credential
 from .models import DEFAULT_DISINFECTION_ITEMS, VEHICLE_PPE_NAMES, AmbulanceReturnRequest, clean_case_address
 from .window_layout import apply_tile
 
@@ -685,12 +685,12 @@ def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceRetur
 
 
 def _ppe_credentials() -> tuple[str, str]:
-    username = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
-    password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
-    if username and password:
-        return username, password
-    saved = load_duty_credential()
+    saved = load_synced_worker_credential()
     if saved is None:
+        username = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
+        password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
+        if username and password:
+            return username, password
         return "", ""
     return saved.user_id, saved.password
 

@@ -35,14 +35,19 @@ def load_duty_credential(
         if env_credential is not None and _credential_matches_any(env_credential, preferred):
             return env_credential
 
+    saved = load_synced_worker_credential()
+    if saved is not None:
+        return saved
+
     env_credential = _env_credential()
     if env_credential is not None:
         return env_credential
 
-    saved = load_saved_duty_automation_credential()
-    if saved is not None:
-        return saved
     return None
+
+
+def load_synced_worker_credential(path: Path | None = None) -> DutyCredential | None:
+    return load_saved_duty_automation_credential(path)
 
 
 def _env_credential() -> DutyCredential | None:
@@ -153,8 +158,12 @@ def _select_account(accounts: list[object], last_selected: str) -> dict | None:
         return None
     if last_selected:
         for account in candidates:
-            identity = str(account.get("user_id", "") or account.get("actor_no", "") or "").strip()
-            if identity == last_selected:
+            identities = {
+                str(account.get("user_id", "") or "").strip(),
+                str(account.get("actor_no", "") or "").strip(),
+                str(account.get("id_number", "") or "").strip(),
+            }
+            if last_selected in identities:
                 return account
     return candidates[0]
 

@@ -22,7 +22,7 @@ class ConsumablesLoginTests(unittest.TestCase):
         href = "/ACS/ACS15002?emmTemsisid=2026060210100301165202"
         self.assertEqual(_emm_temsis_id_from_href(href), "2026060210100301165202")
 
-    def test_load_acs_credentials_uses_synced_id_number(self):
+    def test_load_acs_credentials_uses_selected_synced_id_number(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
             previous_account = os.environ.pop("ACS_ACCOUNT", None)
@@ -38,9 +38,17 @@ class ConsumablesLoginTests(unittest.TestCase):
                             "display_name": "8番 曾彥綸",
                             "name": "曾彥綸",
                             "id_number": "B123017532",
+                        },
+                        {
+                            "actor_no": "9",
+                            "user_id": "tyfd00009",
+                            "password": "selected-secret",
+                            "display_name": "9番 測試員",
+                            "name": "測試員",
+                            "id_number": "C123456789",
                         }
                     ],
-                    last_selected="8",
+                    last_selected="9",
                 )
                 request = AmbulanceReturnRequest(
                     task_id="task-1",
@@ -49,7 +57,7 @@ class ConsumablesLoginTests(unittest.TestCase):
                     personnel_accounts=["tyfd01510"],
                 )
 
-                self.assertEqual(_load_acs_credentials(request), ("B123017532", "secret"))
+                self.assertEqual(_load_acs_credentials(request), ("C123456789", "selected-secret"))
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)

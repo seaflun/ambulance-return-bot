@@ -17,7 +17,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from ambulance_bot.consumables import consumable_inventory_options
-from ambulance_bot.duty_credentials import load_duty_credential
+from ambulance_bot.duty_credentials import load_synced_worker_credential
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
 from ambulance_bot.window_layout import apply_tile
 
@@ -95,15 +95,13 @@ def _load_acs_credentials(task: dict[str, object] | AmbulanceReturnRequest | Non
     if account and password:
         return account, password
 
-    request = task if isinstance(task, AmbulanceReturnRequest) else AmbulanceReturnRequest.from_dict(task or {})
-    preferred_accounts = request.consumables_account_candidates + request.tyfd_personnel_accounts
-    credential = load_duty_credential(preferred_accounts)
+    credential = load_synced_worker_credential()
     if credential is not None:
         acs_account = credential.id_number.strip() or (credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else "")
         if acs_account and credential.password:
             return acs_account, credential.password
 
-    raise RuntimeError("找不到一站通耗材帳密；請先同步含身分證字號的帳號，或設定 ACS_ACCOUNT / ACS_PASSWORD。")
+    raise RuntimeError("找不到一站通耗材帳密；請先在 worker GUI 同步含身分證字號的帳號，或設定 ACS_ACCOUNT / ACS_PASSWORD。")
 
 
 def _chrome_profile_dir(profile_name: str) -> Path:

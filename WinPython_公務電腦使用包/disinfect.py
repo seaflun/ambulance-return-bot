@@ -12,7 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from ambulance_bot.duty_credentials import load_duty_credential
+from ambulance_bot.duty_credentials import load_synced_worker_credential
 from ambulance_bot.window_layout import apply_tile
 
 
@@ -43,9 +43,9 @@ def login_and_get_driver(
     debugger_port: int | None = None,
     tile_name: str = "",
 ) -> webdriver.Chrome:
-    credential = load_duty_credential()
+    credential = load_synced_worker_credential()
     if credential is None:
-        raise RuntimeError("找不到勤務系統帳密，請先設定或保存登入資料。")
+        raise RuntimeError("尚未同步 worker 帳號；請先在 worker GUI 接收同步帳密後再執行消毒。")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
