@@ -754,14 +754,13 @@ class WorkerGui(tk.Tk):
         profile_suffix = task_id.replace("-", "_")
         runners = [
             ("工作紀錄", self._run_selected_task_background, f"duty_work_log_profile_{profile_suffix}", None, "duty_work_log"),
-            ("車輛里程", self._run_selected_vehicle_mileage_background, "vehicle_mileage_profile", None, "vehicle_mileage"),
+            ("車輛里程", self._run_selected_vehicle_mileage_background, f"vehicle_mileage_profile_{profile_suffix}", None, "vehicle_mileage"),
             ("消毒紀錄", self._run_selected_disinfection_background, f"disinfection_profile_{profile_suffix}", None, "disinfection"),
             ("耗材", self._run_selected_consumables_background, f"consumables_profile_{profile_suffix}", None, "consumables"),
         ]
         for name, target, profile_name, debugger_port, tile_name in runners:
             self.log_queue.put(f"四站登打已啟動：{name}")
-            force_new_driver = tile_name != "vehicle_mileage"
-            target(task_id, profile_name, debugger_port, False, tile_name, force_new_driver)
+            target(task_id, profile_name, debugger_port, False, tile_name, True)
         self.log_queue.put(f"四站登打流程結束：{task_id}")
         self._refresh_tasks()
 
