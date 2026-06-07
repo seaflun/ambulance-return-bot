@@ -69,11 +69,11 @@ def _env_enabled(name: str, default: str = "false") -> bool:
 
 
 def _save_vehicle_mileage_enabled() -> bool:
-    return _env_enabled("SAVE_VEHICLE_MILEAGE")
+    return _env_enabled("SAVE_VEHICLE_MILEAGE", default="true")
 
 
 def _save_disinfection_record_enabled() -> bool:
-    return _env_enabled("SAVE_DISINFECTION_RECORD")
+    return _env_enabled("SAVE_DISINFECTION_RECORD", default="true")
 
 
 def run_local_selenium_task(
@@ -600,7 +600,7 @@ def _prepare_duty_work_log_form(
     output_dir: Path,
     summary_path: Path,
 ) -> SeleniumRunResult:
-    if not _ensure_duty_login(driver):
+    if not _ensure_duty_login(driver, request.tyfd_personnel_accounts):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
         return SeleniumRunResult(
             ok=True,
@@ -1038,7 +1038,7 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
     _fill_vehicle_grid_values(driver, values)
     _assert_vehicle_mileage_values_present(driver, values)
     if _save_vehicle_mileage_enabled():
-        if not _click_save_control(driver):
+        if not _click_vehicle_mileage_save(driver):
             raise WebDriverException("missing vehicle mileage save button")
         alert_text = _accept_alert_if_present(driver)
         sweetalert_text = _confirm_sweetalert_if_present(driver)
@@ -1143,7 +1143,7 @@ def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceRet
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
 
     if _save_disinfection_record_enabled():
-        if not _click_save_control(driver):
+        if not _click_disinfection_save(driver):
             raise WebDriverException("missing disinfection save button")
         alert_text = _accept_alert_if_present(driver)
         _assert_disinfection_not_login(driver, "save")
@@ -1360,24 +1360,163 @@ def _click_text_if_present(driver: webdriver.Chrome, texts: list[str]) -> bool:
 
 
 def _click_save_control(driver: webdriver.Chrome) -> bool:
+    if _click_save_control_in_current_frame(driver):
+        return True
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        return False
+    if _click_save_control_in_current_frame(driver):
+        return True
+    return _click_save_control_in_child_frames(driver)
+
+
+def _click_vehicle_mileage_save(driver: webdriver.Chrome) -> bool:
+    clicked = bool(
+        driver.execute_script(
+            """
+            const controls = Array.from(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));
+            const target = controls.find(el => {
+              if (!el || el.disabled) return false;
+              const text = [
+                el.id,
+                el.name,
+                el.value,
+                el.title,
+                el.innerText,
+                el.textContent,
+                el.getAttribute('onclick')
+              ].map(x => String(x || '')).join(' ');
+              return /SaveData\\s*\\(|儲存|存檔/.test(text);
+            });
+            if (target) {
+              target.scrollIntoView({block: 'center', inline: 'center'});
+              target.focus && target.focus();
+              target.click();
+              return true;
+            }
+            if (typeof SaveData === 'function') {
+              SaveData();
+              return true;
+            }
+            return false;
+            """
+        )
+    )
+    if clicked:
+        time.sleep(1)
+        return True
+    return _click_save_control(driver)
+
+
+def _click_disinfection_save(driver: webdriver.Chrome) -> bool:
+    clicked = bool(
+        driver.execute_script(
+            """
+            const target =
+              document.getElementById('_btnSave') ||
+              document.querySelector('input[name="_btnSave"]') ||
+              Array.from(document.querySelectorAll('input[type=button],input[type=submit],button,a')).find(el => {
+                const text = [
+                  el.id,
+                  el.name,
+                  el.value,
+                  el.title,
+                  el.innerText,
+                  el.textContent,
+                  el.getAttribute('onclick')
+                ].map(x => String(x || '')).join(' ');
+                return /_btnSave|儲存|存檔/.test(text);
+              });
+            if (!target || target.disabled) return false;
+            target.scrollIntoView({block: 'center', inline: 'center'});
+            target.focus && target.focus();
+            for (const type of ['mousedown', 'mouseup']) {
+              target.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+            }
+            target.click();
+            return true;
+            """
+        )
+    )
+    if clicked:
+        time.sleep(1)
+        return True
+    return _click_save_control(driver)
+
+
+def _click_save_control_in_child_frames(driver: webdriver.Chrome) -> bool:
+    try:
+        driver.switch_to.default_content()
+        frame_count = len(driver.find_elements(By.CSS_SELECTOR, "iframe,frame"))
+    except Exception:
+        return False
+    for index in range(frame_count):
+        try:
+            driver.switch_to.default_content()
+            frame = driver.find_elements(By.CSS_SELECTOR, "iframe,frame")[index]
+            driver.switch_to.frame(frame)
+            if _click_save_control_in_current_frame(driver):
+                return True
+            nested_count = len(driver.find_elements(By.CSS_SELECTOR, "iframe,frame"))
+            for nested_index in range(nested_count):
+                driver.switch_to.default_content()
+                frame = driver.find_elements(By.CSS_SELECTOR, "iframe,frame")[index]
+                driver.switch_to.frame(frame)
+                nested_frame = driver.find_elements(By.CSS_SELECTOR, "iframe,frame")[nested_index]
+                driver.switch_to.frame(nested_frame)
+                if _click_save_control_in_current_frame(driver):
+                    return True
+        except WebDriverException:
+            continue
+    return False
+
+
+def _click_save_control_in_current_frame(driver: webdriver.Chrome) -> bool:
     clicked = bool(
         driver.execute_script(
             """
             const labels = ['儲存', '存檔', '保存', '送出', '確定', 'Save', 'Submit'];
-            const controls = Array.from(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));
+            const controls = Array.from(document.querySelectorAll([
+              'button',
+              'a',
+              'input[type=button]',
+              'input[type=submit]',
+              'input[type=image]',
+              '[role=button]',
+              '[onclick]',
+              'img',
+              'span',
+              'div'
+            ].join(',')));
             function visible(el) {
               if (!el || el.disabled) return false;
+              if (String(el.type || '').toLowerCase() === 'hidden') return false;
               const style = window.getComputedStyle(el);
               if (style.display === 'none' || style.visibility === 'hidden') return false;
-              return el.offsetParent !== null || el.tagName === 'INPUT';
+              const rect = el.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 || el.offsetParent !== null || el.tagName === 'INPUT';
             }
             function score(el) {
-              const text = [el.id, el.name, el.value, el.title, el.innerText, el.getAttribute('aria-label')]
+              const text = [
+                el.id,
+                el.name,
+                el.value,
+                el.alt,
+                el.title,
+                el.innerText,
+                el.textContent,
+                el.getAttribute('aria-label'),
+                el.getAttribute('onclick'),
+                el.getAttribute('src')
+              ]
                 .map(x => String(x || '')).join(' ');
               const lower = text.toLowerCase();
-              if (/_?btnsave|save|submit|update|confirm/.test(lower)) return 3;
+              if (/_?btnsave|btn.?save|save|submit|update|confirm|dosave|saveform/.test(lower)) return 4;
               if (String(el.type || '').toLowerCase() === 'submit') return 2;
               if (labels.some(label => text.includes(label))) return 2;
+              const parentText = el.parentElement ? String(el.parentElement.innerText || el.parentElement.textContent || '') : '';
+              if (labels.some(label => parentText.includes(label))) return 1;
               return 0;
             }
             const candidates = controls

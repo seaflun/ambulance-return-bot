@@ -75,6 +75,21 @@ class WebAppTests(unittest.TestCase):
         selenium_local_module.query_duty_emergency_cases = self.original_query_duty_emergency_cases
         self.tmp.cleanup()
 
+    def valid_task_data(self, **overrides):
+        data = {
+            "vehicle": "\u65b0\u576191",
+            "driver": "\u66fe\u5f65\u7db8",
+            "mileage": "12345",
+            "case_date": "2026-06-07",
+            "case_time": "1024",
+            "return_date": "2026-06-07",
+            "return_time": "1119",
+            "case_reason": "\u6025\u75c5",
+            "patient_summary": "\u7537\u4e00\u540d",
+        }
+        data.update(overrides)
+        return data
+
     def test_app_page_loads(self):
         response = self.client.get("/app")
 
@@ -96,7 +111,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn(" checked", body)
 
     def test_app_page_recent_task_can_be_deleted(self):
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"}, follow_redirects=False)
+        create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         app_response = self.client.get("/app")
@@ -120,17 +135,14 @@ class WebAppTests(unittest.TestCase):
     def test_create_task_writes_json_and_redirects(self):
         response = self.client.post(
             "/tasks",
-            data={
-                "vehicle": "\u65b0\u576191",
-                "driver": "\u66fe\u5f65\u7db8",
-                "mileage": "12345",
-                "case_time": "1420",
-                "return_time": "1505",
-                "case_address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340",
-                "case_reason": "\u6025\u75c5",
-                "patient_summary": "\u7537\u4e00\u540d",
-                "consumables": "\u53e3\u7f69=2,\u624b\u5957=2",
-            },
+            data=self.valid_task_data(
+                case_time="1420",
+                return_time="1505",
+                case_address="\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+                case_reason="\u6025\u75c5",
+                patient_summary="\u7537\u4e00\u540d",
+                consumables="\u53e3\u7f69=2,\u624b\u5957=2",
+            ),
             follow_redirects=False,
         )
 
@@ -141,6 +153,53 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(tasks[0]["task"]["case_time"], "1420")
         self.assertEqual(tasks[0]["task"]["case_address"], "\u6843\u5712\u5e02\u89c0\u97f3\u5340")
         self.assertEqual(tasks[0]["task"]["case_reason"], "\u6025\u75c5")
+
+    def test_create_task_requires_vehicle_driver_mileage_return_time_and_patient(self):
+        response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(vehicle="", driver="", mileage="", return_time="", patient_summary=""),
+            follow_redirects=False,
+        )
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.store.list_recent(), [])
+        self.assertIn("請選擇出動車輛", body)
+        self.assertIn("請選擇司機", body)
+        self.assertIn("請填寫里程", body)
+        self.assertIn("請填寫返隊時間", body)
+        self.assertIn("請選擇傷病患", body)
+
+    def test_create_task_rejects_return_datetime_before_case_datetime(self):
+        response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                case_date="2026-06-08",
+                case_time="1024",
+                return_date="2026-06-08",
+                return_time="0950",
+            ),
+            follow_redirects=False,
+        )
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.store.list_recent(), [])
+        self.assertIn("返隊日期時間不能早於案件日期時間", body)
+
+    def test_create_task_allows_next_day_return_datetime(self):
+        response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                case_date="2026-06-08",
+                case_time="2350",
+                return_date="2026-06-09",
+                return_time="0010",
+            ),
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
 
     def test_query_cases_redirects_to_app(self):
         response = self.client.post("/cases/query", follow_redirects=False)
@@ -299,7 +358,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_worker_tasks_api_requires_token_and_returns_recent_tasks(self):
         os.environ["WORKER_TOKEN"] = "test-token"
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191", "driver": "\u66fe\u5f65\u7db8"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         denied = self.client.get("/worker/tasks")
@@ -345,22 +404,18 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(" checked", imported_body)
         self.assertEqual(app_module.read_selected_case().get("case_id"), "20260602090556012")
 
-        self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"}, follow_redirects=False)
+        self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
         self.assertEqual(app_module.read_selected_case(), {})
 
     def test_task_detail_run_and_manual_complete(self):
         create_response = self.client.post(
             "/tasks",
-            data={
-                "vehicle": "\u65b0\u576191",
-                "driver": "\u66fe\u5f65\u7db8",
-                "mileage": "12345",
-                "case_address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340",
-                "case_reason": "\u8eca\u798d",
-                "patient_summary": "\u7537\u4e00\u540d",
-                "case_time": "1420",
-                "return_time": "1505",
-            },
+            data=self.valid_task_data(
+                case_address="\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+                case_reason="\u8eca\u798d",
+                case_time="1420",
+                return_time="1505",
+            ),
         )
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
@@ -384,7 +439,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
 
     def test_single_site_button_only_shows_after_site_failure(self):
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         self.store.update_site_result(
             task_id,
@@ -404,7 +459,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_localhost_single_site_run_uses_desktop_fast_runner(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         response = self.client.post(
@@ -419,7 +474,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_remote_single_site_run_does_not_call_desktop_runner(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         response = self.client.post(
@@ -433,7 +488,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(self.store.get(task_id)["overall_status"], "desktop_fast_unavailable")
 
     def test_task_detail_shows_chinese_statuses_without_raw_statuses(self):
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         self.store.update_site_result(
             task_id,
@@ -459,12 +514,15 @@ class WebAppTests(unittest.TestCase):
     def test_task_detail_header_hides_meta_and_keeps_run_button_in_content(self):
         create_response = self.client.post(
             "/tasks",
-            data={
-                "vehicle": "\u65b0\u576192",
-                "driver": "\u5305\u83ef\u5148",
-                "case_time": "1633",
-                "case_date": "2026-06-06",
-            },
+            data=self.valid_task_data(
+                vehicle="\u65b0\u576192",
+                driver="\u5305\u83ef\u5148",
+                mileage="200",
+                case_time="1633",
+                case_date="2026-06-06",
+                return_time="1700",
+                return_date="2026-06-06",
+            ),
         )
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
@@ -480,12 +538,7 @@ class WebAppTests(unittest.TestCase):
     def test_task_edit_updates_existing_task_and_resets_sites(self):
         create_response = self.client.post(
             "/tasks",
-            data={
-                "vehicle": "\u65b0\u576191",
-                "driver": "\u66fe\u5f65\u7db8",
-                "mileage": "100",
-                "consumables": "\u53e3\u7f69=2",
-            },
+            data=self.valid_task_data(mileage="100", consumables="\u53e3\u7f69=2"),
         )
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         self.store.update_site_result(
@@ -505,6 +558,8 @@ class WebAppTests(unittest.TestCase):
                 "vehicle": "\u65b0\u576192",
                 "driver": "\u5305\u83ef\u5148",
                 "mileage": "200",
+                "case_time": "1024",
+                "return_time": "1119",
                 "case_reason": "\u8eca\u798d",
                 "patient_summary": "\u5973\u4e00\u540d",
                 "consumables": "\u624b\u5957=1",
@@ -522,7 +577,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "not_started")
 
     def test_task_detail_card_order_is_work_mileage_disinfection_consumables(self):
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         response = self.client.get(f"/tasks/{task_id}")
@@ -543,7 +598,7 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(mileage.index(">\u91cc\u7a0b</span>"), mileage.index(">\u53f8\u6a5f</span>"))
 
     def test_run_queues_task_for_worker_and_worker_updates_status(self):
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         run_response = self.client.post(f"/tasks/{task_id}/run", follow_redirects=False)
@@ -572,7 +627,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_localhost_run_uses_desktop_fast_mode_when_auto(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         response = self.client.post(f"/tasks/{task_id}/run", base_url="http://127.0.0.1:8080", follow_redirects=False)
@@ -583,7 +638,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_remote_host_run_queues_for_worker_when_auto(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         response = self.client.post(f"/tasks/{task_id}/run", base_url="http://100.114.126.58:8080", follow_redirects=False)
@@ -594,13 +649,13 @@ class WebAppTests(unittest.TestCase):
 
     def test_desktop_fast_mode_environment_overrides_host(self):
         os.environ["DESKTOP_FAST_MODE"] = "1"
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         fast_task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         self.client.post(f"/tasks/{fast_task_id}/run", base_url="http://100.114.126.58:8080", follow_redirects=False)
 
         os.environ["DESKTOP_FAST_MODE"] = "0"
-        create_response = self.client.post("/tasks", data={"vehicle": "\u65b0\u576191"})
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
         queued_task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         self.client.post(f"/tasks/{queued_task_id}/run", base_url="http://127.0.0.1:8080", follow_redirects=False)
 

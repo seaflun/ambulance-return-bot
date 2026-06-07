@@ -307,7 +307,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         return_date=str(form.get("return_date") or "").strip(),
         return_time=str(form.get("return_time") or "").strip(),
         case_address=clean_case_address(str(form.get("case_address") or "")),
-        patient_summary=str(form.get("patient_summary") or "").strip() or "\u7537\u4e00\u540d",
+        patient_summary=str(form.get("patient_summary") or "").strip(),
         case_reason=str(form.get("case_reason") or "").strip() or "\u6025\u75c5",
         disinfection=str(form.get("disinfection") or "").strip()
         or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",

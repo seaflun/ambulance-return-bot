@@ -88,6 +88,17 @@
       box-shadow: 0 8px 18px rgba(184, 107, 91, .18);
     }
     .secondary { background: transparent; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
+    .form-errors {
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border: 1px solid #e3b7b2;
+      border-radius: 10px;
+      background: var(--failed-bg);
+      color: #8f3934;
+      font-size: var(--text-md);
+      font-weight: 720;
+    }
+    .form-errors ul { margin: 0; padding-left: 20px; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
     .lookup { margin-bottom: 16px; }
     .lookup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
@@ -241,6 +252,15 @@
     </section>
 
     <form method="post" action="{{ form_action or '/tasks' }}" id="task-form">
+      {% if form_errors %}
+        <div class="form-errors" role="alert">
+          <ul>
+            {% for error in form_errors %}
+              <li>{{ error }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
       <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
       <input type="hidden" name="personnel" value="{{ selected_case.personnel | join(',') if selected_case.personnel else '' }}">
       <input type="hidden" name="personnel_accounts" value="{{ selected_case.personnel_hidden_raw or (selected_case.personnel_accounts | join(',')) or '' }}">

@@ -5,6 +5,7 @@ import os
 import socket
 import threading
 import time
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -53,23 +54,13 @@ def index():
 def new_task():
     selected_case = read_selected_case()
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
-    case_lookup = read_case_lookup()
-    lookup_request = read_case_lookup_request()
-    if lookup_request.get("status") == "case_lookup_requested":
-        current_detail = str(case_lookup.get("detail") or "").strip()
-        suffix = "正在查詢案件，請稍候。"
-        case_lookup["detail"] = f"{current_detail} {suffix}".strip()
-        case_lookup["is_running"] = True
-    case_lookup.setdefault("cases", [])
-    case_lookup["case_count"] = len(case_lookup.get("cases") or [])
-    case_lookup["debug_artifacts"] = case_lookup_debug_artifacts()
     return render_template(
         "new_task.html",
         form_action=url_for("create_task"),
         submit_label="建立任務",
         cancel_url="",
         recent_tasks=store.list_recent(limit=5),
-        case_lookup=case_lookup,
+        case_lookup=prepared_case_lookup(),
         selected_case=selected_case,
         vehicle_options=VEHICLE_OPTIONS,
         person_options=person_options,
@@ -78,6 +69,7 @@ def new_task():
         default_consumables=DEFAULT_CONSUMABLES if selected_case else {},
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
+        form_errors=[],
     )
 
 
@@ -107,6 +99,17 @@ def import_case():
 @app.post("/tasks")
 def create_task():
     task_request = request_from_form(request.form)
+    errors = validate_task_form(task_request)
+    if errors:
+        return render_task_form_from_request(
+            task_request,
+            form_action=url_for("create_task"),
+            submit_label="建立任務",
+            cancel_url="",
+            recent_tasks=store.list_recent(limit=5),
+            case_lookup=prepared_case_lookup(),
+            form_errors=errors,
+        ), 400
     store.create(task_request)
     pop_selected_case()
     return redirect(url_for("task_detail", task_id=task_request.task_id))
@@ -134,6 +137,7 @@ def edit_task(task_id: str):
         default_consumables=dict(task.get("consumables") or {}),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task.get("disinfection_items") or []),
+        form_errors=[],
     )
 
 
@@ -144,6 +148,17 @@ def update_task(task_id: str):
     except FileNotFoundError:
         abort(404)
     task_request = request_from_form(request.form)
+    errors = validate_task_form(task_request)
+    if errors:
+        return render_task_form_from_request(
+            task_request,
+            form_action=url_for("update_task", task_id=task_id),
+            submit_label="儲存修改",
+            cancel_url=url_for("task_detail", task_id=task_id),
+            recent_tasks=[],
+            case_lookup={"cases": [], "case_count": 0, "debug_artifacts": []},
+            form_errors=errors,
+        ), 400
     store.update_task(task_id, task_request)
     return redirect(url_for("task_detail", task_id=task_id))
 
@@ -846,6 +861,84 @@ def task_form_values(task: dict) -> dict:
     values["return_time_hhmm"] = str(task.get("return_time") or "")
     values["reason"] = str(task.get("case_reason") or "")
     return values
+
+
+def prepared_case_lookup() -> dict:
+    case_lookup = read_case_lookup()
+    lookup_request = read_case_lookup_request()
+    if lookup_request.get("status") == "case_lookup_requested":
+        current_detail = str(case_lookup.get("detail") or "").strip()
+        suffix = "正在查詢案件，請稍候。"
+        case_lookup["detail"] = f"{current_detail} {suffix}".strip()
+        case_lookup["is_running"] = True
+    case_lookup.setdefault("cases", [])
+    case_lookup["case_count"] = len(case_lookup.get("cases") or [])
+    case_lookup["debug_artifacts"] = case_lookup_debug_artifacts()
+    return case_lookup
+
+
+def validate_task_form(task_request) -> list[str]:
+    errors: list[str] = []
+    if not task_request.vehicle.strip():
+        errors.append("請選擇出動車輛")
+    if not task_request.driver.strip():
+        errors.append("請選擇司機")
+    if not task_request.mileage.strip():
+        errors.append("請填寫里程")
+    if not task_request.return_time.strip():
+        errors.append("請填寫返隊時間")
+    if not task_request.patient_summary.strip():
+        errors.append("請選擇傷病患")
+
+    case_time = normalize_hhmm(task_request.case_time)
+    return_time = normalize_hhmm(task_request.return_time)
+    if len(case_time) == 4 and len(return_time) == 4:
+        case_datetime = task_request.service_case_date().replace(
+            hour=int(case_time[:2]),
+            minute=int(case_time[2:]),
+            second=0,
+            microsecond=0,
+        )
+        return_datetime = task_request.service_return_date().replace(
+            hour=int(return_time[:2]),
+            minute=int(return_time[2:]),
+            second=0,
+            microsecond=0,
+        )
+        if return_datetime < case_datetime:
+            errors.append("返隊日期時間不能早於案件日期時間")
+    return errors
+
+
+def render_task_form_from_request(
+    task_request,
+    *,
+    form_action: str,
+    submit_label: str,
+    cancel_url: str,
+    recent_tasks: list[dict],
+    case_lookup: dict,
+    form_errors: list[str],
+) -> str:
+    selected_case = task_form_values(asdict(task_request))
+    person_options = selected_case.get("person_options") or PERSON_OPTIONS
+    return render_template(
+        "new_task.html",
+        form_action=form_action,
+        submit_label=submit_label,
+        cancel_url=cancel_url,
+        recent_tasks=recent_tasks,
+        case_lookup=case_lookup,
+        selected_case=selected_case,
+        vehicle_options=VEHICLE_OPTIONS,
+        person_options=person_options,
+        case_reason_options=CASE_REASON_OPTIONS,
+        consumable_options=consumable_inventory_options(),
+        default_consumables=dict(task_request.consumables or {}),
+        disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
+        default_disinfection_items=list(task_request.disinfection_items or []),
+        form_errors=form_errors,
+    )
 
 
 def pop_selected_case() -> dict:

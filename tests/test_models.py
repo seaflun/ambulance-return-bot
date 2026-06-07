@@ -72,6 +72,11 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.consumables, {})
         self.assertEqual(request.disinfection_items, [])
 
+    def test_request_from_form_keeps_empty_patient_summary(self):
+        request = request_from_form({"patient_summary": ""})
+
+        self.assertEqual(request.patient_summary, "")
+
     def test_request_from_form_keeps_personnel_accounts_by_type(self):
         request = request_from_form(
             {

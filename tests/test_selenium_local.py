@@ -10,10 +10,13 @@ from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
     _attach_case_form_details,
     _assert_disinfection_not_login,
+    _click_disinfection_save,
     _click_save_control,
+    _click_vehicle_mileage_save,
     _disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
     _ppe_credentials,
+    _prepare_duty_work_log_form,
     _previous_case_details,
     _profile_dir,
     _resolve_end_mileage,
@@ -40,6 +43,14 @@ class SeleniumLocalTests(unittest.TestCase):
             os.environ["SAVE_DISINFECTION_RECORD"] = "1"
             self.assertTrue(_save_vehicle_mileage_enabled())
             self.assertTrue(_save_disinfection_record_enabled())
+            os.environ.pop("SAVE_VEHICLE_MILEAGE", None)
+            os.environ.pop("SAVE_DISINFECTION_RECORD", None)
+            self.assertTrue(_save_vehicle_mileage_enabled())
+            self.assertTrue(_save_disinfection_record_enabled())
+            os.environ["SAVE_VEHICLE_MILEAGE"] = "false"
+            os.environ["SAVE_DISINFECTION_RECORD"] = "0"
+            self.assertFalse(_save_vehicle_mileage_enabled())
+            self.assertFalse(_save_disinfection_record_enabled())
         finally:
             if previous_vehicle is None:
                 os.environ.pop("SAVE_VEHICLE_MILEAGE", None)
@@ -260,6 +271,51 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertFalse(_click_save_control(failed_driver))
         self.assertIn("btnsave", success_driver.script.lower())
         self.assertIn("submit", success_driver.script.lower())
+
+    def test_site_specific_save_controls_use_real_button_signatures(self):
+        class FakeDriver:
+            def __init__(self, result: bool):
+                self.result = result
+                self.scripts: list[str] = []
+
+            def execute_script(self, script: str):
+                self.scripts.append(script)
+                return self.result
+
+        mileage_driver = FakeDriver(True)
+        disinfection_driver = FakeDriver(True)
+
+        self.assertTrue(_click_vehicle_mileage_save(mileage_driver))
+        self.assertTrue(_click_disinfection_save(disinfection_driver))
+        self.assertIn("SaveData", mileage_driver.scripts[0])
+        self.assertIn("_btnSave", disinfection_driver.scripts[0])
+
+    def test_duty_work_log_login_uses_personnel_tyfd_accounts(self):
+        class FakeDriver:
+            pass
+
+        captured: dict[str, object] = {}
+        original_ensure_login = selenium_local_module._ensure_duty_login
+        original_save_artifacts = selenium_local_module._save_artifacts
+        try:
+            selenium_local_module._ensure_duty_login = (
+                lambda driver, preferred_user_ids=None: captured.__setitem__("preferred", preferred_user_ids) or False
+            )
+            selenium_local_module._save_artifacts = lambda *args, **kwargs: None
+            request = AmbulanceReturnRequest(
+                task_id="task-1",
+                created_at=datetime(2026, 6, 7, 1, 0),
+                raw_text="",
+                personnel_accounts=["B123017532", "tyfd00008", "tyfd00009"],
+            )
+
+            result = _prepare_duty_work_log_form(FakeDriver(), request, Path("."), Path("task.txt"))
+        finally:
+            selenium_local_module._ensure_duty_login = original_ensure_login
+            selenium_local_module._save_artifacts = original_save_artifacts
+
+        self.assertEqual(result.status, "needs_duty_login")
+        self.assertEqual(captured["preferred"], ["tyfd00008", "tyfd00009"])
 
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]
