@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +87,8 @@ def query_cases():
     if lookup_range not in {"24h", "6h", "today"}:
         lookup_range = "24h"
     write_case_lookup_request(lookup_range)
+    if effective_task_execution_mode() == "desktop_fast":
+        start_local_case_lookup(lookup_range)
     return redirect(url_for("new_task"))
 
 
@@ -472,6 +475,40 @@ def mark_case_lookup_request_completed(latest_payload: dict) -> None:
         "case_count": len(latest_payload.get("cases") or []),
     }
     write_json_atomic(case_lookup_request_path(), payload)
+
+
+def start_local_case_lookup(lookup_range: str) -> threading.Thread:
+    thread = threading.Thread(target=run_local_case_lookup, args=(lookup_range,), daemon=True)
+    thread.start()
+    return thread
+
+
+def run_local_case_lookup(lookup_range: str) -> None:
+    from ambulance_bot.selenium_local import query_duty_emergency_cases
+
+    result = query_duty_emergency_cases(artifacts_dir, lookup_range=lookup_range)
+    cases = result.cases if isinstance(result.cases, list) else []
+    payload = read_case_lookup()
+    if not payload:
+        payload = {
+            "status": result.status,
+            "detail": result.detail,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "cases": cases,
+        }
+    payload["lookup_range"] = lookup_range
+    payload["source"] = "local_public_duty_pc"
+    payload["case_hash"] = hash_cases(cases)
+    payload["case_count"] = len(cases)
+    write_json_atomic(artifacts_dir / "cases" / "latest.json", payload)
+    mark_case_lookup_request_completed(payload)
+
+
+def hash_cases(cases: list[dict[str, object]]) -> str:
+    normalized = json.dumps(cases, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    import hashlib
+
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def write_json_atomic(path: Path, payload: dict) -> None:

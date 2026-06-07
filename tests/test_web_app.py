@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 import app as app_module
+import ambulance_bot.selenium_local as selenium_local_module
+from ambulance_bot.selenium_local import DutyCaseLookupResult
 from ambulance_bot.task_runner import TaskRunner
 from ambulance_bot.task_store import JsonTaskStore
 
@@ -37,6 +39,8 @@ class WebAppTests(unittest.TestCase):
         self.original_worker_token = os.environ.get("WORKER_TOKEN")
         self.original_desktop_fast_mode = os.environ.get("DESKTOP_FAST_MODE")
         self.original_task_execution_mode = os.environ.get("TASK_EXECUTION_MODE")
+        self.original_start_local_case_lookup = app_module.start_local_case_lookup
+        self.original_query_duty_emergency_cases = selenium_local_module.query_duty_emergency_cases
         os.environ["WORKER_TOKEN"] = ""
         os.environ["DESKTOP_FAST_MODE"] = "0"
         os.environ["TASK_EXECUTION_MODE"] = "worker_queue"
@@ -65,6 +69,8 @@ class WebAppTests(unittest.TestCase):
             os.environ.pop("TASK_EXECUTION_MODE", None)
         else:
             os.environ["TASK_EXECUTION_MODE"] = self.original_task_execution_mode
+        app_module.start_local_case_lookup = self.original_start_local_case_lookup
+        selenium_local_module.query_duty_emergency_cases = self.original_query_duty_emergency_cases
         self.tmp.cleanup()
 
     def test_app_page_loads(self):
@@ -149,6 +155,51 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         request_payload = app_module.read_case_lookup_request()
         self.assertEqual(request_payload["lookup_range"], "24h")
+
+    def test_localhost_query_cases_starts_local_lookup_when_fast_mode_auto(self):
+        calls = []
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        app_module.start_local_case_lookup = lambda lookup_range: calls.append(lookup_range)
+
+        response = self.client.post("/cases/query", data={"lookup_range": "6h"}, follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(calls, ["6h"])
+
+    def test_query_cases_does_not_start_local_lookup_when_fast_mode_disabled(self):
+        calls = []
+        os.environ["DESKTOP_FAST_MODE"] = "0"
+        app_module.start_local_case_lookup = lambda lookup_range: calls.append(lookup_range)
+
+        response = self.client.post("/cases/query", data={"lookup_range": "6h"}, follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(calls, [])
+
+    def test_run_local_case_lookup_writes_cases_and_completes_request(self):
+        def fake_query(artifacts_dir: Path, lookup_range: str = "24h") -> DutyCaseLookupResult:
+            cases = [{"case_id": "case-1", "address": "addr"}]
+            payload = {
+                "status": "cases_loaded",
+                "detail": "loaded",
+                "updated_at": "2026-06-07T20:00:00",
+                "cases": cases,
+            }
+            path = artifacts_dir / "cases" / "latest.json"
+            app_module.write_json_atomic(path, payload)
+            return DutyCaseLookupResult(True, "cases_loaded", "loaded", cases, path)
+
+        selenium_local_module.query_duty_emergency_cases = fake_query
+        app_module.write_case_lookup_request("24h")
+
+        app_module.run_local_case_lookup("24h")
+
+        latest = app_module.read_case_lookup()
+        self.assertEqual(latest["source"], "local_public_duty_pc")
+        self.assertEqual(latest["case_count"], 1)
+        self.assertEqual(latest["cases"][0]["case_id"], "case-1")
+        completed = app_module.read_case_lookup_request()
+        self.assertEqual(completed["status"], "case_lookup_completed")
 
     def test_app_page_does_not_query_cases(self):
         response = self.client.get("/app")
