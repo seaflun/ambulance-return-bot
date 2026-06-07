@@ -5,7 +5,13 @@ from pathlib import Path
 
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
 from ambulance_bot.models import AmbulanceReturnRequest
-from consumables_login import _case_id_sid_fragments, _consumable_sid_score, _emm_temsis_id_from_href, _load_acs_credentials
+from consumables_login import (
+    _case_id_sid_fragments,
+    _consumable_sid_score,
+    _emm_temsis_id_from_href,
+    _load_acs_credentials,
+    _wait_for_consumable_detail_page,
+)
 
 
 class ConsumablesLoginTests(unittest.TestCase):
@@ -21,6 +27,27 @@ class ConsumablesLoginTests(unittest.TestCase):
     def test_extracts_emm_temsis_id_from_href(self):
         href = "/ACS/ACS15002?emmTemsisid=2026060210100301165202"
         self.assertEqual(_emm_temsis_id_from_href(href), "2026060210100301165202")
+
+    def test_consumable_detail_wait_fails_when_session_returns_to_sso(self):
+        class FakeElement:
+            text = ""
+
+        class FakeDriver:
+            current_url = "https://nfaemsap3.nfa.gov.tw/SSO/login"
+
+            def find_elements(self, by, value):
+                if value == "verificationCode":
+                    return [object()]
+                return []
+
+            def find_element(self, by, value):
+                return FakeElement()
+
+        class FakeWait:
+            def until(self, predicate):
+                return predicate(FakeDriver())
+
+        self.assertFalse(_wait_for_consumable_detail_page(FakeDriver(), FakeWait()))
 
     def test_load_acs_credentials_uses_selected_synced_id_number(self):
         with tempfile.TemporaryDirectory() as tmp:

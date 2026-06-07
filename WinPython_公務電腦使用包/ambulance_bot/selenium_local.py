@@ -1046,8 +1046,7 @@ def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRe
         driver.get(SITE_DEFINITIONS[2].url)
         time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
-    if _is_disinfection_login_page(driver):
-        raise WebDriverException("消毒系統需要重新登入或驗證碼；請先在 worker Chrome 手動登入一次後再執行。")
+    _assert_disinfection_not_login(driver, "opened")
     detail = _prepare_disinfection_record(driver, request, output_dir)
     controls_path = _save_disinfection_probe(driver, output_dir, request.task_id)
     return f"{detail} 已保存頁面控制項：{controls_path}"
@@ -1060,6 +1059,11 @@ def _is_disinfection_login_page(driver: webdriver.Chrome) -> bool:
     source = driver.page_source
     login_markers = ["驗證碼", "帳號", "密碼", "登入"]
     return sum(1 for marker in login_markers if marker in source) >= 3
+
+
+def _assert_disinfection_not_login(driver: webdriver.Chrome, label: str) -> None:
+    if _is_disinfection_login_page(driver):
+        raise WebDriverException(f"disinfection session returned to login page: {label}")
 
 
 def _save_disinfection_probe(driver: webdriver.Chrome, output_dir: Path, task_id: str) -> Path:
@@ -1103,12 +1107,14 @@ def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceRet
     time.sleep(1.5)
     _switch_to_disinfection_content_if_present(driver)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_entry")
+    _assert_disinfection_not_login(driver, "entry")
 
     _set_disinfection_query_date(driver, _disinfection_query_date(request))
     if not _click_text_if_present(driver, ["\u67e5\u8a62"]):
         raise WebDriverException("missing disinfection query button")
     time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_query")
+    _assert_disinfection_not_login(driver, "query")
 
     if not _open_disinfection_detail_for_case(driver, request.case_time):
         raise WebDriverException(f"missing disinfection detail for case time {request.case_time or 'empty'}")
@@ -1128,6 +1134,7 @@ def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceRet
         if not _click_save_control(driver):
             raise WebDriverException("missing disinfection save button")
         alert_text = _accept_alert_if_present(driver)
+        _assert_disinfection_not_login(driver, "save")
         return f"disinfection items updated={updated}; saved. {alert_text}"
     return f"disinfection items updated={updated}; not saved."
 

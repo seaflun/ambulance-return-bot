@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import ddddocr
 from PIL import Image
 from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -49,6 +50,9 @@ def login_acs_and_get_driver(
     options.add_experimental_option("detach", True)
 
     driver = webdriver.Chrome(options=options)
+    page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
+    driver.set_page_load_timeout(page_timeout)
+    driver.set_script_timeout(page_timeout)
     apply_tile(driver, tile_name)
     try:
         login_error = ""
@@ -77,13 +81,16 @@ def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, ob
     href = _find_consumable_detail_href(driver, request)
     detail_url = urljoin("https://nfaemsap3.nfa.gov.tw", href)
     driver.get(detail_url)
-    wait.until(lambda d: "ACS15002" in d.current_url or "TEMSISID" in d.find_element(By.TAG_NAME, "body").text)
+    if not _wait_for_consumable_detail_page(driver, wait):
+        raise RuntimeError("consumable detail page did not open; SSO login may be required")
     added = ""
     if _needs_extra_consumable_row(request):
         _clear_existing_consumables(driver, wait)
         item_quantities = _resolve_consumable_item_quantities(driver, request)
         _inject_consumables_for_save(driver, item_quantities)
         _save_consumables(driver, wait)
+        if _is_sso_page(driver):
+            raise RuntimeError("consumable save returned to SSO login page")
         _verify_saved_consumables(driver, item_quantities)
         added = f" 已清除舊資料、填入耗材 {len(item_quantities)} 筆、按下儲存並確認。"
     return f"已開啟耗材內容頁：{driver.current_url}{added}"
@@ -192,6 +199,12 @@ def _wait_until_sso_login_finished(driver: webdriver.Chrome, wait: WebDriverWait
     )
 
 
+def _is_sso_page(driver: webdriver.Chrome) -> bool:
+    if "/SSO/" in driver.current_url:
+        return True
+    return bool(driver.find_elements(By.ID, "verificationCode"))
+
+
 def _open_acs_system(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     if "/ACS/" not in driver.current_url:
         cards = driver.find_elements(By.CSS_SELECTOR, "img.cardImg[src*='ACS.jpg']")
@@ -203,6 +216,8 @@ def _open_acs_system(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
             wait.until(lambda d: "/ACS/" in d.current_url)
 
     wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+    if _is_sso_page(driver):
+        raise RuntimeError("ACS system returned to SSO login page")
     time.sleep(1.2)
     _open_consumable_maintenance_page(driver, wait)
 
@@ -210,11 +225,15 @@ def _open_acs_system(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
 def _open_consumable_maintenance_page(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     for attempt in range(1, 4):
         driver.get(ACS_URL)
-        wait.until(lambda d: d.execute_script("return document.readyState") in {"interactive", "complete"})
+        wait.until(
+            lambda d: _is_consumable_maintenance_page(d)
+            or _is_sso_page(d)
+            or d.execute_script("return document.readyState") in {"interactive", "complete"}
+        )
         time.sleep(0.8)
         if _is_consumable_maintenance_page(driver):
             return
-        if "/SSO/" in driver.current_url:
+        if _is_sso_page(driver):
             raise RuntimeError("進入耗材紀錄頁時被導回 SSO，登入 session 尚未建立。")
     raise RuntimeError("已登入 ACS，但無法進入耗材紀錄頁 ACS15001。")
 
@@ -224,6 +243,21 @@ def _is_consumable_maintenance_page(driver: webdriver.Chrome) -> bool:
         return True
     text = driver.find_element(By.TAG_NAME, "body").text
     return "救護紀錄表耗材維護" in text or "救護紀錄表列表" in text
+
+
+def _is_consumable_detail_page(driver: webdriver.Chrome) -> bool:
+    if "ACS15002" in driver.current_url:
+        return True
+    text = driver.find_element(By.TAG_NAME, "body").text
+    return "TEMSISID" in text or "emmTemsisid" in text
+
+
+def _wait_for_consumable_detail_page(driver: webdriver.Chrome, wait: WebDriverWait) -> bool:
+    try:
+        wait.until(lambda d: _is_consumable_detail_page(d) or _is_sso_page(d))
+    except TimeoutException:
+        return False
+    return _is_consumable_detail_page(driver)
 
 
 def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:

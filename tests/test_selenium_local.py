@@ -9,6 +9,7 @@ import ambulance_bot.selenium_local as selenium_local_module
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
     _attach_case_form_details,
+    _assert_disinfection_not_login,
     _click_save_control,
     _disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
@@ -64,6 +65,16 @@ class SeleniumLocalTests(unittest.TestCase):
         )
 
         self.assertEqual(_disinfection_query_date(request), "2026-06-06")
+
+    def test_assert_disinfection_not_login_raises_on_login_page(self):
+        class FakeDriver:
+            current_url = "https://emsdt.tyfd.gov.tw/EmmWeb/login"
+            page_source = ""
+
+        with self.assertRaises(Exception) as context:
+            _assert_disinfection_not_login(FakeDriver(), "entry")
+
+        self.assertIn("entry", str(context.exception))
 
     def test_named_profile_uses_sibling_of_configured_profile_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
