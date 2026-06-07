@@ -9,6 +9,7 @@ import ambulance_bot.selenium_local as selenium_local_module
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
     _attach_case_form_details,
+    _click_save_control,
     _disinfection_query_date,
     _ppe_credentials,
     _previous_case_details,
@@ -175,6 +176,24 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIs(calls["quit_driver"], fake_driver)
         self.assertTrue(calls["released"])
         self.assertTrue(calls["create_kwargs"]["headless"])
+
+    def test_click_save_control_uses_script_result(self):
+        class FakeDriver:
+            def __init__(self, result: bool):
+                self.result = result
+                self.script = ""
+
+            def execute_script(self, script: str):
+                self.script = script
+                return self.result
+
+        success_driver = FakeDriver(True)
+        failed_driver = FakeDriver(False)
+
+        self.assertTrue(_click_save_control(success_driver))
+        self.assertFalse(_click_save_control(failed_driver))
+        self.assertIn("btnsave", success_driver.script.lower())
+        self.assertIn("submit", success_driver.script.lower())
 
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]

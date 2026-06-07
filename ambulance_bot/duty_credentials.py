@@ -168,6 +168,25 @@ def legacy_configured_saved_login_path() -> Path | None:
     return None
 
 
+def set_last_selected_duty_automation_credential(identifier: str, path: Path | None = None) -> Path:
+    selected = str(identifier or "").strip()
+    if not selected:
+        raise ValueError("selected credential id is required")
+
+    source = path or saved_login_path()
+    payload = _read_saved_login(source)
+    accounts = payload.get("accounts")
+    if not isinstance(accounts, list):
+        raise ValueError("saved credential file does not contain synced accounts")
+    if _select_account(accounts, selected) is None:
+        raise ValueError(f"saved credential not found: {selected}")
+
+    payload["last_selected"] = selected
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return source
+
+
 def _select_account(accounts: list[object], last_selected: str) -> dict | None:
     candidates = [account for account in accounts if isinstance(account, dict)]
     if not candidates:

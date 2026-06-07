@@ -26,6 +26,7 @@ from ambulance_bot.duty_credentials import (
     load_saved_duty_automation_credential,
     save_duty_automation_credentials,
     saved_login_path,
+    set_last_selected_duty_automation_credential,
 )
 
 try:
@@ -390,6 +391,12 @@ class WorkerGui(tk.Tk):
         self.duty_password.set(credential.password)
         os.environ["DUTY_ACCOUNT"] = credential.user_id
         os.environ["DUTY_PASSWORD"] = credential.password
+        try:
+            path = persist_selected_saved_credential(credential)
+            self.duty_saved_login_path.set(str(path))
+        except Exception as exc:
+            if log:
+                self._log(f"同步帳號選取狀態儲存失敗：{exc}")
         if log:
             self._log(f"已套用同步帳號：{credential_choice_label(credential)}")
 
@@ -830,6 +837,11 @@ def credential_choice_label(credential: DutyCredential) -> str:
     if prefix and credential.user_id not in prefix:
         return f"{prefix} - {credential.user_id}"
     return credential.user_id
+
+
+def persist_selected_saved_credential(credential: DutyCredential) -> Path:
+    selected = credential.user_id or credential.actor_no or credential.id_number
+    return set_last_selected_duty_automation_credential(selected)
 
 
 def credential_sync_accounts_from_payload(payload: dict[str, object]) -> list[dict[str, object]]:

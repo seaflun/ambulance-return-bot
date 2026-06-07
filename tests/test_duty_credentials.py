@@ -15,6 +15,7 @@ from ambulance_bot.duty_credentials import (
     saved_login_path,
     save_duty_automation_credentials,
     save_duty_automation_credential,
+    set_last_selected_duty_automation_credential,
 )
 
 
@@ -309,6 +310,25 @@ class DutyCredentialTests(unittest.TestCase):
         assert duty_credential is not None
         self.assertEqual(portal_credential.password, "portal-pass")
         self.assertEqual(duty_credential.password, "work-pass")
+
+    def test_set_last_selected_changes_synced_worker_credential(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            save_duty_automation_credentials(
+                [
+                    {"actor_no": "8", "user_id": "user8", "password": "pass8"},
+                    {"actor_no": "9", "user_id": "user9", "password": "pass9"},
+                ],
+                last_selected="user8",
+                path=path,
+            )
+
+            set_last_selected_duty_automation_credential("user9", path=path)
+            credential = load_synced_worker_credential(path)
+
+        self.assertIsNotNone(credential)
+        assert credential is not None
+        self.assertEqual(credential.user_id, "user9")
 
 
 if __name__ == "__main__":

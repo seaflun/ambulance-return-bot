@@ -990,7 +990,8 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
     _fill_vehicle_grid_values(driver, values)
     _assert_vehicle_mileage_values_present(driver, values)
     if _save_vehicle_mileage_enabled():
-        _click_text_if_present(driver, ["\u5132\u5b58"])
+        if not _click_save_control(driver):
+            raise WebDriverException("missing vehicle mileage save button")
         alert_text = _accept_alert_if_present(driver)
         sweetalert_text = _confirm_sweetalert_if_present(driver)
         final_alert_text = _accept_alert_if_present(driver, timeout=1)
@@ -1086,7 +1087,7 @@ def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceRet
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
 
     if _save_disinfection_record_enabled():
-        if not _click_text_if_present(driver, ["\u5132\u5b58"]):
+        if not _click_save_control(driver):
             raise WebDriverException("missing disinfection save button")
         alert_text = _accept_alert_if_present(driver)
         return f"disinfection items updated={updated}; saved. {alert_text}"
@@ -1299,6 +1300,49 @@ def _click_text_if_present(driver: webdriver.Chrome, texts: list[str]) -> bool:
     return true;
     """
     return bool(driver.execute_script(script, texts))
+
+
+def _click_save_control(driver: webdriver.Chrome) -> bool:
+    clicked = bool(
+        driver.execute_script(
+            """
+            const labels = ['儲存', '存檔', '保存', '送出', '確定', 'Save', 'Submit'];
+            const controls = Array.from(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));
+            function visible(el) {
+              if (!el || el.disabled) return false;
+              const style = window.getComputedStyle(el);
+              if (style.display === 'none' || style.visibility === 'hidden') return false;
+              return el.offsetParent !== null || el.tagName === 'INPUT';
+            }
+            function score(el) {
+              const text = [el.id, el.name, el.value, el.title, el.innerText, el.getAttribute('aria-label')]
+                .map(x => String(x || '')).join(' ');
+              const lower = text.toLowerCase();
+              if (/_?btnsave|save|submit|update|confirm/.test(lower)) return 3;
+              if (String(el.type || '').toLowerCase() === 'submit') return 2;
+              if (labels.some(label => text.includes(label))) return 2;
+              return 0;
+            }
+            const candidates = controls
+              .filter(visible)
+              .map(el => ({el, score: score(el)}))
+              .filter(item => item.score > 0)
+              .sort((a, b) => b.score - a.score);
+            const target = candidates.length ? candidates[0].el : null;
+            if (!target) return false;
+            target.scrollIntoView({block: 'center', inline: 'center'});
+            target.focus && target.focus();
+            for (const type of ['mousedown', 'mouseup']) {
+              target.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+            }
+            if (typeof target.click === 'function') target.click();
+            return true;
+            """
+        )
+    )
+    if clicked:
+        time.sleep(1)
+    return clicked
 
 
 def _select_vehicle_record(driver: webdriver.Chrome, vehicle_label: str) -> None:

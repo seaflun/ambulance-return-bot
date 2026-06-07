@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 import worker_gui
-from ambulance_bot.duty_credentials import DutyCredential
+from ambulance_bot.duty_credentials import DutyCredential, load_synced_worker_credential
 
 
 class WorkerGuiEnvTests(unittest.TestCase):
@@ -200,6 +200,39 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(password, "pass8")
         self.assertEqual(count, 2)
         self.assertTrue(path_exists)
+
+    def test_persist_selected_saved_credential_updates_last_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                worker_gui.save_credential_sync_payload(
+                    {
+                        "accounts": [
+                            {"actor_no": "8", "user_id": "user8", "password": "pass8"},
+                            {"actor_no": "9", "user_id": "user9", "password": "pass9"},
+                        ],
+                        "actor_no": "8",
+                    }
+                )
+
+                worker_gui.persist_selected_saved_credential(DutyCredential(user_id="user9", password="pass9", actor_no="9"))
+                selected = load_synced_worker_credential()
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected.user_id, "user9")
 
 
 if __name__ == "__main__":
