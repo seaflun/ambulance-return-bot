@@ -35,7 +35,7 @@ def ocr_digits_with_ddddocr(image_path: Path) -> str:
 
 def wait_until_logged_in(driver: webdriver.Chrome, timeout: int = 15) -> None:
     wait = WebDriverWait(driver, timeout)
-    wait.until(lambda d: not _is_login_page(d))
+    wait.until(lambda d: _is_logged_in(d))
 
 
 def login_and_get_driver(
@@ -57,6 +57,9 @@ def login_and_get_driver(
     options.add_experimental_option("detach", True)
 
     driver = webdriver.Chrome(options=options)
+    page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
+    driver.set_page_load_timeout(page_timeout)
+    driver.set_script_timeout(page_timeout)
     apply_tile(driver, tile_name)
     errors: list[str] = []
 
@@ -65,7 +68,7 @@ def login_and_get_driver(
             try:
                 _login_once(driver, credential.user_id, credential.password, attempt)
                 wait_until_logged_in(driver)
-                if not _is_login_page(driver) or _is_logged_in(driver):
+                if _is_logged_in(driver):
                     return driver
                 errors.append(f"第 {attempt} 次登入後未進入系統")
             except Exception as exc:

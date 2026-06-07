@@ -470,7 +470,11 @@ def _create_driver(
         options.add_argument(f"--remote-debugging-port={debugger_port}")
     if not headless and os.getenv("SELENIUM_DETACH", "true").strip().lower() not in {"0", "false", "no", "off"}:
         options.add_experimental_option("detach", True)
-    return webdriver.Chrome(options=options)
+    driver = webdriver.Chrome(options=options)
+    page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
+    driver.set_page_load_timeout(page_timeout)
+    driver.set_script_timeout(page_timeout)
+    return driver
 
 
 def _remote_browser_options() -> Options | FirefoxOptions:
@@ -654,26 +658,10 @@ def _prepare_duty_work_log_form(
 
 
 def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
-    driver.get(SITE_DEFINITIONS[0].url)
-    time.sleep(1)
-    username, password = _ppe_credentials()
     try:
-        has_login = driver.execute_script("return !!document.getElementById('Account') && !!document.getElementById('Password');")
-        if has_login and username and password:
-            driver.find_element(By.ID, "Account").clear()
-            driver.find_element(By.ID, "Account").send_keys(username)
-            driver.find_element(By.ID, "Password").clear()
-            driver.find_element(By.ID, "Password").send_keys(password)
-            _click_ppe_login(driver)
-            WebDriverWait(driver, 8).until(lambda current: not _is_ppe_login_page(current))
-        if has_login and not (username and password):
-            _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
-            return "\u5df2\u958b\u555f\u8eca\u8f1b\u91cc\u7a0b\u767b\u5165\u9801\uff1b\u8acb\u5148\u767b\u5165 PPE \u7cfb\u7d71\u3002"
-        if _is_ppe_login_page(driver):
-            _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
-            return "\u8eca\u8f1b\u91cc\u7a0b PPE \u81ea\u52d5\u767b\u5165\u672a\u901a\u904e\uff1b\u8acb\u624b\u52d5\u767b\u5165\u5f8c\u518d\u57f7\u884c\u3002"
-        driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
-        time.sleep(1.5)
+        if not _ensure_ppe_vehicle_mileage_session(driver):
+            _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_login")
+            raise WebDriverException("PPE login did not reach vehicle mileage page")
         detail = _prepare_vehicle_mileage_form(driver, request)
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
     except WebDriverException:
@@ -681,6 +669,30 @@ def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceRetur
         raise
 
     return detail
+
+
+def _ensure_ppe_vehicle_mileage_session(driver: webdriver.Chrome) -> bool:
+    username, password = _ppe_credentials()
+    attempts = int(os.getenv("PPE_LOGIN_ATTEMPTS", "3"))
+    for attempt in range(1, max(attempts, 1) + 1):
+        driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
+        if _wait_for_ppe_vehicle_mileage_page(driver, timeout=8):
+            return True
+        if not _is_ppe_login_page(driver):
+            continue
+        if not (username and password):
+            raise WebDriverException("missing PPE login credentials")
+
+        driver.find_element(By.ID, "Account").clear()
+        driver.find_element(By.ID, "Account").send_keys(username)
+        driver.find_element(By.ID, "Password").clear()
+        driver.find_element(By.ID, "Password").send_keys(password)
+        _click_ppe_login(driver)
+        if _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
+            return True
+        if attempt < attempts:
+            time.sleep(1)
+    return False
 
 
 def _ppe_credentials() -> tuple[str, str]:
@@ -959,9 +971,33 @@ def _is_ppe_login_page(driver: webdriver.Chrome) -> bool:
     )
 
 
+def _is_ppe_vehicle_mileage_page(driver: webdriver.Chrome) -> bool:
+    return bool(
+        driver.execute_script(
+            """
+            if (!!document.getElementById('Account') && !!document.getElementById('Password')) return false;
+            const path = String(location.pathname || '');
+            const text = document.body ? document.body.innerText : '';
+            return path.includes('/CarRecord') || text.includes('\u8eca\u8f1b\u4f7f\u7528\u7d00\u9304');
+            """
+        )
+    )
+
+
+def _wait_for_ppe_vehicle_mileage_page(driver: webdriver.Chrome, timeout: int = 12) -> bool:
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda current: _is_ppe_vehicle_mileage_page(current) or _is_ppe_login_page(current)
+        )
+    except TimeoutException:
+        return False
+    return _is_ppe_vehicle_mileage_page(driver)
+
+
 def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
     driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
-    WebDriverWait(driver, 8).until(lambda d: "CarRecord" in d.current_url or "車輛使用紀錄" in d.find_element(By.TAG_NAME, "body").text)
+    if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
+        raise WebDriverException("PPE session returned to login page before vehicle mileage form")
     _click_text_if_present(driver, ["\u8eca\u8f1b\u7ba1\u7406"])
     _click_text_if_present(driver, ["\u8eca\u8f1b\u4f7f\u7528\u7d00\u9304"])
     time.sleep(1)
@@ -995,6 +1031,8 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
         alert_text = _accept_alert_if_present(driver)
         sweetalert_text = _confirm_sweetalert_if_present(driver)
         final_alert_text = _accept_alert_if_present(driver, timeout=1)
+        if _is_ppe_login_page(driver):
+            raise WebDriverException("PPE session returned to login page after vehicle mileage save")
         confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
         if confirmations:
             return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"

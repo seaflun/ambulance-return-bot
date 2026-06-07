@@ -11,6 +11,7 @@ from ambulance_bot.selenium_local import (
     _attach_case_form_details,
     _click_save_control,
     _disinfection_query_date,
+    _ensure_ppe_vehicle_mileage_session,
     _ppe_credentials,
     _previous_case_details,
     _profile_dir,
@@ -132,6 +133,57 @@ class SeleniumLocalTests(unittest.TestCase):
                     os.environ.pop("DUTY_PASSWORD", None)
                 else:
                     os.environ["DUTY_PASSWORD"] = previous_password
+
+    def test_ensure_ppe_vehicle_mileage_session_retries_when_login_returns_to_login_page(self):
+        class FakeInput:
+            def __init__(self):
+                self.values: list[str] = []
+
+            def clear(self):
+                self.values.clear()
+
+            def send_keys(self, value: str):
+                self.values.append(value)
+
+        class FakeDriver:
+            def __init__(self):
+                self.get_calls: list[str] = []
+                self.inputs = {"Account": FakeInput(), "Password": FakeInput()}
+
+            def get(self, url: str):
+                self.get_calls.append(url)
+
+            def find_element(self, by, value: str):
+                return self.inputs[value]
+
+        original_credentials = selenium_local_module._ppe_credentials
+        original_wait = selenium_local_module._wait_for_ppe_vehicle_mileage_page
+        original_is_login = selenium_local_module._is_ppe_login_page
+        original_click = selenium_local_module._click_ppe_login
+        original_sleep = selenium_local_module.time.sleep
+        try:
+            wait_results = iter([False, False, False, True])
+            click_count = {"value": 0}
+            selenium_local_module._ppe_credentials = lambda: ("tyfd00008", "pass")
+            selenium_local_module._wait_for_ppe_vehicle_mileage_page = lambda driver, timeout=12: next(wait_results)
+            selenium_local_module._is_ppe_login_page = lambda driver: True
+            selenium_local_module._click_ppe_login = lambda driver: click_count.__setitem__("value", click_count["value"] + 1)
+            selenium_local_module.time.sleep = lambda seconds: None
+
+            driver = FakeDriver()
+            result = _ensure_ppe_vehicle_mileage_session(driver)
+        finally:
+            selenium_local_module._ppe_credentials = original_credentials
+            selenium_local_module._wait_for_ppe_vehicle_mileage_page = original_wait
+            selenium_local_module._is_ppe_login_page = original_is_login
+            selenium_local_module._click_ppe_login = original_click
+            selenium_local_module.time.sleep = original_sleep
+
+        self.assertTrue(result)
+        self.assertEqual(len(driver.get_calls), 2)
+        self.assertEqual(click_count["value"], 2)
+        self.assertEqual(driver.inputs["Account"].values, ["tyfd00008"])
+        self.assertEqual(driver.inputs["Password"].values, ["pass"])
 
     def test_case_lookup_runs_headless_and_closes_driver_after_login_failure(self):
         class FakeDriver:
