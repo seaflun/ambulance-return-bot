@@ -82,10 +82,10 @@ class DesktopFastRunner:
                 lambda: run_vehicle_mileage_task(
                     request,
                     self.artifacts_dir,
-                    profile_name=f"vehicle_mileage_profile_{profile_suffix}",
+                    profile_name="vehicle_mileage_profile",
                     use_session_lock=False,
                     tile_name="vehicle_mileage",
-                    force_new_driver=True,
+                    force_new_driver=False,
                 ),
             )
             if failed:
@@ -148,10 +148,10 @@ class DesktopFastRunner:
             return lambda: run_vehicle_mileage_task(
                 request,
                 self.artifacts_dir,
-                profile_name=f"vehicle_mileage_profile_{profile_suffix}",
+                profile_name="vehicle_mileage_profile",
                 use_session_lock=False,
                 tile_name="vehicle_mileage",
-                force_new_driver=True,
+                force_new_driver=False,
             )
         if site_key == "disinfection":
             return lambda: self._run_disinfection(request, profile_suffix)

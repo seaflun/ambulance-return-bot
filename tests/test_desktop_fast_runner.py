@@ -52,6 +52,8 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_saved")
             duty_mock.assert_called_once()
             mileage_mock.assert_called_once()
+            self.assertEqual(mileage_mock.call_args.kwargs["profile_name"], "vehicle_mileage_profile")
+            self.assertFalse(mileage_mock.call_args.kwargs["force_new_driver"])
             disinfection_login_mock.assert_called_once()
             disinfection_mock.assert_called_once()
             self.assertIs(disinfection_mock.call_args.kwargs["existing_driver"], disinfection_login_mock.return_value)

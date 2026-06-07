@@ -688,6 +688,8 @@ def _ensure_ppe_vehicle_mileage_session(driver: webdriver.Chrome) -> bool:
         driver.find_element(By.ID, "Password").clear()
         driver.find_element(By.ID, "Password").send_keys(password)
         _click_ppe_login(driver)
+        if _wait_for_ppe_login_result(driver, timeout=12):
+            driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
         if _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
             return True
         if attempt < attempts:
@@ -992,6 +994,16 @@ def _wait_for_ppe_vehicle_mileage_page(driver: webdriver.Chrome, timeout: int = 
     except TimeoutException:
         return False
     return _is_ppe_vehicle_mileage_page(driver)
+
+
+def _wait_for_ppe_login_result(driver: webdriver.Chrome, timeout: int = 12) -> bool:
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda current: _is_ppe_vehicle_mileage_page(current) or not _is_ppe_login_page(current)
+        )
+    except TimeoutException:
+        return False
+    return not _is_ppe_login_page(driver)
 
 
 def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:

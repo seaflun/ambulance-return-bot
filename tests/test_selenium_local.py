@@ -169,14 +169,16 @@ class SeleniumLocalTests(unittest.TestCase):
 
         original_credentials = selenium_local_module._ppe_credentials
         original_wait = selenium_local_module._wait_for_ppe_vehicle_mileage_page
+        original_wait_login = selenium_local_module._wait_for_ppe_login_result
         original_is_login = selenium_local_module._is_ppe_login_page
         original_click = selenium_local_module._click_ppe_login
         original_sleep = selenium_local_module.time.sleep
         try:
-            wait_results = iter([False, False, False, True])
+            wait_results = iter([False, True])
             click_count = {"value": 0}
             selenium_local_module._ppe_credentials = lambda: ("tyfd00008", "pass")
             selenium_local_module._wait_for_ppe_vehicle_mileage_page = lambda driver, timeout=12: next(wait_results)
+            selenium_local_module._wait_for_ppe_login_result = lambda driver, timeout=12: True
             selenium_local_module._is_ppe_login_page = lambda driver: True
             selenium_local_module._click_ppe_login = lambda driver: click_count.__setitem__("value", click_count["value"] + 1)
             selenium_local_module.time.sleep = lambda seconds: None
@@ -186,13 +188,14 @@ class SeleniumLocalTests(unittest.TestCase):
         finally:
             selenium_local_module._ppe_credentials = original_credentials
             selenium_local_module._wait_for_ppe_vehicle_mileage_page = original_wait
+            selenium_local_module._wait_for_ppe_login_result = original_wait_login
             selenium_local_module._is_ppe_login_page = original_is_login
             selenium_local_module._click_ppe_login = original_click
             selenium_local_module.time.sleep = original_sleep
 
         self.assertTrue(result)
         self.assertEqual(len(driver.get_calls), 2)
-        self.assertEqual(click_count["value"], 2)
+        self.assertEqual(click_count["value"], 1)
         self.assertEqual(driver.inputs["Account"].values, ["tyfd00008"])
         self.assertEqual(driver.inputs["Password"].values, ["pass"])
 
