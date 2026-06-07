@@ -3,6 +3,7 @@ from datetime import datetime
 
 from ambulance_bot.models import clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_form
 from ambulance_bot.models import AmbulanceReturnRequest
+from ambulance_bot.models import vehicle_options, vehicle_ppe_names
 
 
 class ModelParsingTests(unittest.TestCase):
@@ -25,6 +26,10 @@ class ModelParsingTests(unittest.TestCase):
                 "血壓計",
             ],
         )
+
+    def test_vehicle_options_include_borrowed_ambulance(self):
+        self.assertIn("新坡95", vehicle_options())
+        self.assertEqual(vehicle_ppe_names()["新坡95"], "BPE-5951")
 
     def test_parse_full_request(self):
         request = parse_request(

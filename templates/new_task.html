@@ -38,7 +38,7 @@
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--ink); font-size: var(--text-md); line-height: 1.45; }
     main { max-width: 780px; margin: 0 auto; padding: 24px 16px 44px; }
-    header { padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
     h1 {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
@@ -202,6 +202,8 @@
     .status.waiting { background: var(--waiting-bg); color: var(--waiting); }
     @media (max-width: 560px) {
       h1 { font-size: 25px; }
+      header { align-items: stretch; flex-direction: column; }
+      header .button { width: 100%; }
       .lookup-head { align-items: stretch; flex-direction: column; }
       .lookup-head button { width: 100%; }
       .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
@@ -220,6 +222,7 @@
   <main>
     <header>
       <h1>救護返隊登打事項</h1>
+      <a class="button secondary" href="/admin/vehicles">救護車後台</a>
     </header>
 
     <section class="panel lookup">
@@ -251,7 +254,7 @@
       {% endif %}
     </section>
 
-    <form method="post" action="{{ form_action or '/tasks' }}" id="task-form">
+    <form method="post" action="{{ form_action or '/tasks' }}" id="task-form" novalidate>
       {% if form_errors %}
         <div class="form-errors" role="alert">
           <ul>
@@ -284,7 +287,7 @@
       </div>
       <div class="grid">
         <label>出動車輛
-          <select name="vehicle" required>
+          <select name="vehicle">
             <option value="">請選擇</option>
             {% for vehicle in vehicle_options %}
               <option value="{{ vehicle }}"{% if selected_case.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}</option>
@@ -292,7 +295,7 @@
           </select>
         </label>
         <label>司機
-          <select name="driver" required>
+          <select name="driver">
             <option value="">請選擇</option>
             {% for number, name in person_options %}
               <option value="{{ name }}"{% if selected_case.driver == name %} selected{% endif %}>{{ name }}</option>
@@ -310,7 +313,7 @@
           </select>
         </label>
         <label>傷病患
-          <select name="patient_summary" required>
+          <select name="patient_summary">
             <option value="">請選擇</option>
             <option value="男一名"{% if selected_case.patient_summary == '男一名' %} selected{% endif %}>男</option>
             <option value="女一名"{% if selected_case.patient_summary == '女一名' %} selected{% endif %}>女</option>

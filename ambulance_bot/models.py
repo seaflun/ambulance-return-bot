@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+import json
+import os
+from pathlib import Path
 import re
 from typing import Any, Iterable
 from uuid import uuid4
@@ -52,11 +55,12 @@ DEFAULT_DISINFECTION_ITEMS: list[str] = [
     "血壓計",
 ]
 COMMAND_PREFIX = "\u6551\u8b77\u56de\u7a0b"
-VEHICLE_OPTIONS = ["\u65b0\u576191", "\u65b0\u576192", "\u65b0\u576193"]
+VEHICLE_OPTIONS = ["\u65b0\u576191", "\u65b0\u576192", "\u65b0\u576193", "\u65b0\u576195"]
 VEHICLE_PPE_NAMES = {
     "\u65b0\u576191": "BGV-2310",
     "\u65b0\u576192": "BXB-7593",
     "\u65b0\u576193": "BSL-9230",
+    "\u65b0\u576195": "BPE-5951",
 }
 PERSON_OPTIONS = [
     ("6", "\u5433\u5b97\u8015"),
@@ -105,6 +109,70 @@ CASE_REASON_OPTIONS = [
     "\u8aa4(\u8b0a)\u5831",
     "\u5176\u4ed6",
 ]
+
+
+def vehicle_settings_path(base_dir: Path | None = None) -> Path:
+    if base_dir is not None:
+        return base_dir / "settings" / "vehicles.json"
+    configured = os.getenv("VEHICLE_SETTINGS_PATH")
+    if configured:
+        return Path(configured)
+    return Path(os.getenv("ARTIFACTS_DIR", "artifacts")) / "settings" / "vehicles.json"
+
+
+def load_vehicle_records(base_dir: Path | None = None) -> list[dict[str, str]]:
+    path = vehicle_settings_path(base_dir)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    records = payload.get("vehicles") if isinstance(payload, dict) else payload
+    if not isinstance(records, list):
+        return []
+    cleaned: list[dict[str, str]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        label = str(record.get("label") or "").strip()
+        ppe_name = str(record.get("ppe_name") or record.get("plate") or "").strip()
+        if label:
+            cleaned.append({"label": label, "ppe_name": ppe_name})
+    return cleaned
+
+
+def save_vehicle_record(label: str, ppe_name: str = "", base_dir: Path | None = None) -> None:
+    label = label.strip()
+    ppe_name = ppe_name.strip()
+    if not label:
+        raise ValueError("missing vehicle label")
+    records = load_vehicle_records(base_dir)
+    for record in records:
+        if record["label"] == label:
+            record["ppe_name"] = ppe_name
+            break
+    else:
+        records.append({"label": label, "ppe_name": ppe_name})
+    path = vehicle_settings_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"vehicles": records}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def vehicle_options(base_dir: Path | None = None) -> list[str]:
+    options = list(VEHICLE_OPTIONS)
+    for record in load_vehicle_records(base_dir):
+        if record["label"] not in options:
+            options.append(record["label"])
+    return options
+
+
+def vehicle_ppe_names(base_dir: Path | None = None) -> dict[str, str]:
+    names = dict(VEHICLE_PPE_NAMES)
+    for record in load_vehicle_records(base_dir):
+        if record["ppe_name"]:
+            names[record["label"]] = record["ppe_name"]
+    return names
 
 
 @dataclass(slots=True)

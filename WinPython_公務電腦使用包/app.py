@@ -23,13 +23,16 @@ from ambulance_bot.models import (
     DEFAULT_CONSUMABLES,
     DISINFECTION_ITEM_OPTIONS,
     PERSON_OPTIONS,
-    VEHICLE_OPTIONS,
     example_command,
     clean_case_address,
+    load_vehicle_records,
     normalize_hhmm,
     parse_case_date,
     parse_request,
     request_from_form,
+    save_vehicle_record,
+    vehicle_options,
+    vehicle_ppe_names,
 )
 from ambulance_bot.task_runner import TaskRunner
 from ambulance_bot.task_store import JsonTaskStore
@@ -62,7 +65,7 @@ def new_task():
         recent_tasks=store.list_recent(limit=5),
         case_lookup=prepared_case_lookup(),
         selected_case=selected_case,
-        vehicle_options=VEHICLE_OPTIONS,
+        vehicle_options=vehicle_options(artifacts_dir),
         person_options=person_options,
         case_reason_options=CASE_REASON_OPTIONS,
         consumable_options=consumable_inventory_options(),
@@ -130,7 +133,7 @@ def edit_task(task_id: str):
         recent_tasks=[],
         case_lookup={"cases": [], "case_count": 0, "debug_artifacts": []},
         selected_case=task_form_values(task),
-        vehicle_options=VEHICLE_OPTIONS,
+        vehicle_options=vehicle_options(artifacts_dir),
         person_options=PERSON_OPTIONS,
         case_reason_options=CASE_REASON_OPTIONS,
         consumable_options=consumable_inventory_options(),
@@ -241,6 +244,36 @@ def status():
             "desktop_fast_mode": os.getenv("DESKTOP_FAST_MODE", "auto"),
             "effective_mode": effective_task_execution_mode(),
         }
+    )
+
+
+@app.get("/admin/vehicles")
+def admin_vehicles():
+    return render_template(
+        "admin_vehicles.html",
+        vehicles=vehicle_admin_records(),
+        errors=[],
+        message="",
+    )
+
+
+@app.post("/admin/vehicles")
+def create_vehicle_option():
+    label = str(request.form.get("label") or "").strip()
+    ppe_name = str(request.form.get("ppe_name") or "").strip().upper()
+    if not label:
+        return render_template(
+            "admin_vehicles.html",
+            vehicles=vehicle_admin_records(),
+            errors=["請輸入救護車名稱"],
+            message="",
+        ), 400
+    save_vehicle_record(label, ppe_name, artifacts_dir)
+    return render_template(
+        "admin_vehicles.html",
+        vehicles=vehicle_admin_records(),
+        errors=[],
+        message=f"已新增或更新 {label}",
     )
 
 
@@ -879,16 +912,16 @@ def prepared_case_lookup() -> dict:
 
 def validate_task_form(task_request) -> list[str]:
     errors: list[str] = []
+    if not task_request.return_time.strip():
+        errors.append("請填寫返隊時間")
     if not task_request.vehicle.strip():
         errors.append("請選擇出動車輛")
     if not task_request.driver.strip():
         errors.append("請選擇司機")
-    if not task_request.mileage.strip():
-        errors.append("請填寫里程")
-    if not task_request.return_time.strip():
-        errors.append("請填寫返隊時間")
     if not task_request.patient_summary.strip():
         errors.append("請選擇傷病患")
+    if not task_request.mileage.strip():
+        errors.append("請填寫里程")
 
     case_time = normalize_hhmm(task_request.case_time)
     return_time = normalize_hhmm(task_request.return_time)
@@ -930,7 +963,7 @@ def render_task_form_from_request(
         recent_tasks=recent_tasks,
         case_lookup=case_lookup,
         selected_case=selected_case,
-        vehicle_options=VEHICLE_OPTIONS,
+        vehicle_options=vehicle_options(artifacts_dir),
         person_options=person_options,
         case_reason_options=CASE_REASON_OPTIONS,
         consumable_options=consumable_inventory_options(),
@@ -939,6 +972,22 @@ def render_task_form_from_request(
         default_disinfection_items=list(task_request.disinfection_items or []),
         form_errors=form_errors,
     )
+
+
+def vehicle_admin_records() -> list[dict[str, str]]:
+    custom_names = {
+        record["label"]: record.get("ppe_name", "")
+        for record in load_vehicle_records(artifacts_dir)
+    }
+    ppe_names = vehicle_ppe_names(artifacts_dir)
+    return [
+        {
+            "label": label,
+            "ppe_name": ppe_names.get(label, ""),
+            "is_custom": label in custom_names,
+        }
+        for label in vehicle_options(artifacts_dir)
+    ]
 
 
 def pop_selected_case() -> dict:

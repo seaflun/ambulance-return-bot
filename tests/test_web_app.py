@@ -164,11 +164,25 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.store.list_recent(), [])
-        self.assertIn("請選擇出動車輛", body)
-        self.assertIn("請選擇司機", body)
-        self.assertIn("請填寫里程", body)
-        self.assertIn("請填寫返隊時間", body)
-        self.assertIn("請選擇傷病患", body)
+        self.assertIn('<div class="form-errors" role="alert">', body)
+        expected_order = ["請填寫返隊時間", "請選擇出動車輛", "請選擇司機", "請選擇傷病患", "請填寫里程"]
+        positions = [body.index(message) for message in expected_order]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_admin_vehicle_create_adds_vehicle_option(self):
+        response = self.client.post(
+            "/admin/vehicles",
+            data={"label": "新坡96", "ppe_name": "BPE-5960"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        settings_path = Path(self.tmp.name) / "settings" / "vehicles.json"
+        self.assertIn("新坡96", settings_path.read_text(encoding="utf-8"))
+        app_response = self.client.get("/app")
+        body = html.unescape(app_response.data.decode("utf-8"))
+        self.assertIn('<option value="新坡96">新坡96</option>', body)
+        self.assertIn("BPE-5960", html.unescape(response.data.decode("utf-8")))
 
     def test_create_task_rejects_return_datetime_before_case_datetime(self):
         response = self.client.post(

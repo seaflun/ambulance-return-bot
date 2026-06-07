@@ -21,7 +21,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITIONS
 from .duty_credentials import load_duty_credential, load_synced_worker_credential
-from .models import DEFAULT_DISINFECTION_ITEMS, VEHICLE_PPE_NAMES, AmbulanceReturnRequest, clean_case_address
+from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .window_layout import apply_tile
 
 
@@ -662,7 +662,7 @@ def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceRetur
         if not _ensure_ppe_vehicle_mileage_session(driver):
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_login")
             raise WebDriverException("PPE login did not reach vehicle mileage page")
-        detail = _prepare_vehicle_mileage_form(driver, request)
+        detail = _prepare_vehicle_mileage_form(driver, request, output_dir.parent)
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
     except WebDriverException:
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_error")
@@ -1006,14 +1006,14 @@ def _wait_for_ppe_login_result(driver: webdriver.Chrome, timeout: int = 12) -> b
     return not _is_ppe_login_page(driver)
 
 
-def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
+def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceReturnRequest, artifacts_dir: Path | None = None) -> str:
     driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
     if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page before vehicle mileage form")
     _click_text_if_present(driver, ["\u8eca\u8f1b\u7ba1\u7406"])
     _click_text_if_present(driver, ["\u8eca\u8f1b\u4f7f\u7528\u7d00\u9304"])
     time.sleep(1)
-    vehicle_label = VEHICLE_PPE_NAMES.get(request.vehicle, request.vehicle)
+    vehicle_label = vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
     _select_vehicle_record(driver, vehicle_label)
     time.sleep(1)
     latest_end_mileage = _extract_latest_end_mileage(driver)
