@@ -28,14 +28,14 @@ def load_duty_credential(
         preferred.append(fallback)
 
     if preferred:
-        selected = _find_saved_credential(preferred)
+        selected = _find_saved_credential(preferred, duty_password=True)
         if selected is not None:
             return selected
         env_credential = _env_credential()
         if env_credential is not None and _credential_matches_any(env_credential, preferred):
             return env_credential
 
-    saved = load_synced_worker_credential()
+    saved = load_saved_duty_work_credential()
     if saved is not None:
         return saved
 
@@ -50,6 +50,10 @@ def load_synced_worker_credential(path: Path | None = None) -> DutyCredential | 
     return load_saved_duty_automation_credential(path)
 
 
+def load_saved_duty_work_credential(path: Path | None = None) -> DutyCredential | None:
+    return load_saved_duty_automation_credential(path, duty_password=True)
+
+
 def _env_credential() -> DutyCredential | None:
     user_id = os.getenv("DUTY_ACCOUNT", "").strip()
     password = os.getenv("DUTY_PASSWORD", "")
@@ -58,8 +62,8 @@ def _env_credential() -> DutyCredential | None:
     return None
 
 
-def _find_saved_credential(user_ids: list[str]) -> DutyCredential | None:
-    for credential in list_saved_duty_automation_credentials():
+def _find_saved_credential(user_ids: list[str], duty_password: bool = False) -> DutyCredential | None:
+    for credential in list_saved_duty_automation_credentials(duty_password=duty_password):
         if _credential_matches_any(credential, user_ids):
             return credential
     return None
@@ -84,7 +88,7 @@ def _normalized_user_ids(values: Iterable[str] | None) -> list[str]:
     return result
 
 
-def load_saved_duty_automation_credential(path: Path | None = None) -> DutyCredential | None:
+def load_saved_duty_automation_credential(path: Path | None = None, duty_password: bool = False) -> DutyCredential | None:
     source = path or saved_login_path()
     if not source.exists():
         return None
@@ -101,7 +105,7 @@ def load_saved_duty_automation_credential(path: Path | None = None) -> DutyCrede
     selected = _select_account(accounts, last_selected)
     if selected is None:
         return None
-    password = _account_password(selected)
+    password = _account_duty_password(selected) if duty_password else _account_password(selected)
     user_id = str(selected.get("user_id", "") or "").strip()
     if not user_id or not password:
         return None
@@ -115,7 +119,7 @@ def load_saved_duty_automation_credential(path: Path | None = None) -> DutyCrede
     )
 
 
-def list_saved_duty_automation_credentials(path: Path | None = None) -> list[DutyCredential]:
+def list_saved_duty_automation_credentials(path: Path | None = None, duty_password: bool = False) -> list[DutyCredential]:
     source = path or saved_login_path()
     if not source.exists():
         return []
@@ -135,7 +139,7 @@ def list_saved_duty_automation_credentials(path: Path | None = None) -> list[Dut
     for account in accounts:
         if not isinstance(account, dict):
             continue
-        credential = _credential_from_account(account)
+        credential = _credential_from_account(account, duty_password=duty_password)
         if credential is not None:
             credentials.append(credential)
 
@@ -195,9 +199,9 @@ def _legacy_credential(payload: dict) -> DutyCredential | None:
     )
 
 
-def _credential_from_account(account: dict) -> DutyCredential | None:
+def _credential_from_account(account: dict, duty_password: bool = False) -> DutyCredential | None:
     user_id = str(account.get("user_id", "") or "").strip()
-    password = _account_password(account)
+    password = _account_duty_password(account) if duty_password else _account_password(account)
     if not user_id or not password:
         return None
     return DutyCredential(
@@ -255,6 +259,7 @@ def save_duty_automation_credentials(
 
     for normalized in normalized_accounts:
         password = normalized.pop("password")
+        duty_password = normalized.pop("duty_password", "")
         encrypted_password = encrypt_dpapi(password)
         if not encrypted_password:
             raise RuntimeError("Windows DPAPI is not available")
@@ -262,6 +267,11 @@ def save_duty_automation_credentials(
             **normalized,
             "password_dpapi": encrypted_password,
         }
+        if duty_password:
+            encrypted_duty_password = encrypt_dpapi(duty_password)
+            if not encrypted_duty_password:
+                raise RuntimeError("Windows DPAPI is not available")
+            updated["duty_password_dpapi"] = encrypted_duty_password
         _upsert_account(account_list, updated)
 
     selected = str(last_selected or "").strip()
@@ -282,10 +292,12 @@ def _normalized_account_for_save(account: dict[str, object]) -> dict[str, str] |
     password = str(account.get("password", "") or "")
     if not user_id or not password:
         return None
+    duty_password = _first_account_value(account, "duty_password", "work_password", "work_log_password")
     return {
         "actor_no": str(account.get("actor_no", "") or "").strip(),
         "user_id": user_id,
         "password": password,
+        "duty_password": duty_password,
         "display_name": str(account.get("display_name", "") or "").strip(),
         "name": str(account.get("name", "") or "").strip(),
         "id_number": str(account.get("id_number", "") or "").strip(),
@@ -316,6 +328,22 @@ def _account_password(account: dict) -> str:
     if encrypted:
         return decrypt_dpapi(encrypted)
     return str(account.get("password", "") or "")
+
+
+def _account_duty_password(account: dict) -> str:
+    encrypted = _first_account_value(account, "duty_password_dpapi", "work_password_dpapi", "work_log_password_dpapi")
+    if encrypted:
+        return decrypt_dpapi(encrypted)
+    password = _first_account_value(account, "duty_password", "work_password", "work_log_password")
+    return password or _account_password(account)
+
+
+def _first_account_value(account: dict, *keys: str) -> str:
+    for key in keys:
+        value = str(account.get(key, "") or "")
+        if value:
+            return value
+    return ""
 
 
 def encrypt_dpapi(password: str) -> str:

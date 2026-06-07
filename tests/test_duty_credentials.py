@@ -270,6 +270,46 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(credential.user_id, "tyfd00008")
         self.assertEqual(credential.password, "personnel-pass")
 
+    def test_duty_credential_uses_separate_work_password_when_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(path)
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_duty_automation_credentials(
+                    [
+                        {
+                            "actor_no": "8",
+                            "user_id": "tyfd01510",
+                            "password": "portal-pass",
+                            "duty_password": "work-pass",
+                        }
+                    ],
+                    last_selected="tyfd01510",
+                    path=path,
+                )
+
+                portal_credential = load_synced_worker_credential()
+                duty_credential = load_duty_credential()
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertIsNotNone(portal_credential)
+        self.assertIsNotNone(duty_credential)
+        assert portal_credential is not None
+        assert duty_credential is not None
+        self.assertEqual(portal_credential.password, "portal-pass")
+        self.assertEqual(duty_credential.password, "work-pass")
+
 
 if __name__ == "__main__":
     unittest.main()
