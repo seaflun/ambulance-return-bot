@@ -100,6 +100,12 @@ def import_case():
     return redirect(url_for("new_task"))
 
 
+@app.post("/cases/clear")
+def clear_imported_case():
+    pop_selected_case()
+    return redirect(url_for("new_task"))
+
+
 @app.post("/tasks")
 def create_task():
     task_request = request_from_form(request.form)

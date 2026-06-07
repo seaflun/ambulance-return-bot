@@ -100,6 +100,9 @@
     }
     .form-errors ul { margin: 0; padding-left: 20px; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .address-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+    .address-row label { margin-bottom: 13px; }
+    .clear-button { margin-bottom: 13px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
     .lookup { margin-bottom: 16px; }
     .lookup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .case-list { display: grid; gap: 8px; }
@@ -206,6 +209,8 @@
       header .button { width: 100%; }
       .lookup-head { align-items: stretch; flex-direction: column; }
       .lookup-head button { width: 100%; }
+      .address-row { grid-template-columns: minmax(0, 1fr) 84px; }
+      .clear-button { padding: 0 12px; }
       .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
       .time-grid { grid-template-columns: 1fr; }
       .time-field { grid-template-columns: minmax(0, 1fr) 82px; }
@@ -260,7 +265,7 @@
       </script>
     {% endif %}
 
-    <form method="post" action="{{ form_action or '/tasks' }}" id="task-form" novalidate>
+    <form method="post" action="{{ form_action or '/tasks' }}" id="task-form" autocomplete="off" novalidate>
       {% if form_errors %}
         <div class="form-errors" role="alert">
           <ul>
@@ -273,9 +278,12 @@
       <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
       <input type="hidden" name="personnel" value="{{ selected_case.personnel | join(',') if selected_case.personnel else '' }}">
       <input type="hidden" name="personnel_accounts" value="{{ selected_case.personnel_hidden_raw or (selected_case.personnel_accounts | join(',')) or '' }}">
-      <label>案發地址
-        <input name="case_address" autocomplete="off" value="{{ selected_case_address(selected_case) }}">
-      </label>
+      <div class="address-row">
+        <label>案發地址
+          <input name="case_address" autocomplete="off" value="{{ selected_case_address(selected_case) }}">
+        </label>
+        <button class="clear-button" type="submit" formaction="/cases/clear" formmethod="post" formnovalidate>清除</button>
+      </div>
       <div class="grid time-grid">
         <label>案件時間
           <div class="time-field">
