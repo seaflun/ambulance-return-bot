@@ -122,6 +122,51 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(len(accounts), 1)
         self.assertEqual(accounts[0]["user_id"], "legacy-user")
 
+    def test_save_credential_sync_payload_saves_without_http_receiver(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_account = os.environ.get("DUTY_ACCOUNT")
+            previous_password = os.environ.get("DUTY_PASSWORD")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                payload = {
+                    "accounts": [
+                        {
+                            "actor_no": "8",
+                            "user_id": "user8",
+                            "password": "pass8",
+                            "display_name": "8番 測試員",
+                            "id_number": "B123017532",
+                        },
+                        {"actor_no": "9", "user_id": "user9", "password": "pass9"},
+                    ],
+                    "actor_no": "8",
+                }
+
+                result = worker_gui.save_credential_sync_payload(payload)
+                path_exists = result[2].exists() if result is not None else False
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_account is None:
+                    os.environ.pop("DUTY_ACCOUNT", None)
+                else:
+                    os.environ["DUTY_ACCOUNT"] = previous_account
+                if previous_password is None:
+                    os.environ.pop("DUTY_PASSWORD", None)
+                else:
+                    os.environ["DUTY_PASSWORD"] = previous_password
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        user_id, password, path, count = result
+        self.assertEqual(user_id, "user8")
+        self.assertEqual(password, "pass8")
+        self.assertEqual(count, 2)
+        self.assertTrue(path_exists)
+
 
 if __name__ == "__main__":
     unittest.main()

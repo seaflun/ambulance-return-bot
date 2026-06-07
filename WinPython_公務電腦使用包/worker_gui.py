@@ -158,12 +158,13 @@ class WorkerGui(tk.Tk):
         self.credential_combo.grid(row=0, column=1, sticky="ew", padx=(10, 10), pady=4)
         self.credential_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_selected_saved_credential())
         ttk.Button(credentials, text="套用", command=self._apply_selected_saved_credential, style="Soft.TButton").grid(row=0, column=2, sticky="ew", padx=(0, 8), pady=4)
-        ttk.Button(credentials, text="接收同步", command=self._start_credential_sync_receiver, style="Primary.TButton").grid(row=0, column=3, sticky="ew", pady=4)
+        ttk.Button(credentials, text="接收同步", command=self._start_credential_sync_receiver, style="Primary.TButton").grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=4)
+        ttk.Button(credentials, text="貼上同步", command=self._import_credential_sync_from_clipboard, style="Soft.TButton").grid(row=0, column=4, sticky="ew", pady=4)
         ttk.Label(credentials, text="目前帳號", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(credentials, textvariable=self.duty_account).grid(row=1, column=1, columnspan=3, sticky="ew", padx=(10, 0), pady=4)
+        ttk.Entry(credentials, textvariable=self.duty_account).grid(row=1, column=1, columnspan=4, sticky="ew", padx=(10, 0), pady=4)
         ttk.Label(credentials, text="密碼", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Entry(credentials, textvariable=self.duty_password, show="*").grid(row=2, column=1, columnspan=3, sticky="ew", padx=(10, 0), pady=4)
-        ttk.Label(credentials, textvariable=self.credential_sync_status, wraplength=860, style="Hint.TLabel").grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ttk.Entry(credentials, textvariable=self.duty_password, show="*").grid(row=2, column=1, columnspan=4, sticky="ew", padx=(10, 0), pady=4)
+        ttk.Label(credentials, textvariable=self.credential_sync_status, wraplength=860, style="Hint.TLabel").grid(row=3, column=0, columnspan=5, sticky="w", pady=(10, 0))
         credentials.columnconfigure(1, weight=1)
 
         log_frame = ttk.LabelFrame(root, text="執行紀錄", padding=12, style="Card.TLabelframe")
@@ -446,21 +447,35 @@ class WorkerGui(tk.Tk):
             return 403, {"ok": False, "error": "sync code expired"}
         if code != self.credential_sync_code:
             return 403, {"ok": False, "error": "invalid sync code"}
-        accounts = credential_sync_accounts_from_payload(payload)
-        selected = select_credential_sync_account(accounts, payload)
-        if selected is None:
+        result = save_credential_sync_payload(payload)
+        if result is None:
             return 400, {"ok": False, "error": "missing credential fields"}
-        user_id = str(selected.get("user_id") or "").strip()
-        password = str(selected.get("password") or "")
-        last_selected = str(payload.get("user_id") or payload.get("actor_no") or user_id).strip()
-        path = save_duty_automation_credentials(accounts, last_selected=last_selected)
-        os.environ["DUTY_ACCOUNT"] = user_id
-        os.environ["DUTY_PASSWORD"] = password
+        user_id, password, path, count = result
         self.credential_sync_code = ""
         self.credential_sync_expires_at = 0.0
-        self.after(0, lambda: self._apply_credential_sync_result(user_id, password, path, len(accounts)))
+        self.after(0, lambda: self._apply_credential_sync_result(user_id, password, path, count))
         threading.Thread(target=self._stop_credential_sync_server, daemon=True).start()
-        return 200, {"ok": True, "saved": len(accounts)}
+        return 200, {"ok": True, "saved": count}
+
+    def _import_credential_sync_from_clipboard(self) -> None:
+        try:
+            raw = self.clipboard_get()
+            payload = json.loads(raw)
+        except (tk.TclError, json.JSONDecodeError) as exc:
+            messagebox.showerror("貼上同步失敗", f"剪貼簿不是有效的帳密同步 JSON：{exc}")
+            return
+        if not isinstance(payload, dict):
+            messagebox.showerror("貼上同步失敗", "剪貼簿內容不是帳密同步物件。")
+            return
+        result = save_credential_sync_payload(payload)
+        if result is None:
+            messagebox.showerror("貼上同步失敗", "同步資料缺少帳號或密碼。")
+            return
+        user_id, password, path, count = result
+        self.credential_sync_code = ""
+        self.credential_sync_expires_at = 0.0
+        self._stop_credential_sync_server()
+        self._apply_credential_sync_result(user_id, password, path, count)
 
     def _apply_credential_sync_result(self, user_id: str, password: str, path: Path, count: int) -> None:
         self.duty_account.set(user_id)
@@ -879,6 +894,22 @@ def select_credential_sync_account(accounts: list[dict[str, object]], payload: d
         if selected_actor_no and actor_no == selected_actor_no:
             return account
     return accounts[0]
+
+
+def save_credential_sync_payload(payload: dict[str, object]) -> tuple[str, str, Path, int] | None:
+    accounts = credential_sync_accounts_from_payload(payload)
+    selected = select_credential_sync_account(accounts, payload)
+    if selected is None:
+        return None
+    user_id = str(selected.get("user_id") or "").strip()
+    password = str(selected.get("password") or "")
+    if not user_id or not password:
+        return None
+    last_selected = str(payload.get("user_id") or payload.get("actor_no") or user_id).strip()
+    path = save_duty_automation_credentials(accounts, last_selected=last_selected)
+    os.environ["DUTY_ACCOUNT"] = user_id
+    os.environ["DUTY_PASSWORD"] = password
+    return user_id, password, path, len(accounts)
 
 
 def _worker_chrome_is_running() -> bool:
