@@ -7,8 +7,7 @@
 3. `CHROME_PROFILE_DIR` 預設使用 `%LOCALAPPDATA%\ambulance_return_bot\chrome_profile`，不要放到 Google Drive 資料夾。
 4. 執行 `SETUP_WINPYTHON.bat` 安裝套件、檢查環境，並建立開機自動啟動捷徑。
 5. 平常用 `RUN_WORKER_GUI_WINPYTHON.vbs` 啟動，沒有黑色命令列視窗。
-6. 在 GUI 按 `接收同步`，用另一邊專案送入帳密；不要把入口帳密寫進 `.env`。
-7. 若公務電腦防火牆擋住 `接收同步`，請在另一邊專案複製同步 JSON，再回 GUI 按 `貼上同步`。
+6. 在另一邊專案匯出帳密同步 JSON 檔，再回 GUI 按 `匯入同步` 選取該 JSON；不要把入口帳密寫進 `.env`。
 
 ## GitHub 更新
 

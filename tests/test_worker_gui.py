@@ -122,7 +122,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(len(accounts), 1)
         self.assertEqual(accounts[0]["user_id"], "legacy-user")
 
-    def test_save_credential_sync_payload_saves_without_http_receiver(self):
+    def test_save_credential_sync_payload_saves_from_imported_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
             previous_account = os.environ.get("DUTY_ACCOUNT")

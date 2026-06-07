@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import queue
-import secrets
 import socket
 import subprocess
 import sys
@@ -11,9 +10,8 @@ import threading
 import time
 import tkinter as tk
 import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
 from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
 from disinfect import login_and_get_driver
@@ -69,10 +67,6 @@ class WorkerGui(tk.Tk):
         self.credential_combo: ttk.Combobox | None = None
         self.duty_saved_login_path = tk.StringVar(value=str(saved_login_path()))
         self.credential_sync_status = tk.StringVar(value="")
-        self.credential_sync_code = ""
-        self.credential_sync_expires_at = 0.0
-        self.credential_sync_server: ThreadingHTTPServer | None = None
-        self.credential_sync_thread: threading.Thread | None = None
         self.task_tree: ttk.Treeview | None = None
         self.tray_icon: Any | None = None
         self.tray_available = bool(pystray and Image and ImageDraw)
@@ -158,13 +152,12 @@ class WorkerGui(tk.Tk):
         self.credential_combo.grid(row=0, column=1, sticky="ew", padx=(10, 10), pady=4)
         self.credential_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_selected_saved_credential())
         ttk.Button(credentials, text="套用", command=self._apply_selected_saved_credential, style="Soft.TButton").grid(row=0, column=2, sticky="ew", padx=(0, 8), pady=4)
-        ttk.Button(credentials, text="接收同步", command=self._start_credential_sync_receiver, style="Primary.TButton").grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=4)
-        ttk.Button(credentials, text="貼上同步", command=self._import_credential_sync_from_clipboard, style="Soft.TButton").grid(row=0, column=4, sticky="ew", pady=4)
+        ttk.Button(credentials, text="匯入同步", command=self._import_credential_sync_file, style="Primary.TButton").grid(row=0, column=3, sticky="ew", pady=4)
         ttk.Label(credentials, text="目前帳號", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(credentials, textvariable=self.duty_account).grid(row=1, column=1, columnspan=4, sticky="ew", padx=(10, 0), pady=4)
+        ttk.Entry(credentials, textvariable=self.duty_account).grid(row=1, column=1, columnspan=3, sticky="ew", padx=(10, 0), pady=4)
         ttk.Label(credentials, text="密碼", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Entry(credentials, textvariable=self.duty_password, show="*").grid(row=2, column=1, columnspan=4, sticky="ew", padx=(10, 0), pady=4)
-        ttk.Label(credentials, textvariable=self.credential_sync_status, wraplength=860, style="Hint.TLabel").grid(row=3, column=0, columnspan=5, sticky="w", pady=(10, 0))
+        ttk.Entry(credentials, textvariable=self.duty_password, show="*").grid(row=2, column=1, columnspan=3, sticky="ew", padx=(10, 0), pady=4)
+        ttk.Label(credentials, textvariable=self.credential_sync_status, wraplength=860, style="Hint.TLabel").grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
         credentials.columnconfigure(1, weight=1)
 
         log_frame = ttk.LabelFrame(root, text="執行紀錄", padding=12, style="Card.TLabelframe")
@@ -411,70 +404,26 @@ class WorkerGui(tk.Tk):
         os.environ["DUTY_PASSWORD"] = credential.password
         self._log(f"已載入值班勤務系統自動化帳密：{credential.user_id}")
 
-    def _start_credential_sync_receiver(self) -> None:
-        self._stop_credential_sync_server()
-        port = int(os.getenv("CREDENTIAL_SYNC_PORT", "8765"))
-        self.credential_sync_code = secrets.token_hex(3).upper()
-        self.credential_sync_expires_at = time.time() + 300
-        try:
-            server = CredentialSyncServer(("0.0.0.0", port), CredentialSyncRequestHandler)
-        except OSError as exc:
-            self.credential_sync_status.set(f"同步接收啟動失敗：{exc}")
-            self._log(f"帳密同步接收啟動失敗：{exc}")
+    def _import_credential_sync_file(self) -> None:
+        filename = filedialog.askopenfilename(
+            title="選擇帳密同步 JSON",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not filename:
             return
-        server.gui = self
-        self.credential_sync_server = server
-        self.credential_sync_thread = threading.Thread(target=server.serve_forever, name="credential-sync", daemon=True)
-        self.credential_sync_thread.start()
-        url = f"http://{_local_host_hint()}:{server.server_port}/credential-sync"
-        self.credential_sync_status.set(f"同步碼 {self.credential_sync_code}，5 分鐘內有效；接收網址：{url}")
-        self._log(f"帳密同步接收已開啟：{url}")
-
-    def _stop_credential_sync_server(self) -> None:
-        server = self.credential_sync_server
-        if server is None:
-            return
-        self.credential_sync_server = None
         try:
-            server.shutdown()
-            server.server_close()
-        except Exception:
-            pass
-
-    def _handle_credential_sync_payload(self, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
-        code = str(payload.get("sync_code") or "").strip().upper()
-        if not self.credential_sync_code or time.time() > self.credential_sync_expires_at:
-            return 403, {"ok": False, "error": "sync code expired"}
-        if code != self.credential_sync_code:
-            return 403, {"ok": False, "error": "invalid sync code"}
-        result = save_credential_sync_payload(payload)
-        if result is None:
-            return 400, {"ok": False, "error": "missing credential fields"}
-        user_id, password, path, count = result
-        self.credential_sync_code = ""
-        self.credential_sync_expires_at = 0.0
-        self.after(0, lambda: self._apply_credential_sync_result(user_id, password, path, count))
-        threading.Thread(target=self._stop_credential_sync_server, daemon=True).start()
-        return 200, {"ok": True, "saved": count}
-
-    def _import_credential_sync_from_clipboard(self) -> None:
-        try:
-            raw = self.clipboard_get()
-            payload = json.loads(raw)
-        except (tk.TclError, json.JSONDecodeError) as exc:
-            messagebox.showerror("貼上同步失敗", f"剪貼簿不是有效的帳密同步 JSON：{exc}")
+            payload = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            messagebox.showerror("匯入同步失敗", f"同步 JSON 讀取失敗：{exc}")
             return
         if not isinstance(payload, dict):
-            messagebox.showerror("貼上同步失敗", "剪貼簿內容不是帳密同步物件。")
+            messagebox.showerror("匯入同步失敗", "同步 JSON 內容不是帳密同步物件。")
             return
         result = save_credential_sync_payload(payload)
         if result is None:
-            messagebox.showerror("貼上同步失敗", "同步資料缺少帳號或密碼。")
+            messagebox.showerror("匯入同步失敗", "同步資料缺少帳號或密碼。")
             return
         user_id, password, path, count = result
-        self.credential_sync_code = ""
-        self.credential_sync_expires_at = 0.0
-        self._stop_credential_sync_server()
         self._apply_credential_sync_result(user_id, password, path, count)
 
     def _apply_credential_sync_result(self, user_id: str, password: str, path: Path, count: int) -> None:
@@ -925,13 +874,6 @@ def _worker_chrome_is_running() -> bool:
         return False
 
 
-def _local_host_hint() -> str:
-    try:
-        return socket.gethostbyname(socket.gethostname())
-    except Exception:
-        return socket.gethostname() or "127.0.0.1"
-
-
 def local_web_host() -> str:
     return os.getenv("DESKTOP_WEB_HOST", "127.0.0.1").strip() or "127.0.0.1"
 
@@ -964,45 +906,6 @@ def find_update_launcher(base_dir: Path | None = None) -> Path | None:
         root / "WinPython_公務電腦使用包" / "UPDATE_PACKAGE.bat",
     ]
     return next((path for path in candidates if path.exists()), None)
-
-
-class CredentialSyncServer(ThreadingHTTPServer):
-    gui: WorkerGui
-
-
-class CredentialSyncRequestHandler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:
-        if self.path.rstrip("/") != "/credential-sync":
-            self._send_json(404, {"ok": False, "error": "not found"})
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-        if length <= 0 or length > 4096:
-            self._send_json(400, {"ok": False, "error": "invalid body"})
-            return
-        try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self._send_json(400, {"ok": False, "error": "invalid json"})
-            return
-        if not isinstance(payload, dict):
-            self._send_json(400, {"ok": False, "error": "invalid payload"})
-            return
-        status, response = self.server.gui._handle_credential_sync_payload(payload)
-        self._send_json(status, response)
-
-    def log_message(self, format: str, *args: object) -> None:
-        return
-
-    def _send_json(self, status: int, payload: dict[str, object]) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
 
 def main() -> None:
