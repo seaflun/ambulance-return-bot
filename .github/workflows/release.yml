@@ -1,0 +1,65 @@
+name: Release public computer package
+
+on:
+  push:
+    tags:
+      - "ambulance-return-*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version from tag
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $prefix = "ambulance-return-"
+          if (-not $tag.StartsWith($prefix)) {
+              throw "Unexpected tag name: $tag"
+          }
+          $version = $tag.Substring($prefix.Length)
+          if ($version -notmatch "^\d{4}\.\d{2}\.\d{2}\.\d{4}$") {
+              throw "Version must use yyyy.MM.dd.HHmm format. Got: $version"
+          }
+          "AMBULANCE_RETURN_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build update package
+        shell: pwsh
+        run: |
+          ./scripts/build_public_duty_package.ps1 -Version $env:AMBULANCE_RETURN_VERSION
+
+      - name: Verify release assets
+        shell: pwsh
+        run: |
+          $required = @(
+              "UPDATE/ambulance-return-version.txt",
+              "UPDATE/ambulance-return-public-package.zip",
+              "UPDATE/ambulance-return-public-package.zip.sha256.txt"
+          )
+          foreach ($path in $required) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Missing release asset: $path"
+              }
+          }
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $versionAsset = "UPDATE/ambulance-return-version.txt"
+          $zipAsset = "UPDATE/ambulance-return-public-package.zip"
+          $shaAsset = "UPDATE/ambulance-return-public-package.zip.sha256.txt"
+          if (gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null) {
+              gh release upload $tag $versionAsset $zipAsset $shaAsset --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+              gh release create $tag $versionAsset $zipAsset $shaAsset --repo $env:GITHUB_REPOSITORY --title $tag --notes "Ambulance return public computer package $env:AMBULANCE_RETURN_VERSION"
+          }
