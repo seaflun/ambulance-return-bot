@@ -95,7 +95,8 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("救護返隊登打事項", body)
+        self.assertIn("救護返隊小幫手", body)
+        self.assertIn("救護車設定", body)
         self.assertIn("\u65b0\u576191", body)
         self.assertIn(">\u5433\u5b97\u8015</option>", body)
         self.assertNotIn("6 : \u5433\u5b97\u8015", body)
@@ -170,6 +171,13 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
 
     def test_admin_vehicle_create_adds_vehicle_option(self):
+        page = self.client.get("/admin/vehicles")
+        page_body = html.unescape(page.data.decode("utf-8"))
+        self.assertIn("救護車設定", page_body)
+        self.assertIn("救護車代號", page_body)
+        self.assertNotIn('placeholder="新坡95"', page_body)
+        self.assertNotIn('placeholder="BPE-5951"', page_body)
+
         response = self.client.post(
             "/admin/vehicles",
             data={"label": "新坡96", "ppe_name": "BPE-5960"},
@@ -183,6 +191,22 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(app_response.data.decode("utf-8"))
         self.assertIn('<option value="新坡96">新坡96</option>', body)
         self.assertIn("BPE-5960", html.unescape(response.data.decode("utf-8")))
+
+    def test_admin_vehicle_delete_removes_custom_vehicle_only(self):
+        response = self.client.post("/admin/vehicles/delete", data={"label": "新坡95"}, follow_redirects=False)
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("已刪除 新坡95", body)
+        app_response = self.client.get("/app")
+        self.assertNotIn("新坡95", html.unescape(app_response.data.decode("utf-8")))
+
+        builtin_response = self.client.post("/admin/vehicles/delete", data={"label": "新坡91"}, follow_redirects=False)
+        builtin_body = html.unescape(builtin_response.data.decode("utf-8"))
+
+        self.assertEqual(builtin_response.status_code, 400)
+        self.assertIn("內建救護車不能刪除", builtin_body)
+        self.assertIn("新坡91", builtin_body)
 
     def test_create_task_rejects_return_datetime_before_case_datetime(self):
         response = self.client.post(
@@ -230,6 +254,14 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         request_payload = app_module.read_case_lookup_request()
         self.assertEqual(request_payload["lookup_range"], "24h")
+
+    def test_app_page_auto_refreshes_while_case_lookup_is_running(self):
+        app_module.write_case_lookup_request("24h")
+
+        response = self.client.get("/app")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn("window.location.reload()", body)
 
     def test_localhost_query_cases_starts_local_lookup_when_fast_mode_auto(self):
         calls = []

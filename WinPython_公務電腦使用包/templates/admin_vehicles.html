@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f766e">
-  <title>救護車後台</title>
+  <title>救護車設定</title>
   <style>
     :root {
       color-scheme: light;
@@ -84,7 +84,7 @@
     .vehicle-list { display: grid; gap: 8px; }
     .vehicle-row {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 130px) auto;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 130px) auto auto;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -95,6 +95,8 @@
     .vehicle-label { font-weight: 780; overflow-wrap: anywhere; }
     .vehicle-plate { color: var(--muted); font-weight: 700; }
     .vehicle-kind { min-width: 48px; text-align: center; color: var(--muted); font-size: var(--text-sm); }
+    .delete-form { padding: 0; border: 0; background: transparent; box-shadow: none; }
+    .delete-button { min-height: 34px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
     @media (max-width: 560px) {
       header { align-items: stretch; flex-direction: column; }
       .grid, .vehicle-row { grid-template-columns: 1fr; }
@@ -105,7 +107,7 @@
 <body>
   <main>
     <header>
-      <h1>救護車後台</h1>
+      <h1>救護車設定</h1>
       <a class="button secondary" href="/app">返回 APP</a>
     </header>
 
@@ -122,11 +124,11 @@
         </div>
       {% endif %}
       <div class="grid">
-        <label>救護車名稱
-          <input name="label" placeholder="新坡95" autocomplete="off">
+        <label>救護車代號
+          <input name="label" autocomplete="off">
         </label>
         <label>車牌 / 里程系統名稱
-          <input name="ppe_name" placeholder="BPE-5951" autocomplete="off">
+          <input name="ppe_name" autocomplete="off">
         </label>
       </div>
       <button type="submit">新增或更新</button>
@@ -140,6 +142,14 @@
             <div class="vehicle-label">{{ vehicle.label }}</div>
             <div class="vehicle-plate">{{ vehicle.ppe_name or "使用名稱查詢" }}</div>
             <div class="vehicle-kind">{{ "自訂" if vehicle.is_custom else "內建" }}</div>
+            {% if vehicle.is_custom %}
+              <form class="delete-form" method="post" action="/admin/vehicles/delete">
+                <input type="hidden" name="label" value="{{ vehicle.label }}">
+                <button class="delete-button" type="submit">刪除</button>
+              </form>
+            {% else %}
+              <span></span>
+            {% endif %}
           </div>
         {% endfor %}
       </div>

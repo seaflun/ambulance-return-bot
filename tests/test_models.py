@@ -1,9 +1,11 @@
 import unittest
 from datetime import datetime
+from pathlib import Path
+import tempfile
 
 from ambulance_bot.models import clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_form
 from ambulance_bot.models import AmbulanceReturnRequest
-from ambulance_bot.models import vehicle_options, vehicle_ppe_names
+from ambulance_bot.models import delete_vehicle_record, vehicle_options, vehicle_ppe_names
 
 
 class ModelParsingTests(unittest.TestCase):
@@ -30,6 +32,16 @@ class ModelParsingTests(unittest.TestCase):
     def test_vehicle_options_include_borrowed_ambulance(self):
         self.assertIn("新坡95", vehicle_options())
         self.assertEqual(vehicle_ppe_names()["新坡95"], "BPE-5951")
+
+    def test_borrowed_ambulance_can_be_deleted_but_builtin_cannot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+
+            self.assertIn("新坡95", vehicle_options(base_dir))
+            self.assertTrue(delete_vehicle_record("新坡95", base_dir))
+            self.assertNotIn("新坡95", vehicle_options(base_dir))
+            self.assertFalse(delete_vehicle_record("新坡91", base_dir))
+            self.assertIn("新坡91", vehicle_options(base_dir))
 
     def test_parse_full_request(self):
         request = parse_request(

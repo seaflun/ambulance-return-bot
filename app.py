@@ -25,6 +25,7 @@ from ambulance_bot.models import (
     PERSON_OPTIONS,
     example_command,
     clean_case_address,
+    delete_vehicle_record,
     load_vehicle_records,
     normalize_hhmm,
     parse_case_date,
@@ -265,7 +266,7 @@ def create_vehicle_option():
         return render_template(
             "admin_vehicles.html",
             vehicles=vehicle_admin_records(),
-            errors=["請輸入救護車名稱"],
+            errors=["請輸入救護車代號"],
             message="",
         ), 400
     save_vehicle_record(label, ppe_name, artifacts_dir)
@@ -274,6 +275,24 @@ def create_vehicle_option():
         vehicles=vehicle_admin_records(),
         errors=[],
         message=f"已新增或更新 {label}",
+    )
+
+
+@app.post("/admin/vehicles/delete")
+def delete_vehicle_option():
+    label = str(request.form.get("label") or "").strip()
+    if not delete_vehicle_record(label, artifacts_dir):
+        return render_template(
+            "admin_vehicles.html",
+            vehicles=vehicle_admin_records(),
+            errors=["內建救護車不能刪除"],
+            message="",
+        ), 400
+    return render_template(
+        "admin_vehicles.html",
+        vehicles=vehicle_admin_records(),
+        errors=[],
+        message=f"已刪除 {label}",
     )
 
 
