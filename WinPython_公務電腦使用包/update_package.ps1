@@ -77,6 +77,37 @@ function Copy-UpdateTree {
     }
 }
 
+function Get-WorkerPackageProcesses {
+    $packageRoot = (Resolve-Path -LiteralPath $packageDir).Path
+    Get-CimInstance Win32_Process |
+        Where-Object {
+            $_.CommandLine -and
+            $_.CommandLine.IndexOf($packageRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+            ($_.CommandLine -match "worker_gui\.py|app\.py")
+        }
+}
+
+function Stop-WorkerPackageProcesses {
+    $processes = @(Get-WorkerPackageProcesses)
+    foreach ($process in $processes) {
+        Write-Host "Stopping running worker process: $($process.ProcessId) $($process.Name)"
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    if ($processes.Count -gt 0) {
+        Start-Sleep -Seconds 2
+    }
+}
+
+function Start-WorkerGui {
+    $launcher = Join-Path $packageDir "RUN_WORKER_GUI_WINPYTHON.vbs"
+    if (Test-Path -LiteralPath $launcher -PathType Leaf) {
+        Write-Host "Restarting worker GUI..."
+        Start-Process -FilePath "wscript.exe" -ArgumentList "`"$launcher`"" -WorkingDirectory $packageDir | Out-Null
+    } else {
+        Write-Warning "Cannot restart worker GUI because launcher is missing: $launcher"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $localVersionPath)) {
     "0" | Set-Content -LiteralPath $localVersionPath -Encoding UTF8
 }
@@ -115,6 +146,8 @@ try {
         throw "Downloaded package SHA256 mismatch. Expected $remoteSha256 but got $downloadedSha256."
     }
 
+    Stop-WorkerPackageProcesses
+
     $backupZip = Join-Path $backupDir "AmbulanceReturnBot-package-backup-$stamp.zip"
     Write-Host "Creating backup: $backupZip"
     Compress-Archive -LiteralPath (Join-Path $packageDir "*") -DestinationPath $backupZip -Force
@@ -147,7 +180,8 @@ try {
     Copy-UpdateTree -SourceDir $sourceDir -DestDir $packageDir
     $packageVersion | Set-Content -LiteralPath $localVersionPath -Encoding UTF8
 
-    Write-Host "Update completed. Restart the worker if it is running."
+    Write-Host "Update completed."
+    Start-WorkerGui
 } finally {
     try {
         if (Test-Path -LiteralPath $tempDir) {

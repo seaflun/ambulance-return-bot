@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 import worker_gui
@@ -54,6 +55,19 @@ class WorkerGuiEnvTests(unittest.TestCase):
                 os.environ.pop("DESKTOP_WEB_PORT", None)
             else:
                 os.environ["DESKTOP_WEB_PORT"] = old_port
+
+    @unittest.skipIf(os.name != "nt", "Windows mutex only runs on Windows")
+    def test_single_instance_lock_blocks_duplicate(self):
+        name = f"Local\\AmbulanceReturnBotWorkerGuiTest-{uuid.uuid4()}"
+
+        self.assertTrue(worker_gui.acquire_single_instance_lock(name))
+        try:
+            self.assertFalse(worker_gui.acquire_single_instance_lock(name))
+        finally:
+            worker_gui.release_single_instance_lock()
+
+        self.assertTrue(worker_gui.acquire_single_instance_lock(name))
+        worker_gui.release_single_instance_lock()
 
     def test_find_update_launcher_prefers_package_root(self):
         with tempfile.TemporaryDirectory() as tmp:

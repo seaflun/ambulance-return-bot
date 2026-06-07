@@ -41,6 +41,8 @@ load_dotenv()
 
 NAS_LAN_URL = "http://10.30.65.30:8080"
 NAS_TAILSCALE_URL = "http://100.114.126.58:8080"
+SINGLE_INSTANCE_MUTEX_NAME = "Local\\AmbulanceReturnBotWorkerGui"
+_SINGLE_INSTANCE_MUTEX_HANDLE: int | None = None
 
 
 class WorkerGui(tk.Tk):
@@ -924,11 +926,67 @@ def find_update_launcher(base_dir: Path | None = None) -> Path | None:
     return next((path for path in candidates if path.exists()), None)
 
 
+def acquire_single_instance_lock(name: str = SINGLE_INSTANCE_MUTEX_NAME) -> bool:
+    global _SINGLE_INSTANCE_MUTEX_HANDLE
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.CreateMutexW(None, False, name)
+        if not handle:
+            return True
+        if kernel32.GetLastError() == 183:
+            kernel32.CloseHandle(handle)
+            return False
+        _SINGLE_INSTANCE_MUTEX_HANDLE = handle
+        return True
+    except Exception:
+        return True
+
+
+def release_single_instance_lock() -> None:
+    global _SINGLE_INSTANCE_MUTEX_HANDLE
+    if os.name != "nt" or not _SINGLE_INSTANCE_MUTEX_HANDLE:
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.CloseHandle(_SINGLE_INSTANCE_MUTEX_HANDLE)
+    except Exception:
+        pass
+    _SINGLE_INSTANCE_MUTEX_HANDLE = None
+
+
+def show_single_instance_message() -> None:
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "救護回程 Worker 已在執行中，請查看右下角系統匣圖示。",
+                "救護回程 Worker",
+                0x40,
+            )
+            return
+        except Exception:
+            pass
+    print("Ambulance return worker is already running.", file=sys.stderr)
+
+
 def main() -> None:
+    if not acquire_single_instance_lock():
+        show_single_instance_message()
+        return
     app = WorkerGui()
     app.after(100, app._start_local_web_app)
     app.after(100, app._start_worker_with_default_server)
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        release_single_instance_lock()
 
 
 if __name__ == "__main__":
