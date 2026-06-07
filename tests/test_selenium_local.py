@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+import ambulance_bot.selenium_local as selenium_local_module
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
     _attach_case_form_details,
@@ -130,6 +131,50 @@ class SeleniumLocalTests(unittest.TestCase):
                     os.environ.pop("DUTY_PASSWORD", None)
                 else:
                     os.environ["DUTY_PASSWORD"] = previous_password
+
+    def test_case_lookup_runs_headless_and_closes_driver_after_login_failure(self):
+        class FakeDriver:
+            def implicitly_wait(self, seconds: int) -> None:
+                pass
+
+        calls: dict[str, object] = {"released": False}
+        original_create_driver = selenium_local_module._create_driver
+        original_acquire = selenium_local_module._acquire_selenium_session
+        original_release = selenium_local_module._release_selenium_session
+        original_quit = selenium_local_module._quit_driver
+        original_ensure_login = selenium_local_module._ensure_duty_login
+        original_save_artifacts = selenium_local_module._save_artifacts
+        original_login_error = selenium_local_module._login_error_text
+        try:
+            fake_driver = FakeDriver()
+
+            def fake_create_driver(*args, **kwargs):
+                calls["create_kwargs"] = kwargs
+                return fake_driver
+
+            selenium_local_module._create_driver = fake_create_driver
+            selenium_local_module._acquire_selenium_session = lambda reason: True
+            selenium_local_module._release_selenium_session = lambda reason: calls.__setitem__("released", True)
+            selenium_local_module._quit_driver = lambda driver: calls.__setitem__("quit_driver", driver)
+            selenium_local_module._ensure_duty_login = lambda driver: False
+            selenium_local_module._save_artifacts = lambda *args, **kwargs: None
+            selenium_local_module._login_error_text = lambda driver: "login failed"
+
+            with tempfile.TemporaryDirectory() as tmp:
+                result = selenium_local_module.query_duty_emergency_cases(Path(tmp), lookup_range="24h")
+        finally:
+            selenium_local_module._create_driver = original_create_driver
+            selenium_local_module._acquire_selenium_session = original_acquire
+            selenium_local_module._release_selenium_session = original_release
+            selenium_local_module._quit_driver = original_quit
+            selenium_local_module._ensure_duty_login = original_ensure_login
+            selenium_local_module._save_artifacts = original_save_artifacts
+            selenium_local_module._login_error_text = original_login_error
+
+        self.assertEqual(result.status, "duty_login_failed")
+        self.assertIs(calls["quit_driver"], fake_driver)
+        self.assertTrue(calls["released"])
+        self.assertTrue(calls["create_kwargs"]["headless"])
 
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]

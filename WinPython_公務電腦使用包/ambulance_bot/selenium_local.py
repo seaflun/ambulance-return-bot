@@ -253,6 +253,7 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
             profile_name=f"case_lookup_profile_{int(time.time())}",
             debugger_port=CASE_LOOKUP_DEBUGGER_PORT,
             attach_existing=False,
+            headless=True,
         )
     except Exception as exc:
         _quit_driver(driver)
@@ -284,7 +285,6 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
                 [],
             )
             _write_json_atomic(output_path, payload)
-            driver = None
             return DutyCaseLookupResult(True, payload["status"], payload["detail"], [], output_path)
 
         _open_case_query(driver, lookup_range=lookup_range)
