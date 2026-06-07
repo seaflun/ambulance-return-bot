@@ -250,9 +250,9 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
         lock_acquired = _acquire_selenium_session(f"case_lookup {lookup_range}")
         driver = _create_driver(
             artifacts_dir,
-            profile_name="case_lookup_profile",
+            profile_name=f"case_lookup_profile_{int(time.time())}",
             debugger_port=CASE_LOOKUP_DEBUGGER_PORT,
-            attach_existing=True,
+            attach_existing=False,
         )
     except Exception as exc:
         _quit_driver(driver)
