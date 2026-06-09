@@ -15,6 +15,7 @@ from ambulance_bot.selenium_local import (
     _click_vehicle_mileage_save,
     _disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
+    _create_local_driver_with_retry,
     _ppe_credentials,
     _prepare_duty_work_log_form,
     _previous_case_details,
@@ -250,6 +251,92 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._login_error_text = original_login_error
 
         self.assertEqual(result.status, "duty_login_failed")
+        self.assertIs(calls["quit_driver"], fake_driver)
+        self.assertTrue(calls["released"])
+        self.assertTrue(calls["create_kwargs"]["headless"])
+
+    def test_local_driver_retries_when_chrome_is_not_reachable(self):
+        class FakeDriver:
+            pass
+
+        calls: dict[str, object] = {"count": 0, "sleep": []}
+        original_webdriver_chrome = selenium_local_module.webdriver.Chrome
+        original_sleep = selenium_local_module.time.sleep
+        original_attempts = os.environ.get("SELENIUM_LOCAL_SESSION_ATTEMPTS")
+        try:
+            os.environ["SELENIUM_LOCAL_SESSION_ATTEMPTS"] = "2"
+
+            def fake_chrome(options=None):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise selenium_local_module.WebDriverException("session not created: from chrome not reachable")
+                return FakeDriver()
+
+            selenium_local_module.webdriver.Chrome = fake_chrome
+            selenium_local_module.time.sleep = lambda seconds: calls["sleep"].append(seconds)
+
+            result = _create_local_driver_with_retry(object())
+        finally:
+            selenium_local_module.webdriver.Chrome = original_webdriver_chrome
+            selenium_local_module.time.sleep = original_sleep
+            if original_attempts is None:
+                os.environ.pop("SELENIUM_LOCAL_SESSION_ATTEMPTS", None)
+            else:
+                os.environ["SELENIUM_LOCAL_SESSION_ATTEMPTS"] = original_attempts
+
+        self.assertIsInstance(result, FakeDriver)
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(calls["sleep"], [2])
+
+    def test_case_lookup_closes_driver_after_success(self):
+        class FakeDriver:
+            def implicitly_wait(self, seconds: int) -> None:
+                pass
+
+        calls: dict[str, object] = {"released": False}
+        original_create_driver = selenium_local_module._create_driver
+        original_acquire = selenium_local_module._acquire_selenium_session
+        original_release = selenium_local_module._release_selenium_session
+        original_quit = selenium_local_module._quit_driver
+        original_ensure_login = selenium_local_module._ensure_duty_login
+        original_set_window = selenium_local_module._set_window_size_if_enabled
+        original_open_case_query = selenium_local_module._open_case_query
+        original_extract_cases = selenium_local_module._extract_all_emergency_cases
+        original_attach_details = selenium_local_module._attach_case_form_details
+        original_save_artifacts = selenium_local_module._save_artifacts
+        try:
+            fake_driver = FakeDriver()
+
+            def fake_create_driver(*args, **kwargs):
+                calls["create_kwargs"] = kwargs
+                return fake_driver
+
+            selenium_local_module._create_driver = fake_create_driver
+            selenium_local_module._acquire_selenium_session = lambda reason: True
+            selenium_local_module._release_selenium_session = lambda reason: calls.__setitem__("released", True)
+            selenium_local_module._quit_driver = lambda driver: calls.__setitem__("quit_driver", driver)
+            selenium_local_module._ensure_duty_login = lambda driver: True
+            selenium_local_module._set_window_size_if_enabled = lambda *args, **kwargs: None
+            selenium_local_module._open_case_query = lambda *args, **kwargs: None
+            selenium_local_module._extract_all_emergency_cases = lambda driver: [{"case_id": "case-1"}]
+            selenium_local_module._attach_case_form_details = lambda driver, cases, artifacts_dir, previous_cases: cases
+            selenium_local_module._save_artifacts = lambda *args, **kwargs: None
+
+            with tempfile.TemporaryDirectory() as tmp:
+                result = selenium_local_module.query_duty_emergency_cases(Path(tmp), lookup_range="24h")
+        finally:
+            selenium_local_module._create_driver = original_create_driver
+            selenium_local_module._acquire_selenium_session = original_acquire
+            selenium_local_module._release_selenium_session = original_release
+            selenium_local_module._quit_driver = original_quit
+            selenium_local_module._ensure_duty_login = original_ensure_login
+            selenium_local_module._set_window_size_if_enabled = original_set_window
+            selenium_local_module._open_case_query = original_open_case_query
+            selenium_local_module._extract_all_emergency_cases = original_extract_cases
+            selenium_local_module._attach_case_form_details = original_attach_details
+            selenium_local_module._save_artifacts = original_save_artifacts
+
+        self.assertEqual(result.status, "cases_loaded")
         self.assertIs(calls["quit_driver"], fake_driver)
         self.assertTrue(calls["released"])
         self.assertTrue(calls["create_kwargs"]["headless"])

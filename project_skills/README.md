@@ -8,6 +8,7 @@ the same operational rules without relying on global Codex skill installation.
 
 - `nas-line-push`: NAS, Docker Compose, Selenium, `.env`, and LINE Messaging API rules.
 - `karpathy-guidelines`: conservative coding and verification rules for incremental automation work.
+- `ambulance-return-workflow`: project-specific NAS bundle, public-duty worker GUI, four-site entry, test, package, and restart workflow.
 
 ## Usage
 

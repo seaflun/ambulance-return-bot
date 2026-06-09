@@ -9,6 +9,96 @@ from ambulance_bot.duty_credentials import DutyCredential, load_synced_worker_cr
 
 
 class WorkerGuiEnvTests(unittest.TestCase):
+    def test_gui_theme_uses_pastel_orange_white_and_deep_navy(self):
+        self.assertEqual(worker_gui.GUI_THEME["bg"], "#fff7ef")
+        self.assertEqual(worker_gui.GUI_THEME["surface"], "#ffffff")
+        self.assertEqual(worker_gui.GUI_THEME["accent"], "#f08a4b")
+        self.assertEqual(worker_gui.GUI_THEME["ink"], "#10233f")
+
+    def test_worker_gui_status_and_card_label_backgrounds_match_root(self):
+        source = Path(worker_gui.__file__).read_text(encoding="utf-8")
+
+        self.assertIn('background=theme["bg"],\n            foreground=theme["ink"],\n            padding=(14, 7)', source)
+        self.assertIn('style.map("Card.TLabelframe.Label"', source)
+
+    def test_worker_gui_default_geometry_is_compact(self):
+        source = Path(worker_gui.__file__).read_text(encoding="utf-8")
+
+        self.assertIn('self.geometry("680x760")', source)
+        self.assertIn('self.minsize(600, 680)', source)
+
+    def test_worker_case_lookup_output_is_gui_readable(self):
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[worker] scheduled case lookup range=24h"),
+            "案件查詢｜背景查詢｜24h",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[worker] case lookup posted count=2"),
+            "案件查詢｜已送出｜2 筆",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[worker] case lookup result status=cases_loaded count=3 detail=完成"),
+            "案件查詢｜完成｜已查到 3 筆",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[case_lookup] query requested host=localhost range=24h mode=desktop_fast"),
+            "案件查詢｜本機端按下查詢｜24h，desktop_fast",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[case_lookup] query requested host=100.114.126.58:8080 source=NAS端 range=24h mode=worker_queue"),
+            "案件查詢｜NAS端按下查詢｜24h，worker_queue",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[worker] manual case lookup requested range=24h source=NAS端"),
+            "案件查詢｜NAS端按下查詢｜24h",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[selenium] waiting for session lock: work-log"),
+            "",
+        )
+
+    def test_gui_log_message_uses_single_compact_format(self):
+        self.assertEqual(
+            worker_gui.format_gui_log_message("面板已啟動。", now="12:34:56"),
+            "12:34:56｜系統｜面板已啟動",
+        )
+        self.assertEqual(
+            worker_gui.format_gui_log_message("12:00:00 [worker] scheduled case lookup range=24h", now="12:34:56"),
+            "12:34:56｜案件查詢｜背景查詢｜24h",
+        )
+
+    def test_current_package_version_prefers_root_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "WinPython_公務電腦使用包").mkdir()
+            (root / "UPDATE").mkdir()
+            (root / "WinPython_公務電腦使用包" / "VERSION.txt").write_text("2026.01.01.0001", encoding="utf-8")
+            (root / "UPDATE" / "VERSION.txt").write_text("2026.01.01.0002", encoding="utf-8")
+
+            self.assertEqual(worker_gui.current_package_version(root), "2026.01.01.0001")
+
+            (root / "VERSION.txt").write_text("2026.01.01.0003", encoding="utf-8")
+            self.assertEqual(worker_gui.current_package_version(root), "2026.01.01.0003")
+
+    def test_local_web_process_output_is_piped_to_gui_log(self):
+        source = Path(worker_gui.__file__).read_text(encoding="utf-8")
+
+        self.assertIn("stdout=subprocess.PIPE", source)
+        self.assertIn("stderr=subprocess.STDOUT", source)
+        self.assertIn("self._start_local_web_log_reader(self.local_web_process)", source)
+
+    def test_queue_text_writer_sends_complete_lines_to_log_queue(self):
+        log_queue = worker_gui.queue.Queue()
+        writer = worker_gui.QueueTextWriter(log_queue)
+
+        writer.write("[worker] scheduled case lookup range=24h\npartial")
+        writer.write(" line\n")
+        writer.write("[selenium] acquired session lock: work-log\n")
+
+        self.assertEqual(log_queue.get_nowait(), "案件查詢｜背景查詢｜24h")
+        self.assertEqual(log_queue.get_nowait(), "partial line")
+        self.assertTrue(log_queue.empty())
+
     def test_task_row_values_formats_payload(self):
         task_id, values = worker_gui.task_row_values(
             {
@@ -69,6 +159,19 @@ class WorkerGuiEnvTests(unittest.TestCase):
                 os.environ["DESKTOP_FAST_MODE"] = old_fast_mode
 
         self.assertEqual(env["DESKTOP_FAST_MODE"], "auto")
+        self.assertEqual(env["PUBLIC_PC_REPORT_ENABLED"], "true")
+
+    def test_gui_site_helpers_follow_desktop_fast_rules(self):
+        self.assertTrue(worker_gui._gui_site_is_complete("consumables_saved"))
+        self.assertTrue(worker_gui._gui_site_is_complete("completed_by_user"))
+        self.assertFalse(worker_gui._gui_site_is_complete("consumables_running"))
+        self.assertTrue(worker_gui._gui_site_blocks_next("disinfection_failed"))
+        self.assertTrue(worker_gui._gui_site_blocks_next("needs_duty_login"))
+        self.assertFalse(worker_gui._gui_site_blocks_next("vehicle_mileage_saved"))
+
+    def test_worker_restart_enables_auto_claim_tasks(self):
+        source = Path(worker_gui.__file__).read_text(encoding="utf-8")
+        self.assertIn('os.environ["WORKER_AUTO_CLAIM_TASKS"] = "true"', source)
 
     @unittest.skipIf(os.name != "nt", "Windows mutex only runs on Windows")
     def test_single_instance_lock_blocks_duplicate(self):
@@ -109,6 +212,11 @@ class WorkerGuiEnvTests(unittest.TestCase):
         credential = DutyCredential(user_id="user1", password="pass", actor_no="8", display_name="8番 王小明")
 
         self.assertEqual(worker_gui.credential_choice_label(credential), "8番 王小明 - user1")
+
+    def test_credential_choice_label_marks_missing_display_parts(self):
+        credential = DutyCredential(user_id="user1", password="pass")
+
+        self.assertEqual(worker_gui.credential_choice_label(credential), "未填番號 未填姓名 - user1")
 
     def test_credential_sync_accounts_from_payload_accepts_accounts_array(self):
         payload = {

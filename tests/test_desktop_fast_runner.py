@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
+from ambulance_bot.manual_task_lock import manual_task_lock_path
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.task_store import JsonTaskStore
 
@@ -46,6 +47,7 @@ class DesktopFastRunnerTests(unittest.TestCase):
 
             payload = store.get("task-1")
             self.assertEqual(payload["overall_status"], "desktop_fast_completed")
+            self.assertFalse(manual_task_lock_path(Path(tmp)).exists())
             self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
             self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
             self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_saved")
@@ -140,6 +142,63 @@ class DesktopFastRunnerTests(unittest.TestCase):
             disinfection_login_mock.assert_called_once()
             disinfection_mock.assert_called_once()
             acs_login_mock.assert_not_called()
+
+    def test_four_site_run_skips_completed_sites_and_resumes_at_failed_site(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-4",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡91",
+            )
+            store.create(request)
+            store.update_site_result(
+                "task-4",
+                SimpleNamespace(key="duty_work_log", name="消防勤務工作紀錄", status="duty_work_log_saved", detail="done"),
+            )
+            store.update_site_result(
+                "task-4",
+                SimpleNamespace(key="vehicle_mileage", name="車輛里程", status="vehicle_mileage_saved", detail="done"),
+            )
+            store.update_site_result(
+                "task-4",
+                SimpleNamespace(key="disinfection", name="緊急救護消毒", status="disinfection_failed", detail="retry"),
+            )
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch(
+                "ambulance_bot.desktop_fast_runner.run_local_selenium_task",
+            ) as duty_mock, patch(
+                "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
+            ) as mileage_mock, patch(
+                "ambulance_bot.desktop_fast_runner.login_disinfection_and_get_driver",
+                return_value=Mock(name="disinfection_driver"),
+            ) as disinfection_login_mock, patch(
+                "ambulance_bot.desktop_fast_runner.run_disinfection_task",
+                return_value=SimpleNamespace(ok=True, status="disinfection_saved", detail="disinfection ok"),
+            ) as disinfection_mock, patch(
+                "ambulance_bot.desktop_fast_runner.login_acs_and_get_driver",
+                return_value=Mock(name="driver"),
+            ) as acs_login_mock, patch(
+                "ambulance_bot.desktop_fast_runner.open_consumable_record_for_task",
+                return_value="consumables ok",
+            ) as consumables_mock:
+                runner.start_existing("task-4")
+                self.assertTrue(runner.wait_for_idle())
+
+            payload = store.get("task-4")
+            self.assertEqual(payload["overall_status"], "desktop_fast_completed")
+            self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
+            self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
+            self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_saved")
+            self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_saved")
+            duty_mock.assert_not_called()
+            mileage_mock.assert_not_called()
+            disinfection_login_mock.assert_called_once()
+            disinfection_mock.assert_called_once()
+            acs_login_mock.assert_called_once()
+            consumables_mock.assert_called_once()
 
 
 if __name__ == "__main__":

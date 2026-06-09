@@ -13,6 +13,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
+from ambulance_bot.adapters import SiteAutomationResult
+from ambulance_bot.manual_task_lock import manual_task_lock_active
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
     query_duty_emergency_cases,
@@ -20,6 +23,7 @@ from ambulance_bot.selenium_local import (
     run_local_selenium_task,
     run_vehicle_mileage_task,
 )
+from ambulance_bot.window_layout import maximize_worker_site_windows
 
 
 load_dotenv()
@@ -59,7 +63,7 @@ def main() -> None:
                     return
                 time.sleep(poll_seconds)
                 continue
-            run_task(server_url, worker_id, task, artifacts_dir)
+            run_all_sites_task(server_url, worker_id, task, artifacts_dir)
             if run_once:
                 return
         except KeyboardInterrupt:
@@ -78,7 +82,7 @@ def maybe_run_case_lookup(
     last_case_hash: str,
     interval_seconds: int,
 ) -> tuple[float, str]:
-    if MANUAL_TASK_ACTIVE.is_set():
+    if MANUAL_TASK_ACTIVE.is_set() or manual_task_lock_active(artifacts_dir):
         print("[worker] scheduled case lookup skipped: manual task active", flush=True)
         return last_lookup_at, last_case_hash
 
@@ -87,7 +91,8 @@ def maybe_run_case_lookup(
     manual_lookup = request_payload is not None
     if manual_lookup:
         lookup_range = str(request_payload.get("lookup_range") or "24h")
-        print(f"[worker] manual case lookup requested range={lookup_range}", flush=True)
+        source = str(request_payload.get("source") or "NAS端")
+        print(f"[worker] manual case lookup requested range={lookup_range} source={source}", flush=True)
     elif now - last_lookup_at >= max(interval_seconds, 60):
         if last_case_lookup_waiting_for_login(artifacts_dir):
             print("[worker] scheduled case lookup skipped: waiting for valid duty login", flush=True)
@@ -98,11 +103,13 @@ def maybe_run_case_lookup(
         return last_lookup_at, last_case_hash
 
     result = query_duty_emergency_cases(artifacts_dir, lookup_range=lookup_range)
+    print(f"[worker] case lookup result status={result.status} count={len(result.cases)} detail={result.detail}", flush=True)
     case_hash = hash_cases(result.cases)
     if not manual_lookup and case_hash == last_case_hash:
         print("[worker] case lookup unchanged; skip posting", flush=True)
         return now, last_case_hash
     post_cases(server_url, result.status, result.detail, lookup_range, result.cases, case_hash)
+    print(f"[worker] case lookup posted count={len(result.cases)}", flush=True)
     return now, case_hash
 
 
@@ -116,6 +123,13 @@ def fetch_task(server_url: str, task_id: str) -> dict[str, object] | None:
     url = f"{server_url}/worker/tasks/{urllib.parse.quote(task_id)}"
     data = request_json(url)
     return data.get("task") if data.get("ok") else None
+
+
+def fetch_task_payload(server_url: str, task_id: str) -> dict[str, object] | None:
+    url = f"{server_url}/worker/tasks/{urllib.parse.quote(task_id)}"
+    data = request_json(url)
+    payload = data.get("payload") if data.get("ok") else None
+    return payload if isinstance(payload, dict) else None
 
 
 def fetch_recent_tasks(server_url: str, limit: int = 20) -> list[dict[str, object]]:
@@ -142,6 +156,7 @@ def run_task(
     use_session_lock: bool = True,
     tile_name: str = "",
     force_new_driver: bool = False,
+    update_overall: bool = True,
 ) -> object:
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] claimed task {request.task_id}", flush=True)
@@ -163,8 +178,105 @@ def run_task(
         site_key="duty_work_log",
         site_name="消防勤務工作紀錄",
     )
+    if update_overall:
+        post_status(
+            server_url,
+            request.task_id,
+            "desktop_fast_completed_with_errors" if _status_blocks_progress(result.status) else "desktop_fast_completed",
+            result.detail,
+        )
     print(f"[worker] finished task {request.task_id}: {result.status}", flush=True)
     return result
+
+
+def run_all_sites_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+) -> object | None:
+    request = AmbulanceReturnRequest.from_dict(task)
+    profile_suffix = request.task_id.replace("-", "_")
+    post_status(server_url, request.task_id, "desktop_fast_running", "公務電腦 worker 四站登打已啟動。")
+    runners = [
+        (
+            "duty_work_log",
+            lambda: run_task(
+                server_url,
+                worker_id,
+                task,
+                artifacts_dir,
+                profile_name=f"duty_work_log_profile_{profile_suffix}",
+                use_session_lock=False,
+                tile_name="duty_work_log",
+                force_new_driver=True,
+                update_overall=False,
+            ),
+        ),
+        (
+            "vehicle_mileage",
+            lambda: run_vehicle_task(
+                server_url,
+                worker_id,
+                task,
+                artifacts_dir,
+                profile_name=f"vehicle_mileage_profile_{profile_suffix}",
+                use_session_lock=False,
+                tile_name="vehicle_mileage",
+                force_new_driver=True,
+                update_overall=False,
+            ),
+        ),
+        (
+            "disinfection",
+            lambda: run_disinfection_worker_task(
+                server_url,
+                worker_id,
+                task,
+                artifacts_dir,
+                profile_name=f"disinfection_profile_{profile_suffix}",
+                use_session_lock=False,
+                tile_name="disinfection",
+                force_new_driver=True,
+                update_overall=False,
+            ),
+        ),
+        (
+            "consumables",
+            lambda: run_consumables_worker_task(
+                server_url,
+                worker_id,
+                task,
+                artifacts_dir,
+                profile_name=f"consumables_profile_{profile_suffix}",
+                tile_name="consumables",
+                update_overall=False,
+            ),
+        ),
+    ]
+    last_result = None
+    for site_key, runner in runners:
+        try:
+            payload = fetch_task_payload(server_url, request.task_id)
+            site_statuses = payload.get("site_statuses") if isinstance(payload, dict) and isinstance(payload.get("site_statuses"), dict) else {}
+            current_status = str((site_statuses.get(site_key) or {}).get("status") or "")
+            if _site_is_complete(current_status):
+                print(f"[worker] skip completed site task={request.task_id} site={site_key}", flush=True)
+                continue
+            last_result = runner()
+            if _result_blocks_progress(last_result):
+                post_status(
+                    server_url,
+                    request.task_id,
+                    "desktop_fast_completed_with_errors",
+                    f"{site_key} failed: {getattr(last_result, 'detail', '')}",
+                )
+                return last_result
+        finally:
+            maximize_worker_site_windows()
+    post_status(server_url, request.task_id, "desktop_fast_completed", "公務電腦 worker 四站登打完成。")
+    maximize_worker_site_windows()
+    return last_result
 
 
 def run_vehicle_task(
@@ -177,6 +289,7 @@ def run_vehicle_task(
     use_session_lock: bool = True,
     tile_name: str = "",
     force_new_driver: bool = False,
+    update_overall: bool = True,
 ) -> object:
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] vehicle mileage task {request.task_id}", flush=True)
@@ -198,6 +311,13 @@ def run_vehicle_task(
         site_key="vehicle_mileage",
         site_name="車輛里程",
     )
+    if update_overall:
+        post_status(
+            server_url,
+            request.task_id,
+            "desktop_fast_completed_with_errors" if _status_blocks_progress(result.status) else "desktop_fast_completed",
+            result.detail,
+        )
     print(f"[worker] finished vehicle mileage {request.task_id}: {result.status}", flush=True)
     return result
 
@@ -213,6 +333,7 @@ def run_disinfection_worker_task(
     use_session_lock: bool = True,
     tile_name: str = "",
     force_new_driver: bool = False,
+    update_overall: bool = True,
 ):
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] disinfection task {request.task_id}", flush=True)
@@ -235,7 +356,64 @@ def run_disinfection_worker_task(
         site_key="disinfection",
         site_name="緊急救護消毒",
     )
+    if update_overall:
+        post_status(
+            server_url,
+            request.task_id,
+            "desktop_fast_completed_with_errors" if _status_blocks_progress(result.status) else "desktop_fast_completed",
+            result.detail,
+        )
     print(f"[worker] finished disinfection {request.task_id}: {result.status}", flush=True)
+    return result
+
+
+def run_consumables_worker_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+    profile_name: str = "consumables_profile",
+    debugger_port: int | None = None,
+    tile_name: str = "",
+    update_overall: bool = True,
+) -> SiteAutomationResult:
+    request = AmbulanceReturnRequest.from_dict(task)
+    print(f"[worker] consumables task {request.task_id}", flush=True)
+    post_status(
+        server_url,
+        request.task_id,
+        "consumables_running",
+        f"公務電腦 worker 執行耗材：{worker_id}",
+        site_key="consumables",
+        site_name="一站通耗材",
+    )
+    try:
+        driver = login_acs_and_get_driver(
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            tile_name=tile_name,
+            task=request,
+        )
+        detail = open_consumable_record_for_task(driver, request)
+        result = SiteAutomationResult("consumables", "一站通耗材", "consumables_saved", detail)
+    except Exception as exc:
+        result = SiteAutomationResult("consumables", "一站通耗材", "consumables_failed", f"耗材登打失敗：{exc}")
+    post_status(
+        server_url,
+        request.task_id,
+        result.status,
+        result.detail,
+        site_key="consumables",
+        site_name="一站通耗材",
+    )
+    if update_overall:
+        post_status(
+            server_url,
+            request.task_id,
+            "desktop_fast_completed_with_errors" if _result_blocks_progress(result) else "desktop_fast_completed",
+            result.detail,
+        )
+    print(f"[worker] finished consumables {request.task_id}: {result.status}", flush=True)
     return result
 
 
@@ -252,6 +430,8 @@ def post_status(
     detail: str,
     site_key: str = "",
     site_name: str = "",
+    overall_status: str = "",
+    overall_detail: str = "",
 ) -> None:
     payload = {
         "status": status,
@@ -259,6 +439,9 @@ def post_status(
         "site_key": site_key,
         "site_name": site_name,
     }
+    if overall_status:
+        payload["overall_status"] = overall_status
+        payload["overall_detail"] = overall_detail or detail
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         f"{server_url}/worker/tasks/{task_id}/status",
@@ -304,6 +487,26 @@ def worker_api_timeout() -> int:
 def hash_cases(cases: list[dict[str, object]]) -> str:
     normalized = json.dumps(cases, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _status_blocks_progress(status: str) -> bool:
+    text = str(status or "")
+    if "failed" in text or "error" in text:
+        return True
+    if text.startswith("needs_") or "login" in text:
+        return True
+    return False
+
+
+def _result_blocks_progress(result: object) -> bool:
+    if getattr(result, "ok", True) is False:
+        return True
+    return _status_blocks_progress(str(getattr(result, "status", "") or ""))
+
+
+def _site_is_complete(status: str) -> bool:
+    value = str(status or "")
+    return value == "completed_by_user" or value.endswith("_saved")
 
 
 def load_last_case_hash(artifacts_dir: Path) -> str:

@@ -470,11 +470,46 @@ def _create_driver(
         options.add_argument(f"--remote-debugging-port={debugger_port}")
     if not headless and os.getenv("SELENIUM_DETACH", "true").strip().lower() not in {"0", "false", "no", "off"}:
         options.add_experimental_option("detach", True)
-    driver = webdriver.Chrome(options=options)
+    driver = _create_local_driver_with_retry(options)
     page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
     driver.set_page_load_timeout(page_timeout)
     driver.set_script_timeout(page_timeout)
     return driver
+
+
+def _create_local_driver_with_retry(options: Options) -> webdriver.Chrome:
+    attempts = int(os.getenv("SELENIUM_LOCAL_SESSION_ATTEMPTS", "2"))
+    last_error: Exception | None = None
+    for attempt in range(1, max(attempts, 1) + 1):
+        try:
+            if attempts > 1:
+                print(f"[selenium] creating local chrome session attempt {attempt}/{attempts}", flush=True)
+            return webdriver.Chrome(options=options)
+        except WebDriverException as exc:
+            last_error = exc
+            if not _is_local_chrome_startup_error(exc) or attempt >= attempts:
+                raise
+            print(f"[selenium] local chrome session attempt {attempt} failed: {_short_webdriver_error(exc)}", flush=True)
+            time.sleep(2)
+    raise WebDriverException(f"local chrome session failed after {attempts} attempts: {_short_webdriver_error(last_error)}")
+
+
+def _is_local_chrome_startup_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    startup_markers = (
+        "from chrome not reachable",
+        "chrome not reachable",
+        "session not created",
+        "devtoolsactiveport file doesn't exist",
+    )
+    return any(marker in message for marker in startup_markers)
+
+
+def _short_webdriver_error(exc: Exception | None) -> str:
+    if exc is None:
+        return "unknown error"
+    first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
+    return first_line[:240]
 
 
 def _remote_browser_options() -> Options | FirefoxOptions:

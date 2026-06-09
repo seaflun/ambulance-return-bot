@@ -13,7 +13,7 @@ class ModelParsingTests(unittest.TestCase):
         request = parse_request("\u6551\u8b77\u56de\u7a0b\n\u8eca\u8f1b:91A1")
 
         self.assertEqual(request.vehicle, "91A1")
-        self.assertEqual(request.consumables, {"桃-口罩(片)": 2, "桃-9吋手套-XL(雙)": 2})
+        self.assertEqual(request.consumables, {"桃-口罩(片)": 2, "桃-9吋手套-L(雙)": 2})
         self.assertEqual(request.patient_summary, "\u7537\u4e00\u540d")
         self.assertEqual(
             request.disinfection_items,
@@ -165,6 +165,10 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(
             clean_case_address("\u6843\u5712\u5e02\u89c0\u97f3\u5340\u89c0\u97f3\u9ad8\u4e2d(\u4e2d\u5c71\u8def\u4e8c\u6bb5\u5074)-\u8eca\u798d\u62d2\u9001"),
             "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u89c0\u97f3\u9ad8\u4e2d(\u4e2d\u5c71\u8def\u4e8c\u6bb5\u5074)",
+        )
+        self.assertEqual(
+            clean_case_address("\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def\u4e8c\u6bb5705\u865f3\u6a13(OHCA-D)-\u6025\u75c5\u653e\u68c4\u6025\u6551\u52e4\u5340\u8655\u7406"),
+            "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def\u4e8c\u6bb5705\u865f3\u6a13(OHCA-D)",
         )
 
 

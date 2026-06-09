@@ -84,7 +84,7 @@
     .vehicle-list { display: grid; gap: 8px; }
     .vehicle-row {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 130px) auto auto;
+      grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 64px 56px;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -92,14 +92,26 @@
       border-radius: 12px;
       background: #fff;
     }
+    .vehicle-row.header-row {
+      min-height: 34px;
+      padding-top: 0;
+      padding-bottom: 0;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: var(--text-sm);
+      font-weight: 760;
+    }
+    .vehicle-row > * { min-width: 0; }
     .vehicle-label { font-weight: 780; overflow-wrap: anywhere; }
-    .vehicle-plate { color: var(--muted); font-weight: 700; }
+    .vehicle-plate { color: var(--muted); font-weight: 700; overflow-wrap: anywhere; }
     .vehicle-kind { min-width: 48px; text-align: center; color: var(--muted); font-size: var(--text-sm); }
     .delete-form { padding: 0; border: 0; background: transparent; box-shadow: none; }
     .delete-button { min-height: 34px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
     @media (max-width: 560px) {
       header { align-items: stretch; flex-direction: column; }
       .grid, .vehicle-row { grid-template-columns: 1fr; }
+      .vehicle-row.header-row { display: none; }
       .button { width: 100%; }
     }
   </style>
@@ -108,7 +120,7 @@
   <main>
     <header>
       <h1>救護車設定</h1>
-      <a class="button secondary" href="/app">返回 APP</a>
+      <a class="button secondary" href="/app">返回首頁</a>
     </header>
 
     <form method="post" action="/admin/vehicles">
@@ -131,12 +143,18 @@
           <input name="ppe_name" autocomplete="off">
         </label>
       </div>
-      <button type="submit">新增或更新</button>
+      <button type="submit">新增</button>
     </form>
 
     <section class="panel" style="margin-top: 16px;">
       <h2>目前車輛</h2>
       <div class="vehicle-list">
+        <div class="vehicle-row header-row">
+          <div class="vehicle-label">救護車代號</div>
+          <div class="vehicle-plate">車牌號碼</div>
+          <div class="vehicle-kind">類型</div>
+          <div></div>
+        </div>
         {% for vehicle in vehicles %}
           <div class="vehicle-row">
             <div class="vehicle-label">{{ vehicle.label }}</div>

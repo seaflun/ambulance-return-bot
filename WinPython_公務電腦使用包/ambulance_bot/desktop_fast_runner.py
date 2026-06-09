@@ -2,23 +2,32 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Callable
 
 from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
 from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
+from .manual_task_lock import clear_manual_task_lock, set_manual_task_lock
 from .selenium_local import run_disinfection_task, run_local_selenium_task, run_vehicle_mileage_task
 from .task_store import JsonTaskStore
+from .window_layout import maximize_worker_site_windows
 
 
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
 
 
 class DesktopFastRunner:
-    def __init__(self, artifacts_dir: Path, store: JsonTaskStore | None = None) -> None:
+    def __init__(
+        self,
+        artifacts_dir: Path,
+        store: JsonTaskStore | None = None,
+        event_callback: Callable[[dict, str], None] | None = None,
+    ) -> None:
         self.artifacts_dir = artifacts_dir
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.store = store or JsonTaskStore(self.artifacts_dir / "tasks")
+        self.event_callback = event_callback
         self._lock = threading.Lock()
         self._running: set[str] = set()
 
@@ -56,7 +65,10 @@ class DesktopFastRunner:
 
     def _run(self, task_id: str) -> None:
         failures = 0
+        lock_owner = f"desktop_fast:{task_id}"
+        set_manual_task_lock(self.artifacts_dir, lock_owner)
         self.store.set_overall_status(task_id, "desktop_fast_running", "本機快速執行已啟動。")
+        self._notify(task_id, "四站登打開始")
         request = self.store.request_for(task_id)
         profile_suffix = task_id.replace("-", "_")
         try:
@@ -75,6 +87,7 @@ class DesktopFastRunner:
             if failed:
                 failures += 1
                 self.store.set_overall_status(task_id, "desktop_fast_completed_with_errors", "本機快速執行已停止：工作紀錄未完成，後續站別未開啟。")
+                self._notify(task_id, "四站登打失敗")
                 return
             failed = self._run_site(
                 task_id,
@@ -91,6 +104,7 @@ class DesktopFastRunner:
             if failed:
                 failures += 1
                 self.store.set_overall_status(task_id, "desktop_fast_completed_with_errors", "本機快速執行已停止：車輛里程未完成，後續站別未開啟。")
+                self._notify(task_id, "四站登打失敗")
                 return
             failed = self._run_site(
                 task_id,
@@ -100,6 +114,7 @@ class DesktopFastRunner:
             if failed:
                 failures += 1
                 self.store.set_overall_status(task_id, "desktop_fast_completed_with_errors", "本機快速執行已停止：消毒紀錄未完成，耗材未開啟。")
+                self._notify(task_id, "四站登打失敗")
                 return
             failed = self._run_site(
                 task_id,
@@ -110,14 +125,21 @@ class DesktopFastRunner:
                 failures += 1
             if failures:
                 self.store.set_overall_status(task_id, "desktop_fast_completed_with_errors", f"本機快速執行完成，{failures} 站失敗。")
+                self._notify(task_id, "四站登打失敗")
             else:
                 self.store.set_overall_status(task_id, "desktop_fast_completed", "本機快速執行完成。")
+                self._notify(task_id, "四站登打成功")
         finally:
+            maximize_worker_site_windows()
+            clear_manual_task_lock(self.artifacts_dir, lock_owner)
             with self._lock:
                 self._running.discard(task_id)
 
     def _run_single_site(self, task_id: str, site_key: str, run_key: str) -> None:
+        lock_owner = f"desktop_fast:{run_key}"
+        set_manual_task_lock(self.artifacts_dir, lock_owner)
         self.store.set_overall_status(task_id, "desktop_fast_running", f"本機快速執行中：{SITE_NAMES[site_key]}。")
+        self._notify(task_id, f"單站登打開始：{SITE_NAMES[site_key]}")
         request = self.store.request_for(task_id)
         profile_suffix = task_id.replace("-", "_")
         try:
@@ -128,9 +150,13 @@ class DesktopFastRunner:
                     "desktop_fast_completed_with_errors",
                     f"單站登打失敗：{SITE_NAMES[site_key]} 未完成。",
                 )
+                self._notify(task_id, f"單站登打失敗：{SITE_NAMES[site_key]}")
             else:
                 self.store.set_overall_status(task_id, "desktop_fast_completed", f"單站登打完成：{SITE_NAMES[site_key]}。")
+                self._notify(task_id, f"單站登打成功：{SITE_NAMES[site_key]}")
         finally:
+            maximize_worker_site_windows()
+            clear_manual_task_lock(self.artifacts_dir, lock_owner)
             with self._lock:
                 self._running.discard(run_key)
 
@@ -161,23 +187,38 @@ class DesktopFastRunner:
 
     def _run_site(self, task_id: str, site_key: str, action) -> int:
         site_name = SITE_NAMES[site_key]
+        if _site_is_complete(str(self.store.get(task_id).get("site_statuses", {}).get(site_key, {}).get("status") or "")):
+            self.store.set_overall_status(task_id, "desktop_fast_running", f"{site_name} 已完成，略過。")
+            self._notify(task_id, f"{site_name} 略過")
+            return False
         self.store.update_site_result(
             task_id,
             SiteAutomationResult(site_key, site_name, f"{site_key}_running", "本機快速執行中。"),
         )
+        self._notify(task_id, f"{site_name} 開始")
         try:
             result = action()
             self.store.update_site_result(
                 task_id,
                 SiteAutomationResult(site_key, site_name, str(result.status), str(result.detail)),
             )
+            self._notify(task_id, f"{site_name} 結果")
             return _result_blocks_next(result)
         except Exception as exc:
             self.store.update_site_result(
                 task_id,
                 SiteAutomationResult(site_key, site_name, f"{site_key}_failed", str(exc)),
             )
+            self._notify(task_id, f"{site_name} 失敗")
             return True
+
+    def _notify(self, task_id: str, action: str) -> None:
+        if not self.event_callback:
+            return
+        try:
+            self.event_callback(self.store.get(task_id), action)
+        except Exception:
+            pass
 
     def _run_consumables(self, request, profile_suffix: str) -> SiteAutomationResult:
         driver = login_acs_and_get_driver(
@@ -213,3 +254,8 @@ def _result_blocks_next(result) -> bool:
     if status.startswith("needs_") or "login" in status:
         return True
     return False
+
+
+def _site_is_complete(status: str) -> bool:
+    value = str(status or "")
+    return value == "completed_by_user" or value.endswith("_saved")

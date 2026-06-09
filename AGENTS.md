@@ -40,6 +40,9 @@ run_worker_forever.bat
 - Daily worker launch should be no-console-window mode. Prefer `run_worker_forever.vbs` or `pyw -3 worker_gui.py`; use console launchers only for debugging.
 - Use UTF-8 for Traditional Chinese text. If PowerShell display is garbled, verify file content with Python `encoding="utf-8"` before rewriting.
 - Keep generated runtime files under `artifacts/`, `logs/`, `tmp/`, or another ignored directory.
+- When worker or web behavior changes, sync the same source updates into `NAS包` and `WinPython_公務電腦使用包` before packaging or deployment.
+- When the user asks to finish the current round, run checks, rebuild the public-duty package when needed, restart the worker when runtime files changed, and create a git commit unless explicitly told not to.
+- Before committing, inspect `git status --short` and make sure no `.env`, token, password, cookie, Chrome profile, screenshot, or generated task JSON is staged.
 
 ## Test
 
@@ -70,3 +73,42 @@ py -m unittest discover -s tests -v
 - NAS Tailscale IP: `100.114.126.58`
 - Phone/tablet entry: `http://100.114.126.58:8080/app`
 - Public-duty PC worker URL: `http://10.30.65.30:8080`
+
+## Current Implemented Behavior
+
+- Public-duty PC web users create and update tasks on the NAS task center. The NAS admin page groups public-duty PC tasks and shows who created tasks, who started entry, per-site progress, success, and failure reports.
+- The local desktop web app is for the operator machine only. It must not show the public-duty admin entry point; the public-duty admin button belongs on the NAS web app.
+- Recent task delete/clear actions are hidden on public-duty and edit flows where deleting would prevent NAS-side tracking.
+- The task detail page shows four-site task cards and a detailed stage checklist. `未開始` wording is standardized to `未執行`.
+- Failed sites and sites blocked behind a failed earlier site expose independent entry controls so the operator can finish only the missing part.
+- Retrying four-site entry skips completed sites and starts from the failed or unfinished site.
+- Public-duty case lookup requests can be triggered from NAS or local web. Worker logs should identify the source as NAS or local when possible.
+- Background case lookup uses the public-duty PC Chrome/Selenium session, closes lookup Chrome resources after lookup, and writes simplified worker GUI logs.
+- Four-site entry launched from the public-duty web page should bring the Selenium Chrome pages to the foreground and keep the four site pages maximized at the end for manual inspection.
+- Manual four-site entry from the local desktop web app and automatic NAS worker entry coordinate through a local manual-task lock so they do not run Selenium at the same time.
+- The worker queue state is separated from final task status. A task can remain visible while queued, running, succeeded, failed, or pending retry.
+- Per-site attempt history is stored so failures from older attempts do not hide the current state.
+- Public-duty worker events use stable event identifiers and acknowledgements so pending events are not removed until the worker confirms receipt.
+- Default consumables are `桃-9吋手套-L(雙)*2` and `桃-口罩(片)*2`.
+- Address cleanup should strip trailing parenthesized remarks such as `(OHCA-D)` from the address field while preserving the case category elsewhere.
+- Synchronized account labels should be consistent across badge, person name, and account name when those fields are available.
+
+## Packaging, Restart, And Git Commit
+
+Use this finish flow after meaningful code changes:
+
+```powershell
+py -m py_compile app.py ambulance_bot\*.py
+py -m unittest discover -s tests -v
+py tools\build_public_pc_package.py
+.\WinPython_公務電腦使用包\run_worker_forever.vbs
+git status --short
+git add -A
+git commit -m "Describe the worker or web change"
+```
+
+Current public-duty package version after the latest worker/web updates:
+
+```text
+2026.06.09.0058
+```

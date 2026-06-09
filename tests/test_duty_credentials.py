@@ -191,6 +191,31 @@ class DutyCredentialTests(unittest.TestCase):
                 else:
                     os.environ["LOCALAPPDATA"] = previous_local
 
+    def test_saved_login_path_override_expands_environment_variables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            previous_root = os.environ.get("AMBULANCE_TEST_LOGIN_ROOT")
+            try:
+                os.environ["AMBULANCE_TEST_LOGIN_ROOT"] = tmp
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = r"%AMBULANCE_TEST_LOGIN_ROOT%\DutyAutomation\saved_login.json"
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+
+                self.assertEqual(saved_login_path(), Path(tmp) / "DutyAutomation" / "saved_login.json")
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+                if previous_root is None:
+                    os.environ.pop("AMBULANCE_TEST_LOGIN_ROOT", None)
+                else:
+                    os.environ["AMBULANCE_TEST_LOGIN_ROOT"] = previous_root
+
     def test_load_duty_credential_prefers_synced_account_over_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "saved_login.json"

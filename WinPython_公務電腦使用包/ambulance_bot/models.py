@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 
-DEFAULT_CONSUMABLES = {"桃-口罩(片)": 2, "桃-9吋手套-XL(雙)": 2}
+DEFAULT_CONSUMABLES = {"桃-口罩(片)": 2, "桃-9吋手套-L(雙)": 2}
 DISINFECTION_ITEM_OPTIONS = [
     "\u6551\u8b77\u8eca\u9ad4",
     "\u64d4\u67b6\u5e8a",
@@ -553,6 +553,7 @@ def clean_case_address(value: str) -> str:
         return ""
     text = text.replace("\uff0d", "-").replace("\u2010", "-").replace("\u2011", "-").replace("\u2013", "-").replace("\u2014", "-")
     for marker in (
+        "-\u6025\u75c5\u653e\u68c4\u6025\u6551",
         "-\u6848\u4ef6\u91cd\u8907",
         "-\u4f86\u96fb\u53d6\u6d88",
         "-\u8eca\u798d\u62d2\u9001",

@@ -5,6 +5,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .models import AmbulanceReturnRequest
@@ -35,7 +36,9 @@ class JsonTaskStore:
             "created_at": now_text(),
             "updated_at": now_text(),
             "overall_status": "created",
+            "worker_queue": initial_worker_queue_state(),
             "site_statuses": initial_site_statuses(),
+            "site_attempts": initial_site_attempts(),
             "events": [
                 {
                     "time": now_text(),
@@ -54,7 +57,9 @@ class JsonTaskStore:
             request.task_id = task_id
             payload["task"] = request.to_dict()
             payload["overall_status"] = "created"
+            payload["worker_queue"] = initial_worker_queue_state()
             payload["site_statuses"] = initial_site_statuses()
+            payload["site_attempts"] = initial_site_attempts()
             self.add_event_to_payload(payload, "task_updated", "任務內容已修改。")
             self.save_payload(task_id, payload)
             return payload
@@ -79,6 +84,18 @@ class JsonTaskStore:
         with self._lock:
             payload = self.get(task_id)
             payload["overall_status"] = "queued_for_worker"
+            queue_state = worker_queue_state(payload)
+            queue_state.update(
+                {
+                    "status": "queued",
+                    "queued_at": now_text(),
+                    "claimed_at": "",
+                    "completed_at": "",
+                    "worker_id": "",
+                    "last_error": "",
+                }
+            )
+            payload["worker_queue"] = queue_state
             self.add_event_to_payload(payload, "queued_for_worker", "任務已排隊，等待公務電腦 worker 執行。")
             self.save_payload(task_id, payload)
             return payload
@@ -89,10 +106,19 @@ class JsonTaskStore:
             paths = sorted(self.tasks_dir.glob("*.json"), key=lambda item: item.stat().st_mtime)
             for path in paths:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-                if payload.get("overall_status") != "queued_for_worker":
+                if worker_queue_state(payload).get("status") != "queued":
                     continue
                 task_id = payload["task"]["task_id"]
                 payload["overall_status"] = "claimed_by_worker"
+                queue_state = worker_queue_state(payload)
+                queue_state.update(
+                    {
+                        "status": "claimed",
+                        "claimed_at": now_text(),
+                        "worker_id": worker_id,
+                    }
+                )
+                payload["worker_queue"] = queue_state
                 payload["worker"] = {
                     "id": worker_id,
                     "claimed_at": now_text(),
@@ -106,6 +132,19 @@ class JsonTaskStore:
         with self._lock:
             payload = self.get(task_id)
             payload["overall_status"] = status
+            queue_state = worker_queue_state(payload)
+            if status == "queued_for_worker":
+                queue_state["status"] = "queued"
+                queue_state["queued_at"] = queue_state.get("queued_at") or now_text()
+            elif status == "claimed_by_worker":
+                queue_state["status"] = "claimed"
+                queue_state["claimed_at"] = queue_state.get("claimed_at") or now_text()
+            elif queue_state.get("status") in {"queued", "claimed"}:
+                queue_state["status"] = "completed"
+                queue_state["completed_at"] = now_text()
+                if "failed" in status or "error" in status:
+                    queue_state["last_error"] = detail
+            payload["worker_queue"] = queue_state
             self.add_event_to_payload(payload, status, detail)
             self.save_payload(task_id, payload)
             return payload
@@ -114,6 +153,7 @@ class JsonTaskStore:
         with self._lock:
             payload = self.get(task_id)
             site = payload["site_statuses"][result.key]
+            attempts = site_attempts(payload)
             if site.get("status") == "completed_by_user":
                 self.add_event_to_payload(payload, result.status, f"{result.name}: 背景狀態已略過，因使用者已確認完成。")
                 self.save_payload(task_id, payload)
@@ -121,6 +161,16 @@ class JsonTaskStore:
             site["status"] = result.status
             site["detail"] = result.detail
             site["updated_at"] = now_text()
+            attempts.setdefault(result.key, []).append(
+                {
+                    "attempt_id": str(uuid4()),
+                    "time": now_text(),
+                    "status": result.status,
+                    "detail": result.detail,
+                    "site_name": result.name,
+                }
+            )
+            payload["site_attempts"] = attempts
             self.add_event_to_payload(payload, result.status, f"{result.name}: {result.detail}")
             self.save_payload(task_id, payload)
             return payload
@@ -129,9 +179,20 @@ class JsonTaskStore:
         with self._lock:
             payload = self.get(task_id)
             site = payload["site_statuses"][site_key]
+            attempts = site_attempts(payload)
             site["status"] = "completed_by_user"
             site["detail"] = "使用者已人工確認完成。"
             site["updated_at"] = now_text()
+            attempts.setdefault(site_key, []).append(
+                {
+                    "attempt_id": str(uuid4()),
+                    "time": now_text(),
+                    "status": "completed_by_user",
+                    "detail": site["detail"],
+                    "site_name": site["name"],
+                }
+            )
+            payload["site_attempts"] = attempts
             self.add_event_to_payload(payload, "completed_by_user", f"{site['name']} 使用者已確認完成。")
             self.save_payload(task_id, payload)
             return payload
@@ -206,3 +267,57 @@ def initial_site_statuses() -> dict[str, dict[str, str]]:
         }
         for site in SITE_DEFINITIONS
     }
+
+
+def initial_site_attempts() -> dict[str, list[dict[str, str]]]:
+    return {site.key: [] for site in SITE_DEFINITIONS}
+
+
+def initial_worker_queue_state() -> dict[str, str]:
+    return {
+        "status": "idle",
+        "queued_at": "",
+        "claimed_at": "",
+        "completed_at": "",
+        "worker_id": "",
+        "last_error": "",
+    }
+
+
+def worker_queue_state(payload: dict[str, Any]) -> dict[str, str]:
+    existing = payload.get("worker_queue")
+    if isinstance(existing, dict):
+        merged = {**initial_worker_queue_state(), **{str(key): str(value) for key, value in existing.items()}}
+        return merged
+    status = str(payload.get("overall_status") or "")
+    state = initial_worker_queue_state()
+    if status == "queued_for_worker":
+        state["status"] = "queued"
+    elif status == "claimed_by_worker":
+        state["status"] = "claimed"
+    return state
+
+
+def site_attempts(payload: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    existing = payload.get("site_attempts")
+    normalized = initial_site_attempts()
+    if not isinstance(existing, dict):
+        return normalized
+    for site_key, entries in existing.items():
+        key = str(site_key)
+        if key not in normalized:
+            normalized[key] = []
+        if not isinstance(entries, list):
+            continue
+        normalized[key] = [
+            {
+                "attempt_id": str(entry.get("attempt_id") or ""),
+                "time": str(entry.get("time") or ""),
+                "status": str(entry.get("status") or ""),
+                "detail": str(entry.get("detail") or ""),
+                "site_name": str(entry.get("site_name") or ""),
+            }
+            for entry in entries
+            if isinstance(entry, dict)
+        ]
+    return normalized
