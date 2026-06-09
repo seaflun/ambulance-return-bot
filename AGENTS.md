@@ -92,6 +92,9 @@ py -m unittest discover -s tests -v
 - Default consumables are `桃-9吋手套-L(雙)*2` and `桃-口罩(片)*2`.
 - Address cleanup should strip trailing parenthesized remarks such as `(OHCA-D)` from the address field while preserving the case category elsewhere.
 - Synchronized account labels should be consistent across badge, person name, and account name when those fields are available.
+- The Worker GUI is now the CustomTkinter-based `救護回程小幫手`. It uses a 2x2 card layout, unified orange buttons, simplified logs, and hides noisy Selenium Chrome session progress messages.
+- If a synced account display name only repeats the account id, do not show it as the person name. Prefer `actor_no + name + user_id`; otherwise show `未填姓名` instead of duplicating the account.
+- Worker GUI NAS timeout logs should be user-readable as `連線｜NAS逾時｜等待下次重試`, while preserving real failure/error logs.
 
 ## Packaging, Restart, And Git Commit
 
@@ -110,5 +113,5 @@ git commit -m "Describe the worker or web change"
 Current public-duty package version after the latest worker/web updates:
 
 ```text
-2026.06.09.0058
+2026.06.09.1707
 ```

@@ -136,6 +136,22 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(credentials[0].name, "曾彥綸")
         self.assertEqual(credentials[0].id_number, "B123017532")
 
+    def test_saves_synced_credential_derives_name_without_repeating_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+
+            save_duty_automation_credentials(
+                [
+                    {"actor_no": "8", "user_id": "tyfd01510", "password": "pass", "display_name": "8番 tyfd01510"},
+                    {"actor_no": "9", "user_id": "user9", "password": "pass", "display_name": "9番 測試員"},
+                ],
+                path=path,
+            )
+            credentials = list_saved_duty_automation_credentials(path)
+
+        self.assertEqual(credentials[0].name, "")
+        self.assertEqual(credentials[1].name, "測試員")
+
     def test_saves_synced_credential_without_duplicate_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "saved_login.json"

@@ -18,8 +18,40 @@ class WorkerGuiEnvTests(unittest.TestCase):
     def test_worker_gui_status_and_card_label_backgrounds_match_root(self):
         source = Path(worker_gui.__file__).read_text(encoding="utf-8")
 
-        self.assertIn('background=theme["bg"],\n            foreground=theme["ink"],\n            padding=(14, 7)', source)
-        self.assertIn('style.map("Card.TLabelframe.Label"', source)
+        self.assertIn("class WorkerGui(ctk.CTk):", source)
+        self.assertIn('self.title("救護回程小幫手")', source)
+        self.assertIn('text="救護回程小幫手"', source)
+        self.assertNotIn('text="救護回程 Worker"', source)
+        self.assertIn('self.configure(fg_color=theme["bg"])', source)
+        self.assertIn('fg_color=theme["status_bg"]', source)
+        self.assertIn("corner_radius=14", source)
+        self.assertIn("ctk.CTkTextbox", source)
+        self.assertIn('self._card(top_area, "本地伺服器")', source)
+        self.assertIn('self._card(top_area, "NAS伺服器")', source)
+        self.assertIn('uniform="main_cards"', source)
+        self.assertIn('uniform="main_card_rows"', source)
+        self.assertIn('nas.grid(row=0, column=1', source)
+        self.assertIn('credentials.grid(row=1, column=0', source)
+        self.assertIn('font=("Consolas", 11)', source)
+        self.assertIn("self.connection_status", source)
+        self.assertIn("self.local_web_status", source)
+        self.assertIn('fg_color=GUI_THEME["accent"]', source)
+        self.assertIn('button_color=theme["accent"]', source)
+        self.assertIn("self.credential_combo.grid(row=1, column=1", source)
+        self.assertIn("credentials.rowconfigure(2, weight=1)", source)
+        self.assertIn("version_card.rowconfigure(2, weight=1)", source)
+        self.assertIn('self._button(credentials, "匯入同步", self._import_credential_sync_file, "primary").grid(row=3', source)
+        self.assertIn('self._button(version_card, "檢查更新", self._check_for_updates, "soft").grid(row=3', source)
+        self.assertIn("columnspan=2", source)
+        self.assertIn('self._hint(version_card, "", textvariable=self.package_version).grid(row=1, column=1', source)
+        self.assertIn("服務狀態：可使用", source)
+        self.assertIn("目前連線：內網", source)
+        self.assertIn("目前連線：Tailscale", source)
+        self.assertNotIn('"本機快速網頁"', source)
+        self.assertNotIn('"NAS Worker"', source)
+        self.assertNotIn("按一次會確認服務", source)
+        self.assertNotIn("textvariable=self.connection_summary, wraplength=260", source)
+        self.assertNotIn("textvariable=self.credential_sync_status", source)
 
     def test_worker_gui_default_geometry_is_compact(self):
         source = Path(worker_gui.__file__).read_text(encoding="utf-8")
@@ -45,6 +77,10 @@ class WorkerGuiEnvTests(unittest.TestCase):
             "案件查詢｜本機端按下查詢｜24h，desktop_fast",
         )
         self.assertEqual(
+            worker_gui.format_worker_output_line("[case_lookup] query requested host=localhost source=������ range=24h mode=desktop_fast"),
+            "案件查詢｜本機端按下查詢｜24h，desktop_fast",
+        )
+        self.assertEqual(
             worker_gui.format_worker_output_line("[case_lookup] query requested host=100.114.126.58:8080 source=NAS端 range=24h mode=worker_queue"),
             "案件查詢｜NAS端按下查詢｜24h，worker_queue",
         )
@@ -53,7 +89,15 @@ class WorkerGuiEnvTests(unittest.TestCase):
             "案件查詢｜NAS端按下查詢｜24h",
         )
         self.assertEqual(
+            worker_gui.format_worker_output_line("[worker] loop error: <urlopen error timed out>"),
+            "連線｜NAS逾時｜等待下次重試",
+        )
+        self.assertEqual(
             worker_gui.format_worker_output_line("[selenium] waiting for session lock: work-log"),
+            "",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[selenium] creating local chrome session attempt 1/2"),
             "",
         )
 
@@ -160,6 +204,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
         self.assertEqual(env["DESKTOP_FAST_MODE"], "auto")
         self.assertEqual(env["PUBLIC_PC_REPORT_ENABLED"], "true")
+        self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
 
     def test_gui_site_helpers_follow_desktop_fast_rules(self):
         self.assertTrue(worker_gui._gui_site_is_complete("consumables_saved"))
@@ -212,6 +257,11 @@ class WorkerGuiEnvTests(unittest.TestCase):
         credential = DutyCredential(user_id="user1", password="pass", actor_no="8", display_name="8番 王小明")
 
         self.assertEqual(worker_gui.credential_choice_label(credential), "8番 王小明 - user1")
+
+    def test_credential_choice_label_does_not_repeat_account_as_name(self):
+        credential = DutyCredential(user_id="tyfd01510", password="pass", actor_no="8", display_name="8番 tyfd01510")
+
+        self.assertEqual(worker_gui.credential_choice_label(credential), "8番 未填姓名 - tyfd01510")
 
     def test_credential_choice_label_marks_missing_display_parts(self):
         credential = DutyCredential(user_id="user1", password="pass")

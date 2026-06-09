@@ -13,8 +13,10 @@ import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 from typing import Any
+
+import customtkinter as ctk
 from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
 from disinfect import login_and_get_driver
 from dotenv import load_dotenv
@@ -59,6 +61,7 @@ GUI_THEME = {
     "success": "#2f8f6b",
     "success_active": "#247556",
     "status_bg": "#fff1e6",
+    "input": "#fffaf5",
     "log_bg": "#10233f",
     "log_fg": "#f8efe7",
 }
@@ -97,6 +100,7 @@ def format_worker_output_line(line: str) -> str:
     if text.startswith("[selenium] ") and any(
         marker in text
         for marker in (
+            "creating local chrome session attempt",
             "waiting for session lock",
             "acquired session lock",
             "released session lock",
@@ -141,6 +145,8 @@ def format_worker_output_line(line: str) -> str:
         return "系統｜Worker 已啟動" + (f"｜{'，'.join(detail_parts)}" if detail_parts else "")
     if text.startswith("[app] starting ambulance return web app on "):
         return ""
+    if text.startswith("[worker] loop error:") and "timed out" in text.lower():
+        return "連線｜NAS逾時｜等待下次重試"
     if text.startswith("[worker] loop error:"):
         return text.replace("[worker] loop error:", "錯誤｜Worker｜", 1).strip()
     if text.startswith("[worker] case lookup result "):
@@ -159,7 +165,10 @@ def format_worker_output_line(line: str) -> str:
         source_match = re.search(r"source=([^ ]+)", text)
         range_match = re.search(r"range=([^ ]+)", text)
         mode_match = re.search(r"mode=([^ ]+)", text)
-        source_text = source_match.group(1) if source_match else case_lookup_source_label(host_match.group(1) if host_match else "")
+        host_text = host_match.group(1) if host_match else ""
+        source_text = source_match.group(1) if source_match else ""
+        if not source_text or "�" in source_text:
+            source_text = case_lookup_source_label(host_text)
         return (
             f"案件查詢｜{source_text}按下查詢｜{range_match.group(1) if range_match else '24h'}，"
             f"{mode_match.group(1) if mode_match else 'auto'}"
@@ -270,10 +279,10 @@ def current_package_version(root: Path | None = None) -> str:
     return "未知"
 
 
-class WorkerGui(tk.Tk):
+class WorkerGui(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("救護回程 Worker")
+        self.title("救護回程小幫手")
         self.geometry("680x760")
         self.minsize(600, 680)
 
@@ -286,6 +295,7 @@ class WorkerGui(tk.Tk):
 
         self.server_url = tk.StringVar(value=initial_worker_server_url(os.getenv("WORKER_SERVER_URL", "")))
         self.local_web_url = tk.StringVar(value=local_web_url())
+        self.local_web_status = tk.StringVar(value="服務狀態：尚未檢查")
         self.worker_status = tk.StringVar(value="啟動中")
         self.worker_id = tk.StringVar(value=os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"))
         self.duty_account = tk.StringVar(value=os.getenv("DUTY_ACCOUNT", ""))
@@ -293,11 +303,12 @@ class WorkerGui(tk.Tk):
         self.credential_choice = tk.StringVar(value="")
         self.package_version = tk.StringVar(value=current_package_version())
         self.connection_summary = tk.StringVar(value=f"目前連線：{self.server_url.get()}")
+        self.connection_status = tk.StringVar(value="目前連線：尚未檢查")
         self.saved_credentials: dict[str, DutyCredential] = {}
-        self.credential_combo: ttk.Combobox | None = None
+        self.credential_combo: ctk.CTkComboBox | None = None
         self.duty_saved_login_path = tk.StringVar(value=str(saved_login_path()))
         self.credential_sync_status = tk.StringVar(value="")
-        self.task_tree: ttk.Treeview | None = None
+        self.task_tree: Any | None = None
         self.tray_icon: Any | None = None
         self.tray_available = bool(pystray and Image and ImageDraw)
 
@@ -310,162 +321,201 @@ class WorkerGui(tk.Tk):
 
     def _configure_styles(self) -> None:
         theme = GUI_THEME
-        self.configure(bg=theme["bg"])
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        base_font = ("Microsoft JhengHei UI", 10)
-        heading_font = ("Microsoft JhengHei UI", 24, "bold")
-        card_heading_font = ("Microsoft JhengHei UI", 11, "bold")
-        style.configure(".", font=base_font)
-        style.configure("Root.TFrame", background=theme["bg"])
-        style.configure("Header.TLabel", background=theme["bg"], foreground=theme["ink"], font=heading_font)
-        style.configure("Subtle.TLabel", background=theme["bg"], foreground=theme["muted"], font=("Microsoft JhengHei UI", 10))
-        style.configure(
-            "Status.TLabel",
-            background=theme["bg"],
-            foreground=theme["ink"],
-            padding=(14, 7),
-            font=("Microsoft JhengHei UI", 10, "bold"),
-        )
-        style.configure("Card.TLabelframe", background=theme["surface"], bordercolor=theme["line"], relief="solid")
-        style.configure("Card.TLabelframe.Label", background=theme["bg"], foreground=theme["ink"], font=card_heading_font)
-        style.map("Card.TLabelframe.Label", background=[("active", theme["bg"]), ("!disabled", theme["bg"])])
-        style.configure("Card.TFrame", background=theme["surface"])
-        style.configure("Card.TLabel", background=theme["surface"], foreground=theme["ink"])
-        style.configure("Hint.TLabel", background=theme["surface"], foreground=theme["muted"], font=("Microsoft JhengHei UI", 9))
-        style.configure("Muted.TLabel", background=theme["surface"], foreground=theme["muted"], font=("Microsoft JhengHei UI", 9))
-        style.configure(
-            "TEntry",
-            fieldbackground=theme["surface"],
-            foreground=theme["ink"],
-            bordercolor=theme["line"],
-            lightcolor=theme["line"],
-            darkcolor=theme["line"],
-            padding=(8, 7),
-        )
-        style.configure(
-            "TCombobox",
-            fieldbackground=theme["surface"],
-            foreground=theme["ink"],
-            bordercolor=theme["line"],
-            lightcolor=theme["line"],
-            darkcolor=theme["line"],
-            padding=(8, 7),
-        )
-        style.configure(
-            "Primary.TButton",
-            foreground="#ffffff",
-            background=theme["accent"],
-            bordercolor=theme["accent"],
-            padding=(18, 11),
-            focusthickness=1,
-            font=("Microsoft JhengHei UI", 10, "bold"),
-        )
-        style.map("Primary.TButton", background=[("active", theme["accent_active"]), ("pressed", theme["accent_active"])])
-        style.configure(
-            "Success.TButton",
-            foreground="#ffffff",
-            background=theme["success"],
-            bordercolor=theme["success"],
-            padding=(18, 11),
-            focusthickness=1,
-            font=("Microsoft JhengHei UI", 10, "bold"),
-        )
-        style.map("Success.TButton", background=[("active", theme["success_active"]), ("pressed", theme["success_active"])])
-        style.configure(
-            "Soft.TButton",
-            foreground=theme["ink"],
-            background=theme["surface"],
-            bordercolor=theme["line"],
-            padding=(14, 9),
-            focusthickness=1,
-        )
-        style.map("Soft.TButton", background=[("active", theme["surface_soft"]), ("pressed", theme["surface_soft"])])
-        style.configure("Wide.TButton", padding=(18, 12), font=("Microsoft JhengHei UI", 10, "bold"))
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+        self.configure(fg_color=theme["bg"])
 
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, padding=20, style="Root.TFrame")
+        theme = GUI_THEME
+        root = ctk.CTkFrame(self, fg_color=theme["bg"], corner_radius=0)
         root.pack(fill="both", expand=True)
+        root.grid_columnconfigure(0, weight=1)
 
-        header = ttk.Frame(root, style="Root.TFrame")
-        header.pack(fill="x", pady=(0, 16))
-        title_block = ttk.Frame(header, style="Root.TFrame")
-        title_block.pack(side="left", fill="x", expand=True)
-        ttk.Label(title_block, text="救護回程 Worker", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(title_block, text="公務電腦本機網頁與 NAS 佇列 worker 控制面板", style="Subtle.TLabel").pack(anchor="w", pady=(4, 0))
-        ttk.Label(header, textvariable=self.worker_status, style="Status.TLabel").pack(side="right", padx=(12, 0))
+        header = ctk.CTkFrame(root, fg_color=theme["bg"], corner_radius=0)
+        header.grid(row=0, column=0, sticky="ew", padx=22, pady=(22, 16))
+        header.grid_columnconfigure(0, weight=1)
+        title_block = ctk.CTkFrame(header, fg_color=theme["bg"], corner_radius=0)
+        title_block.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            title_block,
+            text="救護回程小幫手",
+            text_color=theme["ink"],
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=28, weight="bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_block,
+            text="公務電腦本機網頁與 NAS 佇列 worker 控制面板",
+            text_color=theme["muted"],
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13),
+        ).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(
+            header,
+            textvariable=self.worker_status,
+            fg_color=theme["status_bg"],
+            text_color=theme["ink"],
+            corner_radius=14,
+            padx=16,
+            pady=8,
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13, weight="bold"),
+        ).grid(row=0, column=1, sticky="ne", padx=(12, 0))
 
-        top_area = ttk.Frame(root, style="Root.TFrame")
-        top_area.pack(fill="x")
-        top_area.columnconfigure(0, weight=1)
-        top_area.columnconfigure(1, weight=1)
+        top_area = ctk.CTkFrame(root, fg_color=theme["bg"], corner_radius=0)
+        top_area.grid(row=1, column=0, sticky="ew", padx=22)
+        top_area.columnconfigure(0, weight=1, uniform="main_cards")
+        top_area.columnconfigure(1, weight=1, uniform="main_cards")
+        top_area.rowconfigure(0, weight=1, uniform="main_card_rows")
+        top_area.rowconfigure(1, weight=1, uniform="main_card_rows")
 
-        services = ttk.LabelFrame(top_area, text="服務", padding=16, style="Card.TLabelframe")
-        services.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        services.columnconfigure(0, weight=1)
-
-        local = ttk.Frame(services, style="Card.TFrame")
-        local.grid(row=0, column=0, sticky="nsew")
-        ttk.Label(local, text="本機快速網頁", style="Card.TLabel", font=("Microsoft JhengHei UI", 11, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(local, text="按一次會確認服務，必要時啟動，然後開啟網頁。", style="Hint.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 8))
-        ttk.Entry(local, textvariable=self.local_web_url, state="readonly").grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(local, text="開啟本機網頁", command=self._start_local_web_app, style="Primary.TButton").grid(row=3, column=0, sticky="ew")
+        local = self._card(top_area, "本地伺服器")
+        local.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         local.columnconfigure(0, weight=1)
+        self._hint(local, "", textvariable=self.local_web_status, wraplength=260).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
+        self._entry(local, self.local_web_url).grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
+        self._button(local, "開啟本機網頁", self._start_local_web_app, "primary").grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
 
-        nas = ttk.Frame(services, style="Card.TFrame")
-        nas.grid(row=1, column=0, sticky="nsew", pady=(16, 0))
-        ttk.Label(nas, text="NAS Worker", style="Card.TLabel", font=("Microsoft JhengHei UI", 11, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(nas, textvariable=self.connection_summary, style="Hint.TLabel", wraplength=260).grid(row=1, column=0, sticky="w", pady=(4, 8))
-        ttk.Entry(nas, textvariable=self.server_url, state="readonly").grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(nas, text="自動測試並切換", command=self._test_connection, style="Soft.TButton").grid(row=3, column=0, sticky="ew")
+        nas = self._card(top_area, "NAS伺服器")
+        nas.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self._hint(nas, "", textvariable=self.connection_status, wraplength=260).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
+        self._entry(nas, self.server_url).grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
+        self._button(nas, "自動測試並切換", self._test_connection, "soft").grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
         nas.columnconfigure(0, weight=1)
 
-        right_stack = ttk.Frame(top_area, style="Root.TFrame")
-        right_stack.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        right_stack.columnconfigure(0, weight=1)
+        credentials = self._card(top_area, "帳號")
+        credentials.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(14, 0))
+        credentials.columnconfigure(0, weight=0)
+        credentials.columnconfigure(1, weight=1)
+        credentials.rowconfigure(2, weight=1)
+        self._body_label(credentials, "同步帳號").grid(row=1, column=0, sticky="w", padx=(16, 10), pady=(0, 10))
+        self.credential_combo = ctk.CTkComboBox(
+            credentials,
+            variable=self.credential_choice,
+            values=[],
+            state="readonly",
+            command=lambda _choice: self._apply_selected_saved_credential(),
+            fg_color=theme["input"],
+            border_color=theme["line"],
+            border_width=1,
+            button_color=theme["accent"],
+            button_hover_color=theme["accent_active"],
+            dropdown_fg_color=theme["surface"],
+            dropdown_hover_color=theme["surface_soft"],
+            text_color=theme["ink"],
+            dropdown_text_color=theme["ink"],
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13),
+            height=36,
+            corner_radius=10,
+        )
+        self.credential_combo.grid(row=1, column=1, sticky="ew", padx=(0, 16), pady=(0, 10))
+        self._button(credentials, "匯入同步", self._import_credential_sync_file, "primary").grid(row=3, column=0, columnspan=2, sticky="sew", padx=16, pady=(0, 16))
 
-        credentials = ttk.LabelFrame(right_stack, text="帳號", padding=16, style="Card.TLabelframe")
-        credentials.grid(row=0, column=0, sticky="ew")
-        ttk.Label(credentials, text="同步帳號", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=4)
-        self.credential_combo = ttk.Combobox(credentials, textvariable=self.credential_choice, state="readonly")
-        self.credential_combo.grid(row=1, column=0, sticky="ew", pady=(4, 10))
-        self.credential_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_selected_saved_credential())
-        ttk.Button(credentials, text="匯入同步", command=self._import_credential_sync_file, style="Primary.TButton").grid(row=2, column=0, sticky="ew")
-        ttk.Label(credentials, textvariable=self.credential_sync_status, wraplength=260, style="Hint.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 0))
-        credentials.columnconfigure(0, weight=1)
+        version_card = self._card(top_area, "版本")
+        version_card.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(14, 0))
+        version_card.columnconfigure(0, weight=0)
+        version_card.columnconfigure(1, weight=1)
+        version_card.rowconfigure(2, weight=1)
+        self._body_label(version_card, "目前版本").grid(row=1, column=0, sticky="w", padx=(16, 10), pady=(0, 10))
+        self._hint(version_card, "", textvariable=self.package_version).grid(row=1, column=1, sticky="e", padx=(0, 16), pady=(0, 10))
+        self._button(version_card, "檢查更新", self._check_for_updates, "soft").grid(row=3, column=0, columnspan=2, sticky="sew", padx=16, pady=(0, 16))
 
-        version_card = ttk.LabelFrame(right_stack, text="版本", padding=16, style="Card.TLabelframe")
-        version_card.grid(row=1, column=0, sticky="ew", pady=(14, 0))
-        ttk.Label(version_card, text="目前版本", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(version_card, textvariable=self.package_version, style="Hint.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 10))
-        ttk.Button(version_card, text="檢查更新", command=self._check_for_updates, style="Soft.TButton").grid(row=2, column=0, sticky="ew")
-        version_card.columnconfigure(0, weight=1)
-
-        log_frame = ttk.LabelFrame(root, text="執行紀錄", padding=12, style="Card.TLabelframe")
-        log_frame.pack(fill="both", expand=True, pady=(14, 0))
-        self.log_text = tk.Text(
+        log_frame = self._card(root, "執行紀錄")
+        log_frame.grid(row=2, column=0, sticky="nsew", padx=22, pady=(14, 22))
+        root.grid_rowconfigure(2, weight=1)
+        self.log_text = ctk.CTkTextbox(
             log_frame,
             height=13,
             wrap="word",
-            bg=GUI_THEME["log_bg"],
-            fg=GUI_THEME["log_fg"],
-            insertbackground=GUI_THEME["log_fg"],
-            relief="flat",
-            padx=12,
-            pady=10,
-            font=("Consolas", 10),
+            fg_color=theme["log_bg"],
+            text_color=theme["log_fg"],
+            border_width=0,
+            corner_radius=10,
+            font=("Consolas", 11),
         )
-        self.log_text.pack(fill="both", expand=True)
+        self.log_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        log_frame.grid_columnconfigure(0, weight=1)
+        log_frame.grid_rowconfigure(1, weight=1)
 
         self._log("面板已啟動。")
+
+    def _card(self, parent: Any, title: str) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(
+            parent,
+            fg_color=GUI_THEME["surface"],
+            border_color=GUI_THEME["line"],
+            border_width=1,
+            corner_radius=14,
+        )
+        ctk.CTkLabel(
+            frame,
+            text=title,
+            text_color=GUI_THEME["ink"],
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=15, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 12))
+        return frame
+
+    def _section_title(self, parent: Any, text: str) -> ctk.CTkLabel:
+        return ctk.CTkLabel(
+            parent,
+            text=text,
+            text_color=GUI_THEME["ink"],
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=15, weight="bold"),
+        )
+
+    def _body_label(self, parent: Any, text: str) -> ctk.CTkLabel:
+        return ctk.CTkLabel(
+            parent,
+            text=text,
+            text_color=GUI_THEME["ink"],
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13, weight="bold"),
+        )
+
+    def _hint(
+        self,
+        parent: Any,
+        text: str,
+        textvariable: tk.StringVar | None = None,
+        wraplength: int = 0,
+    ) -> ctk.CTkLabel:
+        return ctk.CTkLabel(
+            parent,
+            text=text,
+            textvariable=textvariable,
+            text_color=GUI_THEME["muted"],
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=12),
+            wraplength=wraplength,
+            justify="left",
+        )
+
+    def _entry(self, parent: Any, variable: tk.StringVar) -> ctk.CTkEntry:
+        return ctk.CTkEntry(
+            parent,
+            textvariable=variable,
+            state="readonly",
+            fg_color=GUI_THEME["input"],
+            border_color=GUI_THEME["line"],
+            text_color=GUI_THEME["ink"],
+            height=36,
+            corner_radius=10,
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13),
+        )
+
+    def _button(self, parent: Any, text: str, command: Any, variant: str) -> ctk.CTkButton:
+        return ctk.CTkButton(
+            parent,
+            text=text,
+            command=command,
+            fg_color=GUI_THEME["accent"],
+            hover_color=GUI_THEME["accent_active"],
+            text_color="#ffffff",
+            height=42,
+            corner_radius=10,
+            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13, weight="bold"),
+        )
 
     def _set_server(self, url: str) -> None:
         self.server_url.set(url)
         self._apply_server_url()
         self.connection_summary.set(f"目前連線：{url}")
+        self.connection_status.set("目前連線：手動指定")
         self._log(f"NAS URL 已切換：{url}")
 
     def _apply_server_url(self) -> None:
@@ -487,12 +537,15 @@ class WorkerGui(tk.Tk):
         self._apply_server_url()
         if mode == "lan":
             self.connection_summary.set(f"目前連線：內網 {selected_url}")
+            self.connection_status.set("目前連線：內網")
             self._log(f"NAS 內網連線成功：{selected_url}")
         elif mode == "tailscale":
             self.connection_summary.set(f"目前連線：Tailscale {selected_url}")
+            self.connection_status.set("目前連線：Tailscale")
             self._log(f"NAS 內網無法連線，已切換 Tailscale：{selected_url}")
         else:
             self.connection_summary.set(f"目前連線：未確認，暫留 {selected_url}")
+            self.connection_status.set("目前連線：未確認")
             self._log(f"NAS 內網與 Tailscale 都無法連線，暫留內網：{selected_url}")
         if start_worker:
             self._restart_worker()
@@ -505,12 +558,15 @@ class WorkerGui(tk.Tk):
         return True
 
     def _start_local_web_app(self) -> None:
-        if self.local_web_process is not None and self.local_web_process.poll() is None:
-            return
         if self._local_web_reachable():
+            self.local_web_status.set("服務狀態：可使用")
             self._log(f"本機網頁已可使用：{self.local_web_url.get()}")
             self._open_local_web_app()
             return
+        if self.local_web_process is not None and self.local_web_process.poll() is None:
+            self.local_web_status.set("服務狀態：啟動中")
+            return
+        self.local_web_status.set("服務狀態：啟動中")
         env = local_web_process_env()
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.local_web_process = subprocess.Popen(
@@ -539,6 +595,8 @@ class WorkerGui(tk.Tk):
         for line in stream:
             text = format_worker_output_line(line)
             if text:
+                if text == "系統｜本機網頁已就緒":
+                    self.after(0, lambda: self.local_web_status.set("服務狀態：可使用"))
                 self.log_queue.put(text)
 
     def _run_local_web_app(self) -> None:
@@ -547,6 +605,7 @@ class WorkerGui(tk.Tk):
 
             web_app.run_web_app(host=local_web_host(), port=local_web_port())
         except Exception as exc:
+            self.after(0, lambda: self.local_web_status.set("服務狀態：啟動失敗"))
             self.log_queue.put(f"本機網頁啟動失敗：{exc}")
 
     def _local_web_reachable(self) -> bool:
@@ -634,9 +693,9 @@ class WorkerGui(tk.Tk):
         self.tray_icon = pystray.Icon(
             "ambulance_return_worker",
             image,
-            "救護回程 Worker",
+            "救護回程小幫手",
             pystray.Menu(
-                pystray.MenuItem("救護回程 Worker", lambda _icon, _item: None, enabled=False),
+                pystray.MenuItem("救護回程小幫手", lambda _icon, _item: None, enabled=False),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("顯示控制台", lambda _icon, _item: self.after(0, self.show_from_tray), default=True),
                 pystray.MenuItem("縮小到背景", lambda _icon, _item: self.after(0, self.hide_to_tray)),
@@ -1226,17 +1285,24 @@ def choose_worker_server(probe) -> tuple[str, str]:
 
 def credential_choice_label(credential: DutyCredential) -> str:
     actor = f"{credential.actor_no}番" if credential.actor_no else "未填番號"
-    name = credential.name or _name_from_display_name(credential.display_name) or "未填姓名"
     account = credential.user_id or "未填帳號"
+    display_name = _name_from_display_name(credential.display_name, account=credential.user_id, actor_no=credential.actor_no)
+    name = credential.name or display_name or "未填姓名"
     return f"{actor} {name} - {account}"
 
 
-def _name_from_display_name(display_name: str) -> str:
+def _name_from_display_name(display_name: str, account: str = "", actor_no: str = "") -> str:
     text = str(display_name or "").strip()
     if not text:
         return ""
-    text = re.sub(r"^\s*\d+\s*番\s*", "", text)
-    return text.strip()
+    text = re.sub(r"^\s*\d+\s*番\s*", "", text).strip()
+    account_text = str(account or "").strip()
+    actor_text = str(actor_no or "").strip()
+    if account_text and text.lower() == account_text.lower():
+        return ""
+    if actor_text and text == actor_text:
+        return ""
+    return text
 
 
 def persist_selected_saved_credential(credential: DutyCredential) -> Path:
@@ -1324,6 +1390,7 @@ def local_web_process_env() -> dict[str, str]:
     env["DESKTOP_FAST_MODE"] = "auto"
     env["PUBLIC_PC_REPORT_ENABLED"] = "true"
     env["PUBLIC_PC_REPORT_SERVER_URL"] = env.get("WORKER_SERVER_URL", "")
+    env["PYTHONIOENCODING"] = "utf-8"
     return env
 
 
@@ -1385,8 +1452,8 @@ def show_single_instance_message() -> None:
 
             ctypes.windll.user32.MessageBoxW(
                 None,
-                "救護回程 Worker 已在執行中，請查看右下角系統匣圖示。",
-                "救護回程 Worker",
+                "救護回程小幫手已在執行中，請查看右下角系統匣圖示。",
+                "救護回程小幫手",
                 0x40,
             )
             return

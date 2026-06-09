@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -312,15 +313,34 @@ def _normalized_account_for_save(account: dict[str, object]) -> dict[str, str] |
     if not user_id or not password:
         return None
     duty_password = _first_account_value(account, "duty_password", "work_password", "work_log_password")
+    actor_no = str(account.get("actor_no", "") or "").strip()
+    display_name = str(account.get("display_name", "") or "").strip()
+    name = str(account.get("name", "") or "").strip()
+    if not name:
+        name = _name_from_display_name(display_name, account=user_id, actor_no=actor_no)
     return {
-        "actor_no": str(account.get("actor_no", "") or "").strip(),
+        "actor_no": actor_no,
         "user_id": user_id,
         "password": password,
         "duty_password": duty_password,
-        "display_name": str(account.get("display_name", "") or "").strip(),
-        "name": str(account.get("name", "") or "").strip(),
+        "display_name": display_name,
+        "name": name,
         "id_number": str(account.get("id_number", "") or "").strip(),
     }
+
+
+def _name_from_display_name(display_name: str, account: str = "", actor_no: str = "") -> str:
+    text = str(display_name or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^\s*\d+\s*番\s*", "", text).strip()
+    account_text = str(account or "").strip()
+    actor_text = str(actor_no or "").strip()
+    if account_text and text.lower() == account_text.lower():
+        return ""
+    if actor_text and text == actor_text:
+        return ""
+    return text
 
 
 def _upsert_account(account_list: list[dict], updated: dict[str, str]) -> None:

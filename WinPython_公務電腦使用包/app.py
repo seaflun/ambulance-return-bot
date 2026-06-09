@@ -651,16 +651,23 @@ def current_public_pc_user_label() -> str:
         account = os.getenv("DUTY_ACCOUNT", "").strip()
         return account or "未知使用者"
     actor = f"{credential.actor_no}番" if credential.actor_no else "未填番號"
-    name = credential.name or _name_from_display_name(credential.display_name) or "未填姓名"
     account = credential.user_id or "未填帳號"
+    name = credential.name or _name_from_display_name(credential.display_name, account=credential.user_id, actor_no=credential.actor_no) or "未填姓名"
     return f"{actor} {name} - {account}"
 
 
-def _name_from_display_name(display_name: str) -> str:
+def _name_from_display_name(display_name: str, account: str = "", actor_no: str = "") -> str:
     text = str(display_name or "").strip()
     if not text:
         return ""
-    return re.sub(r"^\s*\d+\s*番\s*", "", text).strip()
+    text = re.sub(r"^\s*\d+\s*番\s*", "", text).strip()
+    account_text = str(account or "").strip()
+    actor_text = str(actor_no or "").strip()
+    if account_text and text.lower() == account_text.lower():
+        return ""
+    if actor_text and text == actor_text:
+        return ""
+    return text
 
 
 def site_display_name(site_key: str) -> str:
