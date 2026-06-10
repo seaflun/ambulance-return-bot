@@ -259,6 +259,28 @@ class AmbulanceReturnRequest:
         return [account for account in self.personnel_accounts if account.lower().startswith("tyfd")]
 
     @property
+    def duty_login_account_candidates(self) -> list[str]:
+        accounts = [account.strip() for account in self.personnel_accounts if account.strip()]
+        if not accounts:
+            return []
+        ordered: list[str] = []
+        driver = self.driver.strip()
+        if driver:
+            for index, name in enumerate(self.personnel):
+                if index < len(accounts) and name.strip() == driver:
+                    ordered.append(accounts[index])
+        ordered.extend(accounts)
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for account in ordered:
+            key = account.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(account)
+        return deduped
+
+    @property
     def consumables_account_candidates(self) -> list[str]:
         return [account for account in self.personnel_accounts if re.fullmatch(r"[A-Za-z][0-9]{9}", account)]
 

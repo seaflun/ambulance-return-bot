@@ -604,7 +604,7 @@ def _open_duty_work_log_case_picker(
     output_dir: Path,
     summary_path: Path,
 ) -> SeleniumRunResult:
-    if not _ensure_duty_login(driver, request.personnel_accounts):
+    if not _ensure_duty_login(driver, request.duty_login_account_candidates):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
         return SeleniumRunResult(
             ok=True,
@@ -635,7 +635,7 @@ def _prepare_duty_work_log_form(
     output_dir: Path,
     summary_path: Path,
 ) -> SeleniumRunResult:
-    if not _ensure_duty_login(driver, request.personnel_accounts):
+    if not _ensure_duty_login(driver, request.duty_login_account_candidates):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
         return SeleniumRunResult(
             ok=True,
@@ -1799,7 +1799,7 @@ def _ensure_duty_login(driver: webdriver.Chrome, preferred_user_ids: list[str] |
     time.sleep(1)
     if _looks_logged_in(driver):
         return True
-    credential = load_duty_credential(preferred_user_ids, fallback_user_id="tyfd01510" if preferred_user_ids else "")
+    credential = load_duty_credential(preferred_user_ids)
     if credential is None:
         return False
     try:
@@ -2149,7 +2149,8 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
       const row = rows[rowIndex];
       const cells = Array.from(row.querySelectorAll('td, th')).map(textOf).filter(Boolean);
       const joined = cells.join(' ');
-      if (!joined.includes('緊急救護')) continue;
+      const isEmergencyOrFire = joined.includes('緊急救護') || joined.includes('火災');
+      if (!isEmergencyOrFire) continue;
       const caseId = cells[0] || '';
       if (!/^\\d{17}$/.test(caseId)) continue;
       const choose = Array.from(row.querySelectorAll('input, button, a')).find(el => {
@@ -2158,9 +2159,9 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
       });
       const chooseDataMatch = String(choose ? (choose.getAttribute('onclick') || '') : '').match(/choose\\('([\\s\\S]*)'\\)/);
       const chooseParts = chooseDataMatch ? chooseDataMatch[1].split('(^w^)') : [];
-      const category = cells.find(cell => cell.includes('緊急救護')) || '';
-      if (!category.startsWith('緊急救護')) continue;
-      const reason = category.includes('-') ? category.split('-').slice(1).join('-').trim() : '';
+      const category = cells.find(cell => cell.includes('緊急救護') || cell.includes('火災')) || '';
+      if (!category.startsWith('緊急救護') && !category.includes('火災')) continue;
+      const reason = category.includes('-') ? category.split('-').slice(1).join('-').trim() : (category.includes('火災') ? '火災' : '');
       const personnelRaw = chooseParts[34] || '';
       cases.push({
         row_index: String(rowIndex),

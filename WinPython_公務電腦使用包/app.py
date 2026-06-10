@@ -135,6 +135,8 @@ def create_task():
         ), 400
     payload = store.create(task_request)
     report_public_pc_task_event(payload, "建立任務")
+    if should_auto_queue_task_on_create():
+        queue_task_for_worker(task_request.task_id)
     pop_selected_case()
     return redirect(url_for("task_detail", task_id=task_request.task_id))
 
@@ -218,10 +220,7 @@ def run_task(task_id: str):
         desktop_runner.start_existing(task_id)
         return redirect(url_for("task_detail", task_id=task_id))
     if mode == "worker_queue":
-        request_payload = store.request_for(task_id)
-        for adapter in default_adapters():
-            store.update_site_result(task_id, adapter.run(request_payload))
-        store.queue_for_worker(task_id)
+        queue_task_for_worker(task_id)
         return redirect(url_for("task_detail", task_id=task_id))
     runner.start_existing(task_id)
     return redirect(url_for("task_detail", task_id=task_id))
@@ -1190,6 +1189,7 @@ def template_helpers() -> dict:
         "site_short_name": site_short_name,
         "site_stage_rows": site_stage_rows,
         "show_public_pc_admin_button": show_public_pc_admin_button,
+        "show_task_entry_controls": show_task_entry_controls,
         "status_class": status_class,
         "status_label": status_label,
         "task_datetime_display": task_datetime_display,
@@ -1200,6 +1200,21 @@ def template_helpers() -> dict:
 
 def show_public_pc_admin_button() -> bool:
     return not request_is_local_host()
+
+
+def show_task_entry_controls() -> bool:
+    return request_is_local_host()
+
+
+def should_auto_queue_task_on_create() -> bool:
+    return effective_task_execution_mode() == "worker_queue" and not request_is_local_host()
+
+
+def queue_task_for_worker(task_id: str) -> None:
+    request_payload = store.request_for(task_id)
+    for adapter in default_adapters():
+        store.update_site_result(task_id, adapter.run(request_payload))
+    store.queue_for_worker(task_id)
 
 
 def write_selected_case_from_lookup(case_id: str) -> bool:

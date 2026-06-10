@@ -1029,6 +1029,26 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(app_module.desktop_runner.started, [])
         self.assertEqual(self.store.get(task_id)["overall_status"], "queued_for_worker")
 
+    def test_remote_create_queues_for_worker_and_hides_entry_controls(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(),
+            base_url="http://100.114.126.58:8080",
+            follow_redirects=False,
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        self.assertEqual(create_response.status_code, 302)
+        self.assertEqual(app_module.desktop_runner.started, [])
+        self.assertEqual(self.store.get(task_id)["overall_status"], "queued_for_worker")
+
+        detail_response = self.client.get(f"/tasks/{task_id}", base_url="http://100.114.126.58:8080")
+        body = html.unescape(detail_response.data.decode("utf-8"))
+        self.assertNotIn("四站登打啟動", body)
+        self.assertNotIn("單獨登打", body)
+        self.assertIn("返回編輯", body)
+
     def test_desktop_fast_mode_environment_overrides_host(self):
         os.environ["DESKTOP_FAST_MODE"] = "1"
         create_response = self.client.post("/tasks", data=self.valid_task_data())

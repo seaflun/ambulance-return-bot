@@ -393,6 +393,8 @@ class SeleniumLocalTests(unittest.TestCase):
                 task_id="task-1",
                 created_at=datetime(2026, 6, 7, 1, 0),
                 raw_text="",
+                driver="Bob",
+                personnel=["Alice", "Bob", "Carol"],
                 personnel_accounts=["B123017532", "tyfd00008", "tyfd00009"],
             )
 
@@ -402,7 +404,49 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._save_artifacts = original_save_artifacts
 
         self.assertEqual(result.status, "needs_duty_login")
-        self.assertEqual(captured["preferred"], ["B123017532", "tyfd00008", "tyfd00009"])
+        self.assertEqual(captured["preferred"], ["tyfd00008", "B123017532", "tyfd00009"])
+
+    def test_duty_login_does_not_force_hardcoded_fallback(self):
+        class FakeDriver:
+            def get(self, url):
+                self.url = url
+
+        captured: dict[str, object] = {}
+        original_load_duty_credential = selenium_local_module.load_duty_credential
+        original_looks_logged_in = selenium_local_module._looks_logged_in
+        original_sleep = selenium_local_module.time.sleep
+        try:
+            selenium_local_module._looks_logged_in = lambda driver: False
+            selenium_local_module.time.sleep = lambda seconds: None
+            selenium_local_module.load_duty_credential = (
+                lambda preferred_user_ids=None, fallback_user_id="": captured.update(
+                    {"preferred": preferred_user_ids, "fallback": fallback_user_id}
+                )
+                or None
+            )
+
+            result = selenium_local_module._ensure_duty_login(FakeDriver(), ["B123017532"])
+        finally:
+            selenium_local_module.load_duty_credential = original_load_duty_credential
+            selenium_local_module._looks_logged_in = original_looks_logged_in
+            selenium_local_module.time.sleep = original_sleep
+
+        self.assertFalse(result)
+        self.assertEqual(captured["preferred"], ["B123017532"])
+        self.assertEqual(captured["fallback"], "")
+
+    def test_extract_emergency_cases_includes_fire_cases(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                self.script = script
+                return [{"case_id": "20260610170000001", "category": "火災", "reason": "火災"}]
+
+        driver = FakeDriver()
+        cases = selenium_local_module._extract_emergency_cases(driver)
+
+        self.assertEqual(cases[0]["category"], "火災")
+        self.assertEqual(cases[0]["reason"], "火災")
+        self.assertIn("includes('火災')", driver.script)
 
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]

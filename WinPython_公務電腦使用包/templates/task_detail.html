@@ -335,9 +335,11 @@
         <h2>任務內容</h2>
       </div>
       <div class="task-submit">
-        <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
-          <button type="submit">四站登打啟動</button>
-        </form>
+        {% if show_task_entry_controls() %}
+          <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
+            <button type="submit">四站登打啟動</button>
+          </form>
+        {% endif %}
         <a class="button secondary" href="/tasks/{{ payload.task.task_id }}/edit">返回編輯</a>
       </div>
       <div class="task-grid">
@@ -346,7 +348,7 @@
           <div class="card-head">
             <h3>工作</h3>
             <div class="card-state">
-              {% if site_can_run_individually(payload.site_statuses, 'duty_work_log') %}
+              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'duty_work_log') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/duty_work_log/run">
                   <button class="secondary" type="submit">單獨登打</button>
                 </form>
@@ -368,7 +370,7 @@
           <div class="card-head">
             <h3>里程</h3>
             <div class="card-state">
-              {% if site_can_run_individually(payload.site_statuses, 'vehicle_mileage') %}
+              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'vehicle_mileage') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/vehicle_mileage/run">
                   <button class="secondary" type="submit">單獨登打</button>
                 </form>
@@ -390,7 +392,7 @@
           <div class="card-head">
             <h3>消毒</h3>
             <div class="card-state">
-              {% if site_can_run_individually(payload.site_statuses, 'disinfection') %}
+              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'disinfection') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/disinfection/run">
                   <button class="secondary" type="submit">單獨登打</button>
                 </form>
@@ -414,7 +416,7 @@
           <div class="card-head">
             <h3>耗材</h3>
             <div class="card-state">
-              {% if site_can_run_individually(payload.site_statuses, 'consumables') %}
+              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'consumables') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/consumables/run">
                   <button class="secondary" type="submit">單獨登打</button>
                 </form>

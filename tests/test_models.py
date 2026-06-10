@@ -107,6 +107,17 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.tyfd_personnel_accounts, ["tyfd02317"])
         self.assertEqual(request.consumables_account_candidates, ["B123017532", "L124961260"])
 
+    def test_duty_login_account_candidates_put_driver_first(self):
+        request = request_from_form(
+            {
+                "driver": "Bob",
+                "personnel": "Alice,Bob,Carol",
+                "personnel_accounts": "A123456789,B123456789,C123456789",
+            }
+        )
+
+        self.assertEqual(request.duty_login_account_candidates, ["B123456789", "A123456789", "C123456789"])
+
     def test_return_time_description_uses_mobile_hhmm_with_zero_seconds(self):
         request = AmbulanceReturnRequest(
             task_id="task-1",
