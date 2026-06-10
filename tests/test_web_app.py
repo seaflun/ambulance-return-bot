@@ -115,7 +115,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('placeholder="1505"', body)
         self.assertNotIn('placeholder="12345"', body)
         self.assertIn(">\u8acb\u9078\u64c7</option>", body)
-        self.assertIn("查詢前 24 小時", body)
+        self.assertIn("查詢24小時案件", body)
         self.assertIn('name="case_address"', body)
         self.assertNotIn('name="work_note"', body)
         self.assertIn("const defaultConsumables = {};", body)
@@ -494,7 +494,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("window.location.reload()", body)
         self.assertIn("lookup-status is-visible", body)
-        self.assertIn("disabled>查詢前 24 小時救護、火災案件</button>", body)
+        self.assertIn("disabled>查詢24小時案件</button>", body)
         self.assertIn("正在查詢最近 24 小時救護、火災案件，請稍候。", body)
         self.assertNotIn("已查到 2 筆", body)
 
