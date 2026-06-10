@@ -337,6 +337,7 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._save_artifacts = original_save_artifacts
 
         self.assertEqual(result.status, "cases_loaded")
+        self.assertIn("救護、火災案件", result.detail)
         self.assertIs(calls["quit_driver"], fake_driver)
         self.assertTrue(calls["released"])
         self.assertTrue(calls["create_kwargs"]["headless"])

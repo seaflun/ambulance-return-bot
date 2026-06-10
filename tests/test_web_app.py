@@ -476,6 +476,17 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(request_payload["lookup_range"], "24h")
 
     def test_app_page_auto_refreshes_while_case_lookup_is_running(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "detail": "已查到 2 筆前 24 小時的救護、火災案件，並預先讀取服勤人員。",
+                "lookup_range": "24h",
+                "cases": [{"case_id": "old-case"}],
+            },
+        )
         app_module.write_case_lookup_request("24h")
 
         response = self.client.get("/app")
@@ -483,7 +494,9 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("window.location.reload()", body)
         self.assertIn("lookup-status is-visible", body)
-        self.assertIn("disabled>查詢前 24 小時</button>", body)
+        self.assertIn("disabled>查詢前 24 小時救護、火災案件</button>", body)
+        self.assertIn("正在查詢最近 24 小時救護、火災案件，請稍候。", body)
+        self.assertNotIn("已查到 2 筆", body)
 
     def test_app_page_shows_empty_case_lookup_result(self):
         cases_dir = app_module.artifacts_dir / "cases"
@@ -510,7 +523,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertIn('class="lookup-message is-empty"', body)
-        self.assertIn("查詢完成，最近 24 小時沒有找到案件。", body)
+        self.assertIn("查詢完成，最近 24 小時沒有找到救護、火災案件。", body)
         self.assertNotIn("window.location.reload()", body)
 
     def test_mobile_layout_keeps_header_action_compact_and_stacks_time_fields(self):
@@ -703,13 +716,19 @@ class WebAppTests(unittest.TestCase):
         response = self.client.post("/cases/import", data={"case_id": "20260602090556012"}, follow_redirects=False)
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.headers["Location"], "/app")
+        self.assertEqual(response.headers["Location"], "/app#task-form")
         imported_response = self.client.get("/app")
         imported_body = html.unescape(imported_response.data.decode("utf-8"))
         self.assertIn("0905", imported_body)
         self.assertIn(" checked", imported_body)
         self.assertIn('formaction="/cases/clear"', imported_body)
-        self.assertEqual(app_module.read_selected_case().get("case_id"), "20260602090556012")
+        self.assertEqual(app_module.read_selected_case(), {})
+
+        refreshed_response = self.client.get("/app")
+        refreshed_body = html.unescape(refreshed_response.data.decode("utf-8"))
+        self.assertNotIn('value="0905"', refreshed_body)
+        self.assertNotIn('value="桃園市觀音區"', refreshed_body)
+        self.assertNotIn(" checked", refreshed_body)
 
         clear_response = self.client.post("/cases/clear", follow_redirects=False)
         self.assertEqual(clear_response.status_code, 302)

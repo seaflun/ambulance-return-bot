@@ -293,7 +293,7 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
         _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_cases")
         payload = _case_lookup_payload(
             "cases_loaded",
-            f"\u5df2\u67e5\u5230 {len(cases)} \u7b46{_lookup_range_label(lookup_range)}\u7684\u7dca\u6025\u6551\u8b77\u6848\u4ef6\uff0c\u4e26\u9810\u5148\u8b80\u53d6\u670d\u52e4\u4eba\u54e1\u3002",
+            f"\u5df2\u67e5\u5230 {len(cases)} \u7b46{_lookup_range_label(lookup_range)}\u7684\u6551\u8b77\u3001\u706b\u707d\u6848\u4ef6\uff0c\u4e26\u9810\u5148\u8b80\u53d6\u670d\u52e4\u4eba\u54e1\u3002",
             cases,
         )
         _write_json_atomic(output_path, payload)

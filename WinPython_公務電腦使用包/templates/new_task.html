@@ -280,7 +280,7 @@
           <form class="lookup-form" method="post" action="/cases/query" id="lookup-form">
             <input type="hidden" name="lookup_range" value="24h">
             <span class="lookup-status{% if case_lookup.is_running %} is-visible{% endif %}" id="lookup-status" aria-live="polite">查詢中</span>
-            <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢前 24 小時</button>
+            <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢前 24 小時救護、火災案件</button>
           </form>
         </div>
         {% if case_lookup.is_running or case_lookup.empty_message %}
@@ -445,7 +445,7 @@
         const button = lookupForm.querySelector("button[type='submit']");
         if (button) {
           button.disabled = true;
-          button.textContent = "查詢前 24 小時";
+          button.textContent = "查詢中";
         }
       });
     }

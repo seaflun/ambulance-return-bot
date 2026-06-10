@@ -68,7 +68,7 @@ def index():
 
 @app.get("/app")
 def new_task():
-    selected_case = read_selected_case()
+    selected_case = pop_selected_case()
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
     return render_template(
         "new_task.html",
@@ -110,7 +110,7 @@ def import_case():
         abort(400)
     if not write_selected_case_from_lookup(case_id):
         abort(404)
-    return redirect(url_for("new_task"))
+    return redirect(url_for("new_task", _anchor="task-form"))
 
 
 @app.post("/cases/clear")
@@ -839,7 +839,7 @@ def write_case_lookup_request(lookup_range: str, source: str = "") -> dict:
         "lookup_range": lookup_range,
         "source": source or "未知來源",
         "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "detail": f"已送出案件查詢，正在查詢{range_label}案件。",
+        "detail": f"已送出案件查詢，正在查詢{range_label}救護、火災案件。",
     }
     write_json_atomic(case_lookup_request_path(), payload)
     return payload
@@ -1271,9 +1271,9 @@ def prepared_case_lookup() -> dict:
     lookup_request = read_case_lookup_request()
     cases = case_lookup.get("cases") or []
     if lookup_request.get("status") == "case_lookup_requested":
-        current_detail = str(case_lookup.get("detail") or "").strip()
-        suffix = "正在查詢案件，請稍候。"
-        case_lookup["detail"] = f"{current_detail} {suffix}".strip()
+        lookup_range = str(lookup_request.get("lookup_range") or case_lookup.get("lookup_range") or "24h")
+        range_label = case_lookup_range_label(lookup_range)
+        case_lookup["detail"] = f"正在查詢{range_label}救護、火災案件，請稍候。"
         case_lookup["is_running"] = True
     elif not cases and (
         lookup_request.get("status") == "case_lookup_completed"
@@ -1281,7 +1281,7 @@ def prepared_case_lookup() -> dict:
     ):
         lookup_range = str(case_lookup.get("lookup_range") or lookup_request.get("lookup_range") or "24h")
         range_label = case_lookup_range_label(lookup_range)
-        case_lookup["empty_message"] = f"查詢完成，{range_label}沒有找到案件。可以稍後再查，或直接手動輸入案件資料。"
+        case_lookup["empty_message"] = f"查詢完成，{range_label}沒有找到救護、火災案件。可以稍後再查，或直接手動輸入案件資料。"
     case_lookup["cases"] = cases
     case_lookup["case_count"] = len(cases)
     case_lookup["debug_artifacts"] = case_lookup_debug_artifacts()
