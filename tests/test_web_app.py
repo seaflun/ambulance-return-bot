@@ -485,6 +485,34 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("lookup-status is-visible", body)
         self.assertIn("disabled>查詢前 24 小時</button>", body)
 
+    def test_app_page_shows_empty_case_lookup_result(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "detail": "loaded",
+                "lookup_range": "24h",
+                "cases": [],
+            },
+        )
+        app_module.write_json_atomic(
+            cases_dir / "request.json",
+            {
+                "status": "case_lookup_completed",
+                "lookup_range": "24h",
+                "case_count": 0,
+            },
+        )
+
+        response = self.client.get("/app")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn('class="lookup-message is-empty"', body)
+        self.assertIn("查詢完成，最近 24 小時沒有找到案件。", body)
+        self.assertNotIn("window.location.reload()", body)
+
     def test_mobile_layout_keeps_header_action_compact_and_stacks_time_fields(self):
         response = self.client.get("/app")
         body = html.unescape(response.data.decode("utf-8"))

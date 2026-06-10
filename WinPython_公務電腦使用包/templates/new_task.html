@@ -125,6 +125,9 @@
     .lookup-form { display: flex; align-items: center; gap: 10px; padding: 0; border: 0; box-shadow: none; background: transparent; }
     .lookup-status { display: none; color: var(--running); font-weight: 760; white-space: nowrap; }
     .lookup-status.is-visible { display: inline-flex; align-items: center; }
+    .lookup-message { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-weight: 720; }
+    .lookup-message.is-running { border-color: #c9dbe7; background: var(--running-bg); color: var(--running); }
+    .lookup-message.is-empty { border-color: #eadbb9; background: var(--waiting-bg); color: #8a682e; }
     .case-list { display: grid; gap: 8px; }
     .case-card {
       display: grid;
@@ -280,6 +283,11 @@
             <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢前 24 小時</button>
           </form>
         </div>
+        {% if case_lookup.is_running or case_lookup.empty_message %}
+          <div class="lookup-message{% if case_lookup.is_running %} is-running{% elif case_lookup.empty_message %} is-empty{% endif %}" role="status" aria-live="polite">
+            {{ case_lookup.detail if case_lookup.is_running else case_lookup.empty_message }}
+          </div>
+        {% endif %}
         {% if case_lookup.cases %}
           <div class="case-list">
             {% for case in case_lookup.cases %}

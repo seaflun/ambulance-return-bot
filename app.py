@@ -834,7 +834,7 @@ def read_case_lookup_request() -> dict:
 def write_case_lookup_request(lookup_range: str, source: str = "") -> dict:
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
-    range_label = {"24h": "最近 24 小時", "6h": "最近 6 小時", "today": "今日"}.get(lookup_range, "最近 24 小時")
+    range_label = case_lookup_range_label(lookup_range)
     payload = {
         "status": "case_lookup_requested",
         "lookup_range": lookup_range,
@@ -844,6 +844,10 @@ def write_case_lookup_request(lookup_range: str, source: str = "") -> dict:
     }
     write_json_atomic(case_lookup_request_path(), payload)
     return payload
+
+
+def case_lookup_range_label(lookup_range: str) -> str:
+    return {"24h": "最近 24 小時", "6h": "最近 6 小時", "today": "今日"}.get(lookup_range, "最近 24 小時")
 
 
 def case_lookup_source_label(host: str) -> str:
@@ -1250,13 +1254,21 @@ def task_form_values(task: dict) -> dict:
 def prepared_case_lookup() -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
+    cases = case_lookup.get("cases") or []
     if lookup_request.get("status") == "case_lookup_requested":
         current_detail = str(case_lookup.get("detail") or "").strip()
         suffix = "正在查詢案件，請稍候。"
         case_lookup["detail"] = f"{current_detail} {suffix}".strip()
         case_lookup["is_running"] = True
-    case_lookup.setdefault("cases", [])
-    case_lookup["case_count"] = len(case_lookup.get("cases") or [])
+    elif not cases and (
+        lookup_request.get("status") == "case_lookup_completed"
+        or case_lookup.get("status") == "cases_loaded"
+    ):
+        lookup_range = str(case_lookup.get("lookup_range") or lookup_request.get("lookup_range") or "24h")
+        range_label = case_lookup_range_label(lookup_range)
+        case_lookup["empty_message"] = f"查詢完成，{range_label}沒有找到案件。可以稍後再查，或直接手動輸入案件資料。"
+    case_lookup["cases"] = cases
+    case_lookup["case_count"] = len(cases)
     case_lookup["debug_artifacts"] = case_lookup_debug_artifacts()
     return case_lookup
 
