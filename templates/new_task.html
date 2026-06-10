@@ -31,12 +31,12 @@
       --running-bg: #e8f1f6;
       --idle-bg: #f3f1ed;
       --shadow: 0 16px 36px rgba(39, 49, 43, .07);
-      --text-xs: 12px;
-      --text-sm: 13px;
-      --text-md: 14px;
-      --text-label: 15px;
-      --text-lg: 16px;
-      --text-xl: 26px;
+      --text-xs: 13px;
+      --text-sm: 15px;
+      --text-md: 17px;
+      --text-label: 18px;
+      --text-lg: 19px;
+      --text-xl: 31px;
     }
     * { box-sizing: border-box; }
     body {
@@ -77,8 +77,8 @@
       margin-top: 6px;
       border: 1px solid var(--line-strong);
       border-radius: 10px;
-      min-height: 48px;
-      padding: 13px 14px;
+      min-height: 52px;
+      padding: 14px 16px;
       font: inherit;
       font-size: var(--text-md);
       background: #fff;
@@ -90,7 +90,7 @@
       align-items: center;
       justify-content: center;
       gap: 8px;
-      min-height: 44px;
+      min-height: 50px;
       max-width: 100%;
       border: 1px solid transparent;
       border-radius: 999px;
@@ -126,7 +126,7 @@
     .lookup { margin-bottom: 16px; }
     .lookup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .lookup-form { display: flex; align-items: center; gap: 10px; padding: 0; border: 0; box-shadow: none; background: transparent; }
-    .lookup-form button { min-width: 132px; }
+    .lookup-form button { min-width: 148px; }
     .lookup-status { display: none; color: var(--running); font-weight: 760; white-space: nowrap; }
     .lookup-status.is-visible { display: inline-flex; align-items: center; }
     .lookup-message { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-weight: 720; }
@@ -146,11 +146,11 @@
     .case-title { font-weight: 780; line-height: 1.4; overflow-wrap: anywhere; }
     .case-meta { color: var(--muted); font-size: var(--text-sm); margin-top: 3px; }
     .case-card form { padding: 0; border: 0; box-shadow: none; background: transparent; }
-    .case-card button { min-width: 76px; min-height: 44px; padding: 0 18px; box-shadow: none; }
+    .case-card button { min-width: 88px; min-height: 50px; padding: 0 20px; box-shadow: none; }
     .case-card form { min-width: 0; }
     .time-field { display: grid; grid-template-columns: minmax(0, 1fr) 108px; gap: 10px; align-items: end; }
-    .return-time-field { grid-template-columns: minmax(0, 1fr) 96px 48px; }
-    .clock-button { width: 48px; min-width: 48px; min-height: 48px; margin-top: 6px; padding: 0; border: 1px solid var(--line-strong); background: #fff; color: var(--accent); box-shadow: none; }
+    .return-time-field { grid-template-columns: minmax(0, 1fr) 104px 52px; }
+    .clock-button { width: 52px; min-width: 52px; min-height: 52px; margin-top: 6px; padding: 0; border: 1px solid var(--line-strong); background: #fff; color: var(--accent); box-shadow: none; }
     .clock-glyph { width: 18px; height: 18px; border: 2px solid currentColor; border-radius: 50%; position: relative; display: inline-block; }
     .clock-glyph::before { content: ""; position: absolute; left: 7px; top: 3px; width: 2px; height: 6px; background: currentColor; }
     .clock-glyph::after { content: ""; position: absolute; left: 7px; top: 8px; width: 5px; height: 2px; background: currentColor; }
@@ -159,7 +159,7 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      min-height: 48px;
+      min-height: 54px;
       margin: 0;
       padding: 11px 12px;
       border: 1px solid var(--line);
@@ -173,12 +173,12 @@
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
     .consumables { margin: 0 0 14px; }
     .consumable-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
-    .consumable-list { display: grid; gap: 8px; }
-    .consumable-row { display: grid; grid-template-columns: 140px minmax(0, 1fr) 138px 48px; gap: 10px; align-items: end; }
+    .consumable-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+    .consumable-row { display: grid; grid-template-columns: minmax(0, 1fr) 138px 52px; gap: 10px; align-items: end; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .consumable-row > * { min-width: 0; }
     .consumable-row input,
     .consumable-row select {
-      min-height: 46px;
+      min-height: 50px;
       margin-top: 0;
       padding: 10px 12px;
       font-size: var(--text-md);
@@ -187,10 +187,12 @@
     .consumable-qty::-webkit-outer-spin-button,
     .consumable-qty::-webkit-inner-spin-button { margin: 0; -webkit-appearance: none; }
     .consumable-qty { -moz-appearance: textfield; appearance: textfield; }
-    .qty-control { display: grid; grid-template-columns: 42px minmax(48px, 1fr) 42px; gap: 5px; }
-    .qty-button { min-width: 42px; min-height: 46px; padding: 0; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; }
-    .icon-button { min-width: 48px; padding: 0; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
-    #task-form > button[type="submit"] { width: 100%; min-height: 54px; margin-top: 8px; font-size: var(--text-lg); }
+    .consumable-category { grid-column: 1 / -1; }
+    .consumable-name { grid-column: 1 / -1; }
+    .qty-control { display: grid; grid-template-columns: 46px minmax(56px, 1fr) 46px; gap: 6px; }
+    .qty-button { min-width: 46px; min-height: 50px; padding: 0; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; }
+    .icon-button { width: 52px; min-width: 52px; justify-self: start; padding: 0; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
+    #task-form > button[type="submit"] { width: 100%; min-height: 58px; margin-top: 8px; font-size: var(--text-lg); }
     .recent { margin-top: 18px; }
     .recent-list { display: grid; gap: 8px; }
     .recent-card {

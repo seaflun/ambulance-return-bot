@@ -126,9 +126,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("const defaultConsumables = {};", body)
         self.assertNotIn(" checked", body)
         self.assertIn("main { max-width: 1080px;", body)
+        self.assertIn("--text-md: 17px;", body)
         self.assertIn(".check-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));", body)
-        self.assertIn(".case-card button { min-width: 76px; min-height: 44px;", body)
-        self.assertIn('#task-form > button[type="submit"] { width: 100%; min-height: 54px;', body)
+        self.assertIn(".case-card button { min-width: 88px; min-height: 50px;", body)
+        self.assertIn(".consumable-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));", body)
+        self.assertIn('#task-form > button[type="submit"] { width: 100%; min-height: 58px;', body)
         self.assertIn("repeating-linear-gradient", body)
 
     def test_nas_app_page_shows_public_pc_admin_button(self):
