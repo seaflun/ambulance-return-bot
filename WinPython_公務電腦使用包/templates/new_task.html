@@ -283,9 +283,9 @@
             <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢24小時案件</button>
           </form>
         </div>
-        {% if case_lookup.is_running or case_lookup.empty_message %}
+        {% if case_lookup.is_running or case_lookup.empty_message or case_lookup.detail %}
           <div class="lookup-message{% if case_lookup.is_running %} is-running{% elif case_lookup.empty_message %} is-empty{% endif %}" role="status" aria-live="polite">
-            {{ case_lookup.detail if case_lookup.is_running else case_lookup.empty_message }}
+            {{ case_lookup.empty_message if case_lookup.empty_message else case_lookup.detail }}
           </div>
         {% endif %}
         {% if case_lookup.cases %}
@@ -445,7 +445,6 @@
         const button = lookupForm.querySelector("button[type='submit']");
         if (button) {
           button.disabled = true;
-          button.textContent = "查詢中";
         }
       });
     }

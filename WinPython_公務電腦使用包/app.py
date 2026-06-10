@@ -1270,6 +1270,9 @@ def prepared_case_lookup() -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
     cases = case_lookup.get("cases") or []
+    detail = str(case_lookup.get("detail") or "").strip()
+    if detail:
+        case_lookup["detail"] = detail.replace("緊急救護案件", "救護、火災案件")
     if lookup_request.get("status") == "case_lookup_requested":
         lookup_range = str(lookup_request.get("lookup_range") or case_lookup.get("lookup_range") or "24h")
         range_label = case_lookup_range_label(lookup_range)

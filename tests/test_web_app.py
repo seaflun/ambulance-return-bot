@@ -116,6 +116,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('placeholder="12345"', body)
         self.assertIn(">\u8acb\u9078\u64c7</option>", body)
         self.assertIn("查詢24小時案件", body)
+        self.assertNotIn('button.textContent = "查詢中"', body)
         self.assertIn('name="case_address"', body)
         self.assertNotIn('name="work_note"', body)
         self.assertIn("const defaultConsumables = {};", body)
@@ -525,6 +526,29 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="lookup-message is-empty"', body)
         self.assertIn("查詢完成，最近 24 小時沒有找到救護、火災案件。", body)
         self.assertNotIn("window.location.reload()", body)
+
+    def test_app_page_shows_loaded_case_lookup_result_message(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "detail": "已查到 2 筆前 24 小時的緊急救護案件，並預先讀取服勤人員。",
+                "lookup_range": "24h",
+                "cases": [
+                    {"case_id": "case-1", "address": "桃園市觀音區"},
+                    {"case_id": "case-2", "address": "桃園市新屋區"},
+                ],
+            },
+        )
+
+        response = self.client.get("/app")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn("已查到 2 筆前 24 小時的救護、火災案件，並預先讀取服勤人員。", body)
+        self.assertNotIn("緊急救護案件", body)
+        self.assertLess(body.index("已查到 2 筆"), body.index('<div class="case-list">'))
 
     def test_mobile_layout_keeps_header_action_compact_and_stacks_time_fields(self):
         response = self.client.get("/app")
