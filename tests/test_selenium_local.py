@@ -377,7 +377,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIn("SaveData", mileage_driver.scripts[0])
         self.assertIn("_btnSave", disinfection_driver.scripts[0])
 
-    def test_duty_work_log_login_uses_personnel_tyfd_accounts(self):
+    def test_duty_work_log_login_uses_personnel_accounts(self):
         class FakeDriver:
             pass
 
@@ -402,7 +402,7 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._save_artifacts = original_save_artifacts
 
         self.assertEqual(result.status, "needs_duty_login")
-        self.assertEqual(captured["preferred"], ["tyfd00008", "tyfd00009"])
+        self.assertEqual(captured["preferred"], ["B123017532", "tyfd00008", "tyfd00009"])
 
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]

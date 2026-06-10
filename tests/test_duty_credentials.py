@@ -312,6 +312,44 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(credential.user_id, "tyfd00008")
         self.assertEqual(credential.password, "personnel-pass")
 
+    def test_load_duty_credential_prefers_personnel_id_before_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(path)
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_duty_automation_credentials(
+                    [
+                        {
+                            "actor_no": "8",
+                            "user_id": "tyfd00008",
+                            "password": "personnel-pass",
+                            "id_number": "B123017532",
+                        },
+                        {"actor_no": "15", "user_id": "tyfd01510", "password": "fallback-pass"},
+                    ],
+                    last_selected="tyfd01510",
+                    path=path,
+                )
+
+                credential = load_duty_credential(["B123017532"], fallback_user_id="tyfd01510")
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertIsNotNone(credential)
+        assert credential is not None
+        self.assertEqual(credential.user_id, "tyfd00008")
+        self.assertEqual(credential.password, "personnel-pass")
+
     def test_duty_credential_uses_separate_work_password_when_available(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "saved_login.json"

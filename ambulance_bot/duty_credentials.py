@@ -25,8 +25,6 @@ def load_duty_credential(
 ) -> DutyCredential | None:
     preferred = _normalized_user_ids(preferred_user_ids)
     fallback = str(fallback_user_id or "").strip()
-    if fallback:
-        preferred.append(fallback)
 
     if preferred:
         selected = _find_saved_credential(preferred, duty_password=True)
@@ -34,6 +32,14 @@ def load_duty_credential(
             return selected
         env_credential = _env_credential()
         if env_credential is not None and _credential_matches_any(env_credential, preferred):
+            return env_credential
+
+    if fallback:
+        selected = _find_saved_credential([fallback], duty_password=True)
+        if selected is not None:
+            return selected
+        env_credential = _env_credential()
+        if env_credential is not None and _credential_matches_any(env_credential, [fallback]):
             return env_credential
 
     saved = load_saved_duty_work_credential()

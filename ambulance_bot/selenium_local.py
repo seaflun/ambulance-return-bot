@@ -604,7 +604,7 @@ def _open_duty_work_log_case_picker(
     output_dir: Path,
     summary_path: Path,
 ) -> SeleniumRunResult:
-    if not _ensure_duty_login(driver, request.tyfd_personnel_accounts):
+    if not _ensure_duty_login(driver, request.personnel_accounts):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
         return SeleniumRunResult(
             ok=True,
@@ -635,7 +635,7 @@ def _prepare_duty_work_log_form(
     output_dir: Path,
     summary_path: Path,
 ) -> SeleniumRunResult:
-    if not _ensure_duty_login(driver, request.tyfd_personnel_accounts):
+    if not _ensure_duty_login(driver, request.personnel_accounts):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
         return SeleniumRunResult(
             ok=True,
