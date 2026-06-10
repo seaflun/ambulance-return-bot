@@ -108,6 +108,7 @@ py tools\build_public_pc_package.py
 git status --short
 git add -A
 git commit -m "Describe the worker or web change"
+.\scripts\publish_ambulance_return_release.ps1
 ```
 
 Current public-duty package version after the latest worker/web updates:
