@@ -125,7 +125,10 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('name="work_note"', body)
         self.assertIn("const defaultConsumables = {};", body)
         self.assertNotIn(" checked", body)
-        self.assertIn("main { max-width: 860px;", body)
+        self.assertIn("main { max-width: 1080px;", body)
+        self.assertIn(".check-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));", body)
+        self.assertIn(".case-card button { min-width: 76px; min-height: 44px;", body)
+        self.assertIn('#task-form > button[type="submit"] { width: 100%; min-height: 54px;', body)
         self.assertIn("repeating-linear-gradient", body)
 
     def test_nas_app_page_shows_public_pc_admin_button(self):
@@ -793,7 +796,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(detail_body.count("\u55ae\u7368\u767b\u6253"), 0)
         self.assertIn("四站登打啟動", detail_body)
         self.assertNotIn("送到公務電腦", detail_body)
-        self.assertIn("main { max-width: 860px;", detail_body)
+        self.assertIn("main { max-width: 1080px;", detail_body)
         self.assertIn("repeating-linear-gradient", detail_body)
 
         run_response = self.client.post(f"/tasks/{task_id}/run", follow_redirects=False)

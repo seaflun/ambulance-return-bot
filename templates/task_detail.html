@@ -47,7 +47,7 @@
       font-size: var(--text-md);
       line-height: 1.45;
     }
-    main { max-width: 860px; margin: 0 auto; padding: 24px 16px 44px; }
+    main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 52px; }
     a { color: inherit; }
     h1, h2, h3, p { margin: 0; }
     h1 {
@@ -87,10 +87,10 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-height: 42px;
+      min-height: 48px;
       border: 1px solid transparent;
       border-radius: 999px;
-      padding: 0 16px;
+      padding: 0 20px;
       background: var(--accent);
       color: #fff;
       font: inherit;
@@ -99,7 +99,9 @@
       text-decoration: none;
       white-space: nowrap;
       box-shadow: 0 8px 18px rgba(184, 107, 91, .18);
+      cursor: pointer;
     }
+    .button:hover, button:hover { filter: brightness(.98); }
     .secondary {
       background: transparent;
       color: var(--ink);
@@ -134,21 +136,22 @@
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 14px;
-      padding: 16px 18px 18px;
+      padding: 20px;
       margin-bottom: 22px;
       box-shadow: var(--shadow);
     }
     .task-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
+      gap: 14px;
     }
     .task-submit {
       display: flex;
       justify-content: space-between;
-      gap: 12px;
+      gap: 14px;
       margin: 10px 0 20px;
     }
+    .task-submit button, .task-submit .button { min-width: 180px; min-height: 52px; }
     .task-card {
       position: relative;
       min-height: 188px;
@@ -199,8 +202,8 @@
     }
     .card-actions { margin: 0; }
     .card-actions button {
-      min-height: 36px;
-      padding: 0 14px;
+      min-height: 44px;
+      padding: 0 18px;
       font-size: var(--text-md);
     }
     .label {
