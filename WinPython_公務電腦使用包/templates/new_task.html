@@ -356,7 +356,7 @@
         <label>返隊時間
           <div class="time-field return-time-field">
             <input type="date" name="return_date" id="return-date" value="{{ selected_return_date_input(selected_case) }}">
-            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_case.return_time_hhmm or '' }}">
+            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(selected_case) }}">
             <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
           </div>
         </label>

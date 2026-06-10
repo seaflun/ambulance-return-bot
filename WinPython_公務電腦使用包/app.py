@@ -1055,14 +1055,20 @@ def task_datetime_display(task: dict, date_key: str, time_key: str) -> str:
 
 def case_time_range(case: dict) -> str:
     start_date = short_date(case.get("report_time") or case.get("case_date") or "")
-    end_date = short_date(case.get("return_time") or "") or start_date
     start_time = normalize_hhmm(str(case.get("case_time_hhmm") or _time_from_text(case.get("report_time"))))
-    end_time = normalize_hhmm(str(case.get("return_time_hhmm") or _time_from_text(case.get("return_time"))))
+    end_time = selected_return_time_input(case)
     start = f"{start_date} {start_time}".strip() if start_date or start_time else "未填"
     if not end_time:
         return start
+    end_date = short_date(case.get("return_time") or "") or start_date
     end = f"{end_date} {end_time}".strip() if end_date or end_time else ""
     return f"{start} - {end}" if end else start
+
+
+def selected_return_time_input(case: dict) -> str:
+    if placeholder_return_datetime(case.get("return_time")):
+        return ""
+    return normalize_hhmm(str(case.get("return_time_hhmm") or _time_from_text(case.get("return_time"))))
 
 
 def selected_case_address(case: dict) -> str:
@@ -1074,7 +1080,7 @@ def selected_case_date_input(case: dict) -> str:
 
 
 def selected_return_date_input(case: dict) -> str:
-    if not normalize_hhmm(str(case.get("return_time_hhmm") or _time_from_text(case.get("return_time")))):
+    if not selected_return_time_input(case):
         return ""
     return date_input_value(case.get("return_time") or case.get("case_date") or case.get("report_time") or "")
 
@@ -1104,6 +1110,11 @@ def parse_datetime_text(value: object) -> datetime | None:
 def _time_from_text(value: object) -> str:
     parsed = parse_datetime_text(value)
     return parsed.strftime("%H%M") if parsed else ""
+
+
+def placeholder_return_datetime(value: object) -> bool:
+    parsed = parse_datetime_text(value)
+    return bool(parsed and parsed.year <= 1900 and parsed.month == 1 and parsed.day == 1)
 
 
 def visible_events(events: list[dict]) -> list[dict]:
@@ -1184,6 +1195,7 @@ def template_helpers() -> dict:
         "selected_case_date_input": selected_case_date_input,
         "selected_case_address": selected_case_address,
         "selected_return_date_input": selected_return_date_input,
+        "selected_return_time_input": selected_return_time_input,
         "site_short_name": site_short_name,
         "site_stage_rows": site_stage_rows,
         "show_public_pc_admin_button": show_public_pc_admin_button,

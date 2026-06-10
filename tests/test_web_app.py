@@ -657,6 +657,22 @@ class WebAppTests(unittest.TestCase):
             "\u7dca\u6025\u6551\u8b77-\u5275\u50b7 - \u6843\u5712\u5e02\u89c0\u97f3\u5340\u798f\u5c71\u8def\u4e8c\u6bb5790\u5df7100\u5f049\u865f",
         )
         self.assertEqual(app_module.case_time_range(case), "06/07 1024")
+        self.assertEqual(app_module.selected_return_date_input(case), "")
+        self.assertEqual(app_module.selected_return_time_input(case), "")
+
+    def test_case_display_hides_placeholder_return_datetime(self):
+        case = {
+            "category": "\u7dca\u6025\u6551\u8b77-\u6025\u75c5",
+            "address": "\u6843\u5712\u5e02\u5927\u5712\u5340\u79d1\u4e94\u885722\u5df79\u865f4\u6a13",
+            "case_date": "1150611",
+            "case_time_hhmm": "0112",
+            "return_time": "1900/01/01 00:00:00",
+            "return_time_hhmm": "0000",
+        }
+
+        self.assertEqual(app_module.case_time_range(case), "06/11 0112")
+        self.assertEqual(app_module.selected_return_date_input(case), "")
+        self.assertEqual(app_module.selected_return_time_input(case), "")
 
     def test_event_detail_text_keeps_event_log_short(self):
         event = {"status": "vehicle_mileage_saved", "detail": "\u8eca\u8f1b\u91cc\u7a0b: \u5df2\u5efa\u7acb\u5f88\u9577\u7684\u8aaa\u660e"}
