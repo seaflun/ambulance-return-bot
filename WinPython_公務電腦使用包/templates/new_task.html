@@ -159,9 +159,9 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      min-height: 54px;
+      min-height: 56px;
       margin: 0;
-      padding: 11px 12px;
+      padding: 10px 14px;
       border: 1px solid var(--line);
       border-radius: 10px;
       background: #fff;
@@ -169,16 +169,16 @@
       font-weight: 650;
       cursor: pointer;
     }
-    .check-item input { width: auto; margin: 0; transform: scale(1.12); accent-color: var(--accent); }
+    .check-item input { width: 20px; height: 20px; min-height: 20px; margin: 0; transform: scale(1.35); accent-color: var(--accent); }
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
     .consumables { margin: 0 0 14px; }
     .consumable-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
-    .consumable-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
-    .consumable-row { display: grid; grid-template-columns: minmax(0, 1fr) 138px 52px; gap: 10px; align-items: end; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .consumable-list { display: grid; gap: 10px; align-items: start; }
+    .consumable-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 220px 58px; gap: 10px; align-items: end; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .consumable-row > * { min-width: 0; }
     .consumable-row input,
     .consumable-row select {
-      min-height: 50px;
+      min-height: 56px;
       margin-top: 0;
       padding: 10px 12px;
       font-size: var(--text-md);
@@ -187,11 +187,11 @@
     .consumable-qty::-webkit-outer-spin-button,
     .consumable-qty::-webkit-inner-spin-button { margin: 0; -webkit-appearance: none; }
     .consumable-qty { -moz-appearance: textfield; appearance: textfield; }
-    .consumable-category { grid-column: 1 / -1; }
-    .consumable-name { grid-column: 1 / -1; }
-    .qty-control { display: grid; grid-template-columns: 46px minmax(56px, 1fr) 46px; gap: 6px; }
-    .qty-button { min-width: 46px; min-height: 50px; padding: 0; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; }
-    .icon-button { width: 52px; min-width: 52px; justify-self: start; padding: 0; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
+    .qty-control { display: grid; grid-template-columns: 56px minmax(64px, 1fr) 56px; gap: 8px; }
+    .qty-button,
+    .icon-button { height: 56px; min-height: 56px; padding: 0; align-self: end; line-height: 1; font-size: 22px; display: inline-flex; align-items: center; justify-content: center; background: #fff; border-color: var(--line-strong); box-shadow: none; }
+    .qty-button { min-width: 56px; color: var(--accent); }
+    .icon-button { width: 58px; min-width: 58px; justify-self: start; color: var(--failed); }
     #task-form > button[type="submit"] { width: 100%; min-height: 58px; margin-top: 8px; font-size: var(--text-lg); }
     .recent { margin-top: 18px; }
     .recent-list { display: grid; gap: 8px; }
@@ -260,7 +260,7 @@
       .check-grid { grid-template-columns: 1fr; }
       .recent-card { grid-template-columns: minmax(0, 1fr); }
       .recent-card .status { justify-self: start; }
-      .consumable-row { grid-template-columns: minmax(0, 1fr) 44px; }
+      .consumable-row { grid-template-columns: minmax(0, 1fr) 58px; }
       .consumable-category,
       .consumable-name { grid-column: 1 / -1; }
       .qty-control { grid-column: 1; }
