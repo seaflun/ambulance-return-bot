@@ -165,7 +165,8 @@
       font-weight: 650;
     }
     .check-item input { width: auto; margin: 0; transform: scale(1.12); accent-color: var(--accent); }
-    .consumables { margin: 0 0 14px; padding-top: 4px; }
+    .form-section-divider { border-top: 1px solid var(--line); padding-top: 14px; }
+    .consumables { margin: 0 0 14px; }
     .consumable-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
     .consumable-list { display: grid; gap: 8px; }
     .consumable-row { display: grid; grid-template-columns: 120px minmax(0, 1fr) 128px 44px; gap: 8px; align-items: end; }
@@ -392,7 +393,7 @@
         <input name="mileage" inputmode="numeric" value="{{ selected_case.mileage or '' }}">
       </label>
 
-      <section class="consumables">
+      <section class="consumables form-section-divider">
         <input type="hidden" name="consumables" id="consumables-value">
         <div class="consumable-head">
           <span>使用耗材</span>
@@ -401,7 +402,7 @@
         <div class="consumable-list" id="consumable-list"></div>
       </section>
 
-      <label>消毒項目</label>
+      <label class="form-section-divider">消毒項目</label>
       <div class="check-grid">
         {% for item in disinfection_item_options %}
           <label class="check-item">
