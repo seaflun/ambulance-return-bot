@@ -90,7 +90,7 @@ def maybe_run_case_lookup(
     now = time.time()
     manual_lookup = request_payload is not None
     if manual_lookup:
-        lookup_range = str(request_payload.get("lookup_range") or "24h")
+        lookup_range = "24h"
         source = str(request_payload.get("source") or "NAS端")
         print(f"[worker] manual case lookup requested range={lookup_range} source={source}", flush=True)
     elif now - last_lookup_at >= max(interval_seconds, 60):

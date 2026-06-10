@@ -293,7 +293,7 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
         _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_cases")
         payload = _case_lookup_payload(
             "cases_loaded",
-            f"\u5df2\u67e5\u5230 {len(cases)} \u7b46{_lookup_range_label(lookup_range)}\u7684\u6551\u8b77\u3001\u706b\u707d\u6848\u4ef6\uff0c\u4e26\u9810\u5148\u8b80\u53d6\u670d\u52e4\u4eba\u54e1\u3002",
+            f"\u5df2\u67e5\u5230 {len(cases)} \u7b4624\u5c0f\u6642\u5167\u6848\u4ef6\uff0c\u4e26\u8b80\u53d6\u51fa\u52e4\u4eba\u54e1\u3002",
             cases,
         )
         _write_json_atomic(output_path, payload)
@@ -1151,22 +1151,22 @@ def _save_disinfection_probe(driver: webdriver.Chrome, output_dir: Path, task_id
 def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
     driver.switch_to.default_content()
     driver.get(_ems_ap_url(EMS_DISINFECTION_AP))
-    time.sleep(1.5)
     _switch_to_disinfection_content_if_present(driver)
-    _save_artifacts(driver, output_dir, request.task_id, "disinfection_entry")
+    _wait_for_disinfection_query_fields(driver)
+    _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_entry")
     _assert_disinfection_not_login(driver, "entry")
 
     _set_disinfection_query_date(driver, _disinfection_query_date(request))
-    if not _click_text_if_present(driver, ["\u67e5\u8a62"]):
+    if not _click_disinfection_query(driver):
         raise WebDriverException("missing disinfection query button")
-    time.sleep(1.5)
-    _save_artifacts(driver, output_dir, request.task_id, "disinfection_query")
+    _wait_for_disinfection_query_completed(driver)
+    _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_query")
     _assert_disinfection_not_login(driver, "query")
 
     if not _open_disinfection_detail_for_case(driver, request.case_time):
         raise WebDriverException(f"missing disinfection detail for case time {request.case_time or 'empty'}")
-    time.sleep(1.5)
-    _save_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
+    _wait_for_disinfection_detail_ready(driver)
+    _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
 
     selected_items = _effective_disinfection_items(request.disinfection_items)
     if selected_items:
@@ -1175,7 +1175,7 @@ def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceRet
             raise WebDriverException(f"missing disinfection item selects: {request.disinfection_items_summary}")
     else:
         updated = 0
-    _save_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
+    _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
 
     if _save_disinfection_record_enabled():
         if not _click_disinfection_save(driver):
@@ -1212,8 +1212,6 @@ def _set_disinfection_query_date(driver: webdriver.Chrome, date_text: str) -> No
           el.value = value;
           el.setAttribute('realvalue', value);
           if ('realValue' in el) el.realValue = value;
-          el.dispatchEvent(new Event('input', {bubbles: true}));
-          el.dispatchEvent(new Event('change', {bubbles: true}));
           return true;
         }
         return [
@@ -1226,6 +1224,58 @@ def _set_disinfection_query_date(driver: webdriver.Chrome, date_text: str) -> No
     )
     if not all(bool(item) for item in changed):
         raise WebDriverException("missing disinfection date fields _txtFromDate/_txtToDate")
+
+
+def _click_disinfection_query(driver: webdriver.Chrome) -> bool:
+    return bool(
+        driver.execute_script(
+            """
+            const target = document.getElementById('_btnQuery') ||
+              Array.from(document.querySelectorAll('input[type=button], input[type=submit], button'))
+                .find(el => String(el.value || el.innerText || el.textContent || '').includes('查詢'));
+            if (!target) return false;
+            target.click();
+            return true;
+            """
+        )
+    )
+
+
+def _wait_for_disinfection_query_fields(driver: webdriver.Chrome, timeout: float = 4) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if driver.execute_script("return !!document.getElementById('_txtFromDate') && !!document.getElementById('_txtToDate');"):
+            return
+        time.sleep(0.2)
+
+
+def _wait_for_disinfection_query_completed(driver: webdriver.Chrome, timeout: float = 3) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        text = driver.execute_script("return document.body ? document.body.innerText : '';") or ""
+        if "查詢完成" in str(text):
+            return
+        time.sleep(0.2)
+
+
+def _wait_for_disinfection_detail_ready(driver: webdriver.Chrome, timeout: float = 3) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ready = driver.execute_script(
+            """
+            return Array.from(document.querySelectorAll('select, input, button'))
+              .some(el => /已選取區|消毒|儲存|存檔/.test(String(el.value || el.innerText || el.textContent || el.name || el.id || '')));
+            """
+        )
+        if ready:
+            return
+        time.sleep(0.2)
+
+
+def _save_disinfection_progress_artifacts(driver: webdriver.Chrome, output_dir: Path, task_id: str, site_key: str) -> None:
+    enabled = os.getenv("SAVE_DISINFECTION_PROGRESS_ARTIFACTS", "").strip().lower() in {"1", "true", "yes", "on"}
+    if enabled:
+        _save_artifacts(driver, output_dir, task_id, site_key)
 
 
 def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
@@ -1777,10 +1827,6 @@ def _assert_vehicle_mileage_values_present(driver: webdriver.Chrome, values: dic
         raise WebDriverException(f"vehicle mileage values not filled: {missing}")
 
 
-def _today_yyyymmdd() -> str:
-    return datetime.now().strftime("%Y%m%d")
-
-
 def _open_case_query(driver: webdriver.Chrome, lookup_range: str = "24h") -> None:
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
     time.sleep(1)
@@ -2081,12 +2127,7 @@ def _click_query_if_present(driver: webdriver.Chrome) -> None:
 
 def _set_case_query_date_range(driver: webdriver.Chrome, lookup_range: str = "24h") -> None:
     end_at = datetime.now()
-    if lookup_range == "today":
-        start_at = end_at.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif lookup_range == "6h":
-        start_at = end_at - timedelta(hours=6)
-    else:
-        start_at = end_at - timedelta(hours=24)
+    start_at = end_at - timedelta(hours=24)
     start_date = _roc_date(start_at)
     end_date = _roc_date(end_at)
     driver.execute_script(
@@ -2123,14 +2164,6 @@ def _set_case_query_date_range(driver: webdriver.Chrome, lookup_range: str = "24
 
 def _roc_date(value: datetime) -> str:
     return f"{value.year - 1911:03d}{value.month:02d}{value.day:02d}"
-
-
-def _lookup_range_label(lookup_range: str) -> str:
-    if lookup_range == "today":
-        return "\u4eca\u5929"
-    if lookup_range == "6h":
-        return "\u6700\u8fd1 6 \u5c0f\u6642"
-    return "\u524d 24 \u5c0f\u6642"
 
 
 def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:

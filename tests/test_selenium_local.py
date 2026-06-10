@@ -10,10 +10,12 @@ from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
     _attach_case_form_details,
     _assert_disinfection_not_login,
+    _click_disinfection_query,
     _click_disinfection_save,
     _click_save_control,
     _click_vehicle_mileage_save,
     _disinfection_query_date,
+    _set_disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
     _create_local_driver_with_retry,
     _ppe_credentials,
@@ -77,6 +79,36 @@ class SeleniumLocalTests(unittest.TestCase):
         )
 
         self.assertEqual(_disinfection_query_date(request), "2026-06-06")
+
+    def test_set_disinfection_query_date_does_not_dispatch_field_events(self):
+        class FakeDriver:
+            script = ""
+            args = ()
+
+            def execute_script(self, script: str, *args):
+                self.script = script
+                self.args = args
+                return [True, True]
+
+        driver = FakeDriver()
+
+        _set_disinfection_query_date(driver, "2026-06-06")
+
+        self.assertEqual(driver.args, ("2026-06-06 00:00:00", "2026-06-06 23:59:59"))
+        self.assertNotIn("dispatchEvent", driver.script)
+
+    def test_click_disinfection_query_uses_real_button_id(self):
+        class FakeDriver:
+            script = ""
+
+            def execute_script(self, script: str):
+                self.script = script
+                return True
+
+        driver = FakeDriver()
+
+        self.assertTrue(_click_disinfection_query(driver))
+        self.assertIn("_btnQuery", driver.script)
 
     def test_assert_disinfection_not_login_raises_on_login_page(self):
         class FakeDriver:
@@ -337,7 +369,7 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._save_artifacts = original_save_artifacts
 
         self.assertEqual(result.status, "cases_loaded")
-        self.assertIn("救護、火災案件", result.detail)
+        self.assertEqual(result.detail, "已查到 1 筆24小時內案件，並讀取出勤人員。")
         self.assertIs(calls["quit_driver"], fake_driver)
         self.assertTrue(calls["released"])
         self.assertTrue(calls["create_kwargs"]["headless"])

@@ -91,9 +91,7 @@ def new_task():
 
 @app.post("/cases/query")
 def query_cases():
-    lookup_range = str(request.form.get("lookup_range") or "24h").strip()
-    if lookup_range not in {"24h", "6h", "today"}:
-        lookup_range = "24h"
+    lookup_range = "24h"
     source = case_lookup_source_label(request.host)
     write_case_lookup_request(lookup_range, source=source)
     mode = effective_task_execution_mode()
@@ -839,14 +837,14 @@ def write_case_lookup_request(lookup_range: str, source: str = "") -> dict:
         "lookup_range": lookup_range,
         "source": source or "未知來源",
         "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "detail": f"已送出案件查詢，正在查詢{range_label}救護、火災案件。",
+        "detail": f"已送出案件查詢，正在查詢{range_label}案件。",
     }
     write_json_atomic(case_lookup_request_path(), payload)
     return payload
 
 
 def case_lookup_range_label(lookup_range: str) -> str:
-    return {"24h": "最近 24 小時", "6h": "最近 6 小時", "today": "今日"}.get(lookup_range, "最近 24 小時")
+    return "最近 24 小時"
 
 
 def case_lookup_source_label(host: str) -> str:
@@ -1232,7 +1230,7 @@ def write_selected_case_from_lookup(case_id: str) -> bool:
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "status": "case_imported",
-        "detail": "已由查詢結果帶入案件資料與服勤人員。",
+        "detail": "已由查詢結果帶入案件資料與出勤人員。",
         "updated_at": lookup.get("updated_at", ""),
         "selected_case": selected,
     }
@@ -1272,11 +1270,14 @@ def prepared_case_lookup() -> dict:
     cases = case_lookup.get("cases") or []
     detail = str(case_lookup.get("detail") or "").strip()
     if detail:
-        case_lookup["detail"] = detail.replace("緊急救護案件", "救護、火災案件")
+        detail = detail.replace("緊急救護案件", "救護、火災案件")
+        detail = detail.replace("前 24 小時的救護、火災案件，並預先讀取服勤人員", "24小時內案件，並讀取出勤人員")
+        detail = detail.replace("前 24 小時的緊急救護案件，並預先讀取服勤人員", "24小時內案件，並讀取出勤人員")
+        case_lookup["detail"] = detail
     if lookup_request.get("status") == "case_lookup_requested":
         lookup_range = str(lookup_request.get("lookup_range") or case_lookup.get("lookup_range") or "24h")
         range_label = case_lookup_range_label(lookup_range)
-        case_lookup["detail"] = f"正在查詢{range_label}救護、火災案件，請稍候。"
+        case_lookup["detail"] = f"正在查詢{range_label}案件，請稍候。"
         case_lookup["is_running"] = True
     elif not cases and (
         lookup_request.get("status") == "case_lookup_completed"
@@ -1284,7 +1285,7 @@ def prepared_case_lookup() -> dict:
     ):
         lookup_range = str(case_lookup.get("lookup_range") or lookup_request.get("lookup_range") or "24h")
         range_label = case_lookup_range_label(lookup_range)
-        case_lookup["empty_message"] = f"查詢完成，{range_label}沒有找到救護、火災案件。可以稍後再查，或直接手動輸入案件資料。"
+        case_lookup["empty_message"] = f"查詢完成，{range_label}沒有找到案件。可以稍後再查，或直接手動輸入案件資料。"
     case_lookup["cases"] = cases
     case_lookup["case_count"] = len(cases)
     case_lookup["debug_artifacts"] = case_lookup_debug_artifacts()

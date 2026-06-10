@@ -281,7 +281,7 @@
           <form class="lookup-form" method="post" action="/cases/query" id="lookup-form">
             <input type="hidden" name="lookup_range" value="24h">
             <span class="lookup-status{% if case_lookup.is_running %} is-visible{% endif %}" id="lookup-status" aria-live="polite">查詢中</span>
-            <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢24小時案件</button>
+            <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢案件</button>
           </form>
         </div>
         {% if case_lookup.is_running or case_lookup.empty_message or case_lookup.detail %}
@@ -297,7 +297,7 @@
                   <div class="case-title">{{ display_case_title(case) }}</div>
                   <div class="case-meta">{{ case_time_range(case) }}</div>
                   {% if case.personnel %}
-                    <div class="case-meta">服勤人員：{{ case.personnel | join('、') }}</div>
+                    <div class="case-meta">出勤人員：{{ case.personnel | join('、') }}</div>
                   {% endif %}
                 </div>
                 <form method="post" action="/cases/import">

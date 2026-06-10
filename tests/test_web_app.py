@@ -115,7 +115,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('placeholder="1505"', body)
         self.assertNotIn('placeholder="12345"', body)
         self.assertIn(">\u8acb\u9078\u64c7</option>", body)
-        self.assertIn("查詢24小時案件", body)
+        self.assertIn("查詢案件", body)
+        self.assertNotIn("查詢24小時案件", body)
         self.assertNotIn('button.textContent = "查詢中"', body)
         self.assertIn(".form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }", body)
         self.assertIn('<section class="consumables form-section-divider">', body)
@@ -472,8 +473,8 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(request_payload["status"], "case_lookup_requested")
         self.assertEqual(request_payload["lookup_range"], "24h")
 
-    def test_query_cases_accepts_24h_range(self):
-        response = self.client.post("/cases/query", data={"lookup_range": "24h"}, follow_redirects=False)
+    def test_query_cases_forces_24h_range(self):
+        response = self.client.post("/cases/query", data={"lookup_range": "legacy-range"}, follow_redirects=False)
 
         self.assertEqual(response.status_code, 302)
         request_payload = app_module.read_case_lookup_request()
@@ -486,7 +487,7 @@ class WebAppTests(unittest.TestCase):
             cases_dir / "latest.json",
             {
                 "status": "cases_loaded",
-                "detail": "已查到 2 筆前 24 小時的救護、火災案件，並預先讀取服勤人員。",
+                "detail": "已查到 2 筆24小時內案件，並讀取出勤人員。",
                 "lookup_range": "24h",
                 "cases": [{"case_id": "old-case"}],
             },
@@ -498,8 +499,8 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("window.location.reload()", body)
         self.assertIn("lookup-status is-visible", body)
-        self.assertIn("disabled>查詢24小時案件</button>", body)
-        self.assertIn("正在查詢最近 24 小時救護、火災案件，請稍候。", body)
+        self.assertIn("disabled>查詢案件</button>", body)
+        self.assertIn("正在查詢最近 24 小時案件，請稍候。", body)
         self.assertNotIn("已查到 2 筆", body)
 
     def test_app_page_shows_empty_case_lookup_result(self):
@@ -527,7 +528,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertIn('class="lookup-message is-empty"', body)
-        self.assertIn("查詢完成，最近 24 小時沒有找到救護、火災案件。", body)
+        self.assertIn("查詢完成，最近 24 小時沒有找到案件。", body)
         self.assertNotIn("window.location.reload()", body)
 
     def test_app_page_shows_loaded_case_lookup_result_message(self):
@@ -540,7 +541,7 @@ class WebAppTests(unittest.TestCase):
                 "detail": "已查到 2 筆前 24 小時的緊急救護案件，並預先讀取服勤人員。",
                 "lookup_range": "24h",
                 "cases": [
-                    {"case_id": "case-1", "address": "桃園市觀音區"},
+                    {"case_id": "case-1", "address": "桃園市觀音區", "personnel": ["王小明"]},
                     {"case_id": "case-2", "address": "桃園市新屋區"},
                 ],
             },
@@ -549,8 +550,10 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/app")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertIn("已查到 2 筆前 24 小時的救護、火災案件，並預先讀取服勤人員。", body)
+        self.assertIn("已查到 2 筆24小時內案件，並讀取出勤人員。", body)
         self.assertNotIn("緊急救護案件", body)
+        self.assertIn("出勤人員：王小明", body)
+        self.assertNotIn("服勤人員：王小明", body)
         self.assertLess(body.index("已查到 2 筆"), body.index('<div class="case-list">'))
 
     def test_mobile_layout_keeps_header_action_compact_and_stacks_time_fields(self):
@@ -568,10 +571,10 @@ class WebAppTests(unittest.TestCase):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         app_module.start_local_case_lookup = lambda lookup_range: calls.append(lookup_range)
 
-        response = self.client.post("/cases/query", data={"lookup_range": "6h"}, follow_redirects=False)
+        response = self.client.post("/cases/query", data={"lookup_range": "legacy-range"}, follow_redirects=False)
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(calls, ["6h"])
+        self.assertEqual(calls, ["24h"])
 
     def test_local_ip_query_cases_starts_local_lookup_when_fast_mode_auto(self):
         calls = []
@@ -594,7 +597,7 @@ class WebAppTests(unittest.TestCase):
         os.environ["DESKTOP_FAST_MODE"] = "0"
         app_module.start_local_case_lookup = lambda lookup_range: calls.append(lookup_range)
 
-        response = self.client.post("/cases/query", data={"lookup_range": "6h"}, follow_redirects=False)
+        response = self.client.post("/cases/query", data={"lookup_range": "legacy-range"}, follow_redirects=False)
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(calls, [])

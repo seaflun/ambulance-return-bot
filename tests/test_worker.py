@@ -52,21 +52,24 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(calls["posts"], 0)
 
     def test_manual_lookup_posts_even_when_cases_unchanged(self):
-        calls = {"posts": 0}
+        calls = {"posts": 0, "lookup_range": ""}
         original_fetch = worker_module.fetch_case_lookup_request
         original_query = worker_module.query_duty_emergency_cases
         original_post = worker_module.post_cases
         try:
             cases = [{"case_id": "1"}]
             case_hash = worker_module.hash_cases(cases)
-            worker_module.fetch_case_lookup_request = lambda server_url: {"lookup_range": "24h"}
-            worker_module.query_duty_emergency_cases = lambda artifacts_dir, lookup_range="24h": DutyCaseLookupResult(
-                True,
-                "cases_loaded",
-                "loaded",
-                cases,
-                artifacts_dir / "cases" / "latest.json",
-            )
+            worker_module.fetch_case_lookup_request = lambda server_url: {"lookup_range": "legacy-range"}
+            def fake_query(artifacts_dir, lookup_range="24h"):
+                calls["lookup_range"] = lookup_range
+                return DutyCaseLookupResult(
+                    True,
+                    "cases_loaded",
+                    "loaded",
+                    cases,
+                    artifacts_dir / "cases" / "latest.json",
+                )
+            worker_module.query_duty_emergency_cases = fake_query
             worker_module.post_cases = lambda *args, **kwargs: calls.__setitem__("posts", calls["posts"] + 1)
 
             with tempfile.TemporaryDirectory() as tmp:
@@ -84,6 +87,7 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(last_case_hash, case_hash)
         self.assertEqual(calls["posts"], 1)
+        self.assertEqual(calls["lookup_range"], "24h")
 
     def test_scheduled_lookup_skips_when_previous_lookup_waits_for_login(self):
         original_fetch = worker_module.fetch_case_lookup_request
