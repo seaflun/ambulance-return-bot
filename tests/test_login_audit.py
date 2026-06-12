@@ -67,6 +67,8 @@ class LoginAuditTests(unittest.TestCase):
         self.assertNotIn("21番 張家和 - tyfd01317", audit)
 
     def test_consumables_audit_masks_id_number(self):
+        os.environ["ACS_ACCOUNT"] = "A123456789"
+        os.environ["ACS_PASSWORD"] = "env-secret"
         save_duty_automation_credentials(
             [{"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "id_number": "S124774209", "password": "pw"}],
             last_selected="tyfd01317",
@@ -77,6 +79,8 @@ class LoginAuditTests(unittest.TestCase):
         self.assertIn("耗材=公務電腦同步帳號", audit)
         self.assertIn("21番 張家和 - S124***209", audit)
         self.assertNotIn("S124774209", audit)
+        self.assertNotIn("ACS 環境設定", audit)
+        self.assertNotIn("A123456789", audit)
 
     def test_vehicle_mileage_audit_uses_synced_worker_account(self):
         save_duty_automation_credentials(

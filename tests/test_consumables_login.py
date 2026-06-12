@@ -53,10 +53,12 @@ class ConsumablesLoginTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
             previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
-            previous_account = os.environ.pop("ACS_ACCOUNT", None)
-            previous_password = os.environ.pop("ACS_PASSWORD", None)
+            previous_account = os.environ.get("ACS_ACCOUNT")
+            previous_password = os.environ.get("ACS_PASSWORD")
             os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
             os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+            os.environ["ACS_ACCOUNT"] = "A123456789"
+            os.environ["ACS_PASSWORD"] = "env-secret"
             try:
                 save_duty_automation_credentials(
                     [
@@ -96,27 +98,45 @@ class ConsumablesLoginTests(unittest.TestCase):
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
                 else:
                     os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
-                if previous_account is not None:
+                if previous_account is None:
+                    os.environ.pop("ACS_ACCOUNT", None)
+                else:
                     os.environ["ACS_ACCOUNT"] = previous_account
-                if previous_password is not None:
+                if previous_password is None:
+                    os.environ.pop("ACS_PASSWORD", None)
+                else:
                     os.environ["ACS_PASSWORD"] = previous_password
 
-    def test_load_acs_credentials_keeps_env_override(self):
+    def test_load_acs_credentials_ignores_legacy_env_override(self):
         previous_account = os.environ.get("ACS_ACCOUNT")
         previous_password = os.environ.get("ACS_PASSWORD")
+        previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+        previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
         os.environ["ACS_ACCOUNT"] = "A123456789"
         os.environ["ACS_PASSWORD"] = "env-secret"
-        try:
-            self.assertEqual(_load_acs_credentials(), ("A123456789", "env-secret"))
-        finally:
-            if previous_account is None:
-                os.environ.pop("ACS_ACCOUNT", None)
-            else:
-                os.environ["ACS_ACCOUNT"] = previous_account
-            if previous_password is None:
-                os.environ.pop("ACS_PASSWORD", None)
-            else:
-                os.environ["ACS_PASSWORD"] = previous_password
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+            os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+            try:
+                with self.assertRaisesRegex(RuntimeError, "同步含身分證字號"):
+                    _load_acs_credentials()
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+                if previous_account is None:
+                    os.environ.pop("ACS_ACCOUNT", None)
+                else:
+                    os.environ["ACS_ACCOUNT"] = previous_account
+                if previous_password is None:
+                    os.environ.pop("ACS_PASSWORD", None)
+                else:
+                    os.environ["ACS_PASSWORD"] = previous_password
 
 
 if __name__ == "__main__":

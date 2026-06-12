@@ -99,18 +99,13 @@ def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, ob
 
 
 def _load_acs_credentials(task: dict[str, object] | AmbulanceReturnRequest | None = None) -> tuple[str, str]:
-    account = os.getenv("ACS_ACCOUNT", "").strip()
-    password = os.getenv("ACS_PASSWORD", "")
-    if account and password:
-        return account, password
-
     credential = load_synced_worker_credential()
     if credential is not None:
         acs_account = credential.id_number.strip() or (credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else "")
         if acs_account and credential.password:
             return acs_account, credential.password
 
-    raise RuntimeError("找不到一站通耗材帳密；請先在 worker GUI 同步含身分證字號的帳號，或設定 ACS_ACCOUNT / ACS_PASSWORD。")
+    raise RuntimeError("找不到一站通耗材帳密；請先在 worker GUI 同步含身分證字號的帳號。")
 
 
 def _chrome_profile_dir(profile_name: str) -> Path:

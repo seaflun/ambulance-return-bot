@@ -54,11 +54,6 @@ def disinfection_login_summary() -> str:
 
 
 def consumables_login_summary() -> str:
-    account = os.getenv("ACS_ACCOUNT", "").strip()
-    password = os.getenv("ACS_PASSWORD", "")
-    if account and password:
-        return f"{mask_login_account(account)}（ACS 環境設定）"
-
     credential = load_synced_worker_credential()
     if credential is None:
         return "未取得（同步帳號）"
@@ -96,11 +91,6 @@ def disinfection_login_audit() -> str:
 
 
 def consumables_login_audit() -> str:
-    account = os.getenv("ACS_ACCOUNT", "").strip()
-    password = os.getenv("ACS_PASSWORD", "")
-    if account and password:
-        return f"登入帳號：耗材=ACS 環境設定，{mask_login_account(account)}"
-
     credential = load_synced_worker_credential()
     if credential is None:
         return "登入帳號：耗材=公務電腦同步帳號，未取得可用帳號"
