@@ -275,6 +275,7 @@ class WebAppTests(unittest.TestCase):
                     "case_reason": "急病",
                     "case_address": "桃園市觀音區中山路",
                     "vehicle": "新坡91",
+                    "driver": "曾彥綸",
                 },
                 "user": "8番 曾彥綸 - tyfd01510",
                 "worker_id": "public-duty-pc",
@@ -296,9 +297,13 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/public-pc")
         body = html.unescape(page.data.decode("utf-8"))
         self.assertIn("公務電腦後台", body)
-        self.assertIn("8番 曾彥綸 - tyfd01510", body)
+        self.assertIn("公務電腦回報帳號（非各站登入）：8番 曾彥綸 - tyfd01510", body)
+        self.assertIn("登入規則：工作用任務司機優先；里程、消毒、耗材用公務電腦同步帳號", body)
+        self.assertIn("任務司機：曾彥綸", body)
         self.assertIn("緊急救護-急病 - 桃園市觀音區中山路", body)
         self.assertIn("四站登打成功", body)
+        reports = app_module.public_pc_reports()
+        self.assertEqual(reports[0]["operator"], "8番 曾彥綸 - tyfd01510")
 
     def test_admin_public_pc_deduplicates_same_event_id(self):
         os.environ["WORKER_TOKEN"] = "test-token"

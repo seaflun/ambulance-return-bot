@@ -496,11 +496,13 @@ def upsert_public_pc_report(data: dict) -> dict:
     now = datetime.now().isoformat(timespec="seconds")
     event_id = str(data.get("event_id") or "").strip() or str(uuid4())
     ack_id = str(data.get("ack_id") or event_id).strip() or event_id
+    operator_label = str(data.get("operator") or data.get("user") or "未知使用者")
     event = {
         "event_id": event_id,
         "ack_id": ack_id,
         "time": str(data.get("time") or now),
-        "user": str(data.get("user") or "未知使用者"),
+        "operator": operator_label,
+        "user": operator_label,
         "worker_id": str(data.get("worker_id") or ""),
         "action": str(data.get("action") or "更新"),
         "status": str(data.get("status") or ""),
@@ -517,7 +519,8 @@ def upsert_public_pc_report(data: dict) -> dict:
         "task_id": task_id,
         "title": str(data.get("title") or task_title(task) or task_id),
         "task": task,
-        "user": event["user"],
+        "operator": operator_label,
+        "user": operator_label,
         "worker_id": event["worker_id"],
         "overall_status": str(data.get("overall_status") or existing.get("overall_status") or ""),
         "site_statuses": data.get("site_statuses") if isinstance(data.get("site_statuses"), dict) else existing.get("site_statuses", {}),
@@ -599,12 +602,14 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
         return
     events = payload.get("events") if isinstance(payload.get("events"), list) else []
     latest_event = events[-1] if events else {}
+    operator_label = current_public_pc_user_label()
     body = {
         "event_id": str(uuid4()),
         "task_id": task_id,
         "task": task,
         "title": task_title(task),
-        "user": current_public_pc_user_label(),
+        "operator": operator_label,
+        "user": operator_label,
         "worker_id": os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"),
         "action": action,
         "status": str(latest_event.get("status") or payload.get("overall_status") or ""),

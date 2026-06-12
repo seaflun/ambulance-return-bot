@@ -9,12 +9,14 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult
+from ambulance_bot.login_audit import login_audit_for_site, with_login_audit
 from ambulance_bot.manual_task_lock import manual_task_lock_active
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
@@ -160,8 +162,9 @@ def run_task(
     update_overall: bool = True,
 ) -> object:
     request = AmbulanceReturnRequest.from_dict(task)
+    login_audit = login_audit_for_site("duty_work_log", request)
     print(f"[worker] claimed task {request.task_id}", flush=True)
-    post_status(server_url, request.task_id, "worker_running", f"公務電腦 worker 執行中：{worker_id}")
+    post_status(server_url, request.task_id, "worker_running", with_login_audit(f"公務電腦 worker 執行中：{worker_id}", login_audit))
     try:
         result = run_local_selenium_task(
             request,
@@ -174,6 +177,7 @@ def run_task(
         )
     except Exception as exc:
         result = SiteAutomationResult("duty_work_log", "消防勤務工作紀錄", "duty_work_log_failed", f"工作紀錄操作失敗：{exc}")
+    result = _result_with_login_audit(result, login_audit)
     post_status(
         server_url,
         request.task_id,
@@ -307,8 +311,14 @@ def run_vehicle_task(
     update_overall: bool = True,
 ) -> object:
     request = AmbulanceReturnRequest.from_dict(task)
+    login_audit = login_audit_for_site("vehicle_mileage", request)
     print(f"[worker] vehicle mileage task {request.task_id}", flush=True)
-    post_status(server_url, request.task_id, "vehicle_mileage_running", f"公務電腦 worker 執行車輛里程：{worker_id}")
+    post_status(
+        server_url,
+        request.task_id,
+        "vehicle_mileage_running",
+        with_login_audit(f"公務電腦 worker 執行車輛里程：{worker_id}", login_audit),
+    )
     try:
         result = run_vehicle_mileage_task(
             request,
@@ -321,6 +331,7 @@ def run_vehicle_task(
         )
     except Exception as exc:
         result = SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}")
+    result = _result_with_login_audit(result, login_audit)
     post_status(
         server_url,
         request.task_id,
@@ -354,8 +365,14 @@ def run_disinfection_worker_task(
     update_overall: bool = True,
 ):
     request = AmbulanceReturnRequest.from_dict(task)
+    login_audit = login_audit_for_site("disinfection", request)
     print(f"[worker] disinfection task {request.task_id}", flush=True)
-    post_status(server_url, request.task_id, "disinfection_running", f"公務電腦 worker 執行消毒紀錄：{worker_id}")
+    post_status(
+        server_url,
+        request.task_id,
+        "disinfection_running",
+        with_login_audit(f"公務電腦 worker 執行消毒紀錄：{worker_id}", login_audit),
+    )
     try:
         result = run_disinfection_task(
             request,
@@ -369,6 +386,7 @@ def run_disinfection_worker_task(
         )
     except Exception as exc:
         result = SiteAutomationResult("disinfection", "緊急救護消毒", "disinfection_failed", f"消毒紀錄操作失敗：{exc}")
+    result = _result_with_login_audit(result, login_audit)
     post_status(
         server_url,
         request.task_id,
@@ -399,12 +417,13 @@ def run_consumables_worker_task(
     update_overall: bool = True,
 ) -> SiteAutomationResult:
     request = AmbulanceReturnRequest.from_dict(task)
+    login_audit = login_audit_for_site("consumables", request)
     print(f"[worker] consumables task {request.task_id}", flush=True)
     post_status(
         server_url,
         request.task_id,
         "consumables_running",
-        f"公務電腦 worker 執行耗材：{worker_id}",
+        with_login_audit(f"公務電腦 worker 執行耗材：{worker_id}", login_audit),
         site_key="consumables",
         site_name="一站通耗材",
     )
@@ -419,6 +438,7 @@ def run_consumables_worker_task(
         result = SiteAutomationResult("consumables", "一站通耗材", "consumables_saved", detail)
     except Exception as exc:
         result = SiteAutomationResult("consumables", "一站通耗材", "consumables_failed", f"耗材登打失敗：{exc}")
+    result = _result_with_login_audit(result, login_audit)
     post_status(
         server_url,
         request.task_id,
@@ -532,6 +552,14 @@ def _status_blocks_progress(status: str) -> bool:
     if text.startswith("needs_") or "login" in text:
         return True
     return False
+
+
+def _result_with_login_audit(result, audit: str):
+    detail = with_login_audit(str(getattr(result, "detail", "") or ""), audit)
+    try:
+        return replace(result, detail=detail)
+    except (TypeError, ValueError):
+        return result
 
 
 def _result_blocks_progress(result: object) -> bool:

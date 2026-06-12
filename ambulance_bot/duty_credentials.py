@@ -70,9 +70,11 @@ def _env_credential() -> DutyCredential | None:
 
 
 def _find_saved_credential(user_ids: list[str], duty_password: bool = False) -> DutyCredential | None:
-    for credential in list_saved_duty_automation_credentials(duty_password=duty_password):
-        if _credential_matches_any(credential, user_ids):
-            return credential
+    credentials = list_saved_duty_automation_credentials(duty_password=duty_password)
+    for user_id in user_ids:
+        for credential in credentials:
+            if _credential_matches_any(credential, [user_id]):
+                return credential
     return None
 
 

@@ -312,6 +312,39 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(credential.user_id, "tyfd00008")
         self.assertEqual(credential.password, "personnel-pass")
 
+    def test_load_duty_credential_respects_preferred_order_over_last_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(path)
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_duty_automation_credentials(
+                    [
+                        {"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "password": "selected-pass"},
+                        {"actor_no": "12", "name": "王昱勛", "user_id": "tyfd01987", "password": "driver-pass"},
+                    ],
+                    last_selected="tyfd01317",
+                    path=path,
+                )
+
+                credential = load_duty_credential(["tyfd01987", "tyfd01317"])
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertIsNotNone(credential)
+        assert credential is not None
+        self.assertEqual(credential.user_id, "tyfd01987")
+        self.assertEqual(credential.name, "王昱勛")
+
     def test_load_duty_credential_prefers_personnel_id_before_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "saved_login.json"

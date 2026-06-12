@@ -130,10 +130,14 @@
       <section class="task-list" aria-label="公務電腦任務">
         {% for item in reports %}
           <article class="task-card">
+            {% set task = item.task if item.task is mapping else {} %}
+            {% set operator_label = item.operator or item.user or '未知使用者' %}
             <div class="card-head">
               <div>
                 <h2 class="title">{{ item.title }}</h2>
-                <div class="meta">建立/操作：{{ item.user or '未知使用者' }}</div>
+                <div class="meta">公務電腦回報帳號（非各站登入）：{{ operator_label }}</div>
+                <div class="meta">登入規則：工作用任務司機優先；里程、消毒、耗材用公務電腦同步帳號</div>
+                <div class="meta">任務司機：{{ task.driver or '未填司機' }}</div>
                 <div class="meta">公務電腦：{{ item.worker_id or '未回報' }}｜更新：{{ item.updated_at }}</div>
               </div>
               <span class="status {{ status_class(item.overall_status) }}">{{ item.last_action or status_label(item.overall_status) }}</span>
@@ -152,9 +156,10 @@
             <ul class="events">
               {% for event in item.events[-8:] | reverse %}
                 <li>
+                  {% set event_operator = event.operator or event.user or '未知使用者' %}
                   <time class="event-time">{{ event.time }}</time>
                   <div class="event-main">
-                    <div class="event-action">{{ event.user }}｜{{ event.action }}</div>
+                    <div class="event-action">{{ event_operator }}｜{{ event.action }}</div>
                     {% if event.detail %}
                       <div class="event-detail">{{ event.detail }}</div>
                     {% endif %}

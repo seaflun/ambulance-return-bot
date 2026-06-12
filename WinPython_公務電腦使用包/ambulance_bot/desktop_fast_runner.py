@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -8,6 +9,7 @@ from consumables_login import login_acs_and_get_driver, open_consumable_record_f
 from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
+from .login_audit import login_audit_for_site, with_login_audit
 from .manual_task_lock import clear_manual_task_lock, set_manual_task_lock
 from .selenium_local import run_disinfection_task, run_local_selenium_task, run_vehicle_mileage_task
 from .task_store import JsonTaskStore
@@ -187,17 +189,19 @@ class DesktopFastRunner:
 
     def _run_site(self, task_id: str, site_key: str, action) -> int:
         site_name = SITE_NAMES[site_key]
+        login_audit = login_audit_for_site(site_key, self.store.request_for(task_id))
         if _site_is_complete(str(self.store.get(task_id).get("site_statuses", {}).get(site_key, {}).get("status") or "")):
             self.store.set_overall_status(task_id, "desktop_fast_running", f"{site_name} 已完成，略過。")
             self._notify(task_id, f"{site_name} 略過")
             return False
         self.store.update_site_result(
             task_id,
-            SiteAutomationResult(site_key, site_name, f"{site_key}_running", "本機快速執行中。"),
+            SiteAutomationResult(site_key, site_name, f"{site_key}_running", with_login_audit("本機快速執行中。", login_audit)),
         )
         self._notify(task_id, f"{site_name} 開始")
         try:
             result = action()
+            result = _result_with_login_audit(result, login_audit)
             self.store.update_site_result(
                 task_id,
                 SiteAutomationResult(site_key, site_name, str(result.status), str(result.detail)),
@@ -254,6 +258,14 @@ def _result_blocks_next(result) -> bool:
     if status.startswith("needs_") or "login" in status:
         return True
     return False
+
+
+def _result_with_login_audit(result, audit: str):
+    detail = with_login_audit(str(getattr(result, "detail", "") or ""), audit)
+    try:
+        return replace(result, detail=detail)
+    except (TypeError, ValueError):
+        return result
 
 
 def _site_is_complete(status: str) -> bool:
