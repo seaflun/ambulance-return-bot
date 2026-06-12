@@ -75,6 +75,10 @@ def _save_disinfection_record_enabled() -> bool:
     return _env_enabled("SAVE_DISINFECTION_RECORD", default="true")
 
 
+def _save_disinfection_probe_enabled() -> bool:
+    return _env_enabled("SAVE_DISINFECTION_PROBE", default="false")
+
+
 def run_local_selenium_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
@@ -1081,8 +1085,8 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
             raise WebDriverException("PPE session returned to login page after vehicle mileage save")
         confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
         if confirmations:
-            return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
-        return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u5617\u8a66\u78ba\u8a8d\u3002"
+            return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u6309\u4e0b\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
+        return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\uff1b\u672a\u5075\u6e2c\u5230\u78ba\u8a8d\u8996\u7a97\u3002"
     return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
 
 
@@ -1094,8 +1098,10 @@ def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRe
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
     _assert_disinfection_not_login(driver, "opened")
     detail = _prepare_disinfection_record(driver, request, output_dir)
-    controls_path = _save_disinfection_probe(driver, output_dir, request.task_id)
-    return f"{detail} 已保存頁面控制項：{controls_path}"
+    if _save_disinfection_probe_enabled():
+        controls_path = _save_disinfection_probe(driver, output_dir, request.task_id)
+        return f"{detail} 已保存頁面控制項：{controls_path}"
+    return detail
 
 
 def _is_disinfection_login_page(driver: webdriver.Chrome) -> bool:

@@ -23,6 +23,7 @@ from ambulance_bot.selenium_local import (
     _previous_case_details,
     _profile_dir,
     _resolve_end_mileage,
+    _save_disinfection_probe_enabled,
     _save_disinfection_record_enabled,
     _save_vehicle_mileage_enabled,
     _write_json_atomic,
@@ -41,19 +42,26 @@ class SeleniumLocalTests(unittest.TestCase):
     def test_save_flags_read_environment(self):
         previous_vehicle = os.environ.get("SAVE_VEHICLE_MILEAGE")
         previous_disinfection = os.environ.get("SAVE_DISINFECTION_RECORD")
+        previous_probe = os.environ.get("SAVE_DISINFECTION_PROBE")
         try:
             os.environ["SAVE_VEHICLE_MILEAGE"] = "true"
             os.environ["SAVE_DISINFECTION_RECORD"] = "1"
+            os.environ["SAVE_DISINFECTION_PROBE"] = "1"
             self.assertTrue(_save_vehicle_mileage_enabled())
             self.assertTrue(_save_disinfection_record_enabled())
+            self.assertTrue(_save_disinfection_probe_enabled())
             os.environ.pop("SAVE_VEHICLE_MILEAGE", None)
             os.environ.pop("SAVE_DISINFECTION_RECORD", None)
+            os.environ.pop("SAVE_DISINFECTION_PROBE", None)
             self.assertTrue(_save_vehicle_mileage_enabled())
             self.assertTrue(_save_disinfection_record_enabled())
+            self.assertFalse(_save_disinfection_probe_enabled())
             os.environ["SAVE_VEHICLE_MILEAGE"] = "false"
             os.environ["SAVE_DISINFECTION_RECORD"] = "0"
+            os.environ["SAVE_DISINFECTION_PROBE"] = "0"
             self.assertFalse(_save_vehicle_mileage_enabled())
             self.assertFalse(_save_disinfection_record_enabled())
+            self.assertFalse(_save_disinfection_probe_enabled())
         finally:
             if previous_vehicle is None:
                 os.environ.pop("SAVE_VEHICLE_MILEAGE", None)
@@ -63,6 +71,17 @@ class SeleniumLocalTests(unittest.TestCase):
                 os.environ.pop("SAVE_DISINFECTION_RECORD", None)
             else:
                 os.environ["SAVE_DISINFECTION_RECORD"] = previous_disinfection
+            if previous_probe is None:
+                os.environ.pop("SAVE_DISINFECTION_PROBE", None)
+            else:
+                os.environ["SAVE_DISINFECTION_PROBE"] = previous_probe
+
+    def test_vehicle_mileage_message_does_not_use_attempted_confirm_wording(self):
+        source = Path("ambulance_bot/selenium_local.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("\\u5617\\u8a66\\u78ba\\u8a8d", source)
+        self.assertIn("\\u6309\\u4e0b\\u78ba\\u8a8d", source)
+        self.assertIn("\\u672a\\u5075\\u6e2c\\u5230\\u78ba\\u8a8d\\u8996\\u7a97", source)
 
     def test_resolve_end_mileage_accepts_delta(self):
         self.assertEqual(_resolve_end_mileage("123400", "+50"), "123450")
