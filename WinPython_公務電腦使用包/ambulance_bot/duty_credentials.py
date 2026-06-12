@@ -79,7 +79,13 @@ def _find_saved_credential(user_ids: list[str], duty_password: bool = False) -> 
 
 
 def _credential_matches_any(credential: DutyCredential, user_ids: list[str]) -> bool:
-    identities = {credential.user_id.lower(), credential.actor_no.lower(), credential.id_number.lower()}
+    identities = {
+        credential.user_id.lower(),
+        credential.actor_no.lower(),
+        credential.id_number.lower(),
+        credential.name.lower(),
+        credential.display_name.lower(),
+    }
     return any(user_id.lower() in identities for user_id in user_ids)
 
 

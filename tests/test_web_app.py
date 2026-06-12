@@ -278,6 +278,13 @@ class WebAppTests(unittest.TestCase):
                     "driver": "曾彥綸",
                 },
                 "user": "8番 曾彥綸 - tyfd01510",
+                "synced_account": "8番 曾彥綸 - tyfd01510",
+                "site_login_accounts": {
+                    "duty_work_log": "8番 曾彥綸 - tyfd01510（任務司機優先）",
+                    "vehicle_mileage": "8番 曾彥綸 - tyfd01510（同步帳號）",
+                    "disinfection": "8番 曾彥綸 - tyfd01510（同步帳號）",
+                    "consumables": "8番 曾彥綸 - C123***789（同步帳號）",
+                },
                 "worker_id": "public-duty-pc",
                 "action": "四站登打成功",
                 "status": "desktop_fast_completed",
@@ -306,17 +313,34 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(page.data.decode("utf-8"))
         self.assertIn("公務電腦後台", body)
         self.assertIn('<details class="task-details">', body)
-        self.assertIn("<summary>詳細紀錄</summary>", body)
-        self.assertIn("公務電腦回報帳號（非各站登入）：8番 曾彥綸 - tyfd01510", body)
-        self.assertIn("登入規則：工作用任務司機優先；里程、消毒、耗材用公務電腦同步帳號", body)
+        self.assertIn("<summary>完整事件</summary>", body)
         self.assertIn("任務司機：曾彥綸", body)
-        self.assertIn("工作登入帳號：任務司機優先，已保存。", body)
-        self.assertIn("里程已保存。", body)
-        self.assertIn("2026-06-12T14:30:00", body)
+        self.assertIn("同步帳號：8番 曾彥綸 - tyfd01510", body)
+        self.assertIn("各站登入帳號", body)
+        self.assertIn("8番 曾彥綸 - tyfd01510（任務司機優先）", body)
+        self.assertIn("8番 曾彥綸 - tyfd01510（同步帳號）", body)
+        self.assertIn("8番 曾彥綸 - C123***789（同步帳號）", body)
+        self.assertIn("回報來源帳號：8番 曾彥綸 - tyfd01510", body)
+        self.assertNotIn("公務電腦選取帳號：", body)
+        self.assertNotIn("操作人員：", body)
+        self.assertNotIn("登入規則：", body)
+        self.assertNotIn("工作站登入：", body)
+        self.assertNotIn("工作登入帳號：任務司機優先，已保存。", body)
+        self.assertNotIn("里程已保存。", body)
+        self.assertNotIn("2026-06-12T14:30:00", body)
         self.assertIn("緊急救護-急病 - 桃園市觀音區中山路", body)
         self.assertIn("四站登打成功", body)
         reports = app_module.public_pc_reports()
         self.assertEqual(reports[0]["operator"], "8番 曾彥綸 - tyfd01510")
+        self.assertEqual(reports[0]["synced_account"], "8番 曾彥綸 - tyfd01510")
+        self.assertEqual(
+            reports[0]["site_login_accounts"]["duty_work_log"],
+            "8番 曾彥綸 - tyfd01510（任務司機優先）",
+        )
+        self.assertEqual(
+            reports[0]["site_login_accounts"]["consumables"],
+            "8番 曾彥綸 - C123***789（同步帳號）",
+        )
 
     def test_admin_public_pc_deduplicates_same_event_id(self):
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -375,6 +399,8 @@ class WebAppTests(unittest.TestCase):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
         os.environ["PUBLIC_PC_REPORT_SERVER_URL"] = "http://nas.test"
         original_post = app_module._post_public_pc_report
+        original_current_user_label = app_module.current_public_pc_user_label
+        original_site_login_accounts = app_module.public_pc_site_login_accounts
         sent_payloads: list[dict] = []
         try:
             calls = {"count": 0}
@@ -387,6 +413,13 @@ class WebAppTests(unittest.TestCase):
                 return {"ack_id": payload["event_id"]}
 
             app_module._post_public_pc_report = fake_post
+            app_module.current_public_pc_user_label = lambda: "8番 曾彥綸 - tyfd01510"
+            app_module.public_pc_site_login_accounts = lambda task: {
+                "duty_work_log": "8番 曾彥綸 - tyfd01510（任務司機優先）",
+                "vehicle_mileage": "8番 曾彥綸 - tyfd01510（同步帳號）",
+                "disinfection": "8番 曾彥綸 - tyfd01510（同步帳號）",
+                "consumables": "8番 曾彥綸 - C123***789（同步帳號）",
+            }
 
             task_payload = {
                 "task": {"task_id": "task-1", "case_reason": "急病", "case_address": "桃園市"},
@@ -402,12 +435,19 @@ class WebAppTests(unittest.TestCase):
             app_module.report_public_pc_task_event(task_payload, "按下四站登打")
         finally:
             app_module._post_public_pc_report = original_post
+            app_module.current_public_pc_user_label = original_current_user_label
+            app_module.public_pc_site_login_accounts = original_site_login_accounts
             os.environ.pop("PUBLIC_PC_REPORT_SERVER_URL", None)
 
         self.assertEqual(len(sent_payloads), 2)
         self.assertFalse(app_module.public_pc_pending_report_file().exists())
         self.assertEqual(sent_payloads[0]["action"], "建立任務")
         self.assertEqual(sent_payloads[1]["action"], "按下四站登打")
+        self.assertEqual(sent_payloads[0]["synced_account"], "8番 曾彥綸 - tyfd01510")
+        self.assertEqual(
+            sent_payloads[0]["site_login_accounts"]["consumables"],
+            "8番 曾彥綸 - C123***789（同步帳號）",
+        )
 
         self.assertNotEqual(sent_payloads[0]["event_id"], sent_payloads[1]["event_id"])
 

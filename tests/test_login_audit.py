@@ -8,6 +8,7 @@ from ambulance_bot.login_audit import (
     consumables_login_audit,
     duty_work_log_login_audit,
     mask_login_account,
+    site_login_account_summaries,
     vehicle_mileage_login_audit,
 )
 from ambulance_bot.models import AmbulanceReturnRequest
@@ -91,6 +92,52 @@ class LoginAuditTests(unittest.TestCase):
     def test_mask_login_account_only_masks_id_number_style(self):
         self.assertEqual(mask_login_account("S124774209"), "S124***209")
         self.assertEqual(mask_login_account("tyfd01317"), "tyfd01317")
+
+    def test_site_login_account_summaries_lists_all_sites(self):
+        save_duty_automation_credentials(
+            [
+                {"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "id_number": "S124774209", "password": "pw"},
+                {"actor_no": "12", "name": "王昱勛", "user_id": "tyfd01987", "password": "pw"},
+            ],
+            last_selected="tyfd01317",
+        )
+        request = AmbulanceReturnRequest(
+            task_id="task-summary",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            driver="王昱勛",
+            personnel=["張家和", "王昱勛"],
+            personnel_accounts=["tyfd01317", "tyfd01987"],
+        )
+
+        summaries = site_login_account_summaries(request)
+
+        self.assertEqual(summaries["duty_work_log"], "12番 王昱勛 - tyfd01987（任務司機優先）")
+        self.assertEqual(summaries["vehicle_mileage"], "21番 張家和 - tyfd01317（同步帳號）")
+        self.assertEqual(summaries["disinfection"], "21番 張家和 - tyfd01317（同步帳號）")
+        self.assertEqual(summaries["consumables"], "21番 張家和 - S124***209（同步帳號）")
+
+    def test_site_login_account_summaries_can_match_driver_name_without_case_account(self):
+        save_duty_automation_credentials(
+            [
+                {"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "id_number": "S124774209", "password": "pw"},
+                {"actor_no": "12", "name": "王昱勛", "user_id": "tyfd01987", "password": "pw"},
+            ],
+            last_selected="tyfd01317",
+        )
+        request = AmbulanceReturnRequest(
+            task_id="task-driver-name",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            driver="王昱勛",
+            personnel=[],
+            personnel_accounts=[],
+        )
+
+        summaries = site_login_account_summaries(request)
+
+        self.assertEqual(summaries["duty_work_log"], "12番 王昱勛 - tyfd01987（任務司機優先）")
+        self.assertEqual(summaries["vehicle_mileage"], "21番 張家和 - tyfd01317（同步帳號）")
 
 
 if __name__ == "__main__":

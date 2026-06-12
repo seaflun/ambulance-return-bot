@@ -89,6 +89,23 @@
       min-width: 0;
     }
     .site-name { font-weight: 760; margin-bottom: 5px; }
+    .login-summary {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #fff;
+    }
+    .login-title { font-weight: 760; margin-bottom: 8px; }
+    .login-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .login-account {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+    }
+    .login-account-name { display: block; font-weight: 760; margin-bottom: 3px; }
+    .login-account-value { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .task-details { margin-top: 12px; border-top: 1px solid var(--line); }
     .task-details summary {
       cursor: pointer;
@@ -96,15 +113,6 @@
       color: var(--ink);
       font-weight: 760;
     }
-    .site-details { display: grid; gap: 8px; margin: 2px 0 10px; }
-    .site-detail-row {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
-      background: #fff;
-    }
-    .site-detail { margin-top: 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-    .site-updated { margin-top: 4px; color: var(--muted); font-size: 11px; }
     .events { margin: 12px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
     .events li {
       display: grid;
@@ -116,6 +124,7 @@
     .event-time { color: var(--muted); font-size: 12px; }
     .event-main { min-width: 0; }
     .event-action { font-weight: 760; }
+    .event-operator { margin-top: 2px; color: var(--muted); font-size: 12px; }
     .event-detail { margin-top: 2px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
     .empty {
       background: var(--surface);
@@ -131,6 +140,7 @@
       .button { width: 100%; }
       .card-head { grid-template-columns: 1fr; }
       .site-grid { grid-template-columns: 1fr 1fr; }
+      .login-grid { grid-template-columns: 1fr; }
       .events li { grid-template-columns: 1fr; gap: 2px; }
     }
   </style>
@@ -148,16 +158,31 @@
           <article class="task-card">
             {% set task = item.task if item.task is mapping else {} %}
             {% set operator_label = item.operator or item.user or '未知使用者' %}
+            {% set synced_account = item.synced_account or operator_label %}
+            {% set site_login_accounts = item.site_login_accounts if item.site_login_accounts is mapping else {} %}
             <div class="card-head">
               <div>
                 <h2 class="title">{{ item.title }}</h2>
-                <div class="meta">公務電腦回報帳號（非各站登入）：{{ operator_label }}</div>
-                <div class="meta">登入規則：工作用任務司機優先；里程、消毒、耗材用公務電腦同步帳號</div>
                 <div class="meta">任務司機：{{ task.driver or '未填司機' }}</div>
+                <div class="meta">同步帳號：{{ synced_account }}</div>
                 <div class="meta">公務電腦：{{ item.worker_id or '未回報' }}｜更新：{{ item.updated_at }}</div>
               </div>
               <span class="status {{ status_class(item.overall_status) }}">{{ item.last_action or status_label(item.overall_status) }}</span>
             </div>
+
+            {% if site_login_accounts %}
+              <section class="login-summary" aria-label="各站登入帳號">
+                <div class="login-title">各站登入帳號</div>
+                <div class="login-grid">
+                  {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('disinfection', '消毒'), ('consumables', '耗材')] %}
+                    <div class="login-account">
+                      <span class="login-account-name">{{ title }}</span>
+                      <span class="login-account-value">{{ site_login_accounts.get(site_key) or '尚未回報' }}</span>
+                    </div>
+                  {% endfor %}
+                </div>
+              </section>
+            {% endif %}
 
             <div class="site-grid">
               {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('disinfection', '消毒'), ('consumables', '耗材')] %}
@@ -170,31 +195,15 @@
             </div>
 
             <details class="task-details">
-              <summary>詳細紀錄</summary>
-              <div class="site-details">
-                {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('disinfection', '消毒'), ('consumables', '耗材')] %}
-                  {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
-                  {% if site.detail or site.updated_at %}
-                    <div class="site-detail-row">
-                      <strong>{{ title }}</strong>
-                      {% if site.detail %}
-                        <div class="site-detail">{{ site.detail }}</div>
-                      {% endif %}
-                      {% if site.updated_at %}
-                        <div class="site-updated">{{ site.updated_at }}</div>
-                      {% endif %}
-                    </div>
-                  {% endif %}
-                {% endfor %}
-              </div>
-
+              <summary>完整事件</summary>
               <ul class="events">
                 {% for event in item.events | reverse %}
                   <li>
                     {% set event_operator = event.operator or event.user or '未知使用者' %}
                     <time class="event-time">{{ event.time }}</time>
                     <div class="event-main">
-                      <div class="event-action">{{ event_operator }}｜{{ event.action }}</div>
+                      <div class="event-action">{{ event.action }}</div>
+                      <div class="event-operator">回報來源帳號：{{ event_operator }}</div>
                       {% if event.detail %}
                         <div class="event-detail">{{ event.detail }}</div>
                       {% endif %}

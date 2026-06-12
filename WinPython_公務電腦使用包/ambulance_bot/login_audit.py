@@ -19,6 +19,57 @@ def login_audit_for_site(site_key: str, request: AmbulanceReturnRequest) -> str:
     return ""
 
 
+def site_login_account_summaries(request: AmbulanceReturnRequest) -> dict[str, str]:
+    return {
+        "duty_work_log": duty_work_log_login_summary(request),
+        "vehicle_mileage": vehicle_mileage_login_summary(),
+        "disinfection": disinfection_login_summary(),
+        "consumables": consumables_login_summary(),
+    }
+
+
+def duty_work_log_login_summary(request: AmbulanceReturnRequest) -> str:
+    credential = load_duty_credential(request.duty_login_account_candidates)
+    if credential is None:
+        return "未取得（任務司機優先）"
+    return f"{credential_public_label(credential)}（任務司機優先）"
+
+
+def vehicle_mileage_login_summary() -> str:
+    credential = load_synced_worker_credential()
+    if credential is not None:
+        return f"{credential_public_label(credential)}（同步帳號）"
+    account = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
+    password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
+    if account and password:
+        return f"{mask_login_account(account)}（環境設定）"
+    return "未取得"
+
+
+def disinfection_login_summary() -> str:
+    credential = load_synced_worker_credential()
+    if credential is None:
+        return "未取得（同步帳號）"
+    return f"{credential_public_label(credential)}（同步帳號）"
+
+
+def consumables_login_summary() -> str:
+    account = os.getenv("ACS_ACCOUNT", "").strip()
+    password = os.getenv("ACS_PASSWORD", "")
+    if account and password:
+        return f"{mask_login_account(account)}（ACS 環境設定）"
+
+    credential = load_synced_worker_credential()
+    if credential is None:
+        return "未取得（同步帳號）"
+    acs_account = credential.id_number.strip() or (
+        credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else ""
+    )
+    if acs_account and credential.password:
+        return f"{credential_public_label(credential, login_account=acs_account)}（同步帳號）"
+    return f"{credential_public_label(credential)}（同步帳號，缺 ACS 帳號）"
+
+
 def duty_work_log_login_audit(request: AmbulanceReturnRequest) -> str:
     credential = load_duty_credential(request.duty_login_account_candidates)
     if credential is None:

@@ -20,6 +20,7 @@ from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, defau
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
 from ambulance_bot.duty_credentials import load_synced_worker_credential
+from ambulance_bot.login_audit import site_login_account_summaries
 from ambulance_bot.line_api import reply_text, verify_signature
 from ambulance_bot.models import (
     CASE_REASON_OPTIONS,
@@ -497,12 +498,14 @@ def upsert_public_pc_report(data: dict) -> dict:
     event_id = str(data.get("event_id") or "").strip() or str(uuid4())
     ack_id = str(data.get("ack_id") or event_id).strip() or event_id
     operator_label = str(data.get("operator") or data.get("user") or "未知使用者")
+    synced_account = str(data.get("synced_account") or operator_label)
     event = {
         "event_id": event_id,
         "ack_id": ack_id,
         "time": str(data.get("time") or now),
         "operator": operator_label,
         "user": operator_label,
+        "synced_account": synced_account,
         "worker_id": str(data.get("worker_id") or ""),
         "action": str(data.get("action") or "更新"),
         "status": str(data.get("status") or ""),
@@ -514,6 +517,11 @@ def upsert_public_pc_report(data: dict) -> dict:
     known_event_ids = {str(item.get("event_id") or "").strip() for item in events if isinstance(item, dict)}
     if event_id not in known_event_ids:
         events.append(event)
+    site_login_accounts = (
+        data.get("site_login_accounts")
+        if isinstance(data.get("site_login_accounts"), dict)
+        else existing.get("site_login_accounts", {})
+    )
     payload = {
         **existing,
         "task_id": task_id,
@@ -521,6 +529,8 @@ def upsert_public_pc_report(data: dict) -> dict:
         "task": task,
         "operator": operator_label,
         "user": operator_label,
+        "synced_account": synced_account,
+        "site_login_accounts": site_login_accounts,
         "worker_id": event["worker_id"],
         "overall_status": str(data.get("overall_status") or existing.get("overall_status") or ""),
         "site_statuses": data.get("site_statuses") if isinstance(data.get("site_statuses"), dict) else existing.get("site_statuses", {}),
@@ -603,6 +613,7 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
     events = payload.get("events") if isinstance(payload.get("events"), list) else []
     latest_event = events[-1] if events else {}
     operator_label = current_public_pc_user_label()
+    site_login_accounts = public_pc_site_login_accounts(task)
     body = {
         "event_id": str(uuid4()),
         "task_id": task_id,
@@ -610,6 +621,8 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
         "title": task_title(task),
         "operator": operator_label,
         "user": operator_label,
+        "synced_account": operator_label,
+        "site_login_accounts": site_login_accounts,
         "worker_id": os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"),
         "action": action,
         "status": str(latest_event.get("status") or payload.get("overall_status") or ""),
@@ -662,6 +675,17 @@ def current_public_pc_user_label() -> str:
     account = credential.user_id or "未填帳號"
     name = credential.name or _name_from_display_name(credential.display_name, account=credential.user_id, actor_no=credential.actor_no) or "未填姓名"
     return f"{actor} {name} - {account}"
+
+
+def public_pc_site_login_accounts(task: dict) -> dict[str, str]:
+    try:
+        request_model = AmbulanceReturnRequest.from_dict(task)
+    except Exception:
+        return {}
+    try:
+        return site_login_account_summaries(request_model)
+    except Exception:
+        return {}
 
 
 def _name_from_display_name(display_name: str, account: str = "", actor_no: str = "") -> str:

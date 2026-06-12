@@ -261,14 +261,18 @@ class AmbulanceReturnRequest:
     @property
     def duty_login_account_candidates(self) -> list[str]:
         accounts = [account.strip() for account in self.personnel_accounts if account.strip()]
-        if not accounts:
-            return []
-        ordered: list[str] = []
         driver = self.driver.strip()
+        if not accounts:
+            return [driver] if driver else []
+        ordered: list[str] = []
         if driver:
+            matched_driver_account = False
             for index, name in enumerate(self.personnel):
                 if index < len(accounts) and name.strip() == driver:
                     ordered.append(accounts[index])
+                    matched_driver_account = True
+            if not matched_driver_account:
+                ordered.append(driver)
         ordered.extend(accounts)
         deduped: list[str] = []
         seen: set[str] = set()

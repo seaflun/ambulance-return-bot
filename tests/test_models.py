@@ -118,6 +118,11 @@ class ModelParsingTests(unittest.TestCase):
 
         self.assertEqual(request.duty_login_account_candidates, ["B123456789", "A123456789", "C123456789"])
 
+    def test_duty_login_account_candidates_falls_back_to_driver_name(self):
+        request = request_from_form({"driver": "Bob", "personnel": "Alice,Carol"})
+
+        self.assertEqual(request.duty_login_account_candidates, ["Bob"])
+
     def test_return_time_description_uses_mobile_hhmm_with_zero_seconds(self):
         request = AmbulanceReturnRequest(
             task_id="task-1",
