@@ -147,6 +147,8 @@ def format_worker_output_line(line: str) -> str:
         return ""
     if text.startswith("[worker] loop error:") and "timed out" in text.lower():
         return "連線｜NAS逾時｜等待下次重試"
+    if text.startswith("[worker] loop error:") and ("http 403" in text.lower() or "worker_token" in text.lower()):
+        return "連線｜授權失敗｜WORKER_TOKEN 未設定或不一致，請同步 NAS 與公務電腦 .env 後重啟 worker"
     if text.startswith("[worker] loop error:"):
         return text.replace("[worker] loop error:", "錯誤｜Worker｜", 1).strip()
     if text.startswith("[worker] case lookup result "):
@@ -1069,10 +1071,10 @@ class WorkerGui(ctk.CTk):
             )
             elapsed = time.monotonic() - selenium_started_at
             if result is not None:
-                self.log_queue.put(f"???????{result.status}??? {elapsed:.1f} ?")
-                self.log_queue.put(f"???????{result.detail}")
+                self.log_queue.put(f"消毒紀錄完成：{result.status}，耗時 {elapsed:.1f} 秒")
+                self.log_queue.put(f"消毒紀錄結果：{result.detail}")
             else:
-                self.log_queue.put(f"??????????{task_id}??? {elapsed:.1f} ?")
+                self.log_queue.put(f"消毒紀錄沒有回傳結果：{task_id}，耗時 {elapsed:.1f} 秒")
             self._refresh_tasks()
             return result
             

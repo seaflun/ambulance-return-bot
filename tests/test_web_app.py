@@ -262,8 +262,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("新坡91", builtin_body)
 
     def test_admin_public_pc_receives_and_lists_local_task_events(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
         response = self.client.post(
             "/worker/public-pc-task-events",
+            headers=worker_headers,
             json={
                 "event_id": "evt-1",
                 "task_id": "local-task-1",
@@ -298,6 +301,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("四站登打成功", body)
 
     def test_admin_public_pc_deduplicates_same_event_id(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
         payload = {
             "event_id": "evt-dedupe-1",
             "task_id": "local-task-2",
@@ -310,8 +315,8 @@ class WebAppTests(unittest.TestCase):
             "status": "desktop_fast_completed",
         }
 
-        first = self.client.post("/worker/public-pc-task-events", json=payload)
-        second = self.client.post("/worker/public-pc-task-events", json=payload)
+        first = self.client.post("/worker/public-pc-task-events", headers=worker_headers, json=payload)
+        second = self.client.post("/worker/public-pc-task-events", headers=worker_headers, json=payload)
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
@@ -513,6 +518,45 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("disabled>查詢案件</button>", body)
         self.assertIn("正在查詢最近 24 小時案件，請稍候。", body)
         self.assertNotIn("已查到 2 筆", body)
+
+    def test_app_page_auto_refreshes_while_recent_task_is_running(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.set_overall_status(task_id, "desktop_fast_running", "四站登打中")
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("duty_work_log", "消防勤務工作紀錄", "duty_work_log_saved", "saved"),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_running", "running"),
+        )
+
+        running_response = self.client.get("/app")
+        running_body = html.unescape(running_response.data.decode("utf-8"))
+
+        self.assertIn("window.location.reload()", running_body)
+        self.assertIn("taskFormDirty", running_body)
+        self.assertIn("已完成 1/4；目前：里程執行中", running_body)
+
+        self.store.set_overall_status(task_id, "desktop_fast_completed", "四站登打完成")
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_saved", "saved"),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("disinfection", "緊急救護消毒", "disinfection_saved", "saved"),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("consumables", "一站通耗材", "consumables_saved", "saved"),
+        )
+        completed_response = self.client.get("/app")
+        completed_body = html.unescape(completed_response.data.decode("utf-8"))
+
+        self.assertNotIn("window.location.reload()", completed_body)
+        self.assertIn("四站完成", completed_body)
 
     def test_app_page_shows_empty_case_lookup_result(self):
         cases_dir = app_module.artifacts_dir / "cases"
@@ -732,6 +776,13 @@ class WebAppTests(unittest.TestCase):
         completed = app_module.read_case_lookup_request()
         self.assertEqual(completed["status"], "case_lookup_completed")
 
+    def test_worker_api_requires_configured_token(self):
+        os.environ["WORKER_TOKEN"] = ""
+
+        response = self.client.get("/worker/tasks")
+
+        self.assertEqual(response.status_code, 403)
+
     def test_worker_tasks_api_requires_token_and_returns_recent_tasks(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -844,18 +895,22 @@ class WebAppTests(unittest.TestCase):
                 "disinfection",
                 "\u7dca\u6025\u6551\u8b77\u6d88\u6bd2",
                 "disinfection_failed",
-                "login failed",
+                "missing disinfection save button",
             ),
         )
 
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertEqual(body.count("\u55ae\u7368\u767b\u6253"), 2)
+        self.assertEqual(body.count("<button class=\"secondary\" type=\"submit\">\u55ae\u7368\u767b\u6253</button>"), 2)
         self.assertIn(f"/tasks/{task_id}/sites/disinfection/run", body)
         self.assertIn(f"/tasks/{task_id}/sites/consumables/run", body)
         disinfection_card = body[body.index("<h3>\u6d88\u6bd2</h3>") : body.index("<h3>\u8017\u6750</h3>")]
         self.assertLess(disinfection_card.index("\u55ae\u7368\u767b\u6253"), disinfection_card.index("\u5931\u6557"))
+        self.assertIn("\u932f\u8aa4\u6307\u5f15", body)
+        self.assertIn("\u6d88\u6bd2\uff1a\u5931\u6557", body)
+        self.assertIn("\u9801\u9762\u6309\u9215\u6216\u6b04\u4f4d\u8207\u7a0b\u5f0f\u9810\u671f\u4e0d\u540c", body)
+        self.assertIn("\u8017\u6750\uff1a\u672a\u63a5\u7e8c", body)
 
     def test_task_detail_auto_refreshes_while_running(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -867,6 +922,19 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("window.location.reload()", body)
         self.assertIn("1500", body)
+
+    def test_task_detail_auto_refreshes_when_site_status_is_running(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_running", "running"),
+        )
+
+        response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn("window.location.reload()", body)
 
     def test_localhost_single_site_run_uses_desktop_fast_runner(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
@@ -1034,6 +1102,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("耗材：未執行", body)
 
     def test_run_queues_task_for_worker_and_worker_updates_status(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
@@ -1042,13 +1112,14 @@ class WebAppTests(unittest.TestCase):
         queued = self.store.get(task_id)
         self.assertEqual(queued["overall_status"], "queued_for_worker")
 
-        next_response = self.client.get("/worker/next-task?worker_id=test-worker")
+        next_response = self.client.get("/worker/next-task?worker_id=test-worker", headers=worker_headers)
         self.assertEqual(next_response.status_code, 200)
         next_payload = next_response.get_json()
         self.assertEqual(next_payload["task"]["task_id"], task_id)
 
         status_response = self.client.post(
             f"/worker/tasks/{task_id}/status",
+            headers=worker_headers,
             json={
                 "status": "duty_work_log_saved",
                 "detail": "saved",
@@ -1062,13 +1133,16 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
 
     def test_worker_site_status_can_update_overall_when_explicitly_requested(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         self.client.post(f"/tasks/{task_id}/run", follow_redirects=False)
-        self.client.get("/worker/next-task?worker_id=test-worker")
+        self.client.get("/worker/next-task?worker_id=test-worker", headers=worker_headers)
 
         status_response = self.client.post(
             f"/worker/tasks/{task_id}/status",
+            headers=worker_headers,
             json={
                 "status": "duty_work_log_saved",
                 "detail": "saved",

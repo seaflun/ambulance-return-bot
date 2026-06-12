@@ -53,6 +53,13 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertNotIn("textvariable=self.connection_summary, wraplength=260", source)
         self.assertNotIn("textvariable=self.credential_sync_status", source)
 
+    def test_worker_gui_source_has_no_question_mark_mojibake(self):
+        source = Path(worker_gui.__file__).read_text(encoding="utf-8")
+
+        self.assertNotIn("????", source)
+        self.assertIn("消毒紀錄完成：", source)
+        self.assertIn("消毒紀錄沒有回傳結果：", source)
+
     def test_worker_gui_default_geometry_is_compact(self):
         source = Path(worker_gui.__file__).read_text(encoding="utf-8")
 
@@ -91,6 +98,12 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(
             worker_gui.format_worker_output_line("[worker] loop error: <urlopen error timed out>"),
             "連線｜NAS逾時｜等待下次重試",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line(
+                "[worker] loop error: NAS worker API 拒絕連線（HTTP 403）：WORKER_TOKEN 未設定或與 NAS 不一致"
+            ),
+            "連線｜授權失敗｜WORKER_TOKEN 未設定或不一致，請同步 NAS 與公務電腦 .env 後重啟 worker",
         )
         self.assertEqual(
             worker_gui.format_worker_output_line("[selenium] waiting for session lock: work-log"),

@@ -207,6 +207,11 @@
       border-radius: 12px;
       background: #fff;
     }
+    .recent-main {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
     .recent-delete {
       width: 34px;
       margin: 0;
@@ -232,6 +237,7 @@
       box-shadow: none;
     }
     .recent-title { color: inherit; font-weight: 780; overflow-wrap: anywhere; text-decoration: none; }
+    .recent-progress { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .status { min-width: 62px; text-align: center; border-radius: 999px; padding: 5px 10px; font-size: var(--text-sm); font-weight: 760; background: var(--idle-bg); color: var(--muted); }
     .status.complete { background: var(--complete-bg); color: var(--complete); }
     .status.failed { background: var(--failed-bg); color: var(--failed); }
@@ -317,12 +323,6 @@
           </div>
         {% endif %}
       </section>
-    {% endif %}
-
-    {% if case_lookup.is_running %}
-      <script>
-        window.setTimeout(() => window.location.reload(), 2000);
-      </script>
     {% endif %}
 
     <form method="post" action="{{ form_action or '/tasks' }}" id="task-form" autocomplete="off" novalidate>
@@ -431,7 +431,10 @@
       <div class="recent-list">
         {% for item in recent_tasks %}
           <div class="recent-card">
-            <a class="recent-title" href="/tasks/{{ item.task.task_id }}">{{ task_title(item.task) }}</a>
+            <div class="recent-main">
+              <a class="recent-title" href="/tasks/{{ item.task.task_id }}">{{ task_title(item.task) }}</a>
+              <div class="recent-progress">{{ task_progress_summary(item) }}</div>
+            </div>
             <span class="status {{ status_class(effective_task_status(item)) }}">{{ status_label(effective_task_status(item)) }}</span>
           </div>
         {% endfor %}
@@ -439,7 +442,9 @@
     </section>
     {% endif %}
   </main>
+  {% set auto_refresh = case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
   <script>
+    const shouldAutoRefresh = {{ auto_refresh | tojson }};
     const consumableOptions = {{ consumable_options | tojson }};
     const defaultConsumables = {{ default_consumables | tojson }};
     const consumableList = document.getElementById("consumable-list");
@@ -447,6 +452,23 @@
     const categories = [...new Set(consumableOptions.map((item) => item.category || "未分類"))].sort();
     const lookupForm = document.getElementById("lookup-form");
     const lookupStatus = document.getElementById("lookup-status");
+    const taskForm = document.getElementById("task-form");
+    let taskFormDirty = false;
+
+    if (taskForm) {
+      taskForm.addEventListener("input", () => { taskFormDirty = true; });
+      taskForm.addEventListener("change", () => { taskFormDirty = true; });
+    }
+
+    {% if auto_refresh %}
+      if (shouldAutoRefresh) {
+        window.setTimeout(() => {
+          const activeTag = document.activeElement ? document.activeElement.tagName : "";
+          const editing = ["INPUT", "SELECT", "TEXTAREA"].includes(activeTag);
+          if (!taskFormDirty && !editing) window.location.reload();
+        }, 2000);
+      }
+    {% endif %}
 
     if (lookupForm) {
       lookupForm.addEventListener("submit", () => {

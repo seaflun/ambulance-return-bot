@@ -7,7 +7,7 @@ import time
 import webbrowser
 
 from dotenv import load_dotenv
-from flask import Flask, abort, redirect, render_template, request, url_for
+from flask import Flask, abort, redirect, render_template, url_for
 
 import worker
 from ambulance_bot.adapters import SITE_DEFINITIONS

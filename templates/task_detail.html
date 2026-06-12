@@ -132,6 +132,32 @@
       gap: 12px;
       margin: 0 0 12px;
     }
+    .guidance-panel {
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--failed);
+      border-radius: 12px;
+      background: #fff;
+      padding: 14px 16px;
+      margin-bottom: 22px;
+      box-shadow: var(--shadow);
+    }
+    .guidance-list {
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .guidance-item {
+      display: grid;
+      gap: 5px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .guidance-item:first-child { padding-top: 0; border-top: 0; }
+    .guidance-title { font-weight: 780; color: var(--ink); }
+    .guidance-detail { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .guidance-action { color: var(--failed); font-weight: 720; overflow-wrap: anywhere; }
     .task-section {
       background: var(--surface);
       border: 1px solid var(--line);
@@ -438,6 +464,24 @@
       </div>
     </section>
 
+    {% set guidance_entries = site_error_guidance(payload.site_statuses) %}
+    {% if guidance_entries %}
+      <section class="guidance-panel" aria-label="錯誤指引">
+        <div class="section-head">
+          <h2>錯誤指引</h2>
+        </div>
+        <ul class="guidance-list">
+          {% for entry in guidance_entries %}
+            <li class="guidance-item">
+              <div class="guidance-title">{{ entry.site_name }}：{{ entry.state }}</div>
+              <div class="guidance-detail">{{ entry.detail }}</div>
+              <div class="guidance-action">{{ entry.action }}</div>
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
     <section class="stage-panel" aria-label="四站階段檢查">
       <div class="section-head">
         <h2>四站階段檢查</h2>
@@ -485,7 +529,7 @@
       </ul>
     </section>
   </main>
-  {% if status_class(payload.overall_status) == 'running' %}
+  {% if task_payload_is_active(payload) %}
     <script>
       window.setTimeout(() => window.location.reload(), 1500);
     </script>

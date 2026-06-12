@@ -53,6 +53,12 @@ runner = TaskRunner(artifacts_dir, store=store)
 desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
 SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "disinfection", "consumables"]
+SITE_SHORT_NAMES = {
+    "duty_work_log": "工作",
+    "vehicle_mileage": "里程",
+    "disinfection": "消毒",
+    "consumables": "耗材",
+}
 SITE_STAGE_DEFINITIONS = {
     "duty_work_log": ["啟動 Chrome", "登入勤務系統", "新增工作紀錄", "由案件帶入", "填寫勤務資料", "儲存"],
     "vehicle_mileage": ["啟動 Chrome", "登入 PPE", "開啟車輛里程", "填寫返隊時間與里程", "儲存"],
@@ -729,7 +735,7 @@ def _host_without_port(value: str) -> str:
 def worker_authorized() -> bool:
     expected = os.getenv("WORKER_TOKEN", "").strip()
     if not expected:
-        return True
+        return False
     supplied = request.headers.get("X-Worker-Token", "").strip()
     return supplied == expected
 
@@ -1000,11 +1006,56 @@ def effective_task_status(payload: dict) -> str:
     sites = list(dict(payload.get("site_statuses") or {}).values())
     if any(status_class(str(site.get("status") or "")) == "failed" for site in sites):
         return "failed"
+    if any(status_class(str(site.get("status") or "")) == "running" for site in sites):
+        return "desktop_fast_running"
     if any(status_class(str(site.get("status") or "")) == "waiting" for site in sites):
         return "manual_captcha_required"
     if sites and all(status_class(str(site.get("status") or "")) == "complete" for site in sites):
         return "completed_by_user"
     return str(payload.get("overall_status") or "")
+
+
+def task_payload_is_active(payload: dict) -> bool:
+    return status_class(effective_task_status(payload)) == "running"
+
+
+def recent_tasks_need_refresh(recent_tasks: list[dict]) -> bool:
+    return any(task_payload_is_active(dict(item or {})) for item in recent_tasks)
+
+
+def task_progress_summary(payload: dict) -> str:
+    site_statuses = dict(payload.get("site_statuses") or {})
+    completed_count = 0
+    total_count = len(SITE_RUN_ORDER)
+
+    for site_key in SITE_RUN_ORDER:
+        site = dict(site_statuses.get(site_key) or {})
+        site_status = str(site.get("status") or "")
+        site_class = status_class(site_status)
+        site_name = SITE_SHORT_NAMES.get(site_key, site_key)
+        if site_class == "complete":
+            completed_count += 1
+            continue
+        if site_class == "running":
+            return f"已完成 {completed_count}/{total_count}；目前：{site_name}執行中"
+        if site_class == "failed":
+            return f"已完成 {completed_count}/{total_count}；卡在：{site_name}失敗"
+        if site_class == "waiting":
+            return f"已完成 {completed_count}/{total_count}；待確認：{site_name}"
+
+    if completed_count == total_count:
+        return "四站完成"
+
+    overall_status = str(payload.get("overall_status") or "")
+    if overall_status == "queued_for_worker":
+        return f"已完成 {completed_count}/{total_count}；等待公務電腦 worker"
+    if overall_status == "claimed_by_worker":
+        return f"已完成 {completed_count}/{total_count}；worker 已接手"
+    if status_class(effective_task_status(payload)) == "running":
+        return f"已完成 {completed_count}/{total_count}；四站登打中"
+    if status_class(effective_task_status(payload)) == "failed":
+        return f"已完成 {completed_count}/{total_count}；流程有錯誤"
+    return f"已完成 {completed_count}/{total_count}；尚未開始"
 
 
 def task_title(task: dict) -> str:
@@ -1021,12 +1072,7 @@ def task_title(task: dict) -> str:
 
 def site_short_name(site: dict) -> str:
     key = str(site.get("key") or "")
-    return {
-        "vehicle_mileage": "里程",
-        "consumables": "耗材",
-        "disinfection": "消毒",
-        "duty_work_log": "工作",
-    }.get(key, str(site.get("name") or "站台"))
+    return SITE_SHORT_NAMES.get(key, str(site.get("name") or "站台"))
 
 
 def display_case_title(case: dict) -> str:
@@ -1170,6 +1216,78 @@ def event_detail_text(event: dict) -> str:
     return detail[:80] or status_label(status)
 
 
+def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    blocking_site_key = ""
+    for site_key in SITE_RUN_ORDER:
+        site = dict(site_statuses.get(site_key) or {})
+        status = str(site.get("status") or "")
+        detail = str(site.get("detail") or "").strip()
+        current_class = status_class(status)
+        site_name = SITE_SHORT_NAMES.get(site_key, site_key)
+
+        if current_class == "failed":
+            entries.append(
+                {
+                    "site_key": site_key,
+                    "site_name": site_name,
+                    "state": "失敗",
+                    "detail": detail[:120] or "程式回報此站未完成。",
+                    "action": site_next_action(site_key, status, detail),
+                }
+            )
+            if not blocking_site_key:
+                blocking_site_key = site_key
+            continue
+
+        if current_class == "waiting":
+            entries.append(
+                {
+                    "site_key": site_key,
+                    "site_name": site_name,
+                    "state": "待確認",
+                    "detail": detail[:120] or "此站需要人工確認後才能視為完成。",
+                    "action": site_next_action(site_key, status, detail),
+                }
+            )
+            continue
+
+        if blocking_site_key and current_class != "complete":
+            if request_is_local_host():
+                blocked_action = f"先處理前一站；若前一站已人工完成，再按「單獨登打」補做{site_name}。"
+            else:
+                blocked_action = f"先在公務電腦處理前一站；完成後由 worker 或本機頁面補做{site_name}。"
+            entries.append(
+                {
+                    "site_key": site_key,
+                    "site_name": site_name,
+                    "state": "未接續",
+                    "detail": f"前一站「{SITE_SHORT_NAMES.get(blocking_site_key, blocking_site_key)}」未完成，四站流程已停止。",
+                    "action": blocked_action,
+                }
+            )
+    return entries
+
+
+def site_next_action(site_key: str, status: str, detail: str) -> str:
+    text = f"{status} {detail}".lower()
+    site_name = SITE_SHORT_NAMES.get(site_key, site_key)
+    can_retry_here = request_is_local_host()
+    if "captcha" in text or "驗證碼" in detail or "login" in text or "登入" in detail:
+        if can_retry_here:
+            return f"到公務電腦 Chrome 完成登入或驗證碼，再回本頁按「單獨登打」重試{site_name}。"
+        return f"到公務電腦 Chrome 完成登入或驗證碼，再回本頁確認{site_name}狀態。"
+    if "chrome" in text or "session" in text or "not reachable" in text:
+        return "確認 worker Chrome 沒有卡住；必要時關閉殘留 Chrome、重啟 worker，再重新登打。"
+    if "missing" in text or "not found" in text or "找不到" in detail or "無法按" in detail:
+        return f"頁面按鈕或欄位與程式預期不同；先在公務電腦人工完成{site_name}，保留畫面後再回報修正。"
+    if "ready" in text or "prefilled" in text or "待確認" in detail:
+        return f"在公務電腦確認{site_name}資料無誤並手動儲存，完成後回本頁確認狀態。"
+    if can_retry_here:
+        return f"先查看公務電腦該站畫面與執行紀錄；修正後按「單獨登打」重試{site_name}。"
+    return f"先查看公務電腦該站畫面與執行紀錄；修正後由 worker 或本機頁面重試{site_name}。"
+
+
 def event_site_name(event: dict) -> str:
     status = str(event.get("status") or "")
     detail = str(event.get("detail") or "")
@@ -1196,13 +1314,17 @@ def template_helpers() -> dict:
         "selected_case_address": selected_case_address,
         "selected_return_date_input": selected_return_date_input,
         "selected_return_time_input": selected_return_time_input,
+        "recent_tasks_need_refresh": recent_tasks_need_refresh,
         "site_short_name": site_short_name,
+        "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
         "show_public_pc_admin_button": show_public_pc_admin_button,
         "show_task_entry_controls": show_task_entry_controls,
         "status_class": status_class,
         "status_label": status_label,
         "task_datetime_display": task_datetime_display,
+        "task_payload_is_active": task_payload_is_active,
+        "task_progress_summary": task_progress_summary,
         "task_title": task_title,
         "visible_events": visible_events,
     }

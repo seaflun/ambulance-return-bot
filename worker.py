@@ -14,7 +14,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
-from ambulance_bot.adapters import SiteAutomationResult
+from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult
 from ambulance_bot.manual_task_lock import manual_task_lock_active
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
@@ -29,6 +29,7 @@ from ambulance_bot.window_layout import maximize_worker_site_windows
 load_dotenv()
 
 MANUAL_TASK_ACTIVE = threading.Event()
+SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
 
 
 def main() -> None:
@@ -161,15 +162,18 @@ def run_task(
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] claimed task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "worker_running", f"公務電腦 worker 執行中：{worker_id}")
-    result = run_local_selenium_task(
-        request,
-        artifacts_dir,
-        profile_name=profile_name,
-        debugger_port=debugger_port,
-        use_session_lock=use_session_lock,
-        tile_name=tile_name,
-        force_new_driver=force_new_driver,
-    )
+    try:
+        result = run_local_selenium_task(
+            request,
+            artifacts_dir,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+        )
+    except Exception as exc:
+        result = SiteAutomationResult("duty_work_log", "消防勤務工作紀錄", "duty_work_log_failed", f"工作紀錄操作失敗：{exc}")
     post_status(
         server_url,
         request.task_id,
@@ -257,7 +261,18 @@ def run_all_sites_task(
     last_result = None
     for site_key, runner in runners:
         try:
-            payload = fetch_task_payload(server_url, request.task_id)
+            try:
+                payload = fetch_task_payload(server_url, request.task_id)
+            except Exception as exc:
+                detail = f"讀取任務狀態失敗，四站流程已停止：{exc}"
+                result = SiteAutomationResult(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail)
+                post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
+                return result
+            if not isinstance(payload, dict):
+                detail = "讀取任務狀態失敗，NAS 未回傳任務內容，四站流程已停止。"
+                result = SiteAutomationResult(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail)
+                post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
+                return result
             site_statuses = payload.get("site_statuses") if isinstance(payload, dict) and isinstance(payload.get("site_statuses"), dict) else {}
             current_status = str((site_statuses.get(site_key) or {}).get("status") or "")
             if _site_is_complete(current_status):
@@ -269,7 +284,7 @@ def run_all_sites_task(
                     server_url,
                     request.task_id,
                     "desktop_fast_completed_with_errors",
-                    f"{site_key} failed: {getattr(last_result, 'detail', '')}",
+                    f"{SITE_NAMES.get(site_key, site_key)}未完成：{getattr(last_result, 'detail', '')}",
                 )
                 return last_result
         finally:
@@ -294,15 +309,18 @@ def run_vehicle_task(
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] vehicle mileage task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "vehicle_mileage_running", f"公務電腦 worker 執行車輛里程：{worker_id}")
-    result = run_vehicle_mileage_task(
-        request,
-        artifacts_dir,
-        profile_name=profile_name,
-        debugger_port=debugger_port,
-        use_session_lock=use_session_lock,
-        tile_name=tile_name,
-        force_new_driver=force_new_driver,
-    )
+    try:
+        result = run_vehicle_mileage_task(
+            request,
+            artifacts_dir,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+        )
+    except Exception as exc:
+        result = SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}")
     post_status(
         server_url,
         request.task_id,
@@ -338,16 +356,19 @@ def run_disinfection_worker_task(
     request = AmbulanceReturnRequest.from_dict(task)
     print(f"[worker] disinfection task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "disinfection_running", f"公務電腦 worker 執行消毒紀錄：{worker_id}")
-    result = run_disinfection_task(
-        request,
-        artifacts_dir,
-        existing_driver=driver,
-        profile_name=profile_name,
-        debugger_port=debugger_port,
-        use_session_lock=use_session_lock,
-        tile_name=tile_name,
-        force_new_driver=force_new_driver,
-    )
+    try:
+        result = run_disinfection_task(
+            request,
+            artifacts_dir,
+            existing_driver=driver,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+        )
+    except Exception as exc:
+        result = SiteAutomationResult("disinfection", "緊急救護消毒", "disinfection_failed", f"消毒紀錄操作失敗：{exc}")
     post_status(
         server_url,
         request.task_id,
@@ -419,8 +440,11 @@ def run_consumables_worker_task(
 
 def request_json(url: str) -> dict[str, object]:
     req = urllib.request.Request(url, headers=worker_headers())
-    with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(worker_api_error_message(exc)) from exc
 
 
 def post_status(
@@ -449,8 +473,11 @@ def post_status(
         headers={**worker_headers(), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
-        response.read()
+    try:
+        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(worker_api_error_message(exc)) from exc
 
 
 def post_cases(
@@ -476,12 +503,21 @@ def post_cases(
         headers={**worker_headers(), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
-        response.read()
+    try:
+        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(worker_api_error_message(exc)) from exc
 
 
 def worker_api_timeout() -> int:
     return int(os.getenv("WORKER_API_TIMEOUT_SECONDS", "8"))
+
+
+def worker_api_error_message(exc: urllib.error.HTTPError) -> str:
+    if exc.code == 403:
+        return "NAS worker API 拒絕連線（HTTP 403）：WORKER_TOKEN 未設定或與 NAS 不一致，請同步 NAS 與公務電腦 .env 後重啟 worker。"
+    return f"NAS worker API 回應 HTTP {exc.code}：{exc.reason}"
 
 
 def hash_cases(cases: list[dict[str, object]]) -> str:

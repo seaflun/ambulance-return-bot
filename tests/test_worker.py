@@ -143,6 +143,90 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(last_lookup_at, 0)
         self.assertEqual(last_case_hash, "")
 
+    def test_worker_api_403_message_points_to_worker_token(self):
+        error = SimpleNamespace(code=403, reason="Forbidden")
+
+        message = worker_module.worker_api_error_message(error)
+
+        self.assertIn("HTTP 403", message)
+        self.assertIn("WORKER_TOKEN", message)
+        self.assertIn("同步 NAS 與公務電腦 .env", message)
+
+    def test_run_task_posts_site_failure_when_selenium_raises(self):
+        original_run = worker_module.run_local_selenium_task
+        original_post_status = worker_module.post_status
+        statuses: list[tuple[str, str, str]] = []
+        try:
+            worker_module.run_local_selenium_task = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("chrome crashed"))
+            worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
+                (status, detail, kwargs.get("site_key", ""))
+            )
+
+            result = worker_module.run_task(
+                "http://nas",
+                "worker-a",
+                {"task_id": "task-work-fail", "created_at": "2026-06-09T00:00:00"},
+                Path("artifacts"),
+            )
+        finally:
+            worker_module.run_local_selenium_task = original_run
+            worker_module.post_status = original_post_status
+
+        self.assertEqual(result.status, "duty_work_log_failed")
+        self.assertIn("工作紀錄操作失敗：chrome crashed", result.detail)
+        self.assertIn(("duty_work_log_failed", result.detail, "duty_work_log"), statuses)
+        self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
+
+    def test_run_vehicle_posts_site_failure_when_selenium_raises(self):
+        original_run = worker_module.run_vehicle_mileage_task
+        original_post_status = worker_module.post_status
+        statuses: list[tuple[str, str, str]] = []
+        try:
+            worker_module.run_vehicle_mileage_task = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("button missing"))
+            worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
+                (status, detail, kwargs.get("site_key", ""))
+            )
+
+            result = worker_module.run_vehicle_task(
+                "http://nas",
+                "worker-a",
+                {"task_id": "task-mileage-fail", "created_at": "2026-06-09T00:00:00"},
+                Path("artifacts"),
+            )
+        finally:
+            worker_module.run_vehicle_mileage_task = original_run
+            worker_module.post_status = original_post_status
+
+        self.assertEqual(result.status, "vehicle_mileage_failed")
+        self.assertIn("車輛里程操作失敗：button missing", result.detail)
+        self.assertIn(("vehicle_mileage_failed", result.detail, "vehicle_mileage"), statuses)
+        self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
+
+    def test_run_disinfection_posts_site_failure_when_selenium_raises(self):
+        original_run = worker_module.run_disinfection_task
+        original_post_status = worker_module.post_status
+        statuses: list[tuple[str, str, str]] = []
+        try:
+            worker_module.run_disinfection_task = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("query failed"))
+            worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
+                (status, detail, kwargs.get("site_key", ""))
+            )
+
+            result = worker_module.run_disinfection_worker_task(
+                "http://nas",
+                "worker-a",
+                {"task_id": "task-disinfection-fail", "created_at": "2026-06-09T00:00:00"},
+                Path("artifacts"),
+            )
+        finally:
+            worker_module.run_disinfection_task = original_run
+            worker_module.post_status = original_post_status
+
+        self.assertEqual(result.status, "disinfection_failed")
+        self.assertIn("消毒紀錄操作失敗：query failed", result.detail)
+        self.assertIn(("disinfection_failed", result.detail, "disinfection"), statuses)
+        self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
+
     def test_auto_claim_run_all_sites_runs_four_sites_and_sets_final_status(self):
         original_fetch_payload = worker_module.fetch_task_payload
         original_run_task = worker_module.run_task
@@ -151,7 +235,7 @@ class WorkerTests(unittest.TestCase):
         original_run_consumables = worker_module.run_consumables_worker_task
         original_post_status = worker_module.post_status
         calls: list[str] = []
-        statuses: list[tuple[str, str]] = []
+        statuses: list[tuple[str, str, str]] = []
         try:
             worker_module.fetch_task_payload = lambda server_url, task_id: {"site_statuses": {}}
             worker_module.run_task = lambda *args, **kwargs: calls.append("duty_work_log") or SimpleNamespace(
@@ -167,7 +251,7 @@ class WorkerTests(unittest.TestCase):
                 ok=True, status="consumables_saved", detail="consumables ok"
             )
             worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
-                (status, kwargs.get("site_key", ""))
+                (status, detail, kwargs.get("site_key", ""))
             )
 
             result = worker_module.run_all_sites_task(
@@ -186,7 +270,8 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "disinfection", "consumables"])
         self.assertEqual(result.status, "consumables_saved")
-        self.assertEqual(statuses[-1], ("desktop_fast_completed", ""))
+        self.assertEqual(statuses[-1][0], "desktop_fast_completed")
+        self.assertEqual(statuses[-1][2], "")
 
     def test_auto_claim_run_all_sites_stops_after_blocking_failure(self):
         original_fetch_payload = worker_module.fetch_task_payload
@@ -196,7 +281,7 @@ class WorkerTests(unittest.TestCase):
         original_run_consumables = worker_module.run_consumables_worker_task
         original_post_status = worker_module.post_status
         calls: list[str] = []
-        statuses: list[tuple[str, str]] = []
+        statuses: list[tuple[str, str, str]] = []
         try:
             worker_module.fetch_task_payload = lambda server_url, task_id: {"site_statuses": {}}
             worker_module.run_task = lambda *args, **kwargs: calls.append("duty_work_log") or SimpleNamespace(
@@ -212,7 +297,7 @@ class WorkerTests(unittest.TestCase):
                 ok=True, status="consumables_saved", detail="consumables ok"
             )
             worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
-                (status, kwargs.get("site_key", ""))
+                (status, detail, kwargs.get("site_key", ""))
             )
 
             result = worker_module.run_all_sites_task(
@@ -231,7 +316,66 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "disinfection"])
         self.assertEqual(result.status, "disinfection_failed")
-        self.assertEqual(statuses[-1], ("desktop_fast_completed_with_errors", ""))
+        self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
+        self.assertIn("緊急救護消毒未完成：login failed", statuses[-1][1])
+        self.assertEqual(statuses[-1][2], "")
+
+    def test_auto_claim_run_all_sites_marks_error_when_status_fetch_fails(self):
+        original_fetch_payload = worker_module.fetch_task_payload
+        original_run_task = worker_module.run_task
+        original_post_status = worker_module.post_status
+        statuses: list[tuple[str, str, str]] = []
+        try:
+            worker_module.fetch_task_payload = lambda server_url, task_id: (_ for _ in ()).throw(RuntimeError("NAS timeout"))
+            worker_module.run_task = lambda *args, **kwargs: self.fail("site runner should not start when status fetch fails")
+            worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
+                (status, detail, kwargs.get("site_key", ""))
+            )
+
+            result = worker_module.run_all_sites_task(
+                "http://nas",
+                "worker-a",
+                {"task_id": "task-fetch-fail", "created_at": "2026-06-09T00:00:00"},
+                Path("artifacts"),
+            )
+        finally:
+            worker_module.fetch_task_payload = original_fetch_payload
+            worker_module.run_task = original_run_task
+            worker_module.post_status = original_post_status
+
+        self.assertEqual(result.status, "duty_work_log_failed")
+        self.assertIn("讀取任務狀態失敗", result.detail)
+        self.assertIn("NAS timeout", result.detail)
+        self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
+        self.assertIn("四站流程已停止", statuses[-1][1])
+
+    def test_auto_claim_run_all_sites_marks_error_when_status_payload_is_missing(self):
+        original_fetch_payload = worker_module.fetch_task_payload
+        original_run_task = worker_module.run_task
+        original_post_status = worker_module.post_status
+        statuses: list[tuple[str, str, str]] = []
+        try:
+            worker_module.fetch_task_payload = lambda server_url, task_id: None
+            worker_module.run_task = lambda *args, **kwargs: self.fail("site runner should not start without task payload")
+            worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
+                (status, detail, kwargs.get("site_key", ""))
+            )
+
+            result = worker_module.run_all_sites_task(
+                "http://nas",
+                "worker-a",
+                {"task_id": "task-fetch-empty", "created_at": "2026-06-09T00:00:00"},
+                Path("artifacts"),
+            )
+        finally:
+            worker_module.fetch_task_payload = original_fetch_payload
+            worker_module.run_task = original_run_task
+            worker_module.post_status = original_post_status
+
+        self.assertEqual(result.status, "duty_work_log_failed")
+        self.assertIn("NAS 未回傳任務內容", result.detail)
+        self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
+        self.assertIn("NAS 未回傳任務內容", statuses[-1][1])
 
 
 if __name__ == "__main__":
