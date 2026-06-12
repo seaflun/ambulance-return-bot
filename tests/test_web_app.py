@@ -284,8 +284,16 @@ class WebAppTests(unittest.TestCase):
                 "detail": "本機快速執行完成。",
                 "overall_status": "desktop_fast_completed",
                 "site_statuses": {
-                    "duty_work_log": {"status": "duty_work_log_saved"},
-                    "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                    "duty_work_log": {
+                        "status": "duty_work_log_saved",
+                        "detail": "工作登入帳號：任務司機優先，已保存。",
+                        "updated_at": "2026-06-12T14:30:00",
+                    },
+                    "vehicle_mileage": {
+                        "status": "vehicle_mileage_saved",
+                        "detail": "里程已保存。",
+                        "updated_at": "2026-06-12T14:31:00",
+                    },
                     "disinfection": {"status": "disinfection_saved"},
                     "consumables": {"status": "consumables_saved"},
                 },
@@ -297,9 +305,14 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/public-pc")
         body = html.unescape(page.data.decode("utf-8"))
         self.assertIn("公務電腦後台", body)
+        self.assertIn('<details class="task-details">', body)
+        self.assertIn("<summary>詳細紀錄</summary>", body)
         self.assertIn("公務電腦回報帳號（非各站登入）：8番 曾彥綸 - tyfd01510", body)
         self.assertIn("登入規則：工作用任務司機優先；里程、消毒、耗材用公務電腦同步帳號", body)
         self.assertIn("任務司機：曾彥綸", body)
+        self.assertIn("工作登入帳號：任務司機優先，已保存。", body)
+        self.assertIn("里程已保存。", body)
+        self.assertIn("2026-06-12T14:30:00", body)
         self.assertIn("緊急救護-急病 - 桃園市觀音區中山路", body)
         self.assertIn("四站登打成功", body)
         reports = app_module.public_pc_reports()
@@ -329,6 +342,34 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertEqual(len(reports[0]["events"]), 1)
         self.assertEqual(reports[0]["events"][0]["event_id"], "evt-dedupe-1")
+
+    def test_admin_public_pc_lists_all_task_events(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        for index in range(12):
+            response = self.client.post(
+                "/worker/public-pc-task-events",
+                headers=worker_headers,
+                json={
+                    "event_id": f"evt-all-{index}",
+                    "task_id": "local-task-all-events",
+                    "task": {
+                        "task_id": "local-task-all-events",
+                        "case_reason": "急病",
+                        "case_address": "桃園市觀音區中山路",
+                    },
+                    "action": f"事件 {index}",
+                    "status": "desktop_fast_running",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+
+        reports = app_module.public_pc_reports()
+        self.assertEqual(len(reports[0]["events"]), 12)
+        page = self.client.get("/admin/public-pc")
+        body = html.unescape(page.data.decode("utf-8"))
+        self.assertIn("事件 0", body)
+        self.assertIn("事件 11", body)
 
     def test_public_pc_report_is_queued_on_failure_and_flushed_on_next_success(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"

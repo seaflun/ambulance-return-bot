@@ -529,7 +529,7 @@ def upsert_public_pc_report(data: dict) -> dict:
         "last_action": event["action"],
         "last_status": event["status"],
         "last_detail": event["detail"],
-        "events": events[-40:],
+        "events": events,
     }
     reports.insert(0, payload)
     write_json_atomic(path, {"tasks": reports[:100]})

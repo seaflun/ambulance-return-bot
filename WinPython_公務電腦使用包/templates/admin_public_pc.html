@@ -89,6 +89,22 @@
       min-width: 0;
     }
     .site-name { font-weight: 760; margin-bottom: 5px; }
+    .task-details { margin-top: 12px; border-top: 1px solid var(--line); }
+    .task-details summary {
+      cursor: pointer;
+      padding: 10px 0;
+      color: var(--ink);
+      font-weight: 760;
+    }
+    .site-details { display: grid; gap: 8px; margin: 2px 0 10px; }
+    .site-detail-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fff;
+    }
+    .site-detail { margin-top: 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .site-updated { margin-top: 4px; color: var(--muted); font-size: 11px; }
     .events { margin: 12px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
     .events li {
       display: grid;
@@ -153,20 +169,40 @@
               {% endfor %}
             </div>
 
-            <ul class="events">
-              {% for event in item.events[-8:] | reverse %}
-                <li>
-                  {% set event_operator = event.operator or event.user or '未知使用者' %}
-                  <time class="event-time">{{ event.time }}</time>
-                  <div class="event-main">
-                    <div class="event-action">{{ event_operator }}｜{{ event.action }}</div>
-                    {% if event.detail %}
-                      <div class="event-detail">{{ event.detail }}</div>
-                    {% endif %}
-                  </div>
-                </li>
-              {% endfor %}
-            </ul>
+            <details class="task-details">
+              <summary>詳細紀錄</summary>
+              <div class="site-details">
+                {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('disinfection', '消毒'), ('consumables', '耗材')] %}
+                  {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
+                  {% if site.detail or site.updated_at %}
+                    <div class="site-detail-row">
+                      <strong>{{ title }}</strong>
+                      {% if site.detail %}
+                        <div class="site-detail">{{ site.detail }}</div>
+                      {% endif %}
+                      {% if site.updated_at %}
+                        <div class="site-updated">{{ site.updated_at }}</div>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                {% endfor %}
+              </div>
+
+              <ul class="events">
+                {% for event in item.events | reverse %}
+                  <li>
+                    {% set event_operator = event.operator or event.user or '未知使用者' %}
+                    <time class="event-time">{{ event.time }}</time>
+                    <div class="event-main">
+                      <div class="event-action">{{ event_operator }}｜{{ event.action }}</div>
+                      {% if event.detail %}
+                        <div class="event-detail">{{ event.detail }}</div>
+                      {% endif %}
+                    </div>
+                  </li>
+                {% endfor %}
+              </ul>
+            </details>
           </article>
         {% endfor %}
       </section>
