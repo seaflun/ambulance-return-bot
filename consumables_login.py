@@ -17,6 +17,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
+from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.duty_credentials import load_synced_worker_credential
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
@@ -45,11 +46,12 @@ def login_acs_and_get_driver(
     options = Options()
     options.add_argument("--window-size=1280,900")
     options.add_argument(f"--user-data-dir={_chrome_profile_dir(profile_name)}")
+    add_worker_chrome_options(options)
     if debugger_port:
         options.add_argument(f"--remote-debugging-port={debugger_port}")
     options.add_experimental_option("detach", True)
 
-    driver = webdriver.Chrome(options=options)
+    driver = create_chrome_driver_with_retry(options, "一站通耗材")
     page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
     driver.set_page_load_timeout(page_timeout)
     driver.set_script_timeout(page_timeout)
