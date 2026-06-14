@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>公務電腦後台</title>
+  <title>救護後台</title>
   <style>
     :root {
       color-scheme: light;
@@ -17,6 +17,7 @@
       --line: #e8e4dc;
       --line-strong: #d8d2c7;
       --accent: #b86b5b;
+      --accent-soft: #f6e9e5;
       --complete: #5f8a70;
       --complete-bg: #edf6ef;
       --failed: #b75c55;
@@ -25,6 +26,10 @@
       --running-bg: #e8f1f6;
       --idle-bg: #f3f1ed;
       --shadow: 0 16px 36px rgba(39, 49, 43, .07);
+      --text-sm: 13px;
+      --text-md: 15px;
+      --text-lg: 17px;
+      --text-xl: 28px;
     }
     * { box-sizing: border-box; }
     body {
@@ -34,25 +39,29 @@
         repeating-linear-gradient(135deg, var(--bg-line) 0 1px, transparent 1px 18px);
       background-attachment: fixed;
       color: var(--ink);
-      font-size: 15px;
+      font-size: var(--text-md);
       line-height: 1.45;
     }
     main { max-width: 960px; margin: 0 auto; padding: 24px 16px 44px; }
     header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding-bottom: 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
-    h1 { margin: 0; font-size: 28px; line-height: 1.25; font-weight: 800; }
+    h1 { margin: 0; font-size: var(--text-xl); line-height: 1.25; font-weight: 800; }
     h2, h3, p { margin: 0; }
-    .button {
+    button, .button {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-height: 42px;
+      min-height: 44px;
       padding: 0 16px;
-      border: 1px solid var(--line-strong);
+      border: 1px solid transparent;
       border-radius: 999px;
-      color: var(--ink);
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-weight: 760;
       text-decoration: none;
-      background: #fff;
+      box-shadow: 0 8px 18px rgba(184, 107, 91, .18);
     }
+    .secondary { background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
     .task-list { display: grid; gap: 12px; }
     .task-card {
       background: var(--surface);
@@ -89,6 +98,19 @@
       min-width: 0;
     }
     .site-name { font-weight: 760; margin-bottom: 5px; }
+    .site-diagnostic {
+      display: grid;
+      gap: 4px;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .site-diagnostic-title { color: var(--ink); font-weight: 780; }
+    .site-diagnostic strong { color: var(--ink); }
+    .site-diagnostic .action { color: var(--failed); font-weight: 700; }
     .login-summary {
       margin-top: 10px;
       border: 1px solid var(--line);
@@ -148,8 +170,8 @@
 <body>
   <main>
     <header>
-      <h1>公務電腦後台</h1>
-      <a class="button" href="/app">回首頁</a>
+      <h1>救護後台</h1>
+      <a class="button secondary" href="/app">返回首頁</a>
     </header>
 
     {% if reports %}
@@ -174,7 +196,7 @@
               <section class="login-summary" aria-label="各站登入帳號">
                 <div class="login-title">各站登入帳號</div>
                 <div class="login-grid">
-                  {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('disinfection', '消毒'), ('consumables', '耗材')] %}
+                  {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
                     <div class="login-account">
                       <span class="login-account-name">{{ title }}</span>
                       <span class="login-account-value">{{ site_login_accounts.get(site_key) or '尚未回報' }}</span>
@@ -185,11 +207,20 @@
             {% endif %}
 
             <div class="site-grid">
-              {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('disinfection', '消毒'), ('consumables', '耗材')] %}
+              {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
                 {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
+                {% set diag = site_diagnostic(site) %}
                 <div class="site">
                   <div class="site-name">{{ title }}</div>
                   <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
+                  {% if diag.failure_reason %}
+                    <div class="site-diagnostic">
+                      <div class="site-diagnostic-title">錯誤指引</div>
+                      <div><strong>未完成點</strong> {{ diag.failure_stage }}</div>
+                      <div><strong>原因</strong> {{ diag.failure_reason }}</div>
+                      <div class="action"><strong>下一步</strong> {{ diag.next_action }}</div>
+                    </div>
+                  {% endif %}
                 </div>
               {% endfor %}
             </div>

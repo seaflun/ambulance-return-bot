@@ -5,13 +5,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
-from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
+from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task, save_consumables_record_enabled
 from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .login_audit import login_audit_for_site, with_login_audit
 from .manual_task_lock import clear_manual_task_lock, set_manual_task_lock
 from .selenium_local import run_disinfection_task, run_local_selenium_task, run_vehicle_mileage_task
+from .site_diagnostics import make_site_result
 from .task_store import JsonTaskStore
 from .window_layout import maximize_worker_site_windows
 
@@ -73,9 +74,8 @@ class DesktopFastRunner:
         self._notify(task_id, "四站登打開始")
         request = self.store.request_for(task_id)
         profile_suffix = task_id.replace("-", "_")
-        try:
-            failed = self._run_site(
-                task_id,
+        site_runners = [
+            (
                 "duty_work_log",
                 lambda: run_local_selenium_task(
                     request,
@@ -85,14 +85,8 @@ class DesktopFastRunner:
                     tile_name="duty_work_log",
                     force_new_driver=True,
                 ),
-            )
-            if failed:
-                failures += 1
-                self.store.set_overall_status(task_id, "desktop_fast_completed_with_errors", "本機快速執行已停止：工作紀錄未完成，後續站別未開啟。")
-                self._notify(task_id, "四站登打失敗")
-                return
-            failed = self._run_site(
-                task_id,
+            ),
+            (
                 "vehicle_mileage",
                 lambda: run_vehicle_mileage_task(
                     request,
@@ -102,32 +96,28 @@ class DesktopFastRunner:
                     tile_name="vehicle_mileage",
                     force_new_driver=True,
                 ),
-            )
-            if failed:
-                failures += 1
-                self.store.set_overall_status(task_id, "desktop_fast_completed_with_errors", "本機快速執行已停止：車輛里程未完成，後續站別未開啟。")
-                self._notify(task_id, "四站登打失敗")
-                return
-            failed = self._run_site(
-                task_id,
-                "disinfection",
-                lambda: self._run_disinfection(request, profile_suffix),
-            )
-            if failed:
-                failures += 1
-                self.store.set_overall_status(task_id, "desktop_fast_completed_with_errors", "本機快速執行已停止：消毒紀錄未完成，耗材未開啟。")
-                self._notify(task_id, "四站登打失敗")
-                return
-            failed = self._run_site(
-                task_id,
+            ),
+            (
                 "consumables",
                 lambda: self._run_consumables(request, profile_suffix),
-            )
-            if failed:
-                failures += 1
+            ),
+            (
+                "disinfection",
+                lambda: self._run_disinfection(request, profile_suffix),
+            ),
+        ]
+        try:
+            for site_key, action in site_runners:
+                failed = self._run_site(task_id, site_key, action)
+                if failed:
+                    failures += 1
             if failures:
-                self.store.set_overall_status(task_id, "desktop_fast_completed_with_errors", f"本機快速執行完成，{failures} 站失敗。")
-                self._notify(task_id, "四站登打失敗")
+                self.store.set_overall_status(
+                    task_id,
+                    "desktop_fast_completed_with_errors",
+                    f"本機快速執行完成，{failures} 站失敗；已略過失敗站並接續後續站別。",
+                )
+                self._notify(task_id, "四站登打部分失敗")
             else:
                 self.store.set_overall_status(task_id, "desktop_fast_completed", "本機快速執行完成。")
                 self._notify(task_id, "四站登打成功")
@@ -202,16 +192,17 @@ class DesktopFastRunner:
         try:
             result = action()
             result = _result_with_login_audit(result, login_audit)
+            result = make_site_result(site_key, site_name, str(result.status), str(result.detail))
             self.store.update_site_result(
                 task_id,
-                SiteAutomationResult(site_key, site_name, str(result.status), str(result.detail)),
+                result,
             )
             self._notify(task_id, f"{site_name} 結果")
             return _result_blocks_next(result)
         except Exception as exc:
             self.store.update_site_result(
                 task_id,
-                SiteAutomationResult(site_key, site_name, f"{site_key}_failed", str(exc)),
+                make_site_result(site_key, site_name, f"{site_key}_failed", str(exc), exc),
             )
             self._notify(task_id, f"{site_name} 失敗")
             return True
@@ -231,7 +222,8 @@ class DesktopFastRunner:
             task=request,
         )
         detail = open_consumable_record_for_task(driver, request)
-        return SiteAutomationResult("consumables", SITE_NAMES["consumables"], "consumables_saved", detail)
+        status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
+        return SiteAutomationResult("consumables", SITE_NAMES["consumables"], status, detail)
 
     def _run_disinfection(self, request, profile_suffix: str):
         driver = login_disinfection_and_get_driver(

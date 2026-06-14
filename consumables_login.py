@@ -33,6 +33,10 @@ MAX_LOGIN_ATTEMPTS = 3
 ocr = ddddocr.DdddOcr(show_ad=False)
 
 
+def save_consumables_record_enabled() -> bool:
+    return os.getenv("SAVE_CONSUMABLES_RECORD", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def login_acs_and_get_driver(
     profile_name: str = "consumables_profile",
     debugger_port: int | None = None,
@@ -87,14 +91,21 @@ def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, ob
         raise RuntimeError("consumable detail page did not open; SSO login may be required")
     added = ""
     if _needs_extra_consumable_row(request):
-        _clear_existing_consumables(driver, wait)
         item_quantities = _resolve_consumable_item_quantities(driver, request)
-        _inject_consumables_for_save(driver, item_quantities)
-        _save_consumables(driver, wait)
-        if _is_sso_page(driver):
-            raise RuntimeError("consumable save returned to SSO login page")
-        _verify_saved_consumables(driver, item_quantities)
-        added = f" 已清除舊資料、填入耗材 {len(item_quantities)} 筆、按下儲存並確認。"
+        if save_consumables_record_enabled():
+            _clear_existing_consumables(driver, wait)
+            _inject_consumables_for_save(driver, item_quantities)
+            _assert_consumable_rows_match(driver, item_quantities, "耗材儲存前")
+            _save_consumables(driver, wait)
+            if _is_sso_page(driver):
+                raise RuntimeError("consumable save returned to SSO login page")
+            _verify_saved_consumables(driver, item_quantities)
+            added = f" 已清除舊資料、填入耗材 {len(item_quantities)} 筆、按下儲存並確認。"
+        else:
+            _clear_existing_consumables(driver, wait)
+            filled_count = _fill_consumables(driver, wait, request)
+            _assert_consumable_rows_match(driver, item_quantities, "耗材預填後")
+            added = f" 已清除舊資料、在畫面填入耗材 {filled_count} 筆，未按儲存。"
     return f"已開啟耗材內容頁：{driver.current_url}{added}"
 
 
@@ -529,9 +540,13 @@ def _fill_consumables(driver: webdriver.Chrome, wait: WebDriverWait, request: Am
 
 
 def _clear_existing_consumables(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
-    _remove_consumable_rows_by_trash_button(driver)
-    _remove_consumable_rows_from_dom(driver)
-    wait.until(lambda d: _consumable_row_count(d) == 0)
+    _remove_consumable_rows_by_trash_button(driver, wait)
+    if _consumable_payload_row_count(driver) > 0:
+        _remove_consumable_rows_from_dom(driver)
+    wait.until(lambda d: _consumable_row_count(d) == 0 and _consumable_payload_row_count(d) == 0)
+    remaining = _read_consumable_payload_rows(driver, include_blank=True)
+    if remaining:
+        raise RuntimeError(f"耗材清除後仍剩 {len(remaining)} 筆，停止填寫。")
 
 
 def _inject_consumables_for_save(driver: webdriver.Chrome, item_quantities: list[dict[str, str]]) -> None:
@@ -568,30 +583,26 @@ def _inject_consumables_for_save(driver: webdriver.Chrome, item_quantities: list
         raise RuntimeError("耗材儲存資料注入失敗，未按儲存。")
 
 
-def _remove_consumable_rows_by_trash_button(driver: webdriver.Chrome) -> None:
+def _remove_consumable_rows_by_trash_button(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     for _ in range(20):
-        before_count = _consumable_row_count(driver)
+        before_count = _consumable_payload_row_count(driver)
         if before_count == 0:
             return
         clicked = _click_consumable_row_delete(driver)
         if not clicked:
             return
-        time.sleep(0.25)
-        after_count = _consumable_row_count(driver)
-        if after_count >= before_count:
+        try:
+            wait.until(lambda d: _consumable_payload_row_count(d) < before_count)
+        except TimeoutException:
             return
 
 
 def _remove_consumable_rows_from_dom(driver: webdriver.Chrome) -> None:
     driver.execute_script(
         """
-        if (window.jQuery) {
-            window.jQuery('.goods_list > ul').empty();
-        } else {
-            const list = document.querySelector('.goods_list > ul');
-            if (list) {
-                list.innerHTML = '';
-            }
+        const list = document.querySelector('.goods_list > ul');
+        if (list) {
+            Array.from(list.children).forEach((row) => row.remove());
         }
         """
     )
@@ -669,60 +680,91 @@ def _save_consumables_direct(
 
 
 def _verify_saved_consumables(driver: webdriver.Chrome, expected_items: list[dict[str, str]]) -> None:
-    expected = sorted((str(item["itemId"]), str(item["quantity"])) for item in expected_items)
-    actual = sorted(
-        (str(item["itemId"]), str(item["quantity"]))
-        for item in driver.execute_script(
-            """
-            return Array.from(document.querySelectorAll('.snu_one')).map((snu) => {
-                const item = snu.querySelector('.acs_item_id');
-                const quantity = snu.querySelector('input[name="itemQuantity"]');
-                return {
-                    itemId: item ? item.value : '',
-                    quantity: quantity ? quantity.value : ''
-                };
-            }).filter((item) => item.itemId && item.quantity && item.quantity !== '0');
-            """
-        )
-    )
+    expected = _normalize_consumable_pairs(expected_items)
+    actual = _normalize_consumable_pairs(_read_consumable_payload_rows(driver))
     if actual != expected:
         raise RuntimeError(f"耗材儲存後讀回不一致：expected={expected} actual={actual}")
 
 
+def _assert_consumable_rows_match(
+    driver: webdriver.Chrome,
+    expected_items: list[dict[str, str]],
+    label: str,
+) -> None:
+    expected = _normalize_consumable_pairs(expected_items)
+    actual = _normalize_consumable_pairs(_read_consumable_payload_rows(driver, include_blank=True))
+    if actual != expected:
+        raise RuntimeError(f"{label}資料不一致，停止儲存：expected={expected} actual={actual}")
+
+
+def _normalize_consumable_pairs(items: list[dict[str, str]]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for item in items:
+        item_id = str(item.get("itemId") or "").strip()
+        quantity_text = str(item.get("quantity") or "").strip()
+        if not item_id and not quantity_text:
+            pairs.append(("", ""))
+            continue
+        try:
+            quantity_text = str(int(quantity_text))
+        except ValueError:
+            pass
+        pairs.append((item_id, quantity_text))
+    return sorted(pairs)
+
+
+def _read_consumable_payload_rows(driver: webdriver.Chrome, include_blank: bool = False) -> list[dict[str, str]]:
+    rows = driver.execute_script(
+        """
+        return Array.from(document.querySelectorAll('.snu_one')).map((snu) => {
+            const item = snu.querySelector('.acs_item_id');
+            const quantity = snu.querySelector('input[name="itemQuantity"]');
+            return {
+                itemId: item ? item.value : '',
+                quantity: quantity ? quantity.value : ''
+            };
+        });
+        """
+    )
+    if not isinstance(rows, list):
+        return []
+    normalized = [
+        {"itemId": str(item.get("itemId") or ""), "quantity": str(item.get("quantity") or "")}
+        for item in rows
+        if isinstance(item, dict)
+    ]
+    if include_blank:
+        return normalized
+    return [item for item in normalized if item["itemId"] and item["quantity"] and item["quantity"] != "0"]
+
+
 def _click_consumable_row_delete(driver: webdriver.Chrome) -> bool:
-    icons = driver.find_elements(By.CSS_SELECTOR, "li .goods_box > .btn_delete.goods_box_remove i.imgicon3.i_delete")
-    if not icons:
+    buttons = driver.find_elements(By.CSS_SELECTOR, ".goods_list > ul > li .goods_box_remove")
+    if not buttons:
         return False
-    icon = icons[0]
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", icon)
+    button = buttons[0]
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", button)
     try:
-        icon.click()
-        return True
-    except Exception:
-        pass
-    try:
-        ActionChains(driver).move_to_element(icon).click().perform()
+        ActionChains(driver).move_to_element(button).click().perform()
         return True
     except Exception:
         pass
     return bool(
         driver.execute_script(
             """
-            const icon = arguments[0];
-            if (!icon) {
+            const button = arguments[0];
+            if (!button) {
                 return false;
             }
-            const eventOptions = {bubbles: true, cancelable: true, view: window};
-            icon.dispatchEvent(new MouseEvent('mousedown', eventOptions));
-            icon.dispatchEvent(new MouseEvent('mouseup', eventOptions));
-            icon.dispatchEvent(new MouseEvent('click', eventOptions));
             if (window.jQuery) {
-                window.jQuery(icon).trigger('click');
+                window.jQuery(button).trigger('click');
+                return true;
             }
-            icon.click();
+            button.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+            button.click();
             return true;
             """,
-            icon,
+            button,
         )
     )
 
@@ -914,6 +956,10 @@ def _goods_box_count(driver: webdriver.Chrome) -> int:
 
 def _consumable_row_count(driver: webdriver.Chrome) -> int:
     return int(driver.execute_script("return document.querySelectorAll('select.acs_class_type').length;"))
+
+
+def _consumable_payload_row_count(driver: webdriver.Chrome) -> int:
+    return int(driver.execute_script("return document.querySelectorAll('.snu_one').length;"))
 
 
 def _add_new_box_visible(driver: webdriver.Chrome) -> bool:

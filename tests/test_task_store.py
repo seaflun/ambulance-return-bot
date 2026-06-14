@@ -22,6 +22,10 @@ class JsonTaskStoreTests(unittest.TestCase):
             payload = store.create(request)
             self.assertEqual(payload["overall_status"], "created")
             self.assertEqual(payload["worker_queue"]["status"], "idle")
+            self.assertEqual(
+                list(payload["site_statuses"]),
+                ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"],
+            )
             self.assertTrue((Path(tmp) / "task-1.json").exists())
 
             store.update_site_result(
@@ -78,6 +82,25 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual([item["status"] for item in attempts], ["disinfection_failed", "disinfection_saved"])
             self.assertEqual(attempts[0]["detail"], "login failed")
             self.assertEqual(attempts[1]["detail"], "retry ok")
+
+    def test_site_result_records_failure_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="task-diag", created_at=datetime.now(), raw_text="")
+            store.create(request)
+
+            store.update_site_result(
+                "task-diag",
+                SiteAutomationResult("consumables", "一站通耗材", "consumables_failed", "SSO login failed"),
+            )
+
+            payload = store.get("task-diag")
+            site = payload["site_statuses"]["consumables"]
+            attempt = payload["site_attempts"]["consumables"][0]
+            self.assertEqual(site["failure_stage"], "登入一站通")
+            self.assertIn("登入", site["failure_reason"])
+            self.assertEqual(attempt["failure_stage"], "登入一站通")
+            self.assertIn("驗證碼", attempt["next_action"])
 
     def test_worker_queue_state_reads_legacy_overall_status(self):
         with tempfile.TemporaryDirectory() as tmp:

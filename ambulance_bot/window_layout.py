@@ -28,8 +28,8 @@ def tile_rect(tile_name: str) -> WindowRect | None:
     mapping = {
         "duty_work_log": WindowRect(0, 0, half_width, half_height),
         "vehicle_mileage": WindowRect(right_x, 0, half_width, half_height),
-        "disinfection": WindowRect(0, bottom_y, half_width, half_height),
-        "consumables": WindowRect(right_x, bottom_y, half_width, half_height),
+        "consumables": WindowRect(0, bottom_y, half_width, half_height),
+        "disinfection": WindowRect(right_x, bottom_y, half_width, half_height),
     }
     return mapping.get(tile_name)
 
@@ -124,12 +124,12 @@ def _screen_size() -> tuple[int, int]:
 
 
 def _worker_site_title_keywords() -> list[str]:
-    default_keywords = "tyfd119,dutymgt,ppe,carrecord,emsdt,emmweb,nfaemsap,acs,消防,勤務,工作紀錄,車輛,里程,消毒,一站通,耗材"
+    default_keywords = "tyfd119,dutymgt,ppe,carrecord,nfaemsap,acs,emsdt,emmweb,消防,勤務,工作紀錄,車輛,里程,一站通,耗材,消毒"
     configured = os.getenv("WORKER_MAXIMIZE_TITLE_KEYWORDS", default_keywords)
     return [item.strip().lower() for item in configured.split(",") if item.strip()]
     raw = os.getenv(
         "WORKER_MAXIMIZE_TITLE_KEYWORDS",
-        "消防,勤務,工作紀錄,tyfd119,ppe,車輛,里程,emsdt,emmweb,消毒,nfaemsap,一站通,耗材,emergency,chrome",
+        "消防,勤務,工作紀錄,tyfd119,ppe,車輛,里程,nfaemsap,一站通,耗材,emsdt,emmweb,消毒,emergency,chrome",
     )
     return [item.strip().lower() for item in raw.split(",") if item.strip()]
 

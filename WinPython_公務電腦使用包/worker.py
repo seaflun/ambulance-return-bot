@@ -14,8 +14,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
+from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task, save_consumables_record_enabled
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult
+from ambulance_bot.duty_credentials import save_credential_sync_payload
 from ambulance_bot.login_audit import login_audit_for_site, with_login_audit
 from ambulance_bot.manual_task_lock import manual_task_lock_active
 from ambulance_bot.models import AmbulanceReturnRequest
@@ -25,6 +26,7 @@ from ambulance_bot.selenium_local import (
     run_local_selenium_task,
     run_vehicle_mileage_task,
 )
+from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, diagnostic_payload, make_site_result
 from ambulance_bot.window_layout import maximize_worker_site_windows
 
 
@@ -52,6 +54,7 @@ def main() -> None:
     print(f"[worker] starting worker_id={worker_id} server={server_url}", flush=True)
     while True:
         try:
+            maybe_run_credential_sync(server_url)
             last_case_lookup_at, last_case_hash = maybe_run_case_lookup(
                 server_url,
                 artifacts_dir,
@@ -149,6 +152,38 @@ def fetch_case_lookup_request(server_url: str) -> dict[str, object] | None:
     return request_payload if isinstance(request_payload, dict) else None
 
 
+def fetch_credential_sync_request(server_url: str) -> dict[str, object] | None:
+    url = f"{server_url}/worker/credential-sync"
+    data = request_json(url)
+    request_payload = data.get("request") if data.get("ok") else None
+    return request_payload if isinstance(request_payload, dict) else None
+
+
+def maybe_run_credential_sync(server_url: str) -> None:
+    request_payload = fetch_credential_sync_request(server_url)
+    if not request_payload:
+        return
+    request_id = str(request_payload.get("request_id") or "").strip()
+    payload = request_payload.get("payload")
+    if not request_id or not isinstance(payload, dict):
+        return
+    status = "failed"
+    detail = "帳密同步資料格式錯誤。"
+    try:
+        result = save_credential_sync_payload(payload)
+        if result is None:
+            detail = "帳密同步資料缺少帳號或密碼。"
+        else:
+            user_id, _password, path, count = result
+            status = "saved"
+            detail = f"已同步 {count} 組帳密，目前套用 {user_id}，儲存於 {path}。"
+    except Exception as exc:
+        detail = f"帳密同步儲存失敗：{exc}"
+    finally:
+        ack_credential_sync_request(server_url, request_id, status, detail)
+    print(f"[worker] credential sync {status}: {detail}", flush=True)
+
+
 def run_task(
     server_url: str,
     worker_id: str,
@@ -176,7 +211,7 @@ def run_task(
             force_new_driver=force_new_driver,
         )
     except Exception as exc:
-        result = SiteAutomationResult("duty_work_log", "消防勤務工作紀錄", "duty_work_log_failed", f"工作紀錄操作失敗：{exc}")
+        result = make_site_result("duty_work_log", "消防勤務工作紀錄", "duty_work_log_failed", f"工作紀錄操作失敗：{exc}", exc)
     result = _result_with_login_audit(result, login_audit)
     post_status(
         server_url,
@@ -185,6 +220,7 @@ def run_task(
         result.detail,
         site_key="duty_work_log",
         site_name="消防勤務工作紀錄",
+        **_result_diagnostic_kwargs(result),
     )
     if update_overall:
         post_status(
@@ -236,6 +272,18 @@ def run_all_sites_task(
             ),
         ),
         (
+            "consumables",
+            lambda: run_consumables_worker_task(
+                server_url,
+                worker_id,
+                task,
+                artifacts_dir,
+                profile_name=f"consumables_profile_{profile_suffix}",
+                tile_name="consumables",
+                update_overall=False,
+            ),
+        ),
+        (
             "disinfection",
             lambda: run_disinfection_worker_task(
                 server_url,
@@ -249,32 +297,21 @@ def run_all_sites_task(
                 update_overall=False,
             ),
         ),
-        (
-            "consumables",
-            lambda: run_consumables_worker_task(
-                server_url,
-                worker_id,
-                task,
-                artifacts_dir,
-                profile_name=f"consumables_profile_{profile_suffix}",
-                tile_name="consumables",
-                update_overall=False,
-            ),
-        ),
     ]
     last_result = None
+    failed_results = []
     for site_key, runner in runners:
         try:
             try:
                 payload = fetch_task_payload(server_url, request.task_id)
             except Exception as exc:
                 detail = f"讀取任務狀態失敗，四站流程已停止：{exc}"
-                result = SiteAutomationResult(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail)
+                result = make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail, exc)
                 post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
                 return result
             if not isinstance(payload, dict):
                 detail = "讀取任務狀態失敗，NAS 未回傳任務內容，四站流程已停止。"
-                result = SiteAutomationResult(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail)
+                result = make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail)
                 post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
                 return result
             site_statuses = payload.get("site_statuses") if isinstance(payload, dict) and isinstance(payload.get("site_statuses"), dict) else {}
@@ -284,15 +321,18 @@ def run_all_sites_task(
                 continue
             last_result = runner()
             if _result_blocks_progress(last_result):
-                post_status(
-                    server_url,
-                    request.task_id,
-                    "desktop_fast_completed_with_errors",
-                    f"{SITE_NAMES.get(site_key, site_key)}未完成：{getattr(last_result, 'detail', '')}",
-                )
-                return last_result
+                failed_results.append(last_result)
         finally:
             maximize_worker_site_windows()
+    if failed_results:
+        post_status(
+            server_url,
+            request.task_id,
+            "desktop_fast_completed_with_errors",
+            f"公務電腦 worker 四站登打完成，{len(failed_results)} 站失敗；已略過失敗站並接續後續站別。",
+        )
+        maximize_worker_site_windows()
+        return failed_results[-1]
     post_status(server_url, request.task_id, "desktop_fast_completed", "公務電腦 worker 四站登打完成。")
     maximize_worker_site_windows()
     return last_result
@@ -330,7 +370,7 @@ def run_vehicle_task(
             force_new_driver=force_new_driver,
         )
     except Exception as exc:
-        result = SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}")
+        result = make_site_result("vehicle_mileage", "車輛里程", "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}", exc)
     result = _result_with_login_audit(result, login_audit)
     post_status(
         server_url,
@@ -339,6 +379,7 @@ def run_vehicle_task(
         result.detail,
         site_key="vehicle_mileage",
         site_name="車輛里程",
+        **_result_diagnostic_kwargs(result),
     )
     if update_overall:
         post_status(
@@ -385,7 +426,7 @@ def run_disinfection_worker_task(
             force_new_driver=force_new_driver,
         )
     except Exception as exc:
-        result = SiteAutomationResult("disinfection", "緊急救護消毒", "disinfection_failed", f"消毒紀錄操作失敗：{exc}")
+        result = make_site_result("disinfection", "緊急救護消毒", "disinfection_failed", f"消毒紀錄操作失敗：{exc}", exc)
     result = _result_with_login_audit(result, login_audit)
     post_status(
         server_url,
@@ -394,6 +435,7 @@ def run_disinfection_worker_task(
         result.detail,
         site_key="disinfection",
         site_name="緊急救護消毒",
+        **_result_diagnostic_kwargs(result),
     )
     if update_overall:
         post_status(
@@ -435,9 +477,10 @@ def run_consumables_worker_task(
             task=request,
         )
         detail = open_consumable_record_for_task(driver, request)
-        result = SiteAutomationResult("consumables", "一站通耗材", "consumables_saved", detail)
+        status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
+        result = SiteAutomationResult("consumables", "一站通耗材", status, detail)
     except Exception as exc:
-        result = SiteAutomationResult("consumables", "一站通耗材", "consumables_failed", f"耗材登打失敗：{exc}")
+        result = make_site_result("consumables", "一站通耗材", "consumables_failed", f"耗材登打失敗：{exc}", exc)
     result = _result_with_login_audit(result, login_audit)
     post_status(
         server_url,
@@ -446,6 +489,7 @@ def run_consumables_worker_task(
         result.detail,
         site_key="consumables",
         site_name="一站通耗材",
+        **_result_diagnostic_kwargs(result),
     )
     if update_overall:
         post_status(
@@ -476,6 +520,10 @@ def post_status(
     site_name: str = "",
     overall_status: str = "",
     overall_detail: str = "",
+    failure_stage: str = "",
+    failure_reason: str = "",
+    next_action: str = "",
+    exception_type: str = "",
 ) -> None:
     payload = {
         "status": status,
@@ -483,6 +531,18 @@ def post_status(
         "site_key": site_key,
         "site_name": site_name,
     }
+    if site_key:
+        computed = diagnostic_payload(site_key, status, detail)
+        explicit = {
+            "failure_stage": failure_stage,
+            "failure_reason": failure_reason,
+            "next_action": next_action,
+            "exception_type": exception_type,
+        }
+        for field in DIAGNOSTIC_FIELDS:
+            value = str(explicit.get(field) or computed.get(field) or "").strip()
+            if value:
+                payload[field] = value
     if overall_status:
         payload["overall_status"] = overall_status
         payload["overall_detail"] = overall_detail or detail
@@ -530,6 +590,25 @@ def post_cases(
         raise RuntimeError(worker_api_error_message(exc)) from exc
 
 
+def ack_credential_sync_request(server_url: str, request_id: str, status: str, detail: str) -> None:
+    payload = {
+        "status": status,
+        "detail": detail,
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{server_url}/worker/credential-sync/{urllib.parse.quote(request_id)}/ack",
+        data=body,
+        headers={**worker_headers(), "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(worker_api_error_message(exc)) from exc
+
+
 def worker_api_timeout() -> int:
     return int(os.getenv("WORKER_API_TIMEOUT_SECONDS", "8"))
 
@@ -560,6 +639,13 @@ def _result_with_login_audit(result, audit: str):
         return replace(result, detail=detail)
     except (TypeError, ValueError):
         return result
+
+
+def _result_diagnostic_kwargs(result: object) -> dict[str, str]:
+    return {
+        field: str(getattr(result, field, "") or "")
+        for field in DIAGNOSTIC_FIELDS
+    }
 
 
 def _result_blocks_progress(result: object) -> bool:

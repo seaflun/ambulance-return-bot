@@ -11,6 +11,10 @@ class SiteAutomationResult:
     name: str
     status: str
     detail: str
+    failure_stage: str = ""
+    failure_reason: str = ""
+    next_action: str = ""
+    exception_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,18 +26,19 @@ class SiteDefinition:
 
 SITE_DEFINITIONS = [
     SiteDefinition(
+        "duty_work_log",
+        "\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304",
+        "https://dutymgt.tyfd.gov.tw/tyfd119/login119",
+    ),
+    SiteDefinition(
         "vehicle_mileage",
         "\u8eca\u8f1b\u91cc\u7a0b",
         "https://ppe.tyfd.gov.tw/Account/Login?ReturnUrl=%2FCarRecord%2FList",
     ),
     SiteDefinition("consumables", "\u4e00\u7ad9\u901a\u8017\u6750", "https://nfaemsap3.nfa.gov.tw/SSO/"),
     SiteDefinition("disinfection", "\u7dca\u6025\u6551\u8b77\u6d88\u6bd2", "https://emsdt.tyfd.gov.tw/EmmWeb/"),
-    SiteDefinition(
-        "duty_work_log",
-        "\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304",
-        "https://dutymgt.tyfd.gov.tw/tyfd119/login119",
-    ),
 ]
+SITE_DEFINITION_BY_KEY = {site.key: site for site in SITE_DEFINITIONS}
 
 
 class SiteAdapter:
@@ -53,7 +58,7 @@ class SiteAdapter:
 
 
 class VehicleMileageAdapter(SiteAdapter):
-    definition = SITE_DEFINITIONS[0]
+    definition = SITE_DEFINITION_BY_KEY["vehicle_mileage"]
 
     def run(self, request: AmbulanceReturnRequest) -> SiteAutomationResult:
         missing = "\u672a\u586b"
@@ -66,7 +71,7 @@ class VehicleMileageAdapter(SiteAdapter):
 
 
 class ConsumablesAdapter(SiteAdapter):
-    definition = SITE_DEFINITIONS[1]
+    definition = SITE_DEFINITION_BY_KEY["consumables"]
     requires_manual_captcha = True
 
     def run(self, request: AmbulanceReturnRequest) -> SiteAutomationResult:
@@ -79,7 +84,7 @@ class ConsumablesAdapter(SiteAdapter):
 
 
 class DisinfectionAdapter(SiteAdapter):
-    definition = SITE_DEFINITIONS[2]
+    definition = SITE_DEFINITION_BY_KEY["disinfection"]
     requires_manual_captcha = True
 
     def run(self, request: AmbulanceReturnRequest) -> SiteAutomationResult:
@@ -92,7 +97,7 @@ class DisinfectionAdapter(SiteAdapter):
 
 
 class DutyWorkLogAdapter(SiteAdapter):
-    definition = SITE_DEFINITIONS[3]
+    definition = SITE_DEFINITION_BY_KEY["duty_work_log"]
 
     def run(self, request: AmbulanceReturnRequest) -> SiteAutomationResult:
         missing = "\u672a\u586b"
@@ -106,8 +111,8 @@ class DutyWorkLogAdapter(SiteAdapter):
 
 def default_adapters() -> list[SiteAdapter]:
     return [
+        DutyWorkLogAdapter(),
         VehicleMileageAdapter(),
         ConsumablesAdapter(),
         DisinfectionAdapter(),
-        DutyWorkLogAdapter(),
     ]

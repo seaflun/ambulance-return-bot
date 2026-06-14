@@ -23,6 +23,7 @@ from ambulance_bot.selenium_local import (
     _previous_case_details,
     _profile_dir,
     _resolve_end_mileage,
+    _save_duty_work_log_enabled,
     _save_disinfection_probe_enabled,
     _save_disinfection_record_enabled,
     _save_vehicle_mileage_enabled,
@@ -41,25 +42,32 @@ class SeleniumLocalTests(unittest.TestCase):
 
     def test_save_flags_read_environment(self):
         previous_vehicle = os.environ.get("SAVE_VEHICLE_MILEAGE")
+        previous_duty = os.environ.get("SAVE_DUTY_WORK_LOG")
         previous_disinfection = os.environ.get("SAVE_DISINFECTION_RECORD")
         previous_probe = os.environ.get("SAVE_DISINFECTION_PROBE")
         try:
             os.environ["SAVE_VEHICLE_MILEAGE"] = "true"
+            os.environ["SAVE_DUTY_WORK_LOG"] = "yes"
             os.environ["SAVE_DISINFECTION_RECORD"] = "1"
             os.environ["SAVE_DISINFECTION_PROBE"] = "1"
             self.assertTrue(_save_vehicle_mileage_enabled())
+            self.assertTrue(_save_duty_work_log_enabled())
             self.assertTrue(_save_disinfection_record_enabled())
             self.assertTrue(_save_disinfection_probe_enabled())
             os.environ.pop("SAVE_VEHICLE_MILEAGE", None)
+            os.environ.pop("SAVE_DUTY_WORK_LOG", None)
             os.environ.pop("SAVE_DISINFECTION_RECORD", None)
             os.environ.pop("SAVE_DISINFECTION_PROBE", None)
             self.assertTrue(_save_vehicle_mileage_enabled())
+            self.assertTrue(_save_duty_work_log_enabled())
             self.assertTrue(_save_disinfection_record_enabled())
             self.assertFalse(_save_disinfection_probe_enabled())
             os.environ["SAVE_VEHICLE_MILEAGE"] = "false"
+            os.environ["SAVE_DUTY_WORK_LOG"] = "0"
             os.environ["SAVE_DISINFECTION_RECORD"] = "0"
             os.environ["SAVE_DISINFECTION_PROBE"] = "0"
             self.assertFalse(_save_vehicle_mileage_enabled())
+            self.assertFalse(_save_duty_work_log_enabled())
             self.assertFalse(_save_disinfection_record_enabled())
             self.assertFalse(_save_disinfection_probe_enabled())
         finally:
@@ -67,6 +75,10 @@ class SeleniumLocalTests(unittest.TestCase):
                 os.environ.pop("SAVE_VEHICLE_MILEAGE", None)
             else:
                 os.environ["SAVE_VEHICLE_MILEAGE"] = previous_vehicle
+            if previous_duty is None:
+                os.environ.pop("SAVE_DUTY_WORK_LOG", None)
+            else:
+                os.environ["SAVE_DUTY_WORK_LOG"] = previous_duty
             if previous_disinfection is None:
                 os.environ.pop("SAVE_DISINFECTION_RECORD", None)
             else:

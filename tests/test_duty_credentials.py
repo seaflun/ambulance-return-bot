@@ -6,6 +6,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from ambulance_bot.duty_credentials import (
+    credential_sync_accounts_from_payload,
     decrypt_dpapi,
     encrypt_dpapi,
     list_saved_duty_automation_credentials,
@@ -13,8 +14,10 @@ from ambulance_bot.duty_credentials import (
     load_saved_duty_automation_credential,
     load_synced_worker_credential,
     saved_login_path,
+    save_credential_sync_payload,
     save_duty_automation_credentials,
     save_duty_automation_credential,
+    select_credential_sync_account,
     set_last_selected_duty_automation_credential,
 )
 
@@ -135,6 +138,62 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(credentials[0].display_name, "8番 曾彥綸")
         self.assertEqual(credentials[0].name, "曾彥綸")
         self.assertEqual(credentials[0].id_number, "B123017532")
+
+    def test_credential_sync_accounts_from_payload_selects_requested_account(self):
+        payload = {
+            "user_id": "user9",
+            "accounts": [
+                {"actor_no": "8", "user_id": "user8", "password": "pass8"},
+                {"actor_no": "9", "user_id": "user9", "password": "pass9"},
+                {"actor_no": "10", "user_id": "missing-pass"},
+            ],
+        }
+
+        accounts = credential_sync_accounts_from_payload(payload)
+        selected = select_credential_sync_account(accounts, payload)
+
+        self.assertEqual([item["user_id"] for item in accounts], ["user8", "user9"])
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected["user_id"], "user9")
+
+    def test_save_credential_sync_payload_saves_selected_account_locally(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            previous_account = os.environ.get("DUTY_ACCOUNT")
+            previous_password = os.environ.get("DUTY_PASSWORD")
+            try:
+                payload = {
+                    "actor_no": "9",
+                    "accounts": [
+                        {"actor_no": "8", "user_id": "user8", "password": "pass8"},
+                        {"actor_no": "9", "user_id": "user9", "password": "pass9"},
+                    ],
+                }
+
+                result = save_credential_sync_payload(payload, path=path)
+                credential = load_synced_worker_credential(path)
+            finally:
+                if previous_account is None:
+                    os.environ.pop("DUTY_ACCOUNT", None)
+                else:
+                    os.environ["DUTY_ACCOUNT"] = previous_account
+                if previous_password is None:
+                    os.environ.pop("DUTY_PASSWORD", None)
+                else:
+                    os.environ["DUTY_PASSWORD"] = previous_password
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        user_id, password, saved_path, count = result
+        self.assertEqual(user_id, "user9")
+        self.assertEqual(password, "pass9")
+        self.assertEqual(saved_path, path)
+        self.assertEqual(count, 2)
+        self.assertIsNotNone(credential)
+        assert credential is not None
+        self.assertEqual(credential.user_id, "user9")
+        self.assertEqual(credential.password, "pass9")
 
     def test_saves_synced_credential_derives_name_without_repeating_account(self):
         with tempfile.TemporaryDirectory() as tmp:

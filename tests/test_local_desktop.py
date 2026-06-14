@@ -28,8 +28,17 @@ class LocalDesktopTests(unittest.TestCase):
                 os.environ["BROWSER_OPEN_DELAY_SECONDS"] = "0"
                 path = open_task_on_local_desktop(request, Path(tmp))
                 self.assertTrue(path.exists())
+                summary = path.read_text(encoding="utf-8")
 
         self.assertEqual(open_tab.call_count, 4)
+        opened_urls = [call.args[0] for call in open_tab.call_args_list]
+        self.assertIn("dutymgt.tyfd.gov.tw", opened_urls[0])
+        self.assertIn("ppe.tyfd.gov.tw", opened_urls[1])
+        self.assertIn("nfaemsap3.nfa.gov.tw", opened_urls[2])
+        self.assertIn("emsdt.tyfd.gov.tw", opened_urls[3])
+        self.assertLess(summary.index("消防勤務工作紀錄"), summary.index("車輛里程"))
+        self.assertLess(summary.index("車輛里程"), summary.index("一站通耗材"))
+        self.assertLess(summary.index("一站通耗材"), summary.index("緊急救護消毒"))
 
 
 if __name__ == "__main__":

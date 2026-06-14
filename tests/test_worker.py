@@ -16,6 +16,42 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(worker_module.hash_cases(left), worker_module.hash_cases(right))
 
+    def test_post_status_adds_site_failure_diagnostics(self):
+        original_urlopen = worker_module.urllib.request.urlopen
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def fake_urlopen(req, timeout):
+            captured["payload"] = json.loads(req.data.decode("utf-8"))
+            return FakeResponse()
+
+        try:
+            worker_module.urllib.request.urlopen = fake_urlopen
+            worker_module.post_status(
+                "http://nas",
+                "task-1",
+                "consumables_failed",
+                "SSO login failed",
+                site_key="consumables",
+                site_name="一站通耗材",
+            )
+        finally:
+            worker_module.urllib.request.urlopen = original_urlopen
+
+        payload = captured["payload"]
+        self.assertEqual(payload["failure_stage"], "登入一站通")
+        self.assertIn("登入", payload["failure_reason"])
+        self.assertIn("驗證碼", payload["next_action"])
+
     def test_scheduled_lookup_skips_unchanged_cases(self):
         calls = {"posts": 0}
         original_fetch = worker_module.fetch_case_lookup_request
@@ -88,6 +124,45 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(last_case_hash, case_hash)
         self.assertEqual(calls["posts"], 1)
         self.assertEqual(calls["lookup_range"], "24h")
+
+    def test_maybe_run_credential_sync_saves_payload_and_acks(self):
+        payload = {
+            "accounts": [
+                {"actor_no": "8", "user_id": "user8", "password": "secret-pass"},
+            ]
+        }
+        saved_payloads: list[dict] = []
+        acks: list[tuple[str, str, str, str]] = []
+        original_fetch = worker_module.fetch_credential_sync_request
+        original_save = worker_module.save_credential_sync_payload
+        original_ack = worker_module.ack_credential_sync_request
+        try:
+            worker_module.fetch_credential_sync_request = lambda server_url: {
+                "request_id": "sync-test-1",
+                "payload": payload,
+            }
+
+            def fake_save(sync_payload):
+                saved_payloads.append(sync_payload)
+                return "user8", "secret-pass", Path("saved_login.json"), 1
+
+            worker_module.save_credential_sync_payload = fake_save
+            worker_module.ack_credential_sync_request = (
+                lambda server_url, request_id, status, detail: acks.append((server_url, request_id, status, detail))
+            )
+
+            worker_module.maybe_run_credential_sync("http://nas")
+        finally:
+            worker_module.fetch_credential_sync_request = original_fetch
+            worker_module.save_credential_sync_payload = original_save
+            worker_module.ack_credential_sync_request = original_ack
+
+        self.assertEqual(saved_payloads, [payload])
+        self.assertEqual(acks[0][0], "http://nas")
+        self.assertEqual(acks[0][1], "sync-test-1")
+        self.assertEqual(acks[0][2], "saved")
+        self.assertIn("user8", acks[0][3])
+        self.assertNotIn("secret-pass", acks[0][3])
 
     def test_scheduled_lookup_skips_when_previous_lookup_waits_for_login(self):
         original_fetch = worker_module.fetch_case_lookup_request
@@ -268,12 +343,12 @@ class WorkerTests(unittest.TestCase):
             worker_module.run_consumables_worker_task = original_run_consumables
             worker_module.post_status = original_post_status
 
-        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "disinfection", "consumables"])
-        self.assertEqual(result.status, "consumables_saved")
+        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"])
+        self.assertEqual(result.status, "disinfection_saved")
         self.assertEqual(statuses[-1][0], "desktop_fast_completed")
         self.assertEqual(statuses[-1][2], "")
 
-    def test_auto_claim_run_all_sites_stops_after_blocking_failure(self):
+    def test_auto_claim_run_all_sites_continues_after_site_failure(self):
         original_fetch_payload = worker_module.fetch_task_payload
         original_run_task = worker_module.run_task
         original_run_vehicle = worker_module.run_vehicle_task
@@ -290,11 +365,11 @@ class WorkerTests(unittest.TestCase):
             worker_module.run_vehicle_task = lambda *args, **kwargs: calls.append("vehicle_mileage") or SimpleNamespace(
                 ok=True, status="vehicle_mileage_saved", detail="mileage ok"
             )
-            worker_module.run_disinfection_worker_task = lambda *args, **kwargs: calls.append("disinfection") or SimpleNamespace(
-                ok=False, status="disinfection_failed", detail="login failed"
-            )
             worker_module.run_consumables_worker_task = lambda *args, **kwargs: calls.append("consumables") or SimpleNamespace(
-                ok=True, status="consumables_saved", detail="consumables ok"
+                ok=False, status="consumables_failed", detail="login failed"
+            )
+            worker_module.run_disinfection_worker_task = lambda *args, **kwargs: calls.append("disinfection") or SimpleNamespace(
+                ok=True, status="disinfection_saved", detail="disinfection ok"
             )
             worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
                 (status, detail, kwargs.get("site_key", ""))
@@ -314,10 +389,11 @@ class WorkerTests(unittest.TestCase):
             worker_module.run_consumables_worker_task = original_run_consumables
             worker_module.post_status = original_post_status
 
-        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "disinfection"])
-        self.assertEqual(result.status, "disinfection_failed")
+        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"])
+        self.assertEqual(result.status, "consumables_failed")
         self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
-        self.assertIn("緊急救護消毒未完成：login failed", statuses[-1][1])
+        self.assertIn("1 站失敗", statuses[-1][1])
+        self.assertIn("接續後續站別", statuses[-1][1])
         self.assertEqual(statuses[-1][2], "")
 
     def test_auto_claim_run_all_sites_marks_error_when_status_fetch_fails(self):

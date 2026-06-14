@@ -18,7 +18,7 @@ from selenium.webdriver.remote.client_config import ClientConfig
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from .adapters import SITE_DEFINITIONS
+from .adapters import SITE_DEFINITION_BY_KEY, SITE_DEFINITIONS
 from .duty_credentials import load_duty_credential, load_synced_worker_credential
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .window_layout import apply_tile
@@ -69,6 +69,10 @@ def _env_enabled(name: str, default: str = "false") -> bool:
 
 def _save_vehicle_mileage_enabled() -> bool:
     return _env_enabled("SAVE_VEHICLE_MILEAGE", default="true")
+
+
+def _save_duty_work_log_enabled() -> bool:
+    return _env_enabled("SAVE_DUTY_WORK_LOG", default="true")
 
 
 def _save_disinfection_record_enabled() -> bool:
@@ -682,7 +686,7 @@ def _prepare_duty_work_log_form(
     if fill_result:
         detail = f"消防勤務工作紀錄已預填但有欄位未確認：{', '.join(fill_result)}。已保存截圖，不會自動儲存。"
         status = "duty_work_log_prefill_partial"
-    else:
+    elif _save_duty_work_log_enabled():
         save_result = _click_duty_work_log_save(driver)
         time.sleep(1.5)
         _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_saved")
@@ -692,6 +696,9 @@ def _prepare_duty_work_log_form(
         else:
             detail = f"消防勤務工作紀錄已預填，但儲存按鈕未成功點擊：{save_result.get('reason', 'unknown')}。"
             status = "duty_work_log_save_failed"
+    else:
+        detail = "消防勤務工作紀錄已預填勤務項目、事由、處理情形，未按儲存。"
+        status = "duty_work_log_prefilled"
     return SeleniumRunResult(ok=True, status=status, detail=detail, summary_path=summary_path)
 
 
@@ -1093,7 +1100,7 @@ def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceRe
 def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
     current_url = driver.current_url.lower()
     if "emsdt.tyfd.gov.tw/emmweb" not in current_url:
-        driver.get(SITE_DEFINITIONS[2].url)
+        driver.get(SITE_DEFINITION_BY_KEY["disinfection"].url)
         time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
     _assert_disinfection_not_login(driver, "opened")

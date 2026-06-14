@@ -282,7 +282,7 @@
         <div class="header-actions">
           <a class="button secondary" href="/admin/vehicles">救護車設定</a>
           {% if show_public_pc_admin_button() %}
-            <a class="button secondary" href="/admin/public-pc">公務後台</a>
+            <a class="button secondary" href="/admin/public-pc">救護後台</a>
           {% endif %}
         </div>
       {% endif %}
@@ -459,6 +459,17 @@
       taskForm.addEventListener("input", () => { taskFormDirty = true; });
       taskForm.addEventListener("change", () => { taskFormDirty = true; });
     }
+
+    {% if form_errors %}
+      window.addEventListener("load", () => {
+        const target = document.getElementById("task-form");
+        if (!target) return;
+        target.scrollIntoView({ block: "start" });
+        if (window.location.hash !== "#task-form") {
+          history.replaceState(null, "", `${window.location.pathname}${window.location.search}#task-form`);
+        }
+      });
+    {% endif %}
 
     {% if auto_refresh %}
       if (shouldAutoRefresh) {

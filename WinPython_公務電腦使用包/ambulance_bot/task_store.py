@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .models import AmbulanceReturnRequest
+from .site_diagnostics import DIAGNOSTIC_FIELDS, result_with_diagnostics
 
 
 SUCCESS_SITE_STATUSES = {
@@ -152,6 +153,7 @@ class JsonTaskStore:
     def update_site_result(self, task_id: str, result: SiteAutomationResult) -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)
+            result = result_with_diagnostics(result)
             site = payload["site_statuses"][result.key]
             attempts = site_attempts(payload)
             if site.get("status") == "completed_by_user":
@@ -161,17 +163,25 @@ class JsonTaskStore:
             site["status"] = result.status
             site["detail"] = result.detail
             site["updated_at"] = now_text()
-            attempts.setdefault(result.key, []).append(
-                {
-                    "attempt_id": str(uuid4()),
-                    "time": now_text(),
-                    "status": result.status,
-                    "detail": result.detail,
-                    "site_name": result.name,
-                }
-            )
+            for field in DIAGNOSTIC_FIELDS:
+                site[field] = str(getattr(result, field, "") or "")
+            attempt = {
+                "attempt_id": str(uuid4()),
+                "time": now_text(),
+                "status": result.status,
+                "detail": result.detail,
+                "site_name": result.name,
+            }
+            for field in DIAGNOSTIC_FIELDS:
+                attempt[field] = str(getattr(result, field, "") or "")
+            attempts.setdefault(result.key, []).append(attempt)
             payload["site_attempts"] = attempts
-            self.add_event_to_payload(payload, result.status, f"{result.name}: {result.detail}")
+            self.add_event_to_payload(
+                payload,
+                result.status,
+                f"{result.name}: {result.detail}",
+                {field: str(getattr(result, field, "") or "") for field in DIAGNOSTIC_FIELDS},
+            )
             self.save_payload(task_id, payload)
             return payload
 
@@ -183,6 +193,8 @@ class JsonTaskStore:
             site["status"] = "completed_by_user"
             site["detail"] = "使用者已人工確認完成。"
             site["updated_at"] = now_text()
+            for field in DIAGNOSTIC_FIELDS:
+                site[field] = ""
             attempts.setdefault(site_key, []).append(
                 {
                     "attempt_id": str(uuid4()),
@@ -190,6 +202,7 @@ class JsonTaskStore:
                     "status": "completed_by_user",
                     "detail": site["detail"],
                     "site_name": site["name"],
+                    **{field: "" for field in DIAGNOSTIC_FIELDS},
                 }
             )
             payload["site_attempts"] = attempts
@@ -214,14 +227,21 @@ class JsonTaskStore:
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(path)
 
-    def add_event_to_payload(self, payload: dict[str, Any], status: str, detail: str = "") -> None:
-        payload.setdefault("events", []).append(
-            {
-                "time": now_text(),
-                "status": status,
-                "detail": detail,
-            }
-        )
+    def add_event_to_payload(
+        self,
+        payload: dict[str, Any],
+        status: str,
+        detail: str = "",
+        extra: dict[str, str] | None = None,
+    ) -> None:
+        event = {
+            "time": now_text(),
+            "status": status,
+            "detail": detail,
+        }
+        if extra:
+            event.update({str(key): str(value) for key, value in extra.items()})
+        payload.setdefault("events", []).append(event)
 
     def cleanup(self, max_age_hours: int = 24) -> None:
         cutoff = datetime.now() - timedelta(hours=max_age_hours)
@@ -264,6 +284,7 @@ def initial_site_statuses() -> dict[str, dict[str, str]]:
             "status": "not_started",
             "detail": "",
             "updated_at": "",
+            **{field: "" for field in DIAGNOSTIC_FIELDS},
         }
         for site in SITE_DEFINITIONS
     }
@@ -316,6 +337,7 @@ def site_attempts(payload: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
                 "status": str(entry.get("status") or ""),
                 "detail": str(entry.get("detail") or ""),
                 "site_name": str(entry.get("site_name") or ""),
+                **{field: str(entry.get(field) or "") for field in DIAGNOSTIC_FIELDS},
             }
             for entry in entries
             if isinstance(entry, dict)

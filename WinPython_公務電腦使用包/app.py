@@ -19,7 +19,11 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
-from ambulance_bot.duty_credentials import load_synced_worker_credential
+from ambulance_bot.duty_credentials import (
+    credential_sync_accounts_from_payload,
+    load_synced_worker_credential,
+    select_credential_sync_account,
+)
 from ambulance_bot.login_audit import site_login_account_summaries
 from ambulance_bot.line_api import reply_text, verify_signature
 from ambulance_bot.models import (
@@ -41,6 +45,7 @@ from ambulance_bot.models import (
     vehicle_options,
     vehicle_ppe_names,
 )
+from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, SITE_STAGE_DEFINITIONS, merge_diagnostic_fields
 from ambulance_bot.task_runner import TaskRunner
 from ambulance_bot.task_store import JsonTaskStore
 
@@ -53,20 +58,13 @@ store = JsonTaskStore(artifacts_dir / "tasks")
 runner = TaskRunner(artifacts_dir, store=store)
 desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
-SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "disinfection", "consumables"]
+SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"]
 SITE_SHORT_NAMES = {
     "duty_work_log": "工作",
     "vehicle_mileage": "里程",
     "disinfection": "消毒",
     "consumables": "耗材",
 }
-SITE_STAGE_DEFINITIONS = {
-    "duty_work_log": ["啟動 Chrome", "登入勤務系統", "新增工作紀錄", "由案件帶入", "填寫勤務資料", "儲存"],
-    "vehicle_mileage": ["啟動 Chrome", "登入 PPE", "開啟車輛里程", "填寫返隊時間與里程", "儲存"],
-    "disinfection": ["啟動 Chrome", "登入消毒系統", "查詢案件", "開啟消毒紀錄", "填寫消毒項目", "儲存"],
-    "consumables": ["啟動 Chrome", "登入一站通", "開啟耗材紀錄", "填寫耗材品項", "儲存"],
-}
-
 
 @app.get("/")
 def index():
@@ -275,6 +273,35 @@ def status():
     )
 
 
+@app.post("/api/credential-sync")
+def credential_sync():
+    if not credential_sync_receiver_enabled():
+        abort(404)
+    if not credential_sync_authorized():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "invalid_json"}), 400
+    accounts = credential_sync_accounts_from_payload(data)
+    if not accounts:
+        return jsonify({"ok": False, "error": "missing_credentials"}), 400
+    selected = select_credential_sync_account(accounts, data) or accounts[0]
+    ack_id = str(data.get("sync_code") or data.get("event_id") or uuid4())
+    write_credential_sync_relay(
+        {
+            "request_id": ack_id,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "status": "pending",
+            "source_host": request.host,
+            "account_count": len(accounts),
+            "selected_user_id": str(selected.get("user_id") or ""),
+            "payload": data,
+        }
+    )
+    return jsonify({"ok": True, "ack_id": ack_id, "count": len(accounts), "queued": True})
+
+
 @app.get("/admin/vehicles")
 def admin_vehicles():
     return render_template(
@@ -378,7 +405,11 @@ def worker_task_status(task_id: str):
     site_name = str(data.get("site_name") or "公務電腦 worker").strip()
     try:
         if site_key:
-            payload = store.update_site_result(task_id, SiteAutomationResult(site_key, site_name, status_text, detail))
+            diagnostic_fields = {field: str(data.get(field) or "").strip() for field in DIAGNOSTIC_FIELDS}
+            payload = store.update_site_result(
+                task_id,
+                SiteAutomationResult(site_key, site_name, status_text, detail, **diagnostic_fields),
+            )
             if overall_status:
                 payload = store.set_overall_status(task_id, overall_status, overall_detail)
         else:
@@ -396,6 +427,38 @@ def worker_case_lookup_request():
     if payload.get("status") != "case_lookup_requested":
         return jsonify({"ok": True, "request": None})
     return jsonify({"ok": True, "request": payload})
+
+
+@app.get("/worker/credential-sync")
+def worker_credential_sync():
+    if not worker_authorized():
+        abort(403)
+    record = read_credential_sync_relay()
+    if not record or record.get("status") != "pending":
+        return jsonify({"ok": True, "request": None})
+    return jsonify(
+        {
+            "ok": True,
+            "request": {
+                "request_id": str(record.get("request_id") or ""),
+                "created_at": str(record.get("created_at") or ""),
+                "account_count": int(record.get("account_count") or 0),
+                "selected_user_id": str(record.get("selected_user_id") or ""),
+                "payload": record.get("payload") if isinstance(record.get("payload"), dict) else {},
+            },
+        }
+    )
+
+
+@app.post("/worker/credential-sync/<request_id>/ack")
+def worker_credential_sync_ack(request_id: str):
+    if not worker_authorized():
+        abort(403)
+    record = read_credential_sync_relay()
+    if not record or str(record.get("request_id") or "") != request_id:
+        abort(404)
+    clear_credential_sync_relay()
+    return jsonify({"ok": True, "ack_id": request_id})
 
 
 @app.post("/worker/cases")
@@ -464,6 +527,63 @@ def package_version() -> str:
         except OSError:
             pass
     return ""
+
+
+def credential_sync_relay_file() -> Path:
+    return artifacts_dir / "credential_sync" / "pending.json"
+
+
+def credential_sync_token() -> str:
+    return os.getenv("CREDENTIAL_SYNC_TOKEN", "").strip() or os.getenv("WORKER_TOKEN", "").strip()
+
+
+def credential_sync_receiver_enabled() -> bool:
+    return bool(credential_sync_token())
+
+
+def credential_sync_authorized() -> bool:
+    expected = credential_sync_token()
+    if not expected:
+        return False
+    supplied = (
+        request.headers.get("X-Credential-Sync-Token", "").strip()
+        or request.headers.get("X-Worker-Token", "").strip()
+    )
+    return supplied == expected
+
+
+def credential_sync_ttl_seconds() -> int:
+    try:
+        return max(60, int(os.getenv("CREDENTIAL_SYNC_TTL_SECONDS", "3600")))
+    except ValueError:
+        return 3600
+
+
+def read_credential_sync_relay() -> dict:
+    path = credential_sync_relay_file()
+    if not path.exists():
+        return {}
+    try:
+        if time.time() - path.stat().st_mtime > credential_sync_ttl_seconds():
+            path.unlink()
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_credential_sync_relay(payload: dict) -> None:
+    write_json_atomic(credential_sync_relay_file(), payload)
+
+
+def clear_credential_sync_relay() -> None:
+    try:
+        credential_sync_relay_file().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 def public_pc_report_file() -> Path:
@@ -996,12 +1116,19 @@ def site_can_run_individually(site_statuses: dict, site_key: str) -> bool:
     return False
 
 
+def site_diagnostic(site: dict) -> dict[str, str]:
+    return merge_diagnostic_fields(dict(site or {}))
+
+
 def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
     site = dict(site_statuses.get(site_key) or {})
     current_class = status_class(str(site.get("status") or ""))
-    blocked_by_previous = _site_blocked_by_previous(site_statuses, site_key)
+    diagnostic = site_diagnostic(site)
+    focus_stage = diagnostic.get("failure_stage") or ""
+    stages = SITE_STAGE_DEFINITIONS.get(site_key, [])
+    focus_index = stages.index(focus_stage) if focus_stage in stages else -1
     rows: list[dict[str, str]] = []
-    for index, stage in enumerate(SITE_STAGE_DEFINITIONS.get(site_key, [])):
+    for index, stage in enumerate(stages):
         if current_class == "complete":
             state = "已完成"
             state_class = "complete"
@@ -1009,11 +1136,25 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
             state = "執行中" if index == 0 else "待執行"
             state_class = "running" if index == 0 else "idle"
         elif current_class == "failed":
-            state = "需檢查"
-            state_class = "failed"
-        elif blocked_by_previous:
-            state = "被前站卡住"
-            state_class = "waiting"
+            if focus_index >= 0 and index < focus_index:
+                state = "已通過"
+                state_class = "complete"
+            elif (focus_index < 0 and index == 0) or index == focus_index:
+                state = "失敗點"
+                state_class = "failed"
+            else:
+                state = "未完成"
+                state_class = "idle"
+        elif current_class == "waiting":
+            if focus_index >= 0 and index < focus_index:
+                state = "已通過"
+                state_class = "complete"
+            elif (focus_index < 0 and index == 0) or index == focus_index:
+                state = "待確認"
+                state_class = "waiting"
+            else:
+                state = "未完成"
+                state_class = "idle"
         else:
             state = "未執行"
             state_class = "idle"
@@ -1021,22 +1162,12 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
     return rows
 
 
-def _site_blocked_by_previous(site_statuses: dict, site_key: str) -> bool:
-    for ordered_key in SITE_RUN_ORDER:
-        if ordered_key == site_key:
-            return False
-        site = dict(site_statuses.get(ordered_key) or {})
-        if status_class(str(site.get("status") or "")) == "failed":
-            return True
-    return False
-
-
 def effective_task_status(payload: dict) -> str:
     sites = list(dict(payload.get("site_statuses") or {}).values())
-    if any(status_class(str(site.get("status") or "")) == "failed" for site in sites):
-        return "failed"
     if any(status_class(str(site.get("status") or "")) == "running" for site in sites):
         return "desktop_fast_running"
+    if any(status_class(str(site.get("status") or "")) == "failed" for site in sites):
+        return "failed"
     if any(status_class(str(site.get("status") or "")) == "waiting" for site in sites):
         return "manual_captcha_required"
     if sites and all(status_class(str(site.get("status") or "")) == "complete" for site in sites):
@@ -1056,6 +1187,9 @@ def task_progress_summary(payload: dict) -> str:
     site_statuses = dict(payload.get("site_statuses") or {})
     completed_count = 0
     total_count = len(SITE_RUN_ORDER)
+    failed_sites: list[str] = []
+    waiting_site = ""
+    running_site = ""
 
     for site_key in SITE_RUN_ORDER:
         site = dict(site_statuses.get(site_key) or {})
@@ -1066,14 +1200,25 @@ def task_progress_summary(payload: dict) -> str:
             completed_count += 1
             continue
         if site_class == "running":
-            return f"已完成 {completed_count}/{total_count}；目前：{site_name}執行中"
+            running_site = running_site or site_name
+            continue
         if site_class == "failed":
-            return f"已完成 {completed_count}/{total_count}；卡在：{site_name}失敗"
+            failed_sites.append(site_name)
+            continue
         if site_class == "waiting":
-            return f"已完成 {completed_count}/{total_count}；待確認：{site_name}"
+            waiting_site = waiting_site or site_name
+
+    if running_site:
+        return f"已完成 {completed_count}/{total_count}；目前：{running_site}執行中"
+    if waiting_site:
+        return f"已完成 {completed_count}/{total_count}；待確認：{waiting_site}"
 
     if completed_count == total_count:
         return "四站完成"
+    if len(failed_sites) == 1:
+        return f"已完成 {completed_count}/{total_count}；失敗：{failed_sites[0]}"
+    if failed_sites:
+        return f"已完成 {completed_count}/{total_count}；{len(failed_sites)} 站失敗"
 
     overall_status = str(payload.get("overall_status") or "")
     if overall_status == "queued_for_worker":
@@ -1155,6 +1300,9 @@ def selected_case_date_input(case: dict) -> str:
 
 
 def selected_return_date_input(case: dict) -> str:
+    explicit_date = date_input_value(case.get("return_date") or "")
+    if explicit_date:
+        return explicit_date
     if not selected_return_time_input(case):
         return ""
     return date_input_value(case.get("return_time") or case.get("case_date") or case.get("report_time") or "")
@@ -1247,11 +1395,11 @@ def event_detail_text(event: dict) -> str:
 
 def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
-    blocking_site_key = ""
     for site_key in SITE_RUN_ORDER:
         site = dict(site_statuses.get(site_key) or {})
         status = str(site.get("status") or "")
         detail = str(site.get("detail") or "").strip()
+        diagnostic = site_diagnostic(site)
         current_class = status_class(status)
         site_name = SITE_SHORT_NAMES.get(site_key, site_key)
 
@@ -1261,12 +1409,12 @@ def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
                     "site_key": site_key,
                     "site_name": site_name,
                     "state": "失敗",
-                    "detail": detail[:120] or "程式回報此站未完成。",
-                    "action": site_next_action(site_key, status, detail),
+                    "stage": diagnostic.get("failure_stage") or "未判定",
+                    "reason": diagnostic.get("failure_reason") or "程式回報此站未完成。",
+                    "detail": detail[:160] or "程式回報此站未完成。",
+                    "action": diagnostic.get("next_action") or site_next_action(site_key, status, detail),
                 }
             )
-            if not blocking_site_key:
-                blocking_site_key = site_key
             continue
 
         if current_class == "waiting":
@@ -1275,26 +1423,13 @@ def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
                     "site_key": site_key,
                     "site_name": site_name,
                     "state": "待確認",
-                    "detail": detail[:120] or "此站需要人工確認後才能視為完成。",
-                    "action": site_next_action(site_key, status, detail),
+                    "stage": diagnostic.get("failure_stage") or "儲存",
+                    "reason": diagnostic.get("failure_reason") or "此站需要人工確認後才能視為完成。",
+                    "detail": detail[:160] or "此站需要人工確認後才能視為完成。",
+                    "action": diagnostic.get("next_action") or site_next_action(site_key, status, detail),
                 }
             )
             continue
-
-        if blocking_site_key and current_class != "complete":
-            if request_is_local_host():
-                blocked_action = f"先處理前一站；若前一站已人工完成，再按「單獨登打」補做{site_name}。"
-            else:
-                blocked_action = f"先在公務電腦處理前一站；完成後由 worker 或本機頁面補做{site_name}。"
-            entries.append(
-                {
-                    "site_key": site_key,
-                    "site_name": site_name,
-                    "state": "未接續",
-                    "detail": f"前一站「{SITE_SHORT_NAMES.get(blocking_site_key, blocking_site_key)}」未完成，四站流程已停止。",
-                    "action": blocked_action,
-                }
-            )
     return entries
 
 
@@ -1344,6 +1479,7 @@ def template_helpers() -> dict:
         "selected_return_date_input": selected_return_date_input,
         "selected_return_time_input": selected_return_time_input,
         "recent_tasks_need_refresh": recent_tasks_need_refresh,
+        "site_diagnostic": site_diagnostic,
         "site_short_name": site_short_name,
         "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
@@ -1401,6 +1537,18 @@ def write_selected_case_from_lookup(case_id: str) -> bool:
     return True
 
 
+def person_options_from_personnel(personnel: object) -> list[tuple[str, str]]:
+    raw_people = personnel.split(",") if isinstance(personnel, str) else personnel or []
+    people: list[str] = []
+    seen: set[str] = set()
+    for name in raw_people:
+        person = str(name).strip()
+        if person and person not in seen:
+            people.append(person)
+            seen.add(person)
+    return [(name, name) for name in people]
+
+
 def read_selected_case() -> dict:
     path = artifacts_dir / "cases" / "selected.json"
     if not path.exists():
@@ -1410,9 +1558,9 @@ def read_selected_case() -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     selected = dict(payload.get("selected_case") or {})
-    people = [str(name).strip() for name in selected.get("personnel") or [] if str(name).strip()]
+    people = person_options_from_personnel(selected.get("personnel") or [])
     if people:
-        selected["person_options"] = [(name, name) for name in people]
+        selected["person_options"] = people
     selected["status"] = payload.get("status", "")
     selected["detail"] = payload.get("detail", "")
     return selected
@@ -1424,6 +1572,9 @@ def task_form_values(task: dict) -> dict:
     values["case_time_hhmm"] = str(task.get("case_time") or "")
     values["return_time_hhmm"] = str(task.get("return_time") or "")
     values["reason"] = str(task.get("case_reason") or "")
+    people = person_options_from_personnel(task.get("personnel") or [])
+    if people:
+        values["person_options"] = people
     return values
 
 

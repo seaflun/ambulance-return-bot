@@ -1,4 +1,5 @@
 import html
+import json
 import os
 import tempfile
 import unittest
@@ -38,6 +39,12 @@ class WebAppTests(unittest.TestCase):
         os.environ["USE_LOCAL_SELENIUM"] = "false"
         self.tmp = tempfile.TemporaryDirectory()
         self.original_worker_token = os.environ.get("WORKER_TOKEN")
+        self.original_credential_sync_token = os.environ.get("CREDENTIAL_SYNC_TOKEN")
+        self.original_credential_sync_ttl = os.environ.get("CREDENTIAL_SYNC_TTL_SECONDS")
+        self.original_duty_saved_login_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+        self.original_duty_saved_login_path_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+        self.original_duty_account = os.environ.get("DUTY_ACCOUNT")
+        self.original_duty_password = os.environ.get("DUTY_PASSWORD")
         self.original_desktop_fast_mode = os.environ.get("DESKTOP_FAST_MODE")
         self.original_task_execution_mode = os.environ.get("TASK_EXECUTION_MODE")
         self.original_public_pc_report_enabled = os.environ.get("PUBLIC_PC_REPORT_ENABLED")
@@ -45,6 +52,12 @@ class WebAppTests(unittest.TestCase):
         self.original_local_host_candidates = app_module.local_host_candidates
         self.original_query_duty_emergency_cases = selenium_local_module.query_duty_emergency_cases
         os.environ["WORKER_TOKEN"] = ""
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = ""
+        os.environ.pop("CREDENTIAL_SYNC_TTL_SECONDS", None)
+        os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+        os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+        os.environ.pop("DUTY_ACCOUNT", None)
+        os.environ.pop("DUTY_PASSWORD", None)
         os.environ["DESKTOP_FAST_MODE"] = "0"
         os.environ["TASK_EXECUTION_MODE"] = "worker_queue"
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
@@ -80,7 +93,19 @@ class WebAppTests(unittest.TestCase):
         app_module.start_local_case_lookup = self.original_start_local_case_lookup
         app_module.local_host_candidates = self.original_local_host_candidates
         selenium_local_module.query_duty_emergency_cases = self.original_query_duty_emergency_cases
+        self._restore_env("CREDENTIAL_SYNC_TOKEN", self.original_credential_sync_token)
+        self._restore_env("CREDENTIAL_SYNC_TTL_SECONDS", self.original_credential_sync_ttl)
+        self._restore_env("DUTY_SAVED_LOGIN_PATH", self.original_duty_saved_login_path)
+        self._restore_env("DUTY_SAVED_LOGIN_PATH_OVERRIDE", self.original_duty_saved_login_path_override)
+        self._restore_env("DUTY_ACCOUNT", self.original_duty_account)
+        self._restore_env("DUTY_PASSWORD", self.original_duty_password)
         self.tmp.cleanup()
+
+    def _restore_env(self, name: str, value: str | None) -> None:
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
     def valid_task_data(self, **overrides):
         data = {
@@ -97,6 +122,66 @@ class WebAppTests(unittest.TestCase):
         data.update(overrides)
         return data
 
+    def credential_sync_payload(self) -> dict:
+        return {
+            "sync_code": "sync-test-1",
+            "user_id": "user9",
+            "accounts": [
+                {"actor_no": "8", "user_id": "user8", "password": "pass8"},
+                {"actor_no": "9", "user_id": "user9", "password": "pass9"},
+            ],
+        }
+
+    def test_credential_sync_endpoint_requires_source_token(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+
+        response = self.client.post("/api/credential-sync", json=self.credential_sync_payload())
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_credential_sync_endpoint_queues_for_worker_without_local_save(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "worker-token"
+        saved_login = Path(self.tmp.name) / "nas_should_not_save.json"
+        os.environ["DUTY_SAVED_LOGIN_PATH"] = str(saved_login)
+        os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+
+        response = self.client.post(
+            "/api/credential-sync",
+            json=self.credential_sync_payload(),
+            headers={"X-Credential-Sync-Token": "sync-token"},
+        )
+        response_body = response.data.decode("utf-8")
+        relay_path = app_module.credential_sync_relay_file()
+        record = json.loads(relay_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("pass9", response_body)
+        self.assertEqual(response.get_json()["ack_id"], "sync-test-1")
+        self.assertEqual(response.get_json()["count"], 2)
+        self.assertTrue(response.get_json()["queued"])
+        self.assertEqual(record["status"], "pending")
+        self.assertEqual(record["account_count"], 2)
+        self.assertEqual(record["selected_user_id"], "user9")
+        self.assertFalse(saved_login.exists())
+
+        worker_response = self.client.get("/worker/credential-sync", headers={"X-Worker-Token": "worker-token"})
+        worker_payload = worker_response.get_json()["request"]
+        self.assertEqual(worker_response.status_code, 200)
+        self.assertEqual(worker_payload["request_id"], "sync-test-1")
+        self.assertEqual(worker_payload["payload"]["accounts"][1]["password"], "pass9")
+
+        ack_response = self.client.post(
+            "/worker/credential-sync/sync-test-1/ack",
+            json={"status": "saved", "detail": "saved"},
+            headers={"X-Worker-Token": "worker-token"},
+        )
+        self.assertEqual(ack_response.status_code, 200)
+        self.assertFalse(relay_path.exists())
+
+        empty_response = self.client.get("/worker/credential-sync", headers={"X-Worker-Token": "worker-token"})
+        self.assertIsNone(empty_response.get_json()["request"])
+
     def test_app_page_loads(self):
         response = self.client.get("/app")
 
@@ -105,7 +190,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("救護返隊小幫手", body)
         self.assertIn("救護車設定", body)
         self.assertNotIn('href="/admin/public-pc"', body)
-        self.assertNotIn("公務後台", body)
+        self.assertNotIn("救護後台", body)
         self.assertIn('id="task-form" autocomplete="off" novalidate', body)
         self.assertIn("\u65b0\u576191", body)
         self.assertIn(">\u5433\u5b97\u8015</option>", body)
@@ -146,7 +231,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn("救護車設定", body)
         self.assertIn('href="/admin/public-pc"', body)
-        self.assertIn("公務後台", body)
+        self.assertIn("救護後台", body)
         self.assertIn('class="header-actions"', body)
 
     def test_app_page_recent_task_does_not_show_delete_button(self):
@@ -211,9 +296,32 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.store.list_recent(), [])
         self.assertIn('<div class="form-errors" role="alert">', body)
+        self.assertIn('name="return_date" id="return-date" value="2026-06-07"', body)
+        self.assertIn('target.scrollIntoView({ block: "start" });', body)
         expected_order = ["請填寫返隊時間", "請選擇出動車輛", "請選擇司機", "請選擇傷病患", "請填寫里程"]
         positions = [body.index(message) for message in expected_order]
         self.assertEqual(positions, sorted(positions))
+
+    def test_create_task_validation_keeps_imported_personnel_driver_options(self):
+        first_person = "\u5433\u5b97\u8015"
+        second_person = "\u694a\u5f18\u5b87"
+        unrelated_person = "\u5305\u83ef\u5148"
+        response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                personnel=f"{first_person},{second_person}",
+                driver=second_person,
+                mileage="",
+            ),
+            follow_redirects=False,
+        )
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(f'<input type="hidden" name="personnel" value="{first_person},{second_person}">', body)
+        self.assertIn(f'<option value="{first_person}">{first_person}</option>', body)
+        self.assertIn(f'<option value="{second_person}" selected>{second_person}</option>', body)
+        self.assertNotIn(f'<option value="{unrelated_person}">{unrelated_person}</option>', body)
 
     def test_admin_vehicle_create_adds_vehicle_option(self):
         page = self.client.get("/admin/vehicles")
@@ -244,6 +352,17 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(app_response.data.decode("utf-8"))
         self.assertIn('<option value="新坡96">新坡96</option>', body)
         self.assertIn("BPE-5960", html.unescape(response.data.decode("utf-8")))
+
+    def test_admin_pages_share_layout_tokens(self):
+        vehicle_body = html.unescape(self.client.get("/admin/vehicles").data.decode("utf-8"))
+        public_pc_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+
+        for body in (vehicle_body, public_pc_body):
+            self.assertIn("main { max-width: 960px;", body)
+            self.assertIn("--text-md: 15px;", body)
+            self.assertIn("--text-xl: 28px;", body)
+            self.assertIn("repeating-linear-gradient", body)
+            self.assertIn(".secondary { background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }", body)
 
     def test_admin_vehicle_delete_removes_custom_vehicle_only(self):
         response = self.client.post("/admin/vehicles/delete", data={"label": "新坡95"}, follow_redirects=False)
@@ -311,7 +430,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.get_json()["ack_id"], "evt-1")
         page = self.client.get("/admin/public-pc")
         body = html.unescape(page.data.decode("utf-8"))
-        self.assertIn("公務電腦後台", body)
+        self.assertIn("救護後台", body)
         self.assertIn('<details class="task-details">', body)
         self.assertIn("<summary>完整事件</summary>", body)
         self.assertIn("任務司機：曾彥綸", body)
@@ -366,6 +485,43 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertEqual(len(reports[0]["events"]), 1)
         self.assertEqual(reports[0]["events"][0]["event_id"], "evt-dedupe-1")
+
+    def test_admin_public_pc_shows_site_diagnostics(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        response = self.client.post(
+            "/worker/public-pc-task-events",
+            headers=worker_headers,
+            json={
+                "event_id": "evt-diag",
+                "task_id": "local-task-diag",
+                "task": {
+                    "task_id": "local-task-diag",
+                    "case_reason": "急病",
+                    "case_address": "桃園市觀音區中山路",
+                },
+                "action": "四站登打部分失敗",
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": {
+                    "consumables": {
+                        "key": "consumables",
+                        "status": "consumables_failed",
+                        "detail": "SSO login failed",
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        page = self.client.get("/admin/public-pc")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("錯誤指引", body)
+        self.assertIn("未完成點", body)
+        self.assertIn("登入一站通", body)
+        self.assertIn("登入、帳密、SSO 或驗證碼尚未完成", body)
+        self.assertIn("下一步", body)
 
     def test_admin_public_pc_lists_all_task_events(self):
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -804,6 +960,15 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(app_module.selected_return_date_input(case), "")
         self.assertEqual(app_module.selected_return_time_input(case), "")
 
+    def test_return_date_input_preserves_submitted_date_without_return_time(self):
+        case = {
+            "case_date": "2026-06-07",
+            "return_date": "2026-06-08",
+            "return_time_hhmm": "",
+        }
+
+        self.assertEqual(app_module.selected_return_date_input(case), "2026-06-08")
+
     def test_event_detail_text_keeps_event_log_short(self):
         event = {"status": "vehicle_mileage_saved", "detail": "\u8eca\u8f1b\u91cc\u7a0b: \u5df2\u5efa\u7acb\u5f88\u9577\u7684\u8aaa\u660e"}
 
@@ -972,16 +1137,16 @@ class WebAppTests(unittest.TestCase):
         payload = self.store.get(task_id)
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
 
-    def test_single_site_buttons_show_for_failed_and_blocked_unfinished_sites(self):
+    def test_single_site_buttons_show_for_failed_and_unfinished_sites(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         self.store.update_site_result(
             task_id,
             app_module.SiteAutomationResult(
-                "disinfection",
-                "\u7dca\u6025\u6551\u8b77\u6d88\u6bd2",
-                "disinfection_failed",
-                "missing disinfection save button",
+                "consumables",
+                "\u4e00\u7ad9\u901a\u8017\u6750",
+                "consumables_failed",
+                "missing consumables save button",
             ),
         )
 
@@ -989,14 +1154,63 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertEqual(body.count("<button class=\"secondary\" type=\"submit\">\u55ae\u7368\u767b\u6253</button>"), 2)
-        self.assertIn(f"/tasks/{task_id}/sites/disinfection/run", body)
         self.assertIn(f"/tasks/{task_id}/sites/consumables/run", body)
-        disinfection_card = body[body.index("<h3>\u6d88\u6bd2</h3>") : body.index("<h3>\u8017\u6750</h3>")]
-        self.assertLess(disinfection_card.index("\u55ae\u7368\u767b\u6253"), disinfection_card.index("\u5931\u6557"))
-        self.assertIn("\u932f\u8aa4\u6307\u5f15", body)
-        self.assertIn("\u6d88\u6bd2\uff1a\u5931\u6557", body)
-        self.assertIn("\u9801\u9762\u6309\u9215\u6216\u6b04\u4f4d\u8207\u7a0b\u5f0f\u9810\u671f\u4e0d\u540c", body)
-        self.assertIn("\u8017\u6750\uff1a\u672a\u63a5\u7e8c", body)
+        self.assertIn(f"/tasks/{task_id}/sites/disinfection/run", body)
+        consumables_card = body[body.index("<h3>\u8017\u6750</h3>") : body.index("<h3>\u6d88\u6bd2</h3>")]
+        self.assertLess(consumables_card.index("\u55ae\u7368\u767b\u6253"), consumables_card.index("\u5931\u6557"))
+        self.assertNotIn("\u932f\u8aa4\u6307\u5f15", body)
+        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('aria-label="\u56db\u7ad9\u968e\u6bb5\u6aa2\u67e5"')]
+        self.assertNotIn("\u672a\u5b8c\u6210\u9ede", task_section)
+        self.assertNotIn("\u586b\u5beb\u8017\u6750\u54c1\u9805", task_section)
+        self.assertNotIn("\u9801\u9762\u6309\u9215\u6216\u6b04\u4f4d\u8207\u7a0b\u5f0f\u9810\u671f\u4e0d\u540c", task_section)
+        self.assertIn("\u8017\u6750\uff1a\u5931\u6557", body)
+        self.assertNotIn("\u6d88\u6bd2\uff1a\u672a\u63a5\u7e8c", body)
+        self.assertNotIn("\u56db\u7ad9\u6d41\u7a0b\u5df2\u505c\u6b62", body)
+
+    def test_task_detail_shows_failure_stage_reason_and_next_action(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_failed",
+                "vehicle not found: 新坡91",
+            ),
+        )
+
+        response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertLess(body.index("四站登打啟動"), body.index("<h2>任務內容</h2>"))
+        task_section = body[body.index('aria-label="任務內容"') : body.index('aria-label="四站階段檢查"')]
+        self.assertNotIn("未完成點", task_section)
+        self.assertNotIn("原因", task_section)
+        self.assertNotIn("下一步", task_section)
+        stage_section = body[body.index('aria-label="四站階段檢查"') :]
+        self.assertIn("失敗點", stage_section)
+        self.assertIn("未完成", stage_section)
+
+    def test_task_detail_refreshes_when_later_site_runs_after_failure(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("duty_work_log", "消防勤務工作紀錄", "duty_work_log_failed", "login failed"),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_running", "running"),
+        )
+
+        detail_response = self.client.get(f"/tasks/{task_id}")
+        detail_body = html.unescape(detail_response.data.decode("utf-8"))
+        app_response = self.client.get("/app")
+        app_body = html.unescape(app_response.data.decode("utf-8"))
+
+        self.assertIn("window.location.reload()", detail_body)
+        self.assertIn("已完成 0/4；目前：里程執行中", app_body)
 
     def test_task_detail_auto_refreshes_while_running(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -1072,7 +1286,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("local_pc_ready", body)
         self.assertNotIn("https://ppe.tyfd.gov.tw", body)
         task_section = body.split('aria-label="任務內容"', 1)[1]
-        task_section_head = task_section.split('<div class="task-submit">', 1)[0]
+        task_section_head = task_section.split('<div class="task-grid">', 1)[0]
+        self.assertLess(task_section_head.index("四站登打啟動"), task_section_head.index("<h2>任務內容</h2>"))
         self.assertIn("任務內容", task_section_head)
         self.assertNotIn("待確認", task_section_head)
 
@@ -1119,7 +1334,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("救護返隊小幫手-編輯狀態", edit_body)
         self.assertNotIn("勤務案件", edit_body)
         self.assertNotIn("救護車設定", edit_body)
-        self.assertNotIn("公務後台", edit_body)
+        self.assertNotIn("救護後台", edit_body)
         self.assertIn("儲存修改", edit_body)
         self.assertIn('value="100"', edit_body)
 
@@ -1147,7 +1362,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["overall_status"], "created")
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "not_started")
 
-    def test_task_detail_card_order_is_work_mileage_disinfection_consumables(self):
+    def test_task_detail_card_order_is_work_mileage_consumables_disinfection(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
@@ -1155,14 +1370,14 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertLess(body.index("<h3>\u5de5\u4f5c</h3>"), body.index("<h3>\u91cc\u7a0b</h3>"))
-        self.assertLess(body.index("<h3>\u91cc\u7a0b</h3>"), body.index("<h3>\u6d88\u6bd2</h3>"))
-        self.assertLess(body.index("<h3>\u6d88\u6bd2</h3>"), body.index("<h3>\u8017\u6750</h3>"))
+        self.assertLess(body.index("<h3>\u91cc\u7a0b</h3>"), body.index("<h3>\u8017\u6750</h3>"))
+        self.assertLess(body.index("<h3>\u8017\u6750</h3>"), body.index("<h3>\u6d88\u6bd2</h3>"))
         work = body[body.index("<h3>\u5de5\u4f5c</h3>") : body.index("<h3>\u91cc\u7a0b</h3>")]
         self.assertLess(work.index("\u5730\u5740"), work.index("\u4e8b\u7531"))
         self.assertLess(work.index("\u4e8b\u7531"), work.index("\u8eca\u8f1b"))
         self.assertLess(work.index("\u8eca\u8f1b"), work.index("\u53f8\u6a5f"))
         self.assertLess(work.index("\u53f8\u6a5f"), work.index("\u50b7\u75c5\u60a3"))
-        mileage = body[body.index("<h3>\u91cc\u7a0b</h3>") : body.index("<h3>\u6d88\u6bd2</h3>")]
+        mileage = body[body.index("<h3>\u91cc\u7a0b</h3>") : body.index("<h3>\u8017\u6750</h3>")]
         self.assertLess(mileage.index(">\u8eca\u8f1b</span>"), mileage.index(">\u51fa\u52d5</span>"))
         self.assertLess(mileage.index(">\u51fa\u52d5</span>"), mileage.index(">\u8fd4\u968a</span>"))
         self.assertLess(mileage.index(">\u8fd4\u968a</span>"), mileage.index(">\u91cc\u7a0b</span>"))
@@ -1180,6 +1395,10 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("登入 PPE", body)
         self.assertIn("登入消毒系統", body)
         self.assertIn("登入一站通", body)
+        stage_section = body[body.index('aria-label="四站階段檢查"') :]
+        self.assertLess(stage_section.index("<h3>工作</h3>"), stage_section.index("<h3>里程</h3>"))
+        self.assertLess(stage_section.index("<h3>里程</h3>"), stage_section.index("<h3>耗材</h3>"))
+        self.assertLess(stage_section.index("<h3>耗材</h3>"), stage_section.index("<h3>消毒</h3>"))
         self.assertIn("未執行", body)
         self.assertNotIn("未開始", body)
         self.assertNotIn("工作：未執行", body)
@@ -1242,6 +1461,34 @@ class WebAppTests(unittest.TestCase):
         updated = self.store.get(task_id)
         self.assertEqual(updated["overall_status"], "desktop_fast_completed")
         self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
+
+    def test_worker_site_status_accepts_failure_diagnostics(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        status_response = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=worker_headers,
+            json={
+                "status": "consumables_failed",
+                "detail": "SSO login failed",
+                "site_key": "consumables",
+                "site_name": "一站通耗材",
+                "failure_stage": "登入一站通",
+                "failure_reason": "測試指定原因",
+                "next_action": "測試下一步",
+                "exception_type": "RuntimeError",
+            },
+        )
+
+        self.assertEqual(status_response.status_code, 200)
+        site = self.store.get(task_id)["site_statuses"]["consumables"]
+        self.assertEqual(site["failure_stage"], "登入一站通")
+        self.assertEqual(site["failure_reason"], "測試指定原因")
+        self.assertEqual(site["next_action"], "測試下一步")
+        self.assertEqual(site["exception_type"], "RuntimeError")
 
     def test_localhost_run_uses_desktop_fast_mode_when_auto(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"

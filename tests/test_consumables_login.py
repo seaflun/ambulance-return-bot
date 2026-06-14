@@ -6,15 +6,62 @@ from pathlib import Path
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
 from ambulance_bot.models import AmbulanceReturnRequest
 from consumables_login import (
+    _assert_consumable_rows_match,
     _case_id_sid_fragments,
     _consumable_sid_score,
     _emm_temsis_id_from_href,
     _load_acs_credentials,
     _wait_for_consumable_detail_page,
+    save_consumables_record_enabled,
 )
 
 
 class ConsumablesLoginTests(unittest.TestCase):
+    def test_assert_consumable_rows_match_allows_expected_rows(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                return [
+                    {"itemId": "821", "quantity": "2"},
+                    {"itemId": "816", "quantity": "02"},
+                ]
+
+        _assert_consumable_rows_match(
+            FakeDriver(),
+            [{"itemId": "816", "quantity": "2"}, {"itemId": "821", "quantity": "2"}],
+            "耗材儲存前",
+        )
+
+    def test_assert_consumable_rows_match_rejects_extra_duplicate_row(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                return [
+                    {"itemId": "816", "quantity": "2"},
+                    {"itemId": "816", "quantity": "2"},
+                    {"itemId": "821", "quantity": "2"},
+                ]
+
+        with self.assertRaisesRegex(RuntimeError, "停止儲存"):
+            _assert_consumable_rows_match(
+                FakeDriver(),
+                [{"itemId": "816", "quantity": "2"}, {"itemId": "821", "quantity": "2"}],
+                "耗材儲存前",
+            )
+
+    def test_save_consumables_record_flag_defaults_on(self):
+        previous = os.environ.get("SAVE_CONSUMABLES_RECORD")
+        try:
+            os.environ.pop("SAVE_CONSUMABLES_RECORD", None)
+            self.assertTrue(save_consumables_record_enabled())
+            os.environ["SAVE_CONSUMABLES_RECORD"] = "0"
+            self.assertFalse(save_consumables_record_enabled())
+            os.environ["SAVE_CONSUMABLES_RECORD"] = "yes"
+            self.assertTrue(save_consumables_record_enabled())
+        finally:
+            if previous is None:
+                os.environ.pop("SAVE_CONSUMABLES_RECORD", None)
+            else:
+                os.environ["SAVE_CONSUMABLES_RECORD"] = previous
+
     def test_case_id_fragments_match_consumable_sid(self):
         self.assertEqual(
             _case_id_sid_fragments("20260602011652012"),

@@ -62,7 +62,7 @@ class DesktopFastRunnerTests(unittest.TestCase):
             acs_login_mock.assert_called_once()
             consumables_mock.assert_called_once()
 
-    def test_stops_before_consumables_when_disinfection_fails(self):
+    def test_continues_to_disinfection_when_consumables_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp) / "tasks")
             request = AmbulanceReturnRequest(
@@ -83,25 +83,32 @@ class DesktopFastRunnerTests(unittest.TestCase):
             ), patch(
                 "ambulance_bot.desktop_fast_runner.login_disinfection_and_get_driver",
                 return_value=Mock(name="disinfection_driver"),
-            ), patch(
+            ) as disinfection_login_mock, patch(
                 "ambulance_bot.desktop_fast_runner.run_disinfection_task",
                 return_value=SimpleNamespace(
-                    ok=False,
-                    status="disinfection_failed",
-                    detail="消毒系統需要重新登入或驗證碼",
+                    ok=True,
+                    status="disinfection_saved",
+                    detail="disinfection ok",
                 ),
-            ), patch(
+            ) as disinfection_mock, patch(
                 "ambulance_bot.desktop_fast_runner.login_acs_and_get_driver",
-            ) as acs_login_mock:
+                return_value=Mock(name="driver"),
+            ) as acs_login_mock, patch(
+                "ambulance_bot.desktop_fast_runner.open_consumable_record_for_task",
+                side_effect=RuntimeError("耗材系統需要重新登入或驗證碼"),
+            ) as consumables_mock:
                 runner.start_existing("task-2")
                 self.assertTrue(runner.wait_for_idle())
 
             payload = store.get("task-2")
             self.assertEqual(payload["overall_status"], "desktop_fast_completed_with_errors")
-            self.assertIn("耗材未開啟", payload["events"][-1]["detail"])
-            self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_failed")
-            self.assertEqual(payload["site_statuses"]["consumables"]["status"], "not_started")
-            acs_login_mock.assert_not_called()
+            self.assertIn("已略過失敗站並接續後續站別", payload["events"][-1]["detail"])
+            self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_failed")
+            self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_saved")
+            acs_login_mock.assert_called_once()
+            consumables_mock.assert_called_once()
+            disinfection_login_mock.assert_called_once()
+            disinfection_mock.assert_called_once()
 
     def test_single_site_runs_only_requested_site(self):
         with tempfile.TemporaryDirectory() as tmp:

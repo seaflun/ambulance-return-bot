@@ -321,6 +321,50 @@ def save_duty_automation_credentials(
     return source
 
 
+def credential_sync_accounts_from_payload(payload: dict[str, object]) -> list[dict[str, object]]:
+    accounts_payload = payload.get("accounts")
+    if isinstance(accounts_payload, list):
+        accounts = [account for account in accounts_payload if isinstance(account, dict)]
+    else:
+        accounts = [payload]
+    return [
+        account
+        for account in accounts
+        if str(account.get("user_id") or "").strip() and str(account.get("password") or "")
+    ]
+
+
+def select_credential_sync_account(accounts: list[dict[str, object]], payload: dict[str, object]) -> dict[str, object] | None:
+    if not accounts:
+        return None
+    selected_user_id = str(payload.get("user_id") or "").strip()
+    selected_actor_no = str(payload.get("actor_no") or "").strip()
+    for account in accounts:
+        user_id = str(account.get("user_id") or "").strip()
+        actor_no = str(account.get("actor_no") or "").strip()
+        if selected_user_id and user_id == selected_user_id:
+            return account
+        if selected_actor_no and actor_no == selected_actor_no:
+            return account
+    return accounts[0]
+
+
+def save_credential_sync_payload(payload: dict[str, object], path: Path | None = None) -> tuple[str, str, Path, int] | None:
+    accounts = credential_sync_accounts_from_payload(payload)
+    selected = select_credential_sync_account(accounts, payload)
+    if selected is None:
+        return None
+    user_id = str(selected.get("user_id") or "").strip()
+    password = str(selected.get("password") or "")
+    if not user_id or not password:
+        return None
+    last_selected = str(payload.get("user_id") or payload.get("actor_no") or user_id).strip()
+    saved_path = save_duty_automation_credentials(accounts, last_selected=last_selected, path=path)
+    os.environ["DUTY_ACCOUNT"] = user_id
+    os.environ["DUTY_PASSWORD"] = password
+    return user_id, password, saved_path, len(accounts)
+
+
 def _normalized_account_for_save(account: dict[str, object]) -> dict[str, str] | None:
     user_id = str(account.get("user_id", "") or "").strip()
     password = str(account.get("password", "") or "")
