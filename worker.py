@@ -245,10 +245,10 @@ def run_all_sites_task(
     runners = [
         (
             "duty_work_log",
-            lambda: run_task(
+            lambda payload: run_task(
                 server_url,
                 worker_id,
-                task,
+                dict(payload.get("task") or task),
                 artifacts_dir,
                 profile_name=f"duty_work_log_profile_{profile_suffix}",
                 use_session_lock=False,
@@ -259,24 +259,25 @@ def run_all_sites_task(
         ),
         (
             "vehicle_mileage",
-            lambda: run_vehicle_task(
+            lambda payload: run_vehicle_task(
                 server_url,
                 worker_id,
-                task,
+                dict(payload.get("task") or task),
                 artifacts_dir,
                 profile_name=f"vehicle_mileage_profile_{profile_suffix}",
                 use_session_lock=False,
                 tile_name="vehicle_mileage",
                 force_new_driver=True,
                 update_overall=False,
+                update_context=site_update_context_from_payload(payload, "vehicle_mileage"),
             ),
         ),
         (
             "consumables",
-            lambda: run_consumables_worker_task(
+            lambda payload: run_consumables_worker_task(
                 server_url,
                 worker_id,
-                task,
+                dict(payload.get("task") or task),
                 artifacts_dir,
                 profile_name=f"consumables_profile_{profile_suffix}",
                 tile_name="consumables",
@@ -285,10 +286,10 @@ def run_all_sites_task(
         ),
         (
             "disinfection",
-            lambda: run_disinfection_worker_task(
+            lambda payload: run_disinfection_worker_task(
                 server_url,
                 worker_id,
-                task,
+                dict(payload.get("task") or task),
                 artifacts_dir,
                 profile_name=f"disinfection_profile_{profile_suffix}",
                 use_session_lock=False,
@@ -319,7 +320,7 @@ def run_all_sites_task(
             if _site_is_complete(current_status):
                 print(f"[worker] skip completed site task={request.task_id} site={site_key}", flush=True)
                 continue
-            last_result = runner()
+            last_result = runner(payload)
             if _result_blocks_progress(last_result):
                 failed_results.append(last_result)
         finally:
@@ -338,6 +339,17 @@ def run_all_sites_task(
     return last_result
 
 
+def site_update_context_from_payload(payload: dict[str, object], site_key: str) -> dict[str, object] | None:
+    site_statuses = payload.get("site_statuses")
+    if not isinstance(site_statuses, dict):
+        return None
+    site = site_statuses.get(site_key)
+    if not isinstance(site, dict):
+        return None
+    context = site.get("update_context")
+    return context if isinstance(context, dict) else None
+
+
 def run_vehicle_task(
     server_url: str,
     worker_id: str,
@@ -349,6 +361,7 @@ def run_vehicle_task(
     tile_name: str = "",
     force_new_driver: bool = False,
     update_overall: bool = True,
+    update_context: dict[str, object] | None = None,
 ) -> object:
     request = AmbulanceReturnRequest.from_dict(task)
     login_audit = login_audit_for_site("vehicle_mileage", request)
@@ -368,6 +381,7 @@ def run_vehicle_task(
             use_session_lock=use_session_lock,
             tile_name=tile_name,
             force_new_driver=force_new_driver,
+            update_context=update_context,
         )
     except Exception as exc:
         result = make_site_result("vehicle_mileage", "車輛里程", "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}", exc)

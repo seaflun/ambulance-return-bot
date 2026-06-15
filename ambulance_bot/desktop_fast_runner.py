@@ -170,6 +170,7 @@ class DesktopFastRunner:
                 use_session_lock=False,
                 tile_name="vehicle_mileage",
                 force_new_driver=True,
+                update_context=self._site_update_context(request.task_id, site_key),
             )
         if site_key == "disinfection":
             return lambda: self._run_disinfection(request, profile_suffix)
@@ -214,6 +215,11 @@ class DesktopFastRunner:
             self.event_callback(self.store.get(task_id), action)
         except Exception:
             pass
+
+    def _site_update_context(self, task_id: str, site_key: str) -> dict[str, object] | None:
+        site = dict(self.store.get(task_id).get("site_statuses", {}).get(site_key) or {})
+        context = site.get("update_context")
+        return context if isinstance(context, dict) else None
 
     def _run_consumables(self, request, profile_suffix: str) -> SiteAutomationResult:
         driver = login_acs_and_get_driver(

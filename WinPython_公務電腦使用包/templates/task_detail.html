@@ -353,7 +353,7 @@
             <div class="card-state">
               {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'duty_work_log') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/duty_work_log/run">
-                  <button class="secondary" type="submit">單獨登打</button>
+                  <button class="secondary" type="submit">{{ site_action_button_label(duty_site.status, 'duty_work_log') }}</button>
                 </form>
               {% endif %}
               <span class="status {{ status_class(duty_site.status) }}">{{ status_label(duty_site.status) }}</span>
@@ -375,7 +375,7 @@
             <div class="card-state">
               {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'vehicle_mileage') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/vehicle_mileage/run">
-                  <button class="secondary" type="submit">單獨登打</button>
+                  <button class="secondary" type="submit">{{ site_action_button_label(mileage_site.status, 'vehicle_mileage') }}</button>
                 </form>
               {% endif %}
               <span class="status {{ status_class(mileage_site.status) }}">{{ status_label(mileage_site.status) }}</span>
@@ -397,7 +397,7 @@
             <div class="card-state">
               {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'consumables') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/consumables/run">
-                  <button class="secondary" type="submit">單獨登打</button>
+                  <button class="secondary" type="submit">{{ site_action_button_label(consumables_site.status, 'consumables') }}</button>
                 </form>
               {% endif %}
               <span class="status {{ status_class(consumables_site.status) }}">{{ status_label(consumables_site.status) }}</span>
@@ -419,7 +419,7 @@
             <div class="card-state">
               {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'disinfection') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/disinfection/run">
-                  <button class="secondary" type="submit">單獨登打</button>
+                  <button class="secondary" type="submit">{{ site_action_button_label(disinfection_site.status, 'disinfection') }}</button>
                 </form>
               {% endif %}
               <span class="status {{ status_class(disinfection_site.status) }}">{{ status_label(disinfection_site.status) }}</span>

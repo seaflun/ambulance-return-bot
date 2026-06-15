@@ -65,6 +65,12 @@ SITE_SHORT_NAMES = {
     "disinfection": "消毒",
     "consumables": "耗材",
 }
+SITE_UPDATE_BUTTON_LABELS = {
+    "duty_work_log": "更新工作",
+    "vehicle_mileage": "更新里程",
+    "consumables": "更新耗材",
+    "disinfection": "更新消毒",
+}
 
 @app.get("/")
 def index():
@@ -173,7 +179,7 @@ def edit_task(task_id: str):
 @app.post("/tasks/<task_id>/edit")
 def update_task(task_id: str):
     try:
-        store.get(task_id)
+        previous_payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
     task_request = request_from_form(request.form)
@@ -188,7 +194,9 @@ def update_task(task_id: str):
             case_lookup={"cases": [], "case_count": 0, "debug_artifacts": []},
             form_errors=errors,
         ), 400
-    payload = store.update_task(task_id, task_request)
+    changed_site_keys = changed_sites_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict())
+    site_update_contexts = site_update_contexts_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict(), changed_site_keys)
+    payload = store.update_task(task_id, task_request, changed_site_keys=changed_site_keys, site_update_contexts=site_update_contexts)
     report_public_pc_task_event(payload, "修改任務")
     return redirect(url_for("task_detail", task_id=task_id))
 
@@ -269,6 +277,9 @@ def status():
             "host": request.host,
             "desktop_fast_mode": os.getenv("DESKTOP_FAST_MODE", "auto"),
             "effective_mode": effective_task_execution_mode(),
+            "app_dir": str(Path(__file__).resolve().parent),
+            "default_consumables": list(DEFAULT_CONSUMABLES),
+            "consumable_top_names": [item["name"] for item in consumable_inventory_options()[:5]],
         }
     )
 
@@ -1061,6 +1072,52 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     tmp_path.replace(path)
 
 
+def changed_sites_for_task_edit(previous_task: dict, current_task: dict) -> set[str]:
+    changed_sites: set[str] = set()
+    if task_fields_changed(previous_task, current_task, ("vehicle", "driver")):
+        changed_sites.update({"duty_work_log", "vehicle_mileage"})
+    if task_fields_changed(previous_task, current_task, ("mileage", "return_date", "return_time")):
+        changed_sites.add("vehicle_mileage")
+    if task_fields_changed(previous_task, current_task, ("case_reason", "patient_summary", "work_note")):
+        changed_sites.add("duty_work_log")
+    if task_fields_changed(previous_task, current_task, ("consumables",)):
+        changed_sites.add("consumables")
+    if task_fields_changed(previous_task, current_task, ("disinfection", "disinfection_items")):
+        changed_sites.add("disinfection")
+    return changed_sites
+
+
+def site_update_contexts_for_task_edit(previous_task: dict, current_task: dict, changed_site_keys: set[str]) -> dict[str, dict[str, object]]:
+    return {
+        site_key: {
+            "previous_task": previous_task,
+            "current_task": current_task,
+        }
+        for site_key in changed_site_keys
+    }
+
+
+def task_fields_changed(previous_task: dict, current_task: dict, field_names: tuple[str, ...]) -> bool:
+    return any(normalized_task_edit_value(previous_task.get(name)) != normalized_task_edit_value(current_task.get(name)) for name in field_names)
+
+
+def normalized_task_edit_value(value: object) -> object:
+    if isinstance(value, dict):
+        normalized_items: list[tuple[str, int]] = []
+        for key, item_value in value.items():
+            name = str(key).strip()
+            try:
+                qty = int(item_value)
+            except (TypeError, ValueError):
+                qty = 0
+            if name and qty > 0:
+                normalized_items.append((name, qty))
+        return tuple(sorted(normalized_items))
+    if isinstance(value, list):
+        return tuple(sorted(str(item).strip() for item in value if str(item).strip()))
+    return str(value or "").strip()
+
+
 def status_label(status: str) -> str:
     value = str(status or "")
     if value == "desktop_fast_running":
@@ -1069,6 +1126,8 @@ def status_label(status: str) -> str:
         return "部分失敗"
     if value == "desktop_fast_completed":
         return "完成"
+    if value == "site_needs_update" or value.endswith("_needs_update"):
+        return "需更新"
     if value in {"not_started", ""}:
         return "未執行"
     if value in {"completed_by_user"} or value.endswith("_saved"):
@@ -1088,6 +1147,8 @@ def status_class(status: str) -> str:
         return "complete"
     if value == "desktop_fast_completed_with_errors":
         return "failed"
+    if value == "site_needs_update" or value.endswith("_needs_update"):
+        return "waiting"
     if value in {"completed_by_user"} or value.endswith("_saved"):
         return "complete"
     if "failed" in value or "error" in value:
@@ -1107,13 +1168,22 @@ def site_can_run_individually(site_statuses: dict, site_key: str) -> bool:
     blocked = False
     for ordered_key in SITE_RUN_ORDER:
         site = dict(site_statuses.get(ordered_key) or {})
-        current_class = status_class(str(site.get("status") or ""))
+        current_status = str(site.get("status") or "")
+        current_class = status_class(current_status)
         if current_class == "failed":
             blocked = True
         if ordered_key != site_key:
             continue
+        if current_status.endswith("_needs_update"):
+            return True
         return current_class == "failed" or (blocked and current_class != "complete")
     return False
+
+
+def site_action_button_label(status: str, site_key: str) -> str:
+    if str(status or "").endswith("_needs_update"):
+        return SITE_UPDATE_BUTTON_LABELS.get(site_key, "更新")
+    return "單獨登打"
 
 
 def site_diagnostic(site: dict) -> dict[str, str]:
@@ -1168,6 +1238,8 @@ def effective_task_status(payload: dict) -> str:
         return "desktop_fast_running"
     if any(status_class(str(site.get("status") or "")) == "failed" for site in sites):
         return "failed"
+    if any(str(site.get("status") or "").endswith("_needs_update") for site in sites):
+        return "site_needs_update"
     if any(status_class(str(site.get("status") or "")) == "waiting" for site in sites):
         return "manual_captcha_required"
     if sites and all(status_class(str(site.get("status") or "")) == "complete" for site in sites):
@@ -1188,6 +1260,7 @@ def task_progress_summary(payload: dict) -> str:
     completed_count = 0
     total_count = len(SITE_RUN_ORDER)
     failed_sites: list[str] = []
+    updated_sites: list[str] = []
     waiting_site = ""
     running_site = ""
 
@@ -1205,11 +1278,16 @@ def task_progress_summary(payload: dict) -> str:
         if site_class == "failed":
             failed_sites.append(site_name)
             continue
+        if site_status.endswith("_needs_update"):
+            updated_sites.append(site_name)
+            continue
         if site_class == "waiting":
             waiting_site = waiting_site or site_name
 
     if running_site:
         return f"已完成 {completed_count}/{total_count}；目前：{running_site}執行中"
+    if updated_sites:
+        return f"已完成 {completed_count}/{total_count}；需更新：{'、'.join(updated_sites)}"
     if waiting_site:
         return f"已完成 {completed_count}/{total_count}；待確認：{waiting_site}"
 
@@ -1479,6 +1557,7 @@ def template_helpers() -> dict:
         "selected_return_date_input": selected_return_date_input,
         "selected_return_time_input": selected_return_time_input,
         "recent_tasks_need_refresh": recent_tasks_need_refresh,
+        "site_action_button_label": site_action_button_label,
         "site_diagnostic": site_diagnostic,
         "site_short_name": site_short_name,
         "site_error_guidance": site_error_guidance,

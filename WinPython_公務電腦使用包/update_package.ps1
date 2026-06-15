@@ -78,12 +78,11 @@ function Copy-UpdateTree {
 }
 
 function Get-WorkerPackageProcesses {
-    $packageRoot = (Resolve-Path -LiteralPath $packageDir).Path
     Get-CimInstance Win32_Process |
         Where-Object {
             $_.CommandLine -and
-            $_.CommandLine.IndexOf($packageRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-            ($_.CommandLine -match "worker_gui\.py|app\.py")
+            ($_.CommandLine -match "worker_gui\.py|app\.py") -and
+            ($_.CommandLine -match "ambulance_return_bot|WinPython_公務電腦使用包")
         }
 }
 

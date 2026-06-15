@@ -207,6 +207,34 @@ class DesktopFastRunnerTests(unittest.TestCase):
             acs_login_mock.assert_called_once()
             consumables_mock.assert_called_once()
 
+    def test_vehicle_single_site_passes_update_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-update",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="\u65b0\u576191",
+                mileage="200",
+            )
+            store.create(request)
+            payload = store.get("task-update")
+            context = {"previous_task": {**request.to_dict(), "mileage": "100"}, "current_task": request.to_dict()}
+            payload["site_statuses"]["vehicle_mileage"]["status"] = "vehicle_mileage_needs_update"
+            payload["site_statuses"]["vehicle_mileage"]["update_context"] = context
+            store.save_payload("task-update", payload)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch(
+                "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
+                return_value=SimpleNamespace(ok=True, status="vehicle_mileage_saved", detail="mileage ok"),
+            ) as mileage_mock:
+                runner.start_site("task-update", "vehicle_mileage")
+                self.assertTrue(runner.wait_for_idle())
+
+            mileage_mock.assert_called_once()
+            self.assertEqual(mileage_mock.call_args.kwargs["update_context"], context)
+
 
 if __name__ == "__main__":
     unittest.main()

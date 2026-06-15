@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 
-DEFAULT_CONSUMABLES = {"桃-口罩(片)": 2, "桃-9吋手套-L(雙)": 2}
+DEFAULT_CONSUMABLES = {"桃-口罩(片)": 2, "桃-9吋手套-L(雙)": 2, "桃-可拋棄式耳溫槍耳套-福爾TD-1118(個)": 1}
 DISINFECTION_ITEM_OPTIONS = [
     "\u6551\u8b77\u8eca\u9ad4",
     "\u64d4\u67b6\u5e8a",

@@ -148,6 +148,7 @@ def run_vehicle_mileage_task(
     use_session_lock: bool = True,
     tile_name: str = "",
     force_new_driver: bool = False,
+    update_context: dict[str, object] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -177,7 +178,7 @@ def run_vehicle_mileage_task(
         apply_tile(driver, tile_name)
         _set_window_size_if_enabled(driver, "vehicle_mileage")
         driver.implicitly_wait(2)
-        detail = _open_vehicle_mileage_page(driver, request, output_dir)
+        detail = _open_vehicle_mileage_page(driver, request, output_dir, update_context=update_context)
         status = "vehicle_mileage_saved" if _save_vehicle_mileage_enabled() else "vehicle_mileage_prefilled"
         return SeleniumRunResult(True, status, detail, summary_path)
     except Exception as exc:
@@ -702,12 +703,17 @@ def _prepare_duty_work_log_form(
     return SeleniumRunResult(ok=True, status=status, detail=detail, summary_path=summary_path)
 
 
-def _open_vehicle_mileage_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
+def _open_vehicle_mileage_page(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    output_dir: Path,
+    update_context: dict[str, object] | None = None,
+) -> str:
     try:
         if not _ensure_ppe_vehicle_mileage_session(driver):
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_login")
             raise WebDriverException("PPE login did not reach vehicle mileage page")
-        detail = _prepare_vehicle_mileage_form(driver, request, output_dir.parent)
+        detail = _prepare_vehicle_mileage_form(driver, request, output_dir.parent, update_context=update_context)
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
     except WebDriverException:
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_error")
@@ -1051,49 +1057,65 @@ def _wait_for_ppe_login_result(driver: webdriver.Chrome, timeout: int = 12) -> b
     return not _is_ppe_login_page(driver)
 
 
-def _prepare_vehicle_mileage_form(driver: webdriver.Chrome, request: AmbulanceReturnRequest, artifacts_dir: Path | None = None) -> str:
+def _prepare_vehicle_mileage_form(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path | None = None,
+    update_context: dict[str, object] | None = None,
+) -> str:
     driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
     if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page before vehicle mileage form")
     _click_text_if_present(driver, ["\u8eca\u8f1b\u7ba1\u7406"])
     _click_text_if_present(driver, ["\u8eca\u8f1b\u4f7f\u7528\u7d00\u9304"])
     time.sleep(1)
+    previous_request = _vehicle_mileage_previous_request(update_context)
+    if previous_request and previous_request.vehicle and previous_request.vehicle != request.vehicle:
+        old_vehicle_label = vehicle_ppe_names(artifacts_dir).get(previous_request.vehicle, previous_request.vehicle)
+        _select_vehicle_record(driver, old_vehicle_label)
+        time.sleep(1)
+        deleted = _delete_vehicle_mileage_row(driver, previous_request)
+        delete_detail = f"已在原車輛 {previous_request.vehicle} 刪除里程列：{deleted}。"
+        if _save_vehicle_mileage_enabled():
+            delete_detail = f"{delete_detail}{_save_vehicle_mileage_form(driver)}"
+        else:
+            delete_detail = f"{delete_detail}未按儲存。"
+        driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
+        if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
+            raise WebDriverException("PPE session returned to login page before new vehicle mileage row")
+        time.sleep(1)
+        new_vehicle_label = vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
+        _select_vehicle_record(driver, new_vehicle_label)
+        time.sleep(1)
+        add_detail = _add_vehicle_mileage_record(driver, request, artifacts_dir)
+        return f"{delete_detail} 已改至新車輛 {request.vehicle} 新增里程列：{add_detail}"
+
     vehicle_label = vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
     _select_vehicle_record(driver, vehicle_label)
     time.sleep(1)
+    if previous_request:
+        row_index = _find_vehicle_mileage_row_index(driver, previous_request)
+        start_mileage = _vehicle_mileage_row_value(driver, row_index, "StartMileage")
+        values = _vehicle_mileage_values(request, start_mileage)
+        _fill_vehicle_grid_values(driver, values, row_index=row_index)
+        _assert_vehicle_mileage_values_present(driver, values, row_index=row_index)
+        if _save_vehicle_mileage_enabled():
+            return f"已修正原車輛里程列。{_save_vehicle_mileage_form(driver)}"
+        return "已修正原車輛里程列，未按儲存。"
+
+    return _add_vehicle_mileage_record(driver, request, artifacts_dir)
+
+
+def _add_vehicle_mileage_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest, artifacts_dir: Path | None = None) -> str:
     latest_end_mileage = _extract_latest_end_mileage(driver)
     _add_vehicle_mileage_row(driver)
     time.sleep(1)
 
-    start_date = request.service_case_date().strftime("%Y%m%d")
-    end_date = request.service_return_date().strftime("%Y%m%d")
-    start_mileage = latest_end_mileage
-    end_mileage = _resolve_end_mileage(start_mileage, request.mileage)
-    values = {
-        "\u958b\u59cb\u65e5\u671f": start_date,
-        "\u958b\u59cb\u6642\u9593": request.case_time,
-        "\u7d50\u675f\u65e5\u671f": end_date,
-        "\u7d50\u675f\u6642\u9593": request.return_time,
-        "\u958b\u59cb\u91cc\u7a0b": start_mileage,
-        "\u7d50\u675f\u91cc\u7a0b": end_mileage,
-        "\u4e8b\u7531": "\u6551\u8b77",
-        "\u524d\u5f80\u5730\u9ede": clean_case_address(request.case_address),
-        "\u99d5\u99db\u4eba": request.driver,
-    }
+    values = _vehicle_mileage_values(request, latest_end_mileage)
     _fill_vehicle_grid_values(driver, values)
     _assert_vehicle_mileage_values_present(driver, values)
     if _save_vehicle_mileage_enabled():
-        if not _click_vehicle_mileage_save(driver):
-            raise WebDriverException("missing vehicle mileage save button")
-        alert_text = _accept_alert_if_present(driver)
-        sweetalert_text = _confirm_sweetalert_if_present(driver)
-        final_alert_text = _accept_alert_if_present(driver, timeout=1)
-        if _is_ppe_login_page(driver):
-            raise WebDriverException("PPE session returned to login page after vehicle mileage save")
-        confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
-        if confirmations:
-            return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u6309\u4e0b\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
-        return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\uff1b\u672a\u5075\u6e2c\u5230\u78ba\u8a8d\u8996\u7a97\u3002"
+        return _save_vehicle_mileage_form(driver)
     return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
 
 
@@ -1506,6 +1528,20 @@ def _click_vehicle_mileage_save(driver: webdriver.Chrome) -> bool:
     return _click_save_control(driver)
 
 
+def _save_vehicle_mileage_form(driver: webdriver.Chrome) -> str:
+    if not _click_vehicle_mileage_save(driver):
+        raise WebDriverException("missing vehicle mileage save button")
+    alert_text = _accept_alert_if_present(driver)
+    sweetalert_text = _confirm_sweetalert_if_present(driver)
+    final_alert_text = _accept_alert_if_present(driver, timeout=1)
+    if _is_ppe_login_page(driver):
+        raise WebDriverException("PPE session returned to login page after vehicle mileage save")
+    confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
+    if confirmations:
+        return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u6309\u4e0b\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
+    return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\uff1b\u672a\u5075\u6e2c\u5230\u78ba\u8a8d\u8996\u7a97\u3002"
+
+
 def _click_disinfection_save(driver: webdriver.Chrome) -> bool:
     clicked = bool(
         driver.execute_script(
@@ -1676,6 +1712,122 @@ def _select_vehicle_record(driver: webdriver.Chrome, vehicle_label: str) -> None
         raise WebDriverException(f"vehicle not found: {vehicle_label}")
 
 
+def _vehicle_mileage_previous_request(update_context: dict[str, object] | None) -> AmbulanceReturnRequest | None:
+    if not isinstance(update_context, dict):
+        return None
+    previous_task = update_context.get("previous_task")
+    if not isinstance(previous_task, dict):
+        return None
+    try:
+        return AmbulanceReturnRequest.from_dict(previous_task)
+    except Exception:
+        return None
+
+
+def _vehicle_mileage_values(request: AmbulanceReturnRequest, start_mileage: str) -> dict[str, str]:
+    end_mileage = _resolve_end_mileage(start_mileage, request.mileage)
+    return {
+        "\u958b\u59cb\u65e5\u671f": request.service_case_date().strftime("%Y%m%d"),
+        "\u958b\u59cb\u6642\u9593": request.case_time,
+        "\u7d50\u675f\u65e5\u671f": request.service_return_date().strftime("%Y%m%d"),
+        "\u7d50\u675f\u6642\u9593": request.return_time,
+        "\u958b\u59cb\u91cc\u7a0b": start_mileage,
+        "\u7d50\u675f\u91cc\u7a0b": end_mileage,
+        "\u4e8b\u7531": "\u6551\u8b77",
+        "\u524d\u5f80\u5730\u9ede": clean_case_address(request.case_address),
+        "\u99d5\u99db\u4eba": request.driver,
+    }
+
+
+def _find_vehicle_mileage_row_index(driver: webdriver.Chrome, previous_request: AmbulanceReturnRequest) -> int:
+    expected = {
+        "StartDay": previous_request.service_case_date().strftime("%Y%m%d"),
+        "StartTime": normalize_hhmm_local(previous_request.case_time),
+        "EndDay": previous_request.service_return_date().strftime("%Y%m%d"),
+        "EndTime": normalize_hhmm_local(previous_request.return_time),
+        "EndMileage": "" if str(previous_request.mileage or "").strip().startswith("+") else str(previous_request.mileage or "").strip(),
+        "Destination": clean_case_address(previous_request.case_address),
+        "DriverName": str(previous_request.driver or "").strip(),
+    }
+    result = driver.execute_script(
+        """
+        const expected = arguments[0];
+        const grid = window.$ && $("#grid").data("kendoGrid");
+        if (!grid) return {ok: false, reason: 'grid not found'};
+        const rows = grid.dataSource.data();
+        const norm = value => String(value ?? '').replace(/\\s+/g, '').trim();
+        const scoreRow = row => {
+          let score = 0;
+          if (expected.StartDay && norm(row.StartDay) === norm(expected.StartDay)) score += 4;
+          if (expected.StartTime && norm(row.StartTime) === norm(expected.StartTime)) score += 5;
+          if (expected.EndDay && norm(row.EndDay) === norm(expected.EndDay)) score += 3;
+          if (expected.EndTime && norm(row.EndTime) === norm(expected.EndTime)) score += 5;
+          if (expected.EndMileage && norm(row.EndMileage) === norm(expected.EndMileage)) score += 4;
+          if (expected.Destination && norm(row.Destination).includes(norm(expected.Destination))) score += 2;
+          if (expected.DriverName && norm(row.DriverName) === norm(expected.DriverName)) score += 1;
+          return score;
+        };
+        const scored = rows.map((row, index) => ({index, score: scoreRow(row)}))
+          .filter(item => item.score >= 10)
+          .sort((a, b) => b.score - a.score);
+        if (!scored.length) return {ok: false, reason: 'matching mileage row not found'};
+        if (scored.length > 1 && scored[0].score === scored[1].score) {
+          return {ok: false, reason: 'matching mileage row is ambiguous', matches: scored.slice(0, 3)};
+        }
+        return {ok: true, index: scored[0].index, score: scored[0].score};
+        """,
+        expected,
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        raise WebDriverException(f"vehicle mileage row not found safely: {result}")
+    return int(result["index"])
+
+
+def _vehicle_mileage_row_value(driver: webdriver.Chrome, row_index: int, field_name: str) -> str:
+    value = driver.execute_script(
+        """
+        const rowIndex = arguments[0];
+        const fieldName = arguments[1];
+        const grid = window.$ && $("#grid").data("kendoGrid");
+        if (!grid) return '';
+        const row = grid.dataSource.data()[rowIndex];
+        if (!row) return '';
+        return String(row.get ? row.get(fieldName) : row[fieldName] || '');
+        """,
+        row_index,
+        field_name,
+    )
+    value = str(value or "").strip()
+    if not value:
+        raise WebDriverException(f"vehicle mileage row value not found: {field_name}")
+    return value
+
+
+def _delete_vehicle_mileage_row(driver: webdriver.Chrome, previous_request: AmbulanceReturnRequest) -> str:
+    row_index = _find_vehicle_mileage_row_index(driver, previous_request)
+    result = driver.execute_script(
+        """
+        const rowIndex = arguments[0];
+        const grid = window.$ && $("#grid").data("kendoGrid");
+        if (!grid) return {ok: false, reason: 'grid not found'};
+        const row = grid.dataSource.data()[rowIndex];
+        if (!row) return {ok: false, reason: 'row not found'};
+        const id = row.Id || (row.get && row.get('Id')) || '';
+        if (id) {
+          if (!Array.isArray(window.deleteList)) window.deleteList = [];
+          window.deleteList.push(id);
+        }
+        grid.dataSource.remove(row);
+        grid.refresh();
+        return {ok: true, id: String(id || ''), rowIndex};
+        """,
+        row_index,
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        raise WebDriverException(f"vehicle mileage row delete failed: {result}")
+    return f"row={result.get('rowIndex')} id={result.get('id') or 'new'}"
+
+
 def _extract_latest_end_mileage(driver: webdriver.Chrome) -> str:
     script = """
     const grid = window.$ && $("#grid").data("kendoGrid");
@@ -1724,15 +1876,17 @@ def _resolve_end_mileage(start_mileage: str, raw_mileage: str) -> str:
     return raw
 
 
-def _fill_vehicle_grid_values(driver: webdriver.Chrome, values: dict[str, str]) -> None:
+def _fill_vehicle_grid_values(driver: webdriver.Chrome, values: dict[str, str], row_index: int = 0) -> None:
     missing = driver.execute_script(
         """
         const values = arguments[0];
+        const rowIndex = arguments[1] || 0;
         const grid = window.$ && $("#grid").data("kendoGrid");
         if (!grid) return ['grid'];
         const rows = grid.dataSource.data();
         if (!rows.length) return ['newRow'];
-        const row = rows[0];
+        const row = rows[rowIndex];
+        if (!row) return ['row'];
         const driverName = values['駕駛人'] || '';
         let driverId = row.Driver || null;
         if (Array.isArray(window.driverList)) {
@@ -1767,6 +1921,7 @@ def _fill_vehicle_grid_values(driver: webdriver.Chrome, values: dict[str, str]) 
         return missing;
         """,
         values,
+        row_index,
     )
     if missing:
         raise WebDriverException(f"vehicle mileage grid values not filled: {missing}")
@@ -1821,20 +1976,22 @@ def _fill_form_by_labels(driver: webdriver.Chrome, values: dict[str, str]) -> No
         raise WebDriverException(f"vehicle mileage fields not found: {missing}")
 
 
-def _assert_vehicle_mileage_values_present(driver: webdriver.Chrome, values: dict[str, str]) -> None:
+def _assert_vehicle_mileage_values_present(driver: webdriver.Chrome, values: dict[str, str], row_index: int = 0) -> None:
     expected = [values[key] for key in ("\u958b\u59cb\u6642\u9593", "\u7d50\u675f\u6642\u9593", "\u7d50\u675f\u91cc\u7a0b") if values.get(key)]
     script = """
     const expected = arguments[0];
+    const rowIndex = arguments[1] || 0;
     const grid = window.$ && $("#grid").data("kendoGrid");
     if (grid && grid.dataSource.data().length) {
-      const row = grid.dataSource.data()[0];
+      const row = grid.dataSource.data()[rowIndex];
+      if (!row) return expected;
       const values = [row.StartTime, row.EndTime, String(row.EndMileage || '')].map(item => String(item || ''));
       return expected.filter(item => !values.includes(String(item)));
     }
     const values = Array.from(document.querySelectorAll('input, textarea, select')).map(el => String(el.value || ''));
     return expected.filter(item => !values.includes(String(item)));
     """
-    missing = driver.execute_script(script, expected)
+    missing = driver.execute_script(script, expected, row_index)
     if missing:
         raise WebDriverException(f"vehicle mileage values not filled: {missing}")
 

@@ -13,7 +13,10 @@ class ModelParsingTests(unittest.TestCase):
         request = parse_request("\u6551\u8b77\u56de\u7a0b\n\u8eca\u8f1b:91A1")
 
         self.assertEqual(request.vehicle, "91A1")
-        self.assertEqual(request.consumables, {"桃-口罩(片)": 2, "桃-9吋手套-L(雙)": 2})
+        self.assertEqual(
+            request.consumables,
+            {"桃-口罩(片)": 2, "桃-9吋手套-L(雙)": 2, "桃-可拋棄式耳溫槍耳套-福爾TD-1118(個)": 1},
+        )
         self.assertEqual(request.patient_summary, "\u7537\u4e00\u540d")
         self.assertEqual(
             request.disinfection_items,

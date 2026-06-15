@@ -27,6 +27,8 @@ from ambulance_bot.selenium_local import (
     _save_disinfection_probe_enabled,
     _save_disinfection_record_enabled,
     _save_vehicle_mileage_enabled,
+    _vehicle_mileage_previous_request,
+    _vehicle_mileage_values,
     _write_json_atomic,
     selenium_enabled,
 )
@@ -98,6 +100,42 @@ class SeleniumLocalTests(unittest.TestCase):
     def test_resolve_end_mileage_accepts_delta(self):
         self.assertEqual(_resolve_end_mileage("123400", "+50"), "123450")
         self.assertEqual(_resolve_end_mileage("123400", "123456"), "123456")
+
+    def test_vehicle_mileage_previous_request_reads_update_context(self):
+        previous = {
+            "task_id": "task-old",
+            "created_at": "2026-06-15T08:00:00",
+            "raw_text": "",
+            "vehicle": "\u65b0\u576191",
+            "mileage": "142842",
+        }
+
+        request = _vehicle_mileage_previous_request({"previous_task": previous})
+
+        self.assertIsNotNone(request)
+        assert request is not None
+        self.assertEqual(request.vehicle, "\u65b0\u576191")
+        self.assertEqual(request.mileage, "142842")
+
+    def test_vehicle_mileage_values_keep_existing_start_mileage_for_update(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-update",
+            created_at=datetime(2026, 6, 15, 8, 0),
+            raw_text="",
+            case_date="2026/06/15",
+            case_time="0830",
+            return_date="2026/06/15",
+            return_time="0910",
+            mileage="142900",
+            case_address="\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+            driver="\u66fe\u5f65\u7db8",
+        )
+
+        values = _vehicle_mileage_values(request, "142842")
+
+        self.assertEqual(values["\u958b\u59cb\u91cc\u7a0b"], "142842")
+        self.assertEqual(values["\u7d50\u675f\u91cc\u7a0b"], "142900")
+        self.assertEqual(values["\u958b\u59cb\u6642\u9593"], "0830")
 
     def test_disinfection_query_date_uses_case_date(self):
         request = AmbulanceReturnRequest(

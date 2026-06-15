@@ -52,18 +52,56 @@ class JsonTaskStore:
             self.save_payload(request.task_id, payload)
             return payload
 
-    def update_task(self, task_id: str, request: AmbulanceReturnRequest) -> dict[str, Any]:
+    def update_task(
+        self,
+        task_id: str,
+        request: AmbulanceReturnRequest,
+        changed_site_keys: set[str] | None = None,
+        site_update_contexts: dict[str, dict[str, object]] | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)
             request.task_id = task_id
             payload["task"] = request.to_dict()
-            payload["overall_status"] = "created"
-            payload["worker_queue"] = initial_worker_queue_state()
-            payload["site_statuses"] = initial_site_statuses()
-            payload["site_attempts"] = initial_site_attempts()
+            payload["updated_at"] = now_text()
+            changed_site_keys = set(changed_site_keys or set())
+            updated_sites = self._mark_changed_sites_for_update(payload, changed_site_keys, site_update_contexts or {})
+            if updated_sites:
+                payload["overall_status"] = "task_updated_needs_site_update"
+                payload["worker_queue"] = initial_worker_queue_state()
+            else:
+                payload["overall_status"] = str(payload.get("overall_status") or "created")
             self.add_event_to_payload(payload, "task_updated", "任務內容已修改。")
             self.save_payload(task_id, payload)
             return payload
+
+    def _mark_changed_sites_for_update(
+        self,
+        payload: dict[str, Any],
+        changed_site_keys: set[str],
+        site_update_contexts: dict[str, dict[str, object]],
+    ) -> list[str]:
+        site_statuses = payload.get("site_statuses")
+        if not isinstance(site_statuses, dict):
+            return []
+        updated_sites: list[str] = []
+        for site_key in changed_site_keys:
+            site = site_statuses.get(site_key)
+            if not isinstance(site, dict):
+                continue
+            status = str(site.get("status") or "")
+            if status not in SUCCESS_SITE_STATUSES and not status.endswith("_saved"):
+                continue
+            site["status"] = f"{site_key}_needs_update"
+            site["detail"] = "任務內容已修改，請更新此站。"
+            site["updated_at"] = now_text()
+            context = site_update_contexts.get(site_key)
+            if context:
+                site["update_context"] = context
+            for field in DIAGNOSTIC_FIELDS:
+                site[field] = ""
+            updated_sites.append(site_key)
+        return updated_sites
 
     def get(self, task_id: str) -> dict[str, Any]:
         path = self.path_for(task_id)
@@ -163,6 +201,8 @@ class JsonTaskStore:
             site["status"] = result.status
             site["detail"] = result.detail
             site["updated_at"] = now_text()
+            if result.status in SUCCESS_SITE_STATUSES or result.status.endswith("_saved"):
+                site.pop("update_context", None)
             for field in DIAGNOSTIC_FIELDS:
                 site[field] = str(getattr(result, field, "") or "")
             attempt = {

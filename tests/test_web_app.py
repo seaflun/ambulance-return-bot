@@ -230,8 +230,30 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".icon-button { height: 56px; min-height: 56px; padding: 0; align-self: end; line-height: 1; font-size: 22px; display: inline-flex; align-items: center; justify-content: center;", body)
         self.assertIn(".qty-button { min-width: 56px; color: var(--accent); }", body)
         self.assertIn(".icon-button { width: 58px; min-width: 58px; justify-self: start; color: var(--failed); }", body)
-        self.assertIn('#task-form > button[type="submit"] { width: 100%; min-height: 58px;', body)
+        self.assertIn(".form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));", body)
+        self.assertIn(".form-actions button:only-child { grid-column: 1 / -1; }", body)
         self.assertIn("repeating-linear-gradient", body)
+
+    def test_status_includes_runtime_consumable_diagnostics(self):
+        response = self.client.get("/status")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertIn("app_dir", data)
+        self.assertEqual(
+            data["default_consumables"],
+            ["桃-口罩(片)", "桃-9吋手套-L(雙)", "桃-可拋棄式耳溫槍耳套-福爾TD-1118(個)"],
+        )
+        self.assertEqual(
+            data["consumable_top_names"][:5],
+            [
+                "桃-血糖試紙(片)",
+                "桃-安全型採血針(支)",
+                "桃-可拋棄式耳溫槍耳套-福爾TD-1118(個)",
+                "桃-心電圖電極貼片(片)",
+                "桃-拋棄式CPR回饋貼片(組)",
+            ],
+        )
 
     def test_nas_app_page_shows_public_pc_admin_button(self):
         response = self.client.get("/app", headers={"Host": "100.114.126.58:8080"})
@@ -1350,7 +1372,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("\u9001\u5230\u516c\u52d9\u96fb\u8166", header)
         self.assertLess(body.index("\u56db\u7ad9\u767b\u6253\u555f\u52d5"), body.index("\u8fd4\u56de\u7de8\u8f2f"))
 
-    def test_task_edit_updates_existing_task_and_resets_sites(self):
+    def test_task_edit_updates_existing_task_and_marks_changed_saved_sites_for_update(self):
         create_response = self.client.post(
             "/tasks",
             data=self.valid_task_data(mileage="100", consumables="\u53e3\u7f69=2"),
@@ -1369,6 +1391,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("救護車設定", edit_body)
         self.assertNotIn("救護後台", edit_body)
         self.assertIn("儲存修改", edit_body)
+        self.assertIn('class="form-actions"', edit_body)
         self.assertIn('value="100"', edit_body)
 
         update_response = self.client.post(
@@ -1392,8 +1415,71 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["task"]["vehicle"], "\u65b0\u576192")
         self.assertEqual(payload["task"]["mileage"], "200")
         self.assertEqual(payload["task"]["consumables"], {"\u624b\u5957": 1})
-        self.assertEqual(payload["overall_status"], "created")
-        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "not_started")
+        self.assertEqual(payload["overall_status"], "task_updated_needs_site_update")
+        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_needs_update")
+        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["update_context"]["previous_task"]["mileage"], "100")
+        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["update_context"]["current_task"]["mileage"], "200")
+        self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "not_started")
+        self.assertEqual(payload["site_statuses"]["consumables"]["status"], "not_started")
+
+    def test_task_edit_consumables_only_preserves_other_completed_sites(self):
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(mileage="100", consumables="\u53e3\u7f69=2"),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "\u8eca\u8f1b\u91cc\u7a0b", "vehicle_mileage_saved", "done"),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("consumables", "\u4e00\u7ad9\u901a\u8017\u6750", "consumables_saved", "done"),
+        )
+
+        update_response = self.client.post(
+            f"/tasks/{task_id}/edit",
+            data=self.valid_task_data(mileage="100", consumables="\u624b\u5957=1"),
+            follow_redirects=False,
+        )
+        payload = self.store.get(task_id)
+        detail_response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(detail_response.data.decode("utf-8"))
+
+        self.assertEqual(update_response.status_code, 302)
+        self.assertEqual(payload["task"]["consumables"], {"\u624b\u5957": 1})
+        self.assertEqual(payload["overall_status"], "task_updated_needs_site_update")
+        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
+        self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_needs_update")
+        self.assertIn("\u66f4\u65b0\u8017\u6750", body)
+        self.assertIn("\u9700\u66f4\u65b0", body)
+
+    def test_task_edit_driver_marks_work_and_mileage_for_update(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("duty_work_log", "\u5de5\u4f5c", "duty_work_log_saved", "done"),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "\u8eca\u8f1b\u91cc\u7a0b", "vehicle_mileage_saved", "done"),
+        )
+
+        update_response = self.client.post(
+            f"/tasks/{task_id}/edit",
+            data=self.valid_task_data(driver="\u5305\u83ef\u5148"),
+            follow_redirects=False,
+        )
+        payload = self.store.get(task_id)
+        detail_response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(detail_response.data.decode("utf-8"))
+
+        self.assertEqual(update_response.status_code, 302)
+        self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "duty_work_log_needs_update")
+        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_needs_update")
+        self.assertIn("\u66f4\u65b0\u5de5\u4f5c", body)
+        self.assertIn("\u66f4\u65b0\u91cc\u7a0b", body)
 
     def test_task_detail_card_order_is_work_mileage_consumables_disinfection(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())

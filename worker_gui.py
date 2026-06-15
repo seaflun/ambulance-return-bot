@@ -612,10 +612,16 @@ class WorkerGui(ctk.CTk):
 
     def _local_web_reachable(self) -> bool:
         try:
-            worker.request_json(f"{local_web_base_url()}/status")
+            status = worker.request_json(f"{local_web_base_url()}/status")
         except Exception:
             return False
-        return True
+        app_dir = str(status.get("app_dir") or "").strip() if isinstance(status, dict) else ""
+        if not app_dir:
+            return False
+        try:
+            return Path(app_dir).resolve() == Path(__file__).resolve().parent
+        except OSError:
+            return False
 
     def _open_local_web_app(self) -> None:
         url = self.local_web_url.get().strip() or local_web_url()

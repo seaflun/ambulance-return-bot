@@ -193,7 +193,10 @@
     .icon-button { height: 56px; min-height: 56px; padding: 0; align-self: end; line-height: 1; font-size: 22px; display: inline-flex; align-items: center; justify-content: center; background: #fff; border-color: var(--line-strong); box-shadow: none; }
     .qty-button { min-width: 56px; color: var(--accent); }
     .icon-button { width: 58px; min-width: 58px; justify-self: start; color: var(--failed); }
-    #task-form > button[type="submit"] { width: 100%; min-height: 58px; margin-top: 8px; font-size: var(--text-lg); }
+    .form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
+    .form-actions button,
+    .form-actions .button { width: 100%; min-height: 58px; font-size: var(--text-lg); }
+    .form-actions button:only-child { grid-column: 1 / -1; }
     .recent { margin-top: 18px; }
     .recent-list { display: grid; gap: 8px; }
     .recent-card {
@@ -273,6 +276,7 @@
       .consumable-name { grid-column: 1 / -1; }
       .qty-control { grid-column: 2; }
       .icon-button { grid-column: 3; }
+      .form-actions { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -421,10 +425,12 @@
           </label>
         {% endfor %}
       </div>
-      <button type="submit">{{ submit_label or '建立任務' }}</button>
-      {% if cancel_url %}
-        <a class="button secondary" href="{{ cancel_url }}">取消</a>
-      {% endif %}
+      <div class="form-actions">
+        <button type="submit">{{ submit_label or '建立任務' }}</button>
+        {% if cancel_url %}
+          <a class="button secondary" href="{{ cancel_url }}">取消</a>
+        {% endif %}
+      </div>
     </form>
 
     {% if recent_tasks %}
@@ -454,7 +460,7 @@
     const fallbackConsumableCategory = "未分類";
     const categoryPlaceholder = "類別選擇";
     const consumablePlaceholder = "請選擇";
-    const categories = [...new Set(consumableOptions.map((item) => item.category || fallbackConsumableCategory))].sort();
+    const categories = [...new Set(consumableOptions.map((item) => item.category || fallbackConsumableCategory))];
     const lookupForm = document.getElementById("lookup-form");
     const lookupStatus = document.getElementById("lookup-status");
     const taskForm = document.getElementById("task-form");

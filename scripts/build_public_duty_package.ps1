@@ -178,9 +178,8 @@ Write-PackageText -RelativePath "README_公務電腦.txt" -Text @'
 1. 把 `.env.example` 複製成 `.env`。
 2. 填入 `WORKER_TOKEN`，要和 NAS 的值相同。
 3. `CHROME_PROFILE_DIR` 預設使用 `%LOCALAPPDATA%\ambulance_return_bot\chrome_profile`，不要放到 Google Drive 資料夾。
-4. 執行 `SETUP_WINPYTHON.bat` 安裝套件、檢查環境，並建立開機自動啟動捷徑。
+4. 執行 `SETUP_WINPYTHON.bat` 安裝套件、檢查環境，並建立登入後自動啟動工作排程。
 5. 平常用 `RUN_WORKER_GUI_WINPYTHON.vbs` 啟動，沒有黑色命令列視窗。
-6. 在 GUI 按 `接收同步`，用另一邊專案送入帳密；不要把入口帳密寫進 `.env`。
 
 ## GitHub 更新
 
@@ -293,33 +292,56 @@ if not defined PYTHON_EXE (
 "%PYTHON_EXE%" "%~dp0check_environment.py"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_startup_shortcut.ps1"
 if errorlevel 1 (
-  echo [WARN] Could not install startup shortcut. You can still start with RUN_WORKER_GUI_WINPYTHON.vbs.
+  echo [WARN] Could not install startup scheduled task. You can still start with RUN_WORKER_GUI_WINPYTHON.vbs.
 )
 pause
 '@
 
 Write-PackageText -RelativePath "install_startup_shortcut.ps1" -Text @'
+param(
+    [switch]$WhatIf
+)
+
 $ErrorActionPreference = "Stop"
 
 $packageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $target = Join-Path $packageDir "RUN_WORKER_GUI_WINPYTHON.vbs"
-$startupDir = [Environment]::GetFolderPath("Startup")
-$shortcutPath = Join-Path $startupDir "救護回程 Worker.lnk"
+$taskName = "救護回程 Worker"
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
     throw "Cannot find startup target: $target"
 }
-if (-not (Test-Path -LiteralPath $startupDir -PathType Container)) {
-    throw "Cannot find Startup folder: $startupDir"
+
+$action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$target`"" -WorkingDirectory $packageDir
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+try {
+    $trigger.Delay = "PT1M"
+} catch {
+    Write-Warning "Could not set startup delay; the task will start immediately after logon."
+}
+$settings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+$principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
+$task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
+
+if ($WhatIf) {
+    Write-Host "Would install scheduled task: $taskName"
+    Write-Host "User: $currentUser"
+    Write-Host "Target: $target"
+    exit 0
 }
 
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $target
-$shortcut.WorkingDirectory = $packageDir
-$shortcut.Description = "救護回程 Worker"
-$shortcut.Save()
-Write-Host "Installed startup shortcut: $shortcutPath"
+Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
+Write-Host "Installed scheduled task: $taskName"
+Write-Host "User: $currentUser"
+Write-Host "Target: $target"
 '@
 
 Write-PackageText -RelativePath "RUN_WORKER_GUI_WINPYTHON.bat" -Text @'
@@ -526,12 +548,11 @@ function Copy-UpdateTree {
 }
 
 function Get-WorkerPackageProcesses {
-    $packageRoot = (Resolve-Path -LiteralPath $packageDir).Path
     Get-CimInstance Win32_Process |
         Where-Object {
             $_.CommandLine -and
-            $_.CommandLine.IndexOf($packageRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-            ($_.CommandLine -match "worker_gui\.py|app\.py")
+            ($_.CommandLine -match "worker_gui\.py|app\.py") -and
+            ($_.CommandLine -match "ambulance_return_bot|WinPython_公務電腦使用包")
         }
 }
 
