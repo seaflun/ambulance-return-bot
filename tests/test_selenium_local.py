@@ -400,7 +400,7 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._save_artifacts = original_save_artifacts
 
         self.assertEqual(result.status, "cases_loaded")
-        self.assertEqual(result.detail, "已查到 1 筆24小時內案件，並讀取出勤人員。")
+        self.assertEqual(result.detail, "已查到 1 筆 24 小時內案件，並讀取出勤人員。")
         self.assertIs(calls["quit_driver"], fake_driver)
         self.assertTrue(calls["released"])
         self.assertTrue(calls["create_kwargs"]["headless"])

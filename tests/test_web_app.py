@@ -118,6 +118,7 @@ class WebAppTests(unittest.TestCase):
             "return_time": "1119",
             "case_reason": "\u6025\u75c5",
             "patient_summary": "\u7537\u4e00\u540d",
+            "consumables": "\u6843-\u53e3\u7f69(\u7247)=2",
         }
         data.update(overrides)
         return data
@@ -199,7 +200,13 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('placeholder="1420"', body)
         self.assertNotIn('placeholder="1505"', body)
         self.assertNotIn('placeholder="12345"', body)
+        self.assertIn('name="mileage" inputmode="numeric" pattern="[0-9]*"', body)
         self.assertIn(">\u8acb\u9078\u64c7</option>", body)
+        self.assertIn('type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD"', body)
+        self.assertIn('type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD"', body)
+        self.assertNotIn('type="date" name="case_date"', body)
+        self.assertIn('const categoryPlaceholder = "\u985e\u5225\u9078\u64c7";', body)
+        self.assertIn('const consumablePlaceholder = "\u8acb\u9078\u64c7";', body)
         self.assertIn("查詢案件", body)
         self.assertNotIn("查詢24小時案件", body)
         self.assertNotIn('button.textContent = "查詢中"', body)
@@ -216,7 +223,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".check-item input { width: 20px; height: 20px; min-height: 20px; margin: 0; transform: scale(1.35);", body)
         self.assertIn(".case-card button { min-width: 88px; min-height: 50px;", body)
         self.assertIn(".consumable-list { display: grid; gap: 10px; align-items: start; }", body)
-        self.assertIn(".consumable-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 220px 58px;", body)
+        self.assertIn(".consumable-row { display: grid; grid-template-columns: 42px 150px minmax(0, 1fr) 220px 58px;", body)
+        self.assertIn('<span class="consumable-index"></span>', body)
+        self.assertIn("function renumberConsumables()", body)
         self.assertIn(".qty-button,", body)
         self.assertIn(".icon-button { height: 56px; min-height: 56px; padding: 0; align-self: end; line-height: 1; font-size: 22px; display: inline-flex; align-items: center; justify-content: center;", body)
         self.assertIn(".qty-button { min-width: 56px; color: var(--accent); }", body)
@@ -296,11 +305,35 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.store.list_recent(), [])
         self.assertIn('<div class="form-errors" role="alert">', body)
-        self.assertIn('name="return_date" id="return-date" value="2026-06-07"', body)
+        self.assertIn('name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="2026/06/07"', body)
         self.assertIn('target.scrollIntoView({ block: "start" });', body)
         expected_order = ["請填寫返隊時間", "請選擇出動車輛", "請選擇司機", "請選擇傷病患", "請填寫里程"]
         positions = [body.index(message) for message in expected_order]
         self.assertEqual(positions, sorted(positions))
+
+    def test_create_task_requires_consumables(self):
+        response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(consumables=""),
+            follow_redirects=False,
+        )
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.store.list_recent(), [])
+        self.assertIn("請選擇耗材", body)
+
+    def test_create_task_rejects_non_numeric_mileage(self):
+        response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(mileage="12A3"),
+            follow_redirects=False,
+        )
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.store.list_recent(), [])
+        self.assertIn("里程只能輸入數字", body)
 
     def test_create_task_validation_keeps_imported_personnel_driver_options(self):
         first_person = "\u5433\u5b97\u8015"
@@ -745,7 +778,7 @@ class WebAppTests(unittest.TestCase):
             cases_dir / "latest.json",
             {
                 "status": "cases_loaded",
-                "detail": "已查到 2 筆24小時內案件，並讀取出勤人員。",
+                "detail": "已查到 2 筆 24 小時內案件，並讀取出勤人員。",
                 "lookup_range": "24h",
                 "cases": [{"case_id": "old-case"}],
             },
@@ -847,7 +880,7 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/app")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertIn("已查到 2 筆24小時內案件，並讀取出勤人員。", body)
+        self.assertIn("已查到 2 筆 24 小時內案件，並讀取出勤人員。", body)
         self.assertNotIn("緊急救護案件", body)
         self.assertIn("出勤人員：王小明", body)
         self.assertNotIn("服勤人員：王小明", body)
@@ -861,7 +894,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".header-actions .button { flex: 0 0 auto;", body)
         self.assertIn(".lookup-form { display: grid; grid-template-columns: 1fr; gap: 8px; width: 100%; }", body)
         self.assertIn(".time-field { grid-template-columns: 1fr; }", body)
-        self.assertIn('.return-time-field input[type="date"] { grid-column: 1 / -1; }', body)
+        self.assertIn('.return-time-field input[name="return_date"] { grid-column: 1 / -1; }', body)
 
     def test_localhost_query_cases_starts_local_lookup_when_fast_mode_auto(self):
         calls = []
@@ -967,7 +1000,7 @@ class WebAppTests(unittest.TestCase):
             "return_time_hhmm": "",
         }
 
-        self.assertEqual(app_module.selected_return_date_input(case), "2026-06-08")
+        self.assertEqual(app_module.selected_return_date_input(case), "2026/06/08")
 
     def test_event_detail_text_keeps_event_log_short(self):
         event = {"status": "vehicle_mileage_saved", "detail": "\u8eca\u8f1b\u91cc\u7a0b: \u5df2\u5efa\u7acb\u5f88\u9577\u7684\u8aaa\u660e"}

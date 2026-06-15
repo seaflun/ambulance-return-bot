@@ -1310,7 +1310,7 @@ def selected_return_date_input(case: dict) -> str:
 
 def date_input_value(value: object) -> str:
     parsed = parse_datetime_text(value) or parse_case_date(str(value or ""))
-    return parsed.strftime("%Y-%m-%d") if parsed else ""
+    return parsed.strftime("%Y/%m/%d") if parsed else ""
 
 
 def short_date(value: object) -> str:
@@ -1585,8 +1585,9 @@ def prepared_case_lookup() -> dict:
     detail = str(case_lookup.get("detail") or "").strip()
     if detail:
         detail = detail.replace("緊急救護案件", "救護、火災案件")
-        detail = detail.replace("前 24 小時的救護、火災案件，並預先讀取服勤人員", "24小時內案件，並讀取出勤人員")
-        detail = detail.replace("前 24 小時的緊急救護案件，並預先讀取服勤人員", "24小時內案件，並讀取出勤人員")
+        detail = detail.replace("前 24 小時的救護、火災案件，並預先讀取服勤人員", "24 小時內案件，並讀取出勤人員")
+        detail = detail.replace("前 24 小時的緊急救護案件，並預先讀取服勤人員", "24 小時內案件，並讀取出勤人員")
+        detail = detail.replace("筆24", "筆 24").replace("筆 24小時", "筆 24 小時")
         case_lookup["detail"] = detail
     if lookup_request.get("status") == "case_lookup_requested":
         lookup_range = str(lookup_request.get("lookup_range") or case_lookup.get("lookup_range") or "24h")
@@ -1618,6 +1619,10 @@ def validate_task_form(task_request) -> list[str]:
         errors.append("請選擇傷病患")
     if not task_request.mileage.strip():
         errors.append("請填寫里程")
+    elif not re.fullmatch(r"\d+", task_request.mileage.strip()):
+        errors.append("里程只能輸入數字")
+    if not task_request.consumables:
+        errors.append("請選擇耗材")
 
     case_time = normalize_hhmm(task_request.case_time)
     return_time = normalize_hhmm(task_request.return_time)

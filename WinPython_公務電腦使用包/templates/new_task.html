@@ -174,8 +174,9 @@
     .consumables { margin: 0 0 14px; }
     .consumable-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
     .consumable-list { display: grid; gap: 10px; align-items: start; }
-    .consumable-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 220px 58px; gap: 10px; align-items: end; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .consumable-row { display: grid; grid-template-columns: 42px 150px minmax(0, 1fr) 220px 58px; gap: 10px; align-items: end; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .consumable-row > * { min-width: 0; }
+    .consumable-index { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 56px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-weight: 800; }
     .consumable-row input,
     .consumable-row select {
       min-height: 56px;
@@ -261,16 +262,17 @@
       .time-grid { grid-template-columns: 1fr; }
       .time-field { grid-template-columns: 1fr; }
       .return-time-field { grid-template-columns: minmax(0, 1fr) 44px; }
-      .return-time-field input[type="date"] { grid-column: 1 / -1; }
+      .return-time-field input[name="return_date"] { grid-column: 1 / -1; }
       .clock-button { width: 44px; min-width: 44px; }
       .check-grid { grid-template-columns: 1fr; }
       .recent-card { grid-template-columns: minmax(0, 1fr); }
       .recent-card .status { justify-self: start; }
-      .consumable-row { grid-template-columns: minmax(0, 1fr) 58px; }
+      .consumable-row { grid-template-columns: 42px minmax(0, 1fr) 58px; }
+      .consumable-index { grid-column: 1; }
       .consumable-category,
       .consumable-name { grid-column: 1 / -1; }
-      .qty-control { grid-column: 1; }
-      .icon-button { grid-column: 2; }
+      .qty-control { grid-column: 2; }
+      .icon-button { grid-column: 3; }
     }
   </style>
 </head>
@@ -349,13 +351,13 @@
       <div class="grid time-grid">
         <label>案件時間
           <div class="time-field">
-            <input type="date" name="case_date" value="{{ selected_case_date_input(selected_case) }}">
+            <input type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_case_date_input(selected_case) }}">
             <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_case.case_time_hhmm or '' }}">
           </div>
         </label>
         <label>返隊時間
           <div class="time-field return-time-field">
-            <input type="date" name="return_date" id="return-date" value="{{ selected_return_date_input(selected_case) }}">
+            <input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}">
             <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(selected_case) }}">
             <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
           </div>
@@ -398,7 +400,7 @@
         </label>
       </div>
       <label>里程
-        <input name="mileage" inputmode="numeric" value="{{ selected_case.mileage or '' }}">
+        <input name="mileage" inputmode="numeric" pattern="[0-9]*" value="{{ selected_case.mileage or '' }}">
       </label>
 
       <section class="consumables form-section-divider">
@@ -449,7 +451,10 @@
     const defaultConsumables = {{ default_consumables | tojson }};
     const consumableList = document.getElementById("consumable-list");
     const consumablesValue = document.getElementById("consumables-value");
-    const categories = [...new Set(consumableOptions.map((item) => item.category || "未分類"))].sort();
+    const fallbackConsumableCategory = "未分類";
+    const categoryPlaceholder = "類別選擇";
+    const consumablePlaceholder = "請選擇";
+    const categories = [...new Set(consumableOptions.map((item) => item.category || fallbackConsumableCategory))].sort();
     const lookupForm = document.getElementById("lookup-form");
     const lookupStatus = document.getElementById("lookup-status");
     const taskForm = document.getElementById("task-form");
@@ -490,10 +495,14 @@
         }
       });
     }
-    const categoryHtml = categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("");
+    const categoryHtml = [
+      `<option value="">${escapeHtml(categoryPlaceholder)}</option>`,
+      ...categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
+    ].join("");
     const optionHtml = consumableOptions.map((item) => {
-      return `<option value="${escapeHtml(item.name)}" data-category="${escapeHtml(item.category || "未分類")}">${escapeHtml(item.name)}</option>`;
+      return `<option value="${escapeHtml(item.name)}" data-category="${escapeHtml(item.category || fallbackConsumableCategory)}">${escapeHtml(item.name)}</option>`;
     }).join("");
+    const consumableOptionHtml = `<option value="" data-category="">${escapeHtml(consumablePlaceholder)}</option>${optionHtml}`;
 
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, (ch) => ({
@@ -505,8 +514,9 @@
       const row = document.createElement("div");
       row.className = "consumable-row";
       row.innerHTML = `
+        <span class="consumable-index"></span>
         <select class="consumable-category" aria-label="耗材分類">${categoryHtml}</select>
-        <select class="consumable-name" required>${optionHtml}</select>
+        <select class="consumable-name">${consumableOptionHtml}</select>
         <div class="qty-control">
           <button type="button" class="qty-button qty-minus" aria-label="減少數量">-</button>
           <input class="consumable-qty" type="number" min="1" step="1" inputmode="numeric" value="${Number(qty) || 1}" aria-label="耗材數量">
@@ -523,23 +533,29 @@
         option.dataset.category = "其他";
         select.prepend(option);
         if (!Array.from(category.options).some((option) => option.value === "其他")) {
-          category.prepend(new Option("其他", "其他"));
+          category.add(new Option("其他", "其他"));
         }
       }
-      const matchedOption = Array.from(select.options).find((option) => option.value === name) || select.options[0];
+      const matchedOption = name ? Array.from(select.options).find((option) => option.value === name) : null;
       if (matchedOption) {
-        category.value = matchedOption.dataset.category || "未分類";
+        category.value = matchedOption.dataset.category || fallbackConsumableCategory;
         filterConsumableOptions(row);
         select.value = matchedOption.value;
+      } else {
+        category.value = "";
+        filterConsumableOptions(row);
+        select.value = "";
       }
       row.querySelector(".icon-button").addEventListener("click", () => {
         row.remove();
+        renumberConsumables();
         syncConsumables();
       });
       row.querySelector(".qty-minus").addEventListener("click", () => changeQuantity(row, -1));
       row.querySelector(".qty-plus").addEventListener("click", () => changeQuantity(row, 1));
       category.addEventListener("change", () => {
         filterConsumableOptions(row);
+        row.querySelector(".consumable-name").value = "";
         syncConsumables();
       });
       row.querySelectorAll("select,input").forEach((element) => {
@@ -547,7 +563,14 @@
         element.addEventListener("input", syncConsumables);
       });
       consumableList.appendChild(row);
+      renumberConsumables();
       syncConsumables();
+    }
+
+    function renumberConsumables() {
+      consumableList.querySelectorAll(".consumable-row").forEach((row, index) => {
+        row.querySelector(".consumable-index").textContent = `${index + 1}.`;
+      });
     }
 
     function changeQuantity(row, delta) {
@@ -560,15 +583,14 @@
     function filterConsumableOptions(row) {
       const category = row.querySelector(".consumable-category").value;
       const select = row.querySelector(".consumable-name");
-      let firstVisible = "";
       Array.from(select.options).forEach((option) => {
-        const visible = (option.dataset.category || "未分類") === category;
+        const isPlaceholder = option.value === "";
+        const visible = isPlaceholder || (category && (option.dataset.category || fallbackConsumableCategory) === category);
         option.hidden = !visible;
         option.disabled = !visible;
-        if (visible && !firstVisible) firstVisible = option.value;
       });
-      if (select.selectedOptions[0]?.disabled && firstVisible) {
-        select.value = firstVisible;
+      if (select.selectedOptions[0]?.disabled) {
+        select.value = "";
       }
     }
 
@@ -587,7 +609,7 @@
 
     document.getElementById("return-now").addEventListener("click", () => {
       const now = new Date();
-      document.getElementById("return-date").value = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+      document.getElementById("return-date").value = `${now.getFullYear()}/${pad2(now.getMonth() + 1)}/${pad2(now.getDate())}`;
       document.getElementById("return-time").value = `${pad2(now.getHours())}${pad2(now.getMinutes())}`;
     });
 

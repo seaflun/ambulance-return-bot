@@ -94,6 +94,12 @@ class ModelParsingTests(unittest.TestCase):
 
         self.assertEqual(request.patient_summary, "")
 
+    def test_request_from_form_normalizes_date_text(self):
+        request = request_from_form({"case_date": "2026 / 06 / 07", "return_date": "2026-06-08"})
+
+        self.assertEqual(request.case_date, "2026/06/07")
+        self.assertEqual(request.return_date, "2026/06/08")
+
     def test_request_from_form_keeps_personnel_accounts_by_type(self):
         request = request_from_form(
             {

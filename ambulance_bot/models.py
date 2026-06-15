@@ -414,6 +414,11 @@ def parse_case_date(value: str) -> datetime | None:
     return None
 
 
+def normalize_case_date(value: str) -> str:
+    parsed = parse_case_date(value)
+    return parsed.strftime("%Y/%m/%d") if parsed else str(value or "").strip()
+
+
 def example_command() -> str:
     return (
         "\u6551\u8b77\u56de\u7a0b\n"
@@ -444,9 +449,9 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         case_id=str(form.get("case_id") or "").strip(),
         personnel=parse_list(form.get("personnel") or ""),
         personnel_accounts=parse_account_list(form.get("personnel_accounts") or ""),
-        case_date=str(form.get("case_date") or "").strip(),
+        case_date=normalize_case_date(str(form.get("case_date") or "")),
         case_time=str(form.get("case_time") or "").strip(),
-        return_date=str(form.get("return_date") or "").strip(),
+        return_date=normalize_case_date(str(form.get("return_date") or "")),
         return_time=str(form.get("return_time") or "").strip(),
         case_address=clean_case_address(str(form.get("case_address") or "")),
         patient_summary=str(form.get("patient_summary") or "").strip(),
