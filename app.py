@@ -46,6 +46,13 @@ from ambulance_bot.models import (
     vehicle_ppe_names,
 )
 from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, SITE_STAGE_DEFINITIONS, merge_diagnostic_fields
+from ambulance_bot.sinposmart_backend import (
+    SinpoSmartBackendStore,
+    sinposmart_fire_day_label,
+    sinposmart_record_type_label,
+    sinposmart_status_class,
+    sinposmart_trigger_label,
+)
 from ambulance_bot.task_runner import TaskRunner
 from ambulance_bot.task_store import JsonTaskStore
 
@@ -313,6 +320,19 @@ def credential_sync():
     return jsonify({"ok": True, "ack_id": ack_id, "count": len(accounts), "queued": True})
 
 
+@app.post("/api/sinposmart/events")
+def sinposmart_events():
+    if not credential_sync_receiver_enabled():
+        abort(404)
+    if not credential_sync_authorized():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "invalid_json"}), 400
+    event = sinposmart_store().upsert_event(data)
+    return jsonify({"ok": True, "ack_id": event["event_id"], "fire_day": event["fire_day"]})
+
+
 @app.get("/admin/vehicles")
 def admin_vehicles():
     return render_template(
@@ -327,6 +347,22 @@ def admin_vehicles():
 def admin_public_pc():
     reports = public_pc_reports()
     return render_template("admin_public_pc.html", reports=reports)
+
+
+@app.get("/admin/sinposmart")
+def admin_sinposmart():
+    days = sinposmart_store().list_days(limit=7)
+    selected_fire_day = str(request.args.get("fire_day") or "").strip()
+    selected_day = next((day for day in days if str(day.get("fire_day") or "") == selected_fire_day), None)
+    if selected_day is None and days:
+        selected_day = days[0]
+        selected_fire_day = str(selected_day.get("fire_day") or "")
+    return render_template(
+        "admin_sinposmart.html",
+        days=days,
+        selected_day=selected_day,
+        selected_fire_day=selected_fire_day,
+    )
 
 
 @app.post("/admin/vehicles")
@@ -542,6 +578,10 @@ def package_version() -> str:
 
 def credential_sync_relay_file() -> Path:
     return artifacts_dir / "credential_sync" / "pending.json"
+
+
+def sinposmart_store() -> SinpoSmartBackendStore:
+    return SinpoSmartBackendStore(artifacts_dir / "sinposmart")
 
 
 def credential_sync_token() -> str:
@@ -1563,6 +1603,10 @@ def template_helpers() -> dict:
         "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
         "show_public_pc_admin_button": show_public_pc_admin_button,
+        "sinposmart_fire_day_label": sinposmart_fire_day_label,
+        "sinposmart_record_type_label": sinposmart_record_type_label,
+        "sinposmart_status_class": sinposmart_status_class,
+        "sinposmart_trigger_label": sinposmart_trigger_label,
         "show_task_entry_controls": show_task_entry_controls,
         "status_class": status_class,
         "status_label": status_label,

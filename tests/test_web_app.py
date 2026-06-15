@@ -191,7 +191,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("救護返隊小幫手", body)
         self.assertIn("救護車設定", body)
         self.assertNotIn('href="/admin/public-pc"', body)
+        self.assertNotIn('href="/admin/sinposmart"', body)
         self.assertNotIn("救護後台", body)
+        self.assertNotIn("值班後台", body)
         self.assertIn('id="task-form" autocomplete="off" novalidate', body)
         self.assertIn("\u65b0\u576191", body)
         self.assertIn(">\u5433\u5b97\u8015</option>", body)
@@ -262,7 +264,9 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn("救護車設定", body)
         self.assertIn('href="/admin/public-pc"', body)
+        self.assertIn('href="/admin/sinposmart"', body)
         self.assertIn("救護後台", body)
+        self.assertIn("值班後台", body)
         self.assertIn('class="header-actions"', body)
 
     def test_app_page_recent_task_does_not_show_delete_button(self):
@@ -515,6 +519,85 @@ class WebAppTests(unittest.TestCase):
             reports[0]["site_login_accounts"]["consumables"],
             "8番 曾彥綸 - C123***789（同步帳號）",
         )
+
+    def test_sinposmart_event_api_requires_token(self):
+        response = self.client.post("/api/sinposmart/events", json={"event_id": "evt-1"})
+
+        self.assertEqual(response.status_code, 404)
+
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        forbidden = self.client.post("/api/sinposmart/events", json={"event_id": "evt-1"})
+
+        self.assertEqual(forbidden.status_code, 403)
+
+    def test_sinposmart_event_api_receives_and_lists_backend_events(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-sinpo-1",
+                "occurred_at": "2026-06-15T09:10:00",
+                "record_type": "action_result",
+                "actor_no": "8",
+                "user_id": "tyfd01510",
+                "display_name": "8番 曾彥綸 - tyfd01510",
+                "trigger_type": "manual",
+                "status": "submitted",
+                "item_kind": "工作",
+                "item_title": "值班交接",
+                "content": "已登打值班交接。",
+                "error": "",
+                "target": "8番",
+                "target_time": "09:10",
+                "snapshot": {"actions": [{"title": "值班交接"}], "password": "secret"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["ack_id"], "evt-sinpo-1")
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("SinpoSmart 值班後台", body)
+        self.assertIn("2026-06-15", body)
+        self.assertIn("手動", body)
+        self.assertIn("8番 曾彥綸 - tyfd01510", body)
+        self.assertIn("值班交接", body)
+        self.assertIn("已登打值班交接。", body)
+        self.assertNotIn("secret", body)
+
+    def test_sinposmart_backend_hides_old_fire_days(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        old_response = self.client.post(
+            "/api/sinposmart/events",
+            headers=headers,
+            json={
+                "event_id": "evt-old-hidden",
+                "occurred_at": "2026-06-01T09:00:00",
+                "record_type": "login",
+                "status": "ok",
+            },
+        )
+        current_response = self.client.post(
+            "/api/sinposmart/events",
+            headers=headers,
+            json={
+                "event_id": "evt-current-visible",
+                "occurred_at": "2026-06-15T09:00:00",
+                "record_type": "login",
+                "status": "ok",
+            },
+        )
+
+        self.assertEqual(old_response.status_code, 200)
+        self.assertEqual(current_response.status_code, 200)
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertNotIn("2026-06-01", body)
+        self.assertIn("2026-06-15", body)
 
     def test_admin_public_pc_deduplicates_same_event_id(self):
         os.environ["WORKER_TOKEN"] = "test-token"
