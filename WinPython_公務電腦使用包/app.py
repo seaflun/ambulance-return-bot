@@ -51,6 +51,7 @@ from ambulance_bot.sinposmart_backend import (
     sinposmart_fire_day_label,
     sinposmart_record_type_label,
     sinposmart_status_class,
+    sinposmart_status_label,
     sinposmart_trigger_label,
 )
 from ambulance_bot.task_runner import TaskRunner
@@ -1606,6 +1607,7 @@ def template_helpers() -> dict:
         "sinposmart_fire_day_label": sinposmart_fire_day_label,
         "sinposmart_record_type_label": sinposmart_record_type_label,
         "sinposmart_status_class": sinposmart_status_class,
+        "sinposmart_status_label": sinposmart_status_label,
         "sinposmart_trigger_label": sinposmart_trigger_label,
         "show_task_entry_controls": show_task_entry_controls,
         "status_class": status_class,

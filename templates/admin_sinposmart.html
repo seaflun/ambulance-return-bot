@@ -61,7 +61,7 @@
     .day-nav { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
     .day-link { min-height: 38px; padding: 0 12px; font-size: var(--text-sm); }
     .day-link.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
     .summary-card, .event-card, .empty {
       background: var(--surface);
       border: 1px solid var(--line);
@@ -78,7 +78,11 @@
     .event-title { font-weight: 800; overflow-wrap: anywhere; }
     .event-meta { margin-top: 4px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .event-detail { margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
-    .snapshot { margin-top: 10px; padding: 10px; background: #f8f7f3; border: 1px solid var(--line); border-radius: 8px; font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .snapshot, .tool-snapshot { margin-top: 10px; padding: 10px; background: #f8f7f3; border: 1px solid var(--line); border-radius: 8px; font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .tool-snapshot { display: grid; gap: 6px; }
+    .tool-snapshot-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+    .tool-snapshot-label { min-width: 42px; color: var(--muted); }
+    .tool-snapshot code { color: var(--ink); font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12px; }
     .status {
       display: inline-flex;
       align-items: center;
@@ -139,6 +143,10 @@
           <div class="summary-value">{{ summary.manual or 0 }} / {{ summary.auto or 0 }}</div>
         </div>
         <div class="summary-card">
+          <div class="summary-label">工具開始</div>
+          <div class="summary-value">{{ summary.tool_starts or 0 }}</div>
+        </div>
+        <div class="summary-card">
           <div class="summary-label">成功 / 失敗</div>
           <div class="summary-value">{{ summary.success or 0 }} / {{ summary.failed or 0 }}</div>
         </div>
@@ -164,7 +172,7 @@
                   </div>
                 {% endif %}
               </div>
-              <span class="status {{ sinposmart_status_class(event.status) }}">{{ event.status or sinposmart_record_type_label(event.record_type) }}</span>
+              <span class="status {{ sinposmart_status_class(event.status) }}">{{ sinposmart_status_label(event.status, event.record_type) }}</span>
             </div>
             {% if event.content %}
               <div class="event-detail">{{ event.content }}</div>
@@ -172,7 +180,18 @@
             {% if event.error %}
               <div class="event-detail">錯誤原因：{{ event.error }}</div>
             {% endif %}
-            {% if event.snapshot %}
+            {% if event.record_type == 'tool_action_started' and event.snapshot %}
+              <div class="tool-snapshot" aria-label="工具資訊">
+                <div class="tool-snapshot-row">
+                  <span class="tool-snapshot-label">工具</span>
+                  <strong>{{ event.snapshot.tool_label or event.item_title or '未標示工具' }}</strong>
+                </div>
+                <div class="tool-snapshot-row">
+                  <span class="tool-snapshot-label">代碼</span>
+                  <code>{{ event.snapshot.tool_name or '未標示' }}</code>
+                </div>
+              </div>
+            {% elif event.snapshot %}
               <details class="snapshot">
                 <summary>快照內容</summary>
                 <pre>{{ event.snapshot | tojson(indent=2) }}</pre>

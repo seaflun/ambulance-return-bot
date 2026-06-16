@@ -7,6 +7,7 @@ from ambulance_bot.sinposmart_backend import (
     SinpoSmartBackendStore,
     normalize_sinposmart_event,
     sinposmart_fire_day_for,
+    sinposmart_status_label,
 )
 
 
@@ -73,6 +74,35 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
 
         self.assertEqual(event["record_type"], "error")
         self.assertEqual(event["fire_day"], "2026-06-15")
+
+    def test_status_label_translates_common_backend_statuses(self):
+        self.assertEqual(sinposmart_status_label("started", "tool_action_started"), "開始")
+        self.assertEqual(sinposmart_status_label("submitted", "action_result"), "已登打")
+        self.assertEqual(sinposmart_status_label("ok", "login"), "成功")
+        self.assertEqual(sinposmart_status_label("", "login"), "登入")
+
+    def test_tool_action_started_keeps_record_type_and_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            event = store.upsert_event(
+                {
+                    "event_id": "evt-tool-start",
+                    "occurred_at": "2026-06-15T12:10:00",
+                    "record_type": "tool_action_started",
+                    "trigger_type": "tool_start",
+                    "status": "started",
+                    "actor_no": "8",
+                    "user_id": "tyfd01510",
+                    "snapshot": {"tool_name": "duty_sheet", "tool_label": "勤務表登打"},
+                },
+                now=datetime(2026, 6, 15, 12, 10),
+            )
+            day = store.read_day("2026-06-15")
+
+            self.assertEqual(event["record_type"], "tool_action_started")
+            self.assertEqual(event["item_title"], "開始勤務表登打")
+            self.assertEqual(day["summary"]["tool_starts"], 1)
+            self.assertEqual(day["summary"]["failed"], 0)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ SINPOSMART_RECORD_TYPES = {
     "login_failed",
     "action_queued",
     "action_result",
+    "tool_action_started",
     "schedule_snapshot",
     "comparison_snapshot",
     "error",
@@ -63,6 +64,7 @@ def sinposmart_record_type_label(value: str) -> str:
         "login_failed": "登入失敗",
         "action_queued": "加入佇列",
         "action_result": "登打結果",
+        "tool_action_started": "工具開始",
         "schedule_snapshot": "整日勤務",
         "comparison_snapshot": "已登打資料",
         "error": "錯誤",
@@ -77,6 +79,7 @@ def sinposmart_trigger_label(value: str) -> str:
         "login": "登入",
         "schedule": "勤務快照",
         "comparison": "比對快照",
+        "tool_start": "工具開始",
         "system": "系統",
     }
     return labels.get(str(value or ""), str(value or "未標示"))
@@ -86,11 +89,36 @@ def sinposmart_status_class(value: str) -> str:
     text = str(value or "").lower()
     if any(word in text for word in ("failed", "error", "fail", "失敗")):
         return "failed"
-    if any(word in text for word in ("running", "queued", "pending", "manual_marked")):
+    if any(word in text for word in ("running", "queued", "pending", "manual_marked", "started")):
         return "running"
     if any(word in text for word in ("submitted", "saved", "success", "skipped_duplicate", "completed", "ok")):
         return "complete"
     return "idle"
+
+
+def sinposmart_status_label(value: str, record_type: str = "") -> str:
+    text = str(value or "").strip()
+    labels = {
+        "started": "開始",
+        "submitted": "已登打",
+        "ok": "成功",
+        "success": "成功",
+        "saved": "已儲存",
+        "completed": "完成",
+        "skipped_duplicate": "已存在",
+        "running": "執行中",
+        "queued": "等待中",
+        "pending": "等待中",
+        "manual_marked": "已手動標記",
+        "failed": "失敗",
+        "fail": "失敗",
+        "error": "錯誤",
+    }
+    if text.lower() in labels:
+        return labels[text.lower()]
+    if text:
+        return text
+    return sinposmart_record_type_label(record_type)
 
 
 class SinpoSmartBackendStore:
@@ -189,6 +217,11 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         "result_ref": sanitize_scalar(raw_event.get("result_ref"), 260),
         "snapshot": sanitize_value(raw_event.get("snapshot"), depth=0),
     }
+    if record_type == "tool_action_started" and not event["item_title"]:
+        snapshot = event["snapshot"] if isinstance(event.get("snapshot"), dict) else {}
+        tool_label = sanitize_scalar(snapshot.get("tool_label"), 120)
+        if tool_label:
+            event["item_title"] = f"開始{tool_label}"
     return {field: event[field] for field in SINPOSMART_EVENT_FIELDS}
 
 
@@ -237,6 +270,7 @@ def summarize_sinposmart_events(events: list[dict[str, Any]]) -> dict[str, int]:
         "auto": 0,
         "success": 0,
         "failed": 0,
+        "tool_starts": 0,
         "schedule_snapshots": 0,
         "comparison_snapshots": 0,
     }
@@ -249,6 +283,8 @@ def summarize_sinposmart_events(events: list[dict[str, Any]]) -> dict[str, int]:
         status_class = sinposmart_status_class(str(event.get("status") or ""))
         if record_type == "login":
             summary["login"] += 1
+        if record_type == "tool_action_started":
+            summary["tool_starts"] += 1
         if trigger_type == "manual":
             summary["manual"] += 1
         if trigger_type == "due":

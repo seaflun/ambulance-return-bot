@@ -567,6 +567,38 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("已登打值班交接。", body)
         self.assertNotIn("secret", body)
 
+    def test_sinposmart_admin_lists_tool_started_events(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-tool-start",
+                "occurred_at": "2026-06-15T12:10:00",
+                "record_type": "tool_action_started",
+                "trigger_type": "tool_start",
+                "status": "started",
+                "actor_no": "8",
+                "user_id": "tyfd01510",
+                "display_name": "8番 王小明 - tyfd01510",
+                "snapshot": {"tool_name": "duty_sheet", "tool_label": "勤務表登打"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("工具開始", body)
+        self.assertIn("開始勤務表登打", body)
+        self.assertIn("8番 王小明 - tyfd01510", body)
+        self.assertIn("開始", body)
+        self.assertIn("工具", body)
+        self.assertIn("代碼", body)
+        self.assertIn("duty_sheet", body)
+        self.assertNotIn("tool_label", body)
+        self.assertNotIn("錯誤", body)
+
     def test_sinposmart_backend_hides_old_fire_days(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}
