@@ -79,6 +79,7 @@ SITE_UPDATE_BUTTON_LABELS = {
     "consumables": "更新耗材",
     "disinfection": "更新消毒",
 }
+CONSUMABLE_PACKAGE_KEYS = {"glucose", "iv", "io", "ecg", "ohca"}
 
 @app.get("/")
 def index():
@@ -102,6 +103,8 @@ def new_task():
         case_reason_options=CASE_REASON_OPTIONS,
         consumable_options=consumable_inventory_options(),
         default_consumables=DEFAULT_CONSUMABLES if selected_case else {},
+        baseline_consumables_loaded=bool(selected_case),
+        selected_consumable_packages=[],
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
         form_errors=[],
@@ -149,6 +152,8 @@ def create_task():
             recent_tasks=store.list_recent(limit=5),
             case_lookup=prepared_case_lookup(),
             form_errors=errors,
+            baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
+            selected_consumable_packages=selected_consumable_packages_from_form(request.form),
         ), 400
     payload = store.create(task_request)
     report_public_pc_task_event(payload, "建立任務")
@@ -178,6 +183,8 @@ def edit_task(task_id: str):
         case_reason_options=CASE_REASON_OPTIONS,
         consumable_options=consumable_inventory_options(),
         default_consumables=dict(task.get("consumables") or {}),
+        baseline_consumables_loaded=False,
+        selected_consumable_packages=[],
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task.get("disinfection_items") or []),
         form_errors=[],
@@ -201,6 +208,8 @@ def update_task(task_id: str):
             recent_tasks=[],
             case_lookup={"cases": [], "case_count": 0, "debug_artifacts": []},
             form_errors=errors,
+            baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
+            selected_consumable_packages=selected_consumable_packages_from_form(request.form),
         ), 400
     changed_site_keys = changed_sites_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict())
     site_update_contexts = site_update_contexts_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict(), changed_site_keys)
@@ -1769,6 +1778,19 @@ def validate_task_form(task_request) -> list[str]:
     return errors
 
 
+def form_flag_enabled(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def selected_consumable_packages_from_form(form) -> list[str]:
+    selected: list[str] = []
+    for raw_key in re.split(r"[\s,]+", str(form.get("consumable_packages") or "")):
+        key = raw_key.strip()
+        if key in CONSUMABLE_PACKAGE_KEYS and key not in selected:
+            selected.append(key)
+    return selected
+
+
 def render_task_form_from_request(
     task_request,
     *,
@@ -1778,6 +1800,8 @@ def render_task_form_from_request(
     recent_tasks: list[dict],
     case_lookup: dict,
     form_errors: list[str],
+    baseline_consumables_loaded: bool = False,
+    selected_consumable_packages: list[str] | None = None,
 ) -> str:
     selected_case = task_form_values(asdict(task_request))
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
@@ -1794,6 +1818,8 @@ def render_task_form_from_request(
         case_reason_options=CASE_REASON_OPTIONS,
         consumable_options=consumable_inventory_options(),
         default_consumables=dict(task_request.consumables or {}),
+        baseline_consumables_loaded=baseline_consumables_loaded,
+        selected_consumable_packages=selected_consumable_packages or [],
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task_request.disinfection_items or []),
         form_errors=form_errors,

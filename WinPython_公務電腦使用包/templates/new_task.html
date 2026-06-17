@@ -119,6 +119,10 @@
       font-weight: 720;
     }
     .form-errors ul { margin: 0; padding-left: 20px; }
+    .field-label-title { display: inline-flex; align-items: baseline; gap: 4px; }
+    .field-error-mark { display: none; color: #c83f37; font-weight: 900; }
+    .field-visual.is-pending .field-error-mark,
+    .field-visual.has-error .field-error-mark { display: inline; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
     .address-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
     .address-row label { margin-bottom: 13px; }
@@ -172,27 +176,40 @@
     .check-item input { width: 20px; height: 20px; min-height: 20px; margin: 0; transform: scale(1.35); accent-color: var(--accent); }
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
     .consumables { margin: 0 0 14px; }
-    .consumable-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
+    .consumable-head { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
+    .consumable-actions { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; min-width: 0; }
+    .package-cluster { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+    .package-group-label { display: inline-flex; align-items: center; min-height: 38px; padding: 0 2px; color: var(--muted); font-size: var(--text-sm); font-weight: 780; white-space: nowrap; }
+    .package-buttons { display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 8px; min-width: 0; }
+    .package-button { min-height: 42px; padding: 0 12px; font-size: var(--text-sm); box-shadow: none; }
+    .package-button.is-active,
+    .package-button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .add-consumable-button { min-height: 44px; padding: 0 18px; background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 8px 18px rgba(184, 107, 91, .18); }
+    .package-reminder { margin: -2px 0 8px; padding: 8px 12px; border: 1px solid #eadbb9; border-radius: 10px; background: var(--waiting-bg); color: #7a5f2a; font-size: var(--text-sm); font-weight: 760; }
+    .package-reminder[hidden] { display: none; }
     .consumable-list { display: grid; gap: 10px; align-items: start; }
-    .consumable-row { display: grid; grid-template-columns: 42px 150px minmax(0, 1fr) 220px 58px; gap: 10px; align-items: end; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .consumable-row { display: grid; grid-template-columns: 38px 142px minmax(0, 1fr) 196px 50px; gap: 8px; align-items: end; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .consumable-row.is-package-consumable { border-color: #e7c98f; background: #fff8ea; }
     .consumable-row > * { min-width: 0; }
-    .consumable-index { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 56px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-weight: 800; }
+    .consumable-index { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 48px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-weight: 800; }
     .consumable-row input,
     .consumable-row select {
-      min-height: 56px;
+      min-height: 48px;
       margin-top: 0;
-      padding: 10px 12px;
+      padding: 8px 10px;
       font-size: var(--text-md);
     }
     .consumable-qty { text-align: center; }
     .consumable-qty::-webkit-outer-spin-button,
     .consumable-qty::-webkit-inner-spin-button { margin: 0; -webkit-appearance: none; }
     .consumable-qty { -moz-appearance: textfield; appearance: textfield; }
-    .qty-control { display: grid; grid-template-columns: 56px minmax(64px, 1fr) 56px; gap: 8px; }
+    .qty-control { display: grid; grid-template-columns: 48px minmax(56px, 1fr) 48px; gap: 6px; }
     .qty-button,
-    .icon-button { height: 56px; min-height: 56px; padding: 0; align-self: end; line-height: 1; font-size: 22px; display: inline-flex; align-items: center; justify-content: center; background: #fff; border-color: var(--line-strong); box-shadow: none; }
-    .qty-button { min-width: 56px; color: var(--accent); }
-    .icon-button { width: 58px; min-width: 58px; justify-self: start; color: var(--failed); }
+    .icon-button { height: 48px; min-height: 48px; padding: 0; align-self: end; line-height: 1; font-size: 21px; display: inline-flex; align-items: center; justify-content: center; background: #fff; border-color: var(--line-strong); box-shadow: none; }
+    .qty-button { min-width: 48px; color: var(--accent); }
+    .icon-button { width: 50px; min-width: 50px; justify-self: start; color: var(--failed); }
+    .consumable-note { display: none; grid-column: 3 / 5; align-self: start; margin-top: -4px; color: #7a5f2a; font-size: var(--text-sm); font-weight: 720; }
+    .consumable-note.is-visible { display: block; }
     .form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
     .form-actions button,
     .form-actions .button { width: 100%; min-height: 58px; font-size: var(--text-lg); }
@@ -270,12 +287,18 @@
       .check-grid { grid-template-columns: 1fr; }
       .recent-card { grid-template-columns: minmax(0, 1fr); }
       .recent-card .status { justify-self: start; }
-      .consumable-row { grid-template-columns: 42px minmax(0, 1fr) 58px; }
+      .consumable-actions { align-items: stretch; flex-direction: column; }
+      .package-cluster { align-items: stretch; flex-direction: column; }
+      .package-buttons { justify-content: flex-start; }
+      .package-button { flex: 1 1 calc(50% - 8px); }
+      #add-consumable { width: 100%; }
+      .consumable-row { grid-template-columns: 38px minmax(0, 1fr) 50px; }
       .consumable-index { grid-column: 1; }
       .consumable-category,
       .consumable-name { grid-column: 1 / -1; }
       .qty-control { grid-column: 2; }
       .icon-button { grid-column: 3; }
+      .consumable-note { grid-column: 1 / -1; }
       .form-actions { grid-template-columns: 1fr; }
     }
   </style>
@@ -360,7 +383,8 @@
             <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_case.case_time_hhmm or '' }}">
           </div>
         </label>
-        <label>返隊時間
+        <label class="field-visual" data-field-name="return_time">
+          <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
           <div class="time-field return-time-field">
             <input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}">
             <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(selected_case) }}">
@@ -369,7 +393,8 @@
         </label>
       </div>
       <div class="grid">
-        <label>出動車輛
+        <label class="field-visual" data-field-name="vehicle">
+          <span class="field-label-title">出動車輛<span class="field-error-mark" aria-hidden="true">*</span></span>
           <select name="vehicle">
             <option value="">請選擇</option>
             {% for vehicle in vehicle_options %}
@@ -377,7 +402,8 @@
             {% endfor %}
           </select>
         </label>
-        <label>司機
+        <label class="field-visual" data-field-name="driver">
+          <span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span>
           <select name="driver">
             <option value="">請選擇</option>
             {% for number, name in person_options %}
@@ -395,7 +421,8 @@
             {% endfor %}
           </select>
         </label>
-        <label>傷病患
+        <label class="field-visual" data-field-name="patient_summary">
+          <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
           <select name="patient_summary">
             <option value="">請選擇</option>
             <option value="男一名"{% if selected_case.patient_summary == '男一名' %} selected{% endif %}>男</option>
@@ -404,16 +431,32 @@
           </select>
         </label>
       </div>
-      <label>里程
+      <label class="field-visual" data-field-name="mileage">
+        <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
         <input name="mileage" inputmode="numeric" pattern="[0-9]*" value="{{ selected_case.mileage or '' }}">
       </label>
 
       <section class="consumables form-section-divider">
         <input type="hidden" name="consumables" id="consumables-value">
+        <input type="hidden" name="consumable_packages" id="consumable-packages-value" value="{{ selected_consumable_packages | default([]) | join(',') }}">
+        <input type="hidden" name="baseline_consumables_loaded" value="{{ '1' if baseline_consumables_loaded else '' }}">
         <div class="consumable-head">
           <span>使用耗材</span>
-          <button type="button" class="secondary" id="add-consumable">新增耗材</button>
+          <div class="consumable-actions">
+            <div class="package-cluster">
+              <span class="package-group-label">套餐帶入</span>
+              <div class="package-buttons" aria-label="耗材套餐">
+                <button type="button" class="secondary package-button" data-consumable-package="glucose" aria-pressed="false">血糖套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="iv" aria-pressed="false">IV套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="io" aria-pressed="false">IO套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="ecg" aria-pressed="false">心電圖套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="ohca" aria-pressed="false">OHCA套餐</button>
+              </div>
+            </div>
+            <button type="button" class="add-consumable-button" id="add-consumable">＋ 新增耗材</button>
+          </div>
         </div>
+        <div class="package-reminder" id="consumable-package-reminder" role="status" aria-live="polite" hidden></div>
         <div class="consumable-list" id="consumable-list"></div>
       </section>
 
@@ -454,23 +497,161 @@
   {% set auto_refresh = case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
   <script>
     const shouldAutoRefresh = {{ auto_refresh | tojson }};
+    const formErrors = {{ form_errors | tojson }};
     const consumableOptions = {{ consumable_options | tojson }};
     const defaultConsumables = {{ default_consumables | tojson }};
+    const baselineConsumablesLoaded = {{ baseline_consumables_loaded | default(false) | tojson }};
+    const selectedConsumablePackages = {{ selected_consumable_packages | default([]) | tojson }};
     const consumableList = document.getElementById("consumable-list");
     const consumablesValue = document.getElementById("consumables-value");
+    const consumablePackagesValue = document.getElementById("consumable-packages-value");
     const fallbackConsumableCategory = "未分類";
     const categoryPlaceholder = "類別選擇";
     const consumablePlaceholder = "請選擇";
+    const consumablePackages = {
+      glucose: {
+        label: "血糖套餐",
+        consumables: [
+          ["桃-血糖試紙(片)", 1],
+          ["桃-安全型採血針(支)", 1],
+          ["桃-酒精棉片(片)", 2]
+        ],
+        disinfectionItems: ["血糖機"],
+        notes: {}
+      },
+      iv: {
+        label: "IV套餐",
+        consumables: [
+          ["桃-酒精棉片(片)", 3],
+          ["桃-20號防回血IC針(支)", 1],
+          ["桃-免針型輸液套(組)", 1],
+          ["桃-透明敷料op site(片)", 1],
+          ["桃-注射用-生理食鹽水500ml(包)", 1]
+        ],
+        notes: {
+          "桃-20號防回血IC針(支)": "請確認針號",
+          "桃-注射用-生理食鹽水500ml(包)": "請確認輸液"
+        }
+      },
+      io: {
+        label: "IO套餐",
+        consumables: [
+          ["桃-酒精棉片(片)", 3],
+          ["桃-45mm拋棄式骨內血管穿刺針具(組)", 1],
+          ["桃-10ml預充式導管沖洗器(支)", 2],
+          ["桃-免針型輸液套(組)", 1],
+          ["桃-注射用-生理食鹽水500ml(包)", 1]
+        ],
+        notes: {
+          "桃-45mm拋棄式骨內血管穿刺針具(組)": "請確認針號"
+        }
+      },
+      ecg: {
+        label: "心電圖套餐",
+        consumables: [
+          ["桃-心電圖電極貼片(片)", 10]
+        ],
+        notes: {}
+      },
+      ohca: {
+        label: "OHCA套餐",
+        consumables: [
+          ["桃-拋棄式CPR回饋貼片(組)", 1],
+          ["桃-成人甦醒球(組)", 1],
+          ["桃-連接管-長管(條)", 1],
+          ["桃-非充氣聲門上呼吸道-4號(組)", 1],
+          ["桃-細菌過濾器(組)", 1]
+        ],
+        removals: ["桃-可拋棄式耳溫槍耳套-福爾TD-1118(個)"],
+        disinfectionItems: ["固定式氧氣組", "自動給氧機", "心臟電擊去顫器", "自動心肺復甦機"],
+        notes: {
+          "桃-非充氣聲門上呼吸道-4號(組)": "請確認尺寸"
+        }
+      }
+    };
+    const activeConsumablePackages = new Set();
+    const packageConsumableContributions = new Map();
+    const packageConsumableRemovals = new Map();
+    const autoCheckedDisinfectionItems = new Map();
+    const packageButtons = Array.from(document.querySelectorAll("[data-consumable-package]"));
+    const packageReminder = document.getElementById("consumable-package-reminder");
     const categories = [...new Set(consumableOptions.map((item) => item.category || fallbackConsumableCategory))];
     const lookupForm = document.getElementById("lookup-form");
     const lookupStatus = document.getElementById("lookup-status");
     const taskForm = document.getElementById("task-form");
+    const requiredTaskFields = [
+      { name: "return_time", label: "返隊時間", selector: 'input[name="return_time"]' },
+      { name: "vehicle", label: "出動車輛", selector: 'select[name="vehicle"]' },
+      { name: "driver", label: "司機", selector: 'select[name="driver"]' },
+      { name: "patient_summary", label: "傷病患", selector: 'select[name="patient_summary"]' },
+      { name: "mileage", label: "里程", selector: 'input[name="mileage"]' }
+    ];
+    const formErrorFieldMap = {
+      "請填寫返隊時間": { name: "return_time", message: "請填寫返隊時間" },
+      "請選擇出動車輛": { name: "vehicle", message: "請選擇出動車輛" },
+      "請選擇司機": { name: "driver", message: "請選擇司機" },
+      "請選擇傷病患": { name: "patient_summary", message: "請選擇傷病患" },
+      "請填寫里程": { name: "mileage", message: "請填寫里程" },
+      "里程只能輸入數字": { name: "mileage", message: "里程只能輸入數字" },
+      "返隊日期時間不能早於案件日期時間": { name: "return_time", message: "返隊時間不能早於案件時間" }
+    };
     let taskFormDirty = false;
 
     if (taskForm) {
       taskForm.addEventListener("input", () => { taskFormDirty = true; });
       taskForm.addEventListener("change", () => { taskFormDirty = true; });
     }
+
+    function taskFieldValue(fieldName) {
+      const field = requiredTaskFields.find((item) => item.name === fieldName);
+      const input = field ? document.querySelector(field.selector) : null;
+      return input ? input.value.trim() : "";
+    }
+
+    function setFieldState(fieldName, state) {
+      const wrapper = document.querySelector(`[data-field-name="${fieldName}"]`);
+      if (!wrapper) return;
+      wrapper.classList.toggle("is-pending", state === "pending");
+      wrapper.classList.toggle("has-error", state === "error");
+    }
+
+    function currentErrorMessage(fieldName) {
+      for (const error of formErrors) {
+        const mapped = formErrorFieldMap[error];
+        if (mapped && mapped.name === fieldName) return mapped.message;
+      }
+      return "";
+    }
+
+    function fieldErrorStillApplies(fieldName, message) {
+      const value = taskFieldValue(fieldName);
+      if (!value) return true;
+      if (fieldName === "mileage") return !/^\d+$/.test(value);
+      if (message === "返隊時間不能早於案件時間") return true;
+      return false;
+    }
+
+    function updateFieldVisualHints() {
+      requiredTaskFields.forEach((field) => {
+        const errorMessage = currentErrorMessage(field.name);
+        if (errorMessage && fieldErrorStillApplies(field.name, errorMessage)) {
+          setFieldState(field.name, "error");
+          return;
+        }
+        if (baselineConsumablesLoaded && !taskFieldValue(field.name)) {
+          setFieldState(field.name, "pending");
+          return;
+        }
+        setFieldState(field.name, "");
+      });
+    }
+
+    requiredTaskFields.forEach((field) => {
+      const input = document.querySelector(field.selector);
+      if (!input) return;
+      input.addEventListener("input", updateFieldVisualHints);
+      input.addEventListener("change", updateFieldVisualHints);
+    });
 
     {% if form_errors %}
       window.addEventListener("load", () => {
@@ -530,6 +711,7 @@
           <button type="button" class="qty-button qty-plus" aria-label="增加數量">+</button>
         </div>
         <button type="button" class="icon-button" aria-label="刪除耗材">×</button>
+        <div class="consumable-note"></div>
       `;
       const category = row.querySelector(".consumable-category");
       const select = row.querySelector(".consumable-name");
@@ -572,6 +754,7 @@
       consumableList.appendChild(row);
       renumberConsumables();
       syncConsumables();
+      return row;
     }
 
     function renumberConsumables() {
@@ -608,6 +791,206 @@
         return name && qty > 0 ? `${name}=${qty}` : "";
       }).filter(Boolean);
       consumablesValue.value = values.join(",");
+      updateConsumableNotes();
+    }
+
+    function consumableRows() {
+      return Array.from(consumableList.querySelectorAll(".consumable-row"));
+    }
+
+    function rowConsumableName(row) {
+      return row.querySelector(".consumable-name").value.trim();
+    }
+
+    function rowConsumableQuantity(row) {
+      return parseInt(row.querySelector(".consumable-qty").value, 10) || 0;
+    }
+
+    function setRowConsumableQuantity(row, qty) {
+      row.querySelector(".consumable-qty").value = Math.max(1, qty);
+    }
+
+    function findConsumableRowsByName(name) {
+      return consumableRows().filter((row) => rowConsumableName(row) === name);
+    }
+
+    function adjustConsumableQuantity(name, delta) {
+      if (!name || !delta) return;
+      if (delta > 0) {
+        const existingRow = findConsumableRowsByName(name)[0];
+        if (existingRow) {
+          setRowConsumableQuantity(existingRow, rowConsumableQuantity(existingRow) + delta);
+          syncConsumables();
+          return;
+        }
+        addConsumableRow(name, delta);
+        return;
+      }
+
+      let remaining = Math.abs(delta);
+      for (const row of findConsumableRowsByName(name)) {
+        const current = rowConsumableQuantity(row);
+        if (current > remaining) {
+          setRowConsumableQuantity(row, current - remaining);
+          remaining = 0;
+          break;
+        }
+        row.remove();
+        remaining -= current;
+        if (remaining <= 0) break;
+      }
+      renumberConsumables();
+      syncConsumables();
+    }
+
+    function removeConsumableRowsByName(name) {
+      let removedQty = 0;
+      findConsumableRowsByName(name).forEach((row) => {
+        removedQty += rowConsumableQuantity(row);
+        row.remove();
+      });
+      if (removedQty > 0) {
+        renumberConsumables();
+        syncConsumables();
+      }
+      return removedQty;
+    }
+
+    function applyPackageConsumableRemovals(packageKey, preset) {
+      const removed = {};
+      (preset.removals || []).forEach((name) => {
+        const qty = removeConsumableRowsByName(name);
+        if (qty > 0) removed[name] = qty;
+      });
+      if (Object.keys(removed).length > 0) {
+        packageConsumableRemovals.set(packageKey, removed);
+      }
+    }
+
+    function restorePackageConsumableRemovals(packageKey) {
+      const removed = packageConsumableRemovals.get(packageKey) || {};
+      Object.entries(removed).forEach(([name, qty]) => {
+        if (findConsumableRowsByName(name).length === 0) {
+          adjustConsumableQuantity(name, qty);
+        }
+      });
+      packageConsumableRemovals.delete(packageKey);
+    }
+
+    function packageContributionMap(preset) {
+      const contribution = {};
+      (preset.consumables || []).forEach(([name, qty]) => {
+        contribution[name] = (contribution[name] || 0) + qty;
+      });
+      return contribution;
+    }
+
+    function disinfectionCheckbox(itemName) {
+      return Array.from(document.querySelectorAll('input[name="disinfection_items"]')).find((checkbox) => checkbox.value === itemName);
+    }
+
+    function applyPackageDisinfectionItems(packageKey, preset) {
+      (preset.disinfectionItems || []).forEach((itemName) => {
+        const checkbox = disinfectionCheckbox(itemName);
+        if (!checkbox) return;
+        const currentOwners = autoCheckedDisinfectionItems.get(itemName);
+        if (!checkbox.checked || currentOwners) {
+          checkbox.checked = true;
+          const owners = currentOwners || new Set();
+          owners.add(packageKey);
+          autoCheckedDisinfectionItems.set(itemName, owners);
+        }
+      });
+    }
+
+    function clearPackageDisinfectionItems(packageKey, preset) {
+      (preset.disinfectionItems || []).forEach((itemName) => {
+        const owners = autoCheckedDisinfectionItems.get(itemName);
+        if (!owners) return;
+        owners.delete(packageKey);
+        if (owners.size > 0) return;
+        const checkbox = disinfectionCheckbox(itemName);
+        if (checkbox) checkbox.checked = false;
+        autoCheckedDisinfectionItems.delete(itemName);
+      });
+    }
+
+    function toggleConsumablePackage(packageKey) {
+      const preset = consumablePackages[packageKey];
+      if (!preset) return;
+      taskFormDirty = true;
+      if (activeConsumablePackages.has(packageKey)) {
+        const contribution = packageConsumableContributions.get(packageKey) || packageContributionMap(preset);
+        Object.entries(contribution).forEach(([name, qty]) => adjustConsumableQuantity(name, -qty));
+        packageConsumableContributions.delete(packageKey);
+        activeConsumablePackages.delete(packageKey);
+        restorePackageConsumableRemovals(packageKey);
+        clearPackageDisinfectionItems(packageKey, preset);
+      } else {
+        const contribution = packageContributionMap(preset);
+        Object.entries(contribution).forEach(([name, qty]) => adjustConsumableQuantity(name, qty));
+        packageConsumableContributions.set(packageKey, contribution);
+        activeConsumablePackages.add(packageKey);
+        applyPackageConsumableRemovals(packageKey, preset);
+        applyPackageDisinfectionItems(packageKey, preset);
+      }
+      updateConsumablePackageUi();
+    }
+
+    function activePackageLabels() {
+      return Array.from(activeConsumablePackages).map((packageKey) => consumablePackages[packageKey].label);
+    }
+
+    function loadedConsumableLabels() {
+      const labels = [];
+      if (baselineConsumablesLoaded) labels.push("基礎三項");
+      return labels.concat(activePackageLabels());
+    }
+
+    function activePackageConsumableNames() {
+      const names = new Set();
+      activeConsumablePackages.forEach((packageKey) => {
+        (consumablePackages[packageKey].consumables || []).forEach(([name]) => names.add(name));
+      });
+      return names;
+    }
+
+    function updateConsumablePackageUi() {
+      packageButtons.forEach((button) => {
+        const isActive = activeConsumablePackages.has(button.dataset.consumablePackage);
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-pressed", isActive ? "true" : "false");
+      });
+      if (consumablePackagesValue) {
+        consumablePackagesValue.value = Array.from(activeConsumablePackages).join(",");
+      }
+      const loadedLabels = loadedConsumableLabels();
+      if (packageReminder) {
+        packageReminder.hidden = loadedLabels.length === 0;
+        packageReminder.textContent = loadedLabels.length ? `已帶入：${loadedLabels.join("、")}` : "";
+      }
+      updateConsumableNotes();
+    }
+
+    function activeNotesForConsumable(name) {
+      const notes = [];
+      activeConsumablePackages.forEach((packageKey) => {
+        const note = consumablePackages[packageKey].notes?.[name];
+        if (note && !notes.includes(note)) notes.push(note);
+      });
+      return notes;
+    }
+
+    function updateConsumableNotes() {
+      const activeNames = activePackageConsumableNames();
+      consumableRows().forEach((row) => {
+        const note = row.querySelector(".consumable-note");
+        row.classList.toggle("is-package-consumable", activeNames.has(rowConsumableName(row)));
+        if (!note) return;
+        const notes = activeNotesForConsumable(rowConsumableName(row));
+        note.textContent = notes.join("、");
+        note.classList.toggle("is-visible", notes.length > 0);
+      });
     }
 
     function pad2(value) {
@@ -618,9 +1001,26 @@
       const now = new Date();
       document.getElementById("return-date").value = `${now.getFullYear()}/${pad2(now.getMonth() + 1)}/${pad2(now.getDate())}`;
       document.getElementById("return-time").value = `${pad2(now.getHours())}${pad2(now.getMinutes())}`;
+      updateFieldVisualHints();
     });
 
     Object.entries(defaultConsumables).forEach(([name, qty]) => addConsumableRow(name, qty));
+    selectedConsumablePackages.forEach((packageKey) => {
+      const preset = consumablePackages[packageKey];
+      if (!preset) return;
+      activeConsumablePackages.add(packageKey);
+      packageConsumableContributions.set(packageKey, packageContributionMap(preset));
+    });
+    packageButtons.forEach((button) => {
+      button.addEventListener("click", () => toggleConsumablePackage(button.dataset.consumablePackage));
+    });
+    document.querySelectorAll('input[name="disinfection_items"]').forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        autoCheckedDisinfectionItems.delete(checkbox.value);
+      });
+    });
+    updateConsumablePackageUi();
+    updateFieldVisualHints();
     document.getElementById("add-consumable").addEventListener("click", () => addConsumableRow());
   </script>
 </body>

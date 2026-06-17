@@ -218,6 +218,12 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="case_address"', body)
         self.assertNotIn('name="work_note"', body)
         self.assertIn("const defaultConsumables = {};", body)
+        self.assertIn("const baselineConsumablesLoaded = false;", body)
+        self.assertIn("const selectedConsumablePackages = [];", body)
+        self.assertIn('name="consumable_packages" id="consumable-packages-value" value=""', body)
+        self.assertIn('name="baseline_consumables_loaded" value=""', body)
+        self.assertIn('consumablePackagesValue.value = Array.from(activeConsumablePackages).join(",");', body)
+        self.assertIn("selectedConsumablePackages.forEach((packageKey) => {", body)
         self.assertNotIn(" checked", body)
         self.assertIn("main { max-width: 1080px;", body)
         self.assertIn("--text-md: 17px;", body)
@@ -225,16 +231,89 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".check-item input { width: 20px; height: 20px; min-height: 20px; margin: 0; transform: scale(1.35);", body)
         self.assertIn(".case-card button { min-width: 88px; min-height: 50px;", body)
         self.assertIn(".consumable-list { display: grid; gap: 10px; align-items: start; }", body)
-        self.assertIn(".consumable-row { display: grid; grid-template-columns: 42px 150px minmax(0, 1fr) 220px 58px;", body)
+        self.assertIn(".consumable-row { display: grid; grid-template-columns: 38px 142px minmax(0, 1fr) 196px 50px;", body)
         self.assertIn('<span class="consumable-index"></span>', body)
         self.assertIn("function renumberConsumables()", body)
         self.assertIn(".qty-button,", body)
-        self.assertIn(".icon-button { height: 56px; min-height: 56px; padding: 0; align-self: end; line-height: 1; font-size: 22px; display: inline-flex; align-items: center; justify-content: center;", body)
-        self.assertIn(".qty-button { min-width: 56px; color: var(--accent); }", body)
-        self.assertIn(".icon-button { width: 58px; min-width: 58px; justify-self: start; color: var(--failed); }", body)
+        self.assertIn(".icon-button { height: 48px; min-height: 48px; padding: 0; align-self: end; line-height: 1; font-size: 21px; display: inline-flex; align-items: center; justify-content: center;", body)
+        self.assertIn(".qty-button { min-width: 48px; color: var(--accent); }", body)
+        self.assertIn(".icon-button { width: 50px; min-width: 50px; justify-self: start; color: var(--failed); }", body)
         self.assertIn(".form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));", body)
         self.assertIn(".form-actions button:only-child { grid-column: 1 / -1; }", body)
         self.assertIn("repeating-linear-gradient", body)
+        self.assertNotIn('id="field-summary"', body)
+        self.assertIn('const formErrors = [];', body)
+        self.assertIn('const requiredTaskFields = [', body)
+        self.assertIn('data-field-name="return_time"', body)
+        self.assertIn('data-field-name="vehicle"', body)
+        self.assertIn('data-field-name="driver"', body)
+        self.assertIn('data-field-name="patient_summary"', body)
+        self.assertIn('data-field-name="mileage"', body)
+        self.assertIn(".field-visual.is-pending .field-error-mark", body)
+        self.assertIn(".field-visual.has-error .field-error-mark", body)
+        self.assertIn('class="field-label-title"', body)
+        self.assertIn('class="field-error-mark" aria-hidden="true">*</span>', body)
+        self.assertNotIn("background: #fffaf0", body)
+        self.assertNotIn("background: #fff7f6", body)
+        self.assertNotIn(".field-visual.has-error input", body)
+        self.assertNotIn("field-status-text", body)
+        self.assertNotIn("data-field-status-text", body)
+        self.assertNotIn("待補：", body)
+        self.assertNotIn("待填：", body)
+        self.assertIn('setFieldState(field.name, "pending");', body)
+
+    def test_app_page_includes_consumable_package_shortcuts(self):
+        response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        for package_key, label in [
+            ("glucose", "血糖套餐"),
+            ("iv", "IV套餐"),
+            ("io", "IO套餐"),
+            ("ecg", "心電圖套餐"),
+            ("ohca", "OHCA套餐"),
+        ]:
+            self.assertIn(f'data-consumable-package="{package_key}"', body)
+            self.assertIn(f">{label}</button>", body)
+        for consumable_name in [
+            "桃-血糖試紙(片)",
+            "桃-安全型採血針(支)",
+            "桃-酒精棉片(片)",
+            "桃-20號防回血IC針(支)",
+            "桃-免針型輸液套(組)",
+            "桃-透明敷料op site(片)",
+            "桃-注射用-生理食鹽水500ml(包)",
+            "桃-45mm拋棄式骨內血管穿刺針具(組)",
+            "桃-10ml預充式導管沖洗器(支)",
+            "桃-心電圖電極貼片(片)",
+            "桃-拋棄式CPR回饋貼片(組)",
+            "桃-成人甦醒球(組)",
+            "桃-連接管-長管(條)",
+            "桃-非充氣聲門上呼吸道-4號(組)",
+            "桃-細菌過濾器(組)",
+        ]:
+            self.assertIn(consumable_name, body)
+        self.assertIn('<span class="package-group-label">套餐帶入</span>', body)
+        self.assertIn('class="add-consumable-button" id="add-consumable">＋ 新增耗材</button>', body)
+        self.assertIn(".consumable-row.is-package-consumable", body)
+        self.assertIn('id="consumable-package-reminder"', body)
+        self.assertIn('packageReminder.textContent = loadedLabels.length ? `已帶入：${loadedLabels.join("、")}` : "";', body)
+        self.assertIn("const baselineConsumablesLoaded =", body)
+        self.assertIn('removals: ["桃-可拋棄式耳溫槍耳套-福爾TD-1118(個)"]', body)
+        self.assertIn('disinfectionItems: ["血糖機"]', body)
+        self.assertIn('disinfectionItems: ["固定式氧氣組", "自動給氧機", "心臟電擊去顫器", "自動心肺復甦機"]', body)
+        self.assertIn('const packageConsumableRemovals = new Map();', body)
+        self.assertIn('const autoCheckedDisinfectionItems = new Map();', body)
+        self.assertIn("function removeConsumableRowsByName(name)", body)
+        self.assertIn("請確認針號", body)
+        self.assertIn("請確認輸液", body)
+        self.assertNotIn("請確認針長", body)
+        self.assertIn("請確認尺寸", body)
+        iv_section = body[body.index("iv: {") : body.index("io: {")]
+        io_section = body[body.index("io: {") : body.index("ecg: {")]
+        self.assertIn('"桃-注射用-生理食鹽水500ml(包)": "請確認輸液"', iv_section)
+        self.assertNotIn('"桃-注射用-生理食鹽水500ml(包)": "請確認輸液"', io_section)
 
     def test_status_includes_runtime_consumable_diagnostics(self):
         response = self.client.get("/status")
@@ -333,6 +412,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('<div class="form-errors" role="alert">', body)
         self.assertIn('name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="2026/06/07"', body)
         self.assertIn('target.scrollIntoView({ block: "start" });', body)
+        self.assertIn('const formErrors = ', body)
+        self.assertIn('"請填寫返隊時間": { name: "return_time"', body)
+        self.assertIn('"請選擇出動車輛": { name: "vehicle"', body)
+        self.assertIn('"請選擇司機": { name: "driver"', body)
+        self.assertIn('"請選擇傷病患": { name: "patient_summary"', body)
+        self.assertIn('"請填寫里程": { name: "mileage"', body)
+        self.assertIn('setFieldState(field.name, "error");', body)
+        self.assertNotIn("錯誤：${errorMessage}", body)
         expected_order = ["請填寫返隊時間", "請選擇出動車輛", "請選擇司機", "請選擇傷病患", "請填寫里程"]
         positions = [body.index(message) for message in expected_order]
         self.assertEqual(positions, sorted(positions))
@@ -360,6 +447,28 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.store.list_recent(), [])
         self.assertIn("里程只能輸入數字", body)
+        self.assertIn('"里程只能輸入數字": { name: "mileage", message: "里程只能輸入數字" }', body)
+
+    def test_create_task_validation_preserves_consumable_package_state(self):
+        response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                vehicle="",
+                consumables="桃-酒精棉片(片)=3,桃-20號防回血IC針(支)=1,桃-注射用-生理食鹽水500ml(包)=1",
+                consumable_packages="iv,ohca,invalid,iv",
+                baseline_consumables_loaded="1",
+            ),
+            follow_redirects=False,
+        )
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('name="consumable_packages" id="consumable-packages-value" value="iv,ohca"', body)
+        self.assertIn('name="baseline_consumables_loaded" value="1"', body)
+        self.assertIn('const baselineConsumablesLoaded = true;', body)
+        self.assertIn('const selectedConsumablePackages = ["iv", "ohca"];', body)
+        self.assertIn("桃-20號防回血IC針(支)", body)
+        self.assertIn("桃-注射用-生理食鹽水500ml(包)", body)
 
     def test_create_task_validation_keeps_imported_personnel_driver_options(self):
         first_person = "\u5433\u5b97\u8015"
@@ -1251,6 +1360,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("0905", imported_body)
         self.assertIn(" checked", imported_body)
         self.assertIn('formaction="/cases/clear"', imported_body)
+        self.assertIn("const baselineConsumablesLoaded = true;", imported_body)
         self.assertEqual(app_module.read_selected_case(), {})
 
         refreshed_response = self.client.get("/app")
@@ -1258,6 +1368,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('value="0905"', refreshed_body)
         self.assertNotIn('value="桃園市觀音區"', refreshed_body)
         self.assertNotIn(" checked", refreshed_body)
+        self.assertIn("const baselineConsumablesLoaded = false;", refreshed_body)
 
         clear_response = self.client.post("/cases/clear", follow_redirects=False)
         self.assertEqual(clear_response.status_code, 302)
@@ -1269,6 +1380,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('value="桃園市觀音區"', cleared_body)
         self.assertNotIn(" checked", cleared_body)
         self.assertIn("const defaultConsumables = {};", cleared_body)
+        self.assertIn("const baselineConsumablesLoaded = false;", cleared_body)
 
         self.client.post("/cases/import", data={"case_id": "20260602090556012"}, follow_redirects=False)
         self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
