@@ -172,9 +172,6 @@
               <div>
                 <h3 class="event-title">{{ event.item_title }}</h3>
                 <div class="event-meta">{{ event.record_label }}｜{{ event.trigger_label }}｜{{ event.person_label }}</div>
-                {% if event.target_time or event.target or event.item_kind %}
-                  <div class="event-meta">{{ event.target_time or '未標示時間' }}｜{{ event.item_kind or '未標示項目' }}｜{{ event.target or '未標示對象' }}</div>
-                {% endif %}
               </div>
               <div class="event-badges">
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
@@ -183,9 +180,6 @@
                 {% endif %}
               </div>
             </div>
-            {% if event.content %}
-              <div class="event-detail">{{ event.content }}</div>
-            {% endif %}
             {% if event.error %}
               <div class="event-detail">錯誤原因：{{ event.error }}</div>
             {% endif %}

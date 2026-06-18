@@ -241,6 +241,66 @@ def sinposmart_summary_key(event: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def parse_sinposmart_snapshot_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        pass
+    if text.isdigit() and len(text) == 7:
+        try:
+            return date(int(text[:3]) + 1911, int(text[3:5]), int(text[5:7]))
+        except ValueError:
+            return None
+    return None
+
+
+def sinposmart_snapshot_target_dates(event: dict[str, Any]) -> list[date | None]:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    days = snapshot.get("days") if isinstance(snapshot, dict) else []
+    if not isinstance(days, list):
+        return []
+    target_dates: list[date | None] = []
+    seen: set[str] = set()
+    for day_item in days:
+        if not isinstance(day_item, dict):
+            continue
+        raw_date = str(day_item.get("target_date") or "").strip()
+        if raw_date in seen:
+            continue
+        seen.add(raw_date)
+        target_dates.append(parse_sinposmart_snapshot_date(raw_date))
+    return target_dates
+
+
+def sinposmart_schedule_snapshot_scope(event: dict[str, Any], target_date: date | None) -> str:
+    fire_day = parse_sinposmart_snapshot_date(event.get("fire_day"))
+    if fire_day and target_date:
+        if target_date == fire_day:
+            return "當日整日勤務"
+        if target_date == fire_day + timedelta(days=1):
+            return "隔日整日勤務"
+        if target_date == fire_day - timedelta(days=1):
+            return "前日整日勤務"
+    return "整日勤務"
+
+
+def sinposmart_background_summary_events(event: dict[str, Any]) -> list[dict[str, Any]]:
+    if str(event.get("record_type") or "") != "schedule_snapshot":
+        return [event]
+    target_dates = sinposmart_snapshot_target_dates(event)
+    if not target_dates:
+        return [event]
+    summary_events: list[dict[str, Any]] = []
+    for target_date in target_dates:
+        scoped_event = dict(event)
+        scoped_event["item_title"] = sinposmart_schedule_snapshot_scope(event, target_date)
+        summary_events.append(scoped_event)
+    return summary_events
+
+
 def sinposmart_tool_group_key(event: dict[str, Any]) -> tuple[str, ...]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     tool_name = sanitize_scalar(snapshot.get("tool_name"), 120) if snapshot else ""
@@ -296,6 +356,14 @@ def sinposmart_admin_event(event: dict[str, Any], status_label: str | None = Non
     }
 
 
+def sinposmart_action_display_title(event: dict[str, Any]) -> str:
+    item_title = str(event.get("item_title") or "").strip()
+    if not item_title:
+        item_title = sinposmart_record_type_label(str(event.get("record_type") or ""))
+    parts = [str(event.get("target_time") or "").strip(), str(event.get("item_kind") or "").strip(), item_title]
+    return "｜".join(part for part in parts if part)
+
+
 def better_sinposmart_action_result(current: dict[str, Any] | None, candidate: dict[str, Any]) -> dict[str, Any]:
     if current is None:
         return candidate
@@ -317,6 +385,7 @@ def sinposmart_admin_action_event(action_state: dict[str, dict[str, Any]]) -> di
         str(base_event.get("record_type") or ""),
     )
     card = sinposmart_admin_event(base_event, status_label)
+    card["item_title"] = sinposmart_action_display_title(base_event)
     started_at = sinposmart_event_time(queued_event) if queued_event else ""
     completed_at = sinposmart_event_time(result_event) if result_event else ""
     steps: list[dict[str, str]] = []
@@ -445,8 +514,9 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
                 tool_state["finished"] = newer_sinposmart_event(tool_state.get("finished"), event)
             continue
         if record_type in {"schedule_snapshot", "comparison_snapshot"}:
-            key = sinposmart_summary_key(event)
-            background_updates[key] = newer_sinposmart_event(background_updates.get(key), event)
+            for summary_event in sinposmart_background_summary_events(event):
+                key = sinposmart_summary_key(summary_event)
+                background_updates[key] = newer_sinposmart_event(background_updates.get(key), summary_event)
             continue
         if record_type in {"login", "login_failed", "logout"}:
             key = sinposmart_login_key(event)

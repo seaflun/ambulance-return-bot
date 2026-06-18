@@ -676,7 +676,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("8番 曾彥綸", body)
         self.assertNotIn("tyfd01510", body)
         self.assertIn("值班交接", body)
-        self.assertIn("已登打值班交接。", body)
+        self.assertNotIn("已登打值班交接。", body)
         self.assertNotIn("secret", body)
 
     def test_sinposmart_admin_lists_tool_started_events(self):
@@ -851,7 +851,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("到點勤務", body)
         self.assertIn("背景資料比對快照", body)
         self.assertIn("登入狀態", body)
-        self.assertIn("值退 / 值退｜27 林宏為", body)
+        self.assertIn("18:00｜出入｜值退 / 值退｜27 林宏為", body)
         self.assertIn("開始送出", body)
         self.assertIn("完成結果", body)
         self.assertIn("已登打", body)
@@ -860,10 +860,42 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("暫停原因", body)
         self.assertNotIn("加入佇列", body)
         self.assertNotIn("pending_write_automation", body)
+        self.assertNotIn("18:00｜出入｜27番 林宏為", body)
         self.assertNotIn("快照內容", body)
         self.assertNotIn("代碼", body)
         self.assertNotIn("duty_sheet", body)
         self.assertNotIn("tyfd01027", body)
+
+    def test_sinposmart_admin_splits_schedule_snapshot_by_fire_day_scope(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-schedule-days-web",
+                "occurred_at": "2026-06-18T22:00:33",
+                "fire_day": "2026-06-18",
+                "record_type": "schedule_snapshot",
+                "trigger_type": "schedule",
+                "status": "success",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "snapshot": {
+                    "days": [
+                        {"target_date": "1150618", "action_count": 3},
+                        {"target_date": "1150619", "action_count": 5},
+                    ]
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("當日整日勤務", body)
+        self.assertIn("隔日整日勤務", body)
+        self.assertNotIn("action_count", body)
 
     def test_sinposmart_admin_waiting_event_shows_pause_reason(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"

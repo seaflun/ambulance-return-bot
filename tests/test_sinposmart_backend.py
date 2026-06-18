@@ -214,6 +214,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
 
             self.assertEqual(len(actions), 1)
             self.assertEqual(actions[0]["record_label"], "到點勤務")
+            self.assertEqual(actions[0]["item_title"], "18:00｜出入｜值退 / 值退｜27 林宏為")
             self.assertEqual(actions[0]["status_label"], "已登打")
             self.assertEqual(actions[0]["started_at"], "2026-06-18T18:00:00")
             self.assertEqual(actions[0]["completed_at"], "2026-06-18T18:00:22")
@@ -242,6 +243,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
 
         self.assertEqual(len(view["action_events"]), 1)
         self.assertEqual(view["action_events"][0]["record_label"], "到點勤務")
+        self.assertEqual(view["action_events"][0]["item_title"], "17:00｜工作｜在隊訓練｜戰術體能訓練")
         self.assertEqual(view["action_events"][0]["status_label"], "等待登打")
         self.assertEqual(view["action_events"][0]["started_at"], "2026-06-18T17:00:00")
         self.assertEqual(view["action_events"][0]["completed_at"], "")
@@ -334,6 +336,35 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(len(view["background_updates"]), 1)
         self.assertEqual(view["background_updates"][0]["last_occurred_at"], "2026-06-18T18:00:33")
         self.assertNotIn("snapshot", view["background_updates"][0])
+
+    def test_admin_view_splits_schedule_snapshots_by_fire_day_scope(self):
+        events = [
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-schedule-days",
+                    "occurred_at": "2026-06-18T22:00:33",
+                    "fire_day": "2026-06-18",
+                    "record_type": "schedule_snapshot",
+                    "status": "success",
+                    "actor_no": "27",
+                    "display_name": "27番 隊員 林宏為",
+                    "snapshot": {
+                        "days": [
+                            {"target_date": "1150618", "action_count": 3},
+                            {"target_date": "1150619", "action_count": 5},
+                        ]
+                    },
+                },
+                now=datetime(2026, 6, 18, 22, 0),
+            ),
+        ]
+
+        view = build_sinposmart_admin_view(events)
+
+        self.assertEqual(len(view["background_updates"]), 2)
+        titles = {event["item_title"] for event in view["background_updates"]}
+        self.assertEqual(titles, {"當日整日勤務", "隔日整日勤務"})
+        self.assertTrue(all("snapshot" not in event for event in view["background_updates"]))
 
     def test_admin_view_login_section_shows_latest_logout_status(self):
         events = [
