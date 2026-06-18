@@ -1,5 +1,12 @@
 # AGENTS.md
 
+## Superpowers Skills
+
+- This repository vendors Superpowers skills under `project_skills/superpowers/`.
+- At the start of work in this repository, prefer the `using-superpowers` skill to decide whether another Superpowers skill should be used.
+- For planning, debugging, testing, branch finishing, code review, or completion verification, use the matching Superpowers skill when applicable.
+- Superpowers skills do not override this `AGENTS.md` or direct user instructions; repository rules and user instructions remain higher priority.
+
 ## Project
 
 This repository is the ambulance return web app, NAS task center, and public-duty Windows worker automation.
