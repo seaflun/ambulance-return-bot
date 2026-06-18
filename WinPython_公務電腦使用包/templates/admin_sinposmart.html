@@ -62,6 +62,10 @@
     .day-link { min-height: 38px; padding: 0 12px; font-size: var(--text-sm); }
     .day-link.active { background: var(--accent); border-color: var(--accent); color: #fff; }
     .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .section { margin-top: 18px; }
+    .section-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 10px; }
+    .section-title { font-size: 20px; font-weight: 840; }
+    .section-note { color: var(--muted); font-size: var(--text-sm); }
     .summary-card, .event-card, .empty {
       background: var(--surface);
       border: 1px solid var(--line);
@@ -78,11 +82,11 @@
     .event-title { font-weight: 800; overflow-wrap: anywhere; }
     .event-meta { margin-top: 4px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .event-detail { margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
-    .snapshot, .tool-snapshot { margin-top: 10px; padding: 10px; background: #f8f7f3; border: 1px solid var(--line); border-radius: 8px; font-size: var(--text-sm); overflow-wrap: anywhere; }
-    .tool-snapshot { display: grid; gap: 6px; }
-    .tool-snapshot-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
-    .tool-snapshot-label { min-width: 42px; color: var(--muted); }
-    .tool-snapshot code { color: var(--ink); font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .event-steps { display: grid; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .event-step { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; gap: 10px; align-items: center; color: var(--muted); font-size: var(--text-sm); }
+    .event-step-name { color: var(--ink); font-weight: 760; }
+    .pause-reason { margin-top: 10px; padding: 10px; border: 1px solid var(--failed-bg); border-radius: 8px; background: var(--failed-bg); color: var(--failed); font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .event-badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
     .status {
       display: inline-flex;
       align-items: center;
@@ -106,6 +110,7 @@
       .button { width: 100%; }
       .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .event-head { grid-template-columns: 1fr; gap: 4px; }
+      .event-step { grid-template-columns: 1fr; gap: 4px; align-items: start; }
     }
   </style>
 </head>
@@ -128,51 +133,55 @@
     {% endif %}
 
     {% if selected_day %}
-      {% set summary = selected_day.summary or {} %}
+      {% set admin_view = selected_day.admin_view or {} %}
+      {% set summary = admin_view.summary or {} %}
       <section class="summary-grid" aria-label="每日彙總">
         <div class="summary-card">
           <div class="summary-label">消防日</div>
           <div class="summary-value">{{ selected_day.fire_day }}</div>
         </div>
         <div class="summary-card">
-          <div class="summary-label">事件</div>
-          <div class="summary-value">{{ summary.total or 0 }}</div>
+          <div class="summary-label">到點勤務</div>
+          <div class="summary-value">{{ summary.actions or 0 }}</div>
         </div>
         <div class="summary-card">
-          <div class="summary-label">手動 / 自動</div>
-          <div class="summary-value">{{ summary.manual or 0 }} / {{ summary.auto or 0 }}</div>
+          <div class="summary-label">已登打 / 已存在</div>
+          <div class="summary-value">{{ summary.submitted or 0 }} / {{ summary.existing or 0 }}</div>
         </div>
         <div class="summary-card">
-          <div class="summary-label">工具開始</div>
-          <div class="summary-value">{{ summary.tool_starts or 0 }}</div>
+          <div class="summary-label">等待登打</div>
+          <div class="summary-value">{{ summary.waiting or 0 }}</div>
         </div>
         <div class="summary-card">
-          <div class="summary-label">成功 / 失敗</div>
-          <div class="summary-value">{{ summary.success or 0 }} / {{ summary.failed or 0 }}</div>
+          <div class="summary-label">失敗</div>
+          <div class="summary-value">{{ summary.failed or 0 }}</div>
         </div>
       </section>
 
-      <section class="event-list" aria-label="事件時間軸">
-        {% for event in selected_day.events | reverse %}
+      <section class="section" aria-label="到點勤務">
+        <div class="section-head">
+          <h2 class="section-title">到點勤務</h2>
+          <div class="section-note">每一筆到點勤務顯示開始送出與完成結果</div>
+        </div>
+        <div class="event-list">
+        {% for event in admin_view.action_events or [] %}
+          {% set repeat_count = (event.repeat_count or 1) | int %}
           <article class="event-card">
             <div class="event-head">
-              <time class="event-time">{{ event.occurred_at }}</time>
+              <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
               <div>
-                <h2 class="event-title">{{ event.item_title or sinposmart_record_type_label(event.record_type) }}</h2>
-                <div class="event-meta">
-                  {{ sinposmart_record_type_label(event.record_type) }}｜
-                  {{ sinposmart_trigger_label(event.trigger_type) }}｜
-                  {{ event.display_name or event.actor_no or event.user_id or '未知使用者' }}
-                </div>
+                <h3 class="event-title">{{ event.item_title }}</h3>
+                <div class="event-meta">{{ event.record_label }}｜{{ event.trigger_label }}｜{{ event.person_label }}</div>
                 {% if event.target_time or event.target or event.item_kind %}
-                  <div class="event-meta">
-                    {{ event.target_time or '未標示時間' }}｜
-                    {{ event.item_kind or '未標示項目' }}｜
-                    {{ event.target or '未標示對象' }}
-                  </div>
+                  <div class="event-meta">{{ event.target_time or '未標示時間' }}｜{{ event.item_kind or '未標示項目' }}｜{{ event.target or '未標示對象' }}</div>
                 {% endif %}
               </div>
-              <span class="status {{ sinposmart_status_class(event.status) }}">{{ sinposmart_status_label(event.status, event.record_type) }}</span>
+              <div class="event-badges">
+                <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
+                {% if repeat_count > 1 %}
+                  <span class="status running">合併 {{ repeat_count }} 次</span>
+                {% endif %}
+              </div>
             </div>
             {% if event.content %}
               <div class="event-detail">{{ event.content }}</div>
@@ -180,25 +189,117 @@
             {% if event.error %}
               <div class="event-detail">錯誤原因：{{ event.error }}</div>
             {% endif %}
-            {% if event.record_type == 'tool_action_started' and event.snapshot %}
-              <div class="tool-snapshot" aria-label="工具資訊">
-                <div class="tool-snapshot-row">
-                  <span class="tool-snapshot-label">工具</span>
-                  <strong>{{ event.snapshot.tool_label or event.item_title or '未標示工具' }}</strong>
-                </div>
-                <div class="tool-snapshot-row">
-                  <span class="tool-snapshot-label">代碼</span>
-                  <code>{{ event.snapshot.tool_name or '未標示' }}</code>
-                </div>
+            {% if event.steps %}
+              <div class="event-steps">
+                {% for step in event.steps %}
+                  <div class="event-step">
+                    <div class="event-step-name">{{ step.label }}</div>
+                    <time>{{ step.occurred_at or '尚未完成' }}</time>
+                    <span class="status {{ step.status_class }}">{{ step.status_label }}</span>
+                  </div>
+                {% endfor %}
               </div>
-            {% elif event.snapshot %}
-              <details class="snapshot">
-                <summary>快照內容</summary>
-                <pre>{{ event.snapshot | tojson(indent=2) }}</pre>
-              </details>
+            {% endif %}
+            {% if event.pause_reason %}
+              <div class="pause-reason">暫停原因：{{ event.pause_reason }}</div>
             {% endif %}
           </article>
+        {% else %}
+          <section class="empty">目前沒有到點勤務。</section>
         {% endfor %}
+        </div>
+      </section>
+
+      <section class="section" aria-label="使用工具">
+        <div class="section-head">
+          <h2 class="section-title">使用工具</h2>
+          <div class="section-note">每日作業工具啟動紀錄</div>
+        </div>
+        <div class="event-list">
+        {% for event in admin_view.tool_events or [] %}
+          <article class="event-card">
+            <div class="event-head">
+              <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
+              <div>
+                <h3 class="event-title">{{ event.item_title }}</h3>
+                <div class="event-meta">{{ event.record_label }}｜{{ event.person_label }}</div>
+              </div>
+              <div class="event-badges">
+                <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
+              </div>
+            </div>
+            {% if event.steps %}
+              <div class="event-steps">
+                {% for step in event.steps %}
+                  <div class="event-step">
+                    <div class="event-step-name">{{ step.label }}</div>
+                    <time>{{ step.occurred_at or '尚未完成' }}</time>
+                    <span class="status {{ step.status_class }}">{{ step.status_label }}</span>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
+            {% if event.result_text %}
+              <div class="event-detail">結果：{{ event.result_text }}</div>
+            {% endif %}
+            {% if event.pause_reason %}
+              <div class="pause-reason">暫停原因：{{ event.pause_reason }}</div>
+            {% endif %}
+          </article>
+        {% else %}
+          <section class="empty">目前沒有工具使用紀錄。</section>
+        {% endfor %}
+        </div>
+      </section>
+
+      <section class="section" aria-label="登入狀態">
+        <div class="section-head">
+          <h2 class="section-title">登入狀態</h2>
+          <div class="section-note">每個番號只顯示最後一次登入狀態</div>
+        </div>
+        <div class="event-list">
+        {% for event in admin_view.login_events or [] %}
+          <article class="event-card">
+            <div class="event-head">
+              <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
+              <div>
+                <h3 class="event-title">{{ event.person_label }}</h3>
+                <div class="event-meta">{{ event.record_label }}</div>
+              </div>
+              <div class="event-badges">
+                <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
+              </div>
+            </div>
+          </article>
+        {% else %}
+          <section class="empty">目前沒有登入紀錄。</section>
+        {% endfor %}
+        </div>
+      </section>
+
+      <section class="section" aria-label="背景資料比對快照">
+        <div class="section-head">
+          <h2 class="section-title">背景資料比對快照</h2>
+          <div class="section-note">整日勤務與已登打資料只保留最後更新摘要</div>
+        </div>
+        <div class="event-list">
+        {% for event in admin_view.background_updates or [] %}
+          <article class="event-card">
+            <div class="event-head">
+              <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
+              <div>
+                <h3 class="event-title">{{ event.item_title }}</h3>
+                <div class="event-meta">{{ event.record_label }}｜{{ event.person_label }}</div>
+              </div>
+              <div class="event-badges">
+                <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
+              </div>
+            </div>
+          </article>
+        {% else %}
+          <section class="empty">目前沒有背景資料比對紀錄。</section>
+        {% endfor %}
+        </div>
       </section>
     {% else %}
       <section class="empty">目前尚未收到 SinpoSmart 值班事件。</section>

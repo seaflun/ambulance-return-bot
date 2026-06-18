@@ -1,4 +1,6 @@
 import html
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -671,7 +673,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("SinpoSmart 值班後台", body)
         self.assertIn("2026-06-15", body)
         self.assertIn("手動", body)
-        self.assertIn("8番 曾彥綸 - tyfd01510", body)
+        self.assertIn("8番 曾彥綸", body)
+        self.assertNotIn("tyfd01510", body)
         self.assertIn("值班交接", body)
         self.assertIn("已登打值班交接。", body)
         self.assertNotIn("secret", body)
@@ -698,15 +701,266 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/sinposmart")
         body = html.unescape(page.data.decode("utf-8"))
 
-        self.assertIn("工具開始", body)
-        self.assertIn("開始勤務表登打", body)
-        self.assertIn("8番 王小明 - tyfd01510", body)
-        self.assertIn("開始", body)
+        self.assertIn("使用工具", body)
+        self.assertIn("勤務表登打", body)
+        self.assertIn("開始執行", body)
+        self.assertIn("執行中", body)
+        self.assertIn("8番 王小明", body)
+        self.assertNotIn("tyfd01510", body)
         self.assertIn("工具", body)
-        self.assertIn("代碼", body)
-        self.assertIn("duty_sheet", body)
+        self.assertNotIn("代碼", body)
+        self.assertNotIn("duty_sheet", body)
         self.assertNotIn("tool_label", body)
         self.assertNotIn("錯誤", body)
+
+    def test_sinposmart_admin_combines_tool_start_finish_and_result(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        for event in [
+            {
+                "event_id": "evt-tool-start-finish-web-1",
+                "occurred_at": "2026-06-18T16:30:52",
+                "record_type": "tool_action_started",
+                "trigger_type": "tool_start",
+                "status": "started",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "snapshot": {"tool_name": "duty_sheet", "tool_label": "勤務表登打"},
+            },
+            {
+                "event_id": "evt-tool-start-finish-web-2",
+                "occurred_at": "2026-06-18T16:31:30",
+                "record_type": "tool_action_finished",
+                "trigger_type": "tool_finish",
+                "status": "completed",
+                "content": "勤務表登打完成：115/06/19",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "snapshot": {"tool_name": "duty_sheet", "tool_label": "勤務表登打"},
+            },
+        ]:
+            response = self.client.post("/api/sinposmart/events", headers=headers, json=event)
+            self.assertEqual(response.status_code, 200)
+
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("使用工具", body)
+        self.assertIn("勤務表登打", body)
+        self.assertIn("開始執行", body)
+        self.assertIn("結束執行", body)
+        self.assertIn("結果：勤務表登打完成：115/06/19", body)
+        self.assertNotIn("duty_sheet", body)
+
+    def test_sinposmart_admin_merges_repeated_events_and_hides_raw_snapshot(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        base_payload = {
+            "occurred_at": "2026-06-15T12:10:00",
+            "record_type": "action_result",
+            "trigger_type": "manual",
+            "status": "submitted",
+            "actor_no": "8",
+            "user_id": "tyfd01510",
+            "display_name": "8番 王小明 - tyfd01510",
+            "item_kind": "出入",
+            "item_title": "休息後退勤",
+            "content": "已登打休息後退勤",
+            "target": "4",
+            "target_time": "06:00",
+            "snapshot": {"tool_name": "duty_sheet", "password": "secret"},
+        }
+        first = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={**base_payload, "event_id": "evt-merge-web-1"},
+        )
+        second = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={**base_payload, "event_id": "evt-merge-web-2", "occurred_at": "2026-06-15T12:11:00"},
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("合併 2 次", body)
+        self.assertNotIn("快照資料已收到", body)
+        self.assertIn("8番 王小明", body)
+        self.assertNotIn("tyfd01510", body)
+        self.assertNotIn("duty_sheet", body)
+        self.assertNotIn("secret", body)
+
+    def test_sinposmart_admin_collapses_queue_snapshot_and_login_noise(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        events = [
+            {
+                "event_id": "evt-login-27",
+                "occurred_at": "2026-06-18T16:30:40",
+                "record_type": "login",
+                "status": "ok",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為 - tyfd01027",
+            },
+            {
+                "event_id": "evt-schedule-27",
+                "occurred_at": "2026-06-18T16:31:12",
+                "record_type": "schedule_snapshot",
+                "trigger_type": "schedule",
+                "status": "success",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "snapshot": {"tool_name": "duty_sheet", "raw": {"code": "duty_sheet"}},
+            },
+            {
+                "event_id": "evt-queue-27",
+                "occurred_at": "2026-06-18T18:00:00",
+                "record_type": "action_queued",
+                "trigger_type": "due",
+                "status": "pending_write_automation",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "item_kind": "出入",
+                "item_title": "值退 / 值退｜27 林宏為",
+                "target": "27番 林宏為（隊員）",
+                "target_time": "18:00",
+            },
+            {
+                "event_id": "evt-result-27",
+                "occurred_at": "2026-06-18T18:00:22",
+                "record_type": "action_result",
+                "trigger_type": "due",
+                "status": "submitted",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "item_kind": "出入",
+                "item_title": "值退 / 值退｜27 林宏為",
+                "target": "27番 林宏為（隊員）",
+                "target_time": "18:00",
+            },
+        ]
+        for event in events:
+            response = self.client.post("/api/sinposmart/events", headers=headers, json=event)
+            self.assertEqual(response.status_code, 200)
+
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("到點勤務", body)
+        self.assertIn("背景資料比對快照", body)
+        self.assertIn("登入狀態", body)
+        self.assertIn("值退 / 值退｜27 林宏為", body)
+        self.assertIn("開始送出", body)
+        self.assertIn("完成結果", body)
+        self.assertIn("已登打", body)
+        self.assertIn("整日勤務", body)
+        self.assertIn("27番 隊員 林宏為", body)
+        self.assertNotIn("暫停原因", body)
+        self.assertNotIn("加入佇列", body)
+        self.assertNotIn("pending_write_automation", body)
+        self.assertNotIn("快照內容", body)
+        self.assertNotIn("代碼", body)
+        self.assertNotIn("duty_sheet", body)
+        self.assertNotIn("tyfd01027", body)
+
+    def test_sinposmart_admin_waiting_event_shows_pause_reason(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-queue-only-web",
+                "occurred_at": "2026-06-18T19:00:00",
+                "record_type": "action_queued",
+                "trigger_type": "due",
+                "status": "pending_write_automation",
+                "actor_no": "5",
+                "display_name": "5番 小隊長 張鴻志",
+                "item_kind": "出入",
+                "item_title": "值班 / 值班｜05 張鴻志",
+                "target": "5番 張鴻志（小隊長）",
+                "target_time": "19:00",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("到點勤務", body)
+        self.assertIn("開始送出", body)
+        self.assertIn("等待登打", body)
+        self.assertIn("暫停原因：尚未收到完成結果", body)
+        self.assertNotIn("pending_write_automation", body)
+        self.assertNotIn("加入佇列", body)
+
+    def test_sinposmart_admin_login_section_can_show_logout(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        for event in [
+            {
+                "event_id": "evt-login-web",
+                "occurred_at": "2026-06-18T16:30:40",
+                "record_type": "login",
+                "status": "ok",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為 - tyfd01027",
+            },
+            {
+                "event_id": "evt-logout-web",
+                "occurred_at": "2026-06-18T18:05:12",
+                "record_type": "logout",
+                "status": "ok",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+            },
+        ]:
+            response = self.client.post("/api/sinposmart/events", headers=headers, json=event)
+            self.assertEqual(response.status_code, 200)
+
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("登入狀態", body)
+        self.assertIn("27番 隊員 林宏為", body)
+        self.assertIn("登出", body)
+        self.assertIn("18:05:12", body)
+        self.assertNotIn("tyfd01027", body)
+
+    def test_sinposmart_admin_login_section_prefers_person_name_over_account(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        for event in [
+            {
+                "event_id": "evt-login-account-web",
+                "occurred_at": "2026-06-18T11:08:39",
+                "record_type": "login",
+                "status": "ok",
+                "actor_no": "8",
+                "display_name": "8番 tyfd01510",
+            },
+            {
+                "event_id": "evt-login-name-web",
+                "occurred_at": "2026-06-18T10:47:28",
+                "record_type": "login",
+                "status": "ok",
+                "actor_no": "8",
+                "display_name": "8番 隊員 曾彥綸",
+            },
+        ]:
+            response = self.client.post("/api/sinposmart/events", headers=headers, json=event)
+            self.assertEqual(response.status_code, 200)
+
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("登入狀態", body)
+        self.assertIn("8番 隊員 曾彥綸", body)
+        self.assertIn("11:08:39", body)
+        self.assertIn("10:47:28", body)
+        self.assertNotIn("8番 tyfd01510", body)
 
     def test_sinposmart_backend_hides_old_fire_days(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
@@ -1194,7 +1448,9 @@ class WebAppTests(unittest.TestCase):
         selenium_local_module.query_duty_emergency_cases = fake_query
         app_module.write_case_lookup_request("24h")
 
-        app_module.run_local_case_lookup("24h")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            app_module.run_local_case_lookup("24h")
 
         latest = app_module.read_case_lookup()
         self.assertEqual(latest["source"], "local_public_duty_pc")
@@ -1202,6 +1458,94 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(latest["cases"][0]["case_id"], "case-1")
         completed = app_module.read_case_lookup_request()
         self.assertEqual(completed["status"], "case_lookup_completed")
+        self.assertIn("[worker] case lookup result status=cases_loaded count=1", output.getvalue())
+
+    def test_run_local_case_lookup_failure_clears_running_request(self):
+        def fake_query(artifacts_dir: Path, lookup_range: str = "24h") -> DutyCaseLookupResult:
+            raise RuntimeError("login window stuck")
+
+        selenium_local_module.query_duty_emergency_cases = fake_query
+        app_module.write_case_lookup_request("24h")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            app_module.run_local_case_lookup("24h")
+
+        latest = app_module.read_case_lookup()
+        self.assertEqual(latest["status"], "case_lookup_failed")
+        self.assertEqual(latest["case_count"], 0)
+        self.assertIn("login window stuck", latest["detail"])
+        completed = app_module.read_case_lookup_request()
+        self.assertEqual(completed["status"], "case_lookup_failed")
+        self.assertIn("[worker] case lookup result status=case_lookup_failed count=0", output.getvalue())
+
+    def test_run_local_case_lookup_non_loaded_result_clears_running_request(self):
+        def fake_query(artifacts_dir: Path, lookup_range: str = "24h") -> DutyCaseLookupResult:
+            payload = {
+                "status": "case_lookup_timeout",
+                "detail": "timeout",
+                "updated_at": "2026-06-18T10:40:00",
+                "cases": [],
+            }
+            path = artifacts_dir / "cases" / "latest.json"
+            app_module.write_json_atomic(path, payload)
+            return DutyCaseLookupResult(False, "case_lookup_timeout", "timeout", [], path)
+
+        selenium_local_module.query_duty_emergency_cases = fake_query
+        app_module.write_case_lookup_request("24h")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            app_module.run_local_case_lookup("24h")
+
+        latest = app_module.read_case_lookup()
+        self.assertEqual(latest["status"], "case_lookup_timeout")
+        self.assertEqual(latest["case_count"], 0)
+        completed = app_module.read_case_lookup_request()
+        self.assertEqual(completed["status"], "case_lookup_failed")
+        self.assertEqual(completed["detail"], "timeout")
+        self.assertIn("[worker] case lookup result status=case_lookup_timeout count=0", output.getvalue())
+
+    def test_app_page_stale_case_lookup_request_allows_retry(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True)
+        app_module.write_json_atomic(
+            cases_dir / "request.json",
+            {
+                "status": "case_lookup_requested",
+                "lookup_range": "24h",
+                "requested_at": "2000-01-01T00:00:00",
+            },
+        )
+
+        response = self.client.get("/app")
+
+        body = response.get_data(as_text=True)
+        self.assertIn("案件查詢逾時", body)
+        self.assertNotIn("window.location.reload()", body)
+        self.assertNotIn("disabled>查詢案件</button>", body)
+
+    def test_app_page_abandoned_local_case_lookup_request_allows_retry(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True)
+        app_module.write_json_atomic(
+            cases_dir / "request.json",
+            {
+                "status": "case_lookup_requested",
+                "lookup_range": "24h",
+                "requested_at": "2026-06-18T10:35:34",
+            },
+        )
+
+        response = self.client.get("/app")
+
+        body = response.get_data(as_text=True)
+        request_payload = app_module.read_case_lookup_request()
+        self.assertEqual(request_payload["status"], "case_lookup_failed")
+        self.assertIn("上一輪本機案件查詢已中斷", request_payload["detail"])
+        self.assertNotIn("window.location.reload()", body)
+        self.assertNotIn("disabled>?亥岷獢辣</button>", body)
 
     def test_app_page_does_not_query_cases(self):
         response = self.client.get("/app")
