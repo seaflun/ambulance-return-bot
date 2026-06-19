@@ -961,6 +961,78 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("18:05:12", body)
         self.assertNotIn("tyfd01027", body)
 
+    def test_sinposmart_admin_shows_login_logout_times_and_sinposmart_version(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        original_version_info = getattr(app_module, "sinposmart_admin_version_info", None)
+        app_module.sinposmart_admin_version_info = lambda _selected_day=None: {
+            "label": "SinpoSmart 公務電腦",
+            "version": "2026.06.19.0730",
+            "detail": "GitHub latest",
+        }
+        try:
+            headers = {"X-Credential-Sync-Token": "sync-token"}
+            for event in [
+                {
+                    "event_id": "evt-login-logout-version-web-1",
+                    "occurred_at": "2026-06-18T16:30:40",
+                    "record_type": "login",
+                    "status": "ok",
+                    "actor_no": "27",
+                    "display_name": "27番 隊員 林宏為 - tyfd01027",
+                },
+                {
+                    "event_id": "evt-login-logout-version-web-2",
+                    "occurred_at": "2026-06-18T18:05:12",
+                    "record_type": "logout",
+                    "status": "ok",
+                    "actor_no": "27",
+                    "display_name": "27番 隊員 林宏為",
+                },
+            ]:
+                response = self.client.post("/api/sinposmart/events", headers=headers, json=event)
+                self.assertEqual(response.status_code, 200)
+
+            page = self.client.get("/admin/sinposmart")
+            body = html.unescape(page.data.decode("utf-8"))
+
+            self.assertIn("系統版本", body)
+            self.assertIn("SinpoSmart 公務電腦", body)
+            self.assertIn("2026.06.19.0730", body)
+            self.assertNotIn("救護 worker", body)
+            self.assertIn("登入時間", body)
+            self.assertIn("登出時間", body)
+            self.assertIn("16:30:40", body)
+            self.assertIn("18:05:12", body)
+        finally:
+            if original_version_info is None:
+                delattr(app_module, "sinposmart_admin_version_info")
+            else:
+                app_module.sinposmart_admin_version_info = original_version_info
+
+    def test_sinposmart_admin_prefers_reported_installed_version(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-sinposmart-installed-version",
+                "occurred_at": "2026-06-18T20:00:00",
+                "record_type": "login",
+                "status": "ok",
+                "actor_no": "5",
+                "display_name": "5番 小隊長 張鴻志",
+                "snapshot": {"app_version": "2026.06.18.2201-installed"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("SinpoSmart 公務電腦", body)
+        self.assertIn("2026.06.18.2201-installed", body)
+        self.assertIn("公務電腦已安裝", body)
+
     def test_sinposmart_admin_login_section_prefers_person_name_over_account(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}
@@ -1116,12 +1188,58 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("事件 0", body)
         self.assertIn("事件 11", body)
 
+    def test_admin_public_pc_shows_worker_version(self):
+        original_version_info = getattr(app_module, "worker_admin_version_info", None)
+        app_module.worker_admin_version_info = lambda _reports=None: {
+            "label": "救護 worker",
+            "version": "2026.06.19.0715",
+            "detail": "目前後台",
+        }
+        try:
+            page = self.client.get("/admin/public-pc")
+            body = html.unescape(page.data.decode("utf-8"))
+
+            self.assertIn("系統版本", body)
+            self.assertIn("救護 worker", body)
+            self.assertIn("2026.06.19.0715", body)
+            self.assertIn("目前後台", body)
+        finally:
+            if original_version_info is None:
+                delattr(app_module, "worker_admin_version_info")
+            else:
+                app_module.worker_admin_version_info = original_version_info
+
+    def test_admin_public_pc_prefers_reported_installed_worker_version(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        response = self.client.post(
+            "/worker/public-pc-task-events",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "event_id": "evt-worker-installed-version",
+                "task_id": "local-task-version",
+                "task": {"task_id": "local-task-version", "case_reason": "急病"},
+                "worker_id": "public-duty-pc",
+                "package_version": "2026.06.19.0801-installed",
+                "action": "建立任務",
+                "status": "created",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        page = self.client.get("/admin/public-pc")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("救護 worker", body)
+        self.assertIn("2026.06.19.0801-installed", body)
+        self.assertIn("公務電腦已安裝", body)
+
     def test_public_pc_report_is_queued_on_failure_and_flushed_on_next_success(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
         os.environ["PUBLIC_PC_REPORT_SERVER_URL"] = "http://nas.test"
         original_post = app_module._post_public_pc_report
         original_current_user_label = app_module.current_public_pc_user_label
         original_site_login_accounts = app_module.public_pc_site_login_accounts
+        original_package_version = app_module.package_version
         sent_payloads: list[dict] = []
         try:
             calls = {"count": 0}
@@ -1135,6 +1253,7 @@ class WebAppTests(unittest.TestCase):
 
             app_module._post_public_pc_report = fake_post
             app_module.current_public_pc_user_label = lambda: "8番 曾彥綸 - tyfd01510"
+            app_module.package_version = lambda: "2026.06.19.0801-local"
             app_module.public_pc_site_login_accounts = lambda task: {
                 "duty_work_log": "8番 曾彥綸 - tyfd01510（任務司機優先）",
                 "vehicle_mileage": "8番 曾彥綸 - tyfd01510（同步帳號）",
@@ -1158,6 +1277,7 @@ class WebAppTests(unittest.TestCase):
             app_module._post_public_pc_report = original_post
             app_module.current_public_pc_user_label = original_current_user_label
             app_module.public_pc_site_login_accounts = original_site_login_accounts
+            app_module.package_version = original_package_version
             os.environ.pop("PUBLIC_PC_REPORT_SERVER_URL", None)
 
         self.assertEqual(len(sent_payloads), 2)
@@ -1165,6 +1285,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(sent_payloads[0]["action"], "建立任務")
         self.assertEqual(sent_payloads[1]["action"], "按下四站登打")
         self.assertEqual(sent_payloads[0]["synced_account"], "8番 曾彥綸 - tyfd01510")
+        self.assertEqual(sent_payloads[0]["package_version"], "2026.06.19.0801-local")
         self.assertEqual(
             sent_payloads[0]["site_login_accounts"]["consumables"],
             "8番 曾彥綸 - C123***789（同步帳號）",

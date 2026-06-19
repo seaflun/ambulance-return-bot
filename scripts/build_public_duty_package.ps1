@@ -24,6 +24,7 @@ $shaPath = "$zipPath.sha256.txt"
 $releaseVersionAsset = "ambulance-return-version.txt"
 $releaseZipAsset = "ambulance-return-public-package.zip"
 $releaseShaAsset = "ambulance-return-public-package.zip.sha256.txt"
+$releaseUpdaterAsset = "update_package.ps1"
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $stageRoot = Join-Path (Join-Path $project "tmp") "public-duty-package-$stamp"
 $stagePackageDir = Join-Path $stageRoot $packageName
@@ -57,62 +58,18 @@ function Remove-SafeDirectory {
     Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
-function Copy-PackageFile {
-    param(
-        [string]$RelativePath,
-        [string]$DestinationRelativePath
-    )
-    if ([string]::IsNullOrWhiteSpace($DestinationRelativePath)) {
-        $DestinationRelativePath = $RelativePath
-    }
-    $source = Join-Path $project $RelativePath
-    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-        throw "Missing package source file: $RelativePath"
-    }
-    $target = Join-Path $packageDir $DestinationRelativePath
-    $targetDir = Split-Path -Parent $target
-    if (-not (Test-Path -LiteralPath $targetDir)) {
-        New-Item -ItemType Directory -Path $targetDir | Out-Null
-    }
-    Copy-Item -LiteralPath $source -Destination $target -Force
-}
-
-function Copy-PackageTree {
-    param([string]$RelativePath)
-    $sourceRoot = Join-Path $project $RelativePath
-    if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
-        throw "Missing package source directory: $RelativePath"
-    }
-    $sourceRootPrefix = (Resolve-FullPath -Path $sourceRoot).TrimEnd([char]92) + [string][char]92
-    Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force | ForEach-Object {
-        $relative = $_.FullName.Substring($sourceRootPrefix.Length)
-        $parts = $relative -split "[\\/]"
-        if ($parts | Where-Object { $_ -in @("__pycache__", ".pytest_cache") }) {
-            return
-        }
-        if ($_.Name -match "\.pyc$|\.pyo$|\.pyd$") {
-            return
-        }
-        $target = Join-Path (Join-Path $packageDir $RelativePath) $relative
-        $targetDir = Split-Path -Parent $target
-        if (-not (Test-Path -LiteralPath $targetDir)) {
-            New-Item -ItemType Directory -Path $targetDir | Out-Null
-        }
-        Copy-Item -LiteralPath $_.FullName -Destination $target -Force
-    }
-}
-
 function Write-PackageText {
     param(
         [string]$RelativePath,
-        [string]$Text
+        [string]$Text,
+        [string]$Encoding = "UTF8"
     )
     $target = Join-Path $packageDir $RelativePath
     $targetDir = Split-Path -Parent $target
     if (-not (Test-Path -LiteralPath $targetDir)) {
         New-Item -ItemType Directory -Path $targetDir | Out-Null
     }
-    $Text.TrimStart() | Set-Content -LiteralPath $target -Encoding UTF8
+    $Text.TrimStart() | Set-Content -LiteralPath $target -Encoding $Encoding
 }
 
 function Copy-ZipStage {
@@ -144,11 +101,28 @@ function Copy-ZipStage {
     }
 }
 
-New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
-New-Item -ItemType Directory -Path $updateDir -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $packageDir "ambulance_bot") -Force | Out-Null
+function Assert-PackageFile {
+    param([string]$RelativePath)
+    $path = Join-Path $packageDir $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Missing public-duty package source file: $RelativePath"
+    }
+}
 
-$rootFiles = @(
+function Assert-PackageDirectory {
+    param([string]$RelativePath)
+    $path = Join-Path $packageDir $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+        throw "Missing public-duty package source directory: $RelativePath"
+    }
+}
+
+if (-not (Test-Path -LiteralPath $packageDir -PathType Container)) {
+    throw "Missing public-duty package source directory: $packageDir"
+}
+New-Item -ItemType Directory -Path $updateDir -Force | Out-Null
+
+foreach ($file in @(
     "app.py",
     "worker_gui.py",
     "worker.py",
@@ -159,13 +133,14 @@ $rootFiles = @(
     "run_worker_forever.bat",
     "run_worker_forever.vbs",
     "run_worker_headless.bat",
-    "run_worker_once.bat"
-)
-foreach ($file in $rootFiles) {
-    Copy-PackageFile -RelativePath $file
+    "run_worker_once.bat",
+    "repair_update_package.ps1"
+)) {
+    Assert-PackageFile -RelativePath $file
 }
-Copy-PackageTree -RelativePath "ambulance_bot"
-Copy-PackageTree -RelativePath "templates"
+foreach ($dir in @("ambulance_bot", "templates")) {
+    Assert-PackageDirectory -RelativePath $dir
+}
 
 $Version | Set-Content -LiteralPath (Join-Path $packageDir "VERSION.txt") -Encoding UTF8
 $Version | Set-Content -LiteralPath (Join-Path $updateDir "VERSION.txt") -Encoding UTF8
@@ -299,49 +274,99 @@ pause
 
 Write-PackageText -RelativePath "install_startup_shortcut.ps1" -Text @'
 param(
-    [switch]$WhatIf
+    [switch]$WhatIf,
+    [switch]$SkipScheduledTask
 )
 
 $ErrorActionPreference = "Stop"
 
 $packageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $target = Join-Path $packageDir "RUN_WORKER_GUI_WINPYTHON.vbs"
-$taskName = "救護回程 Worker"
+$taskName = "AmbulanceReturnWorker"
+$shortcutName = "AmbulanceReturnWorker.lnk"
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$wscript = Join-Path $env:WINDIR "System32\wscript.exe"
 
 if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
     throw "Cannot find startup target: $target"
 }
 
-$action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$target`"" -WorkingDirectory $packageDir
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
-try {
-    $trigger.Delay = "PT1M"
-} catch {
-    Write-Warning "Could not set startup delay; the task will start immediately after logon."
+function Install-StartupFolderShortcut {
+    $startupDir = [Environment]::GetFolderPath("Startup")
+    if ([string]::IsNullOrWhiteSpace($startupDir)) {
+        $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
+    }
+    $shortcutPath = Join-Path $startupDir $shortcutName
+
+    if ($WhatIf) {
+        Write-Host "Would install startup folder shortcut: $shortcutPath"
+        Write-Host "Target: $target"
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $startupDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $wscript
+    $shortcut.Arguments = "`"$target`""
+    $shortcut.WorkingDirectory = $packageDir
+    $shortcut.WindowStyle = 7
+    $shortcut.Description = "Ambulance return worker GUI"
+    $shortcut.Save()
+    Write-Host "Installed startup folder shortcut: $shortcutPath"
+    Write-Host "Target: $target"
 }
-$settings = New-ScheduledTaskSettingsSet `
-    -StartWhenAvailable `
-    -MultipleInstances IgnoreNew `
-    -RestartCount 3 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
-$principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
-$task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
+
+if (-not $SkipScheduledTask) {
+    $action = New-ScheduledTaskAction -Execute $wscript -Argument "`"$target`""
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+    try {
+        $trigger.Delay = "PT1M"
+    } catch {
+        Write-Warning "Could not set startup delay; the task will start immediately after logon."
+    }
+    $settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -MultipleInstances IgnoreNew `
+        -RestartCount 3 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+    $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
+    $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
+}
 
 if ($WhatIf) {
-    Write-Host "Would install scheduled task: $taskName"
+    if ($SkipScheduledTask) {
+        Write-Host "Would skip scheduled task refresh: $taskName"
+    } else {
+        Write-Host "Would install scheduled task: $taskName"
+    }
+    Write-Host "User: $currentUser"
+    Write-Host "Target: $target"
+    Install-StartupFolderShortcut
+    exit 0
+}
+
+Install-StartupFolderShortcut
+if ($SkipScheduledTask) {
+    Write-Host "Skipped scheduled task refresh: $taskName"
     Write-Host "User: $currentUser"
     Write-Host "Target: $target"
     exit 0
 }
-
-Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
-Write-Host "Installed scheduled task: $taskName"
+try {
+    Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
+    Write-Host "Installed scheduled task: $taskName"
+} catch {
+    Write-Warning "Could not install scheduled task; startup folder shortcut is installed instead. $($_.Exception.Message)"
+}
 Write-Host "User: $currentUser"
 Write-Host "Target: $target"
+exit 0
 '@
 
 Write-PackageText -RelativePath "RUN_WORKER_GUI_WINPYTHON.bat" -Text @'
@@ -366,7 +391,7 @@ set WORKER_RUN_ONCE=false
 start "" "%PYTHONW_EXE%" "%~dp0worker_gui.py"
 '@
 
-Write-PackageText -RelativePath "RUN_WORKER_GUI_WINPYTHON.vbs" -Text @'
+Write-PackageText -RelativePath "RUN_WORKER_GUI_WINPYTHON.vbs" -Encoding "ASCII" -Text @'
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
@@ -374,7 +399,7 @@ shell.CurrentDirectory = scriptDir
 shell.Run """" & scriptDir & "\RUN_WORKER_GUI_WINPYTHON.bat""", 0, False
 '@
 
-Write-PackageText -RelativePath "UPDATE_PACKAGE.bat" -Text @'
+Write-PackageText -RelativePath "UPDATE_PACKAGE.bat" -Encoding "ASCII" -Text @'
 @echo off
 setlocal
 cd /d "%~dp0"
@@ -383,17 +408,41 @@ echo Ambulance return worker package updater
 echo Package: %CD%
 echo.
 
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$path = Join-Path (Get-Location) 'update_package.ps1'; $tokens = $null; $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count) { $errors | ForEach-Object { Write-Host ('[WARN] Updater parse error: ' + $_.Message) }; exit 1 }"
+if errorlevel 1 (
+  echo.
+  echo [WARN] update_package.ps1 is broken. Trying self repair...
+  if not exist "%~dp0repair_update_package.ps1" (
+    echo [ERROR] repair_update_package.ps1 is missing.
+    pause
+    exit /b 1
+  )
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0repair_update_package.ps1"
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] Could not repair update_package.ps1.
+    pause
+    exit /b 1
+  )
+)
+
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0update_package.ps1"
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+set "UPDATE_EXIT=%ERRORLEVEL%"
+if not "%UPDATE_EXIT%"=="0" goto update_failed
+
+echo.
+echo [OK] Update check completed.
+pause
+exit /b 0
+
+:update_failed
 if errorlevel 1 (
   echo.
   echo [ERROR] Update failed.
   pause
   exit /b 1
 )
-
-echo.
-echo [OK] Update check completed.
-pause
 '@
 
 Write-PackageText -RelativePath "check_environment.py" -Text @'
@@ -472,10 +521,9 @@ $ErrorActionPreference = "Stop"
 
 $packageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $localVersionPath = Join-Path $packageDir "VERSION.txt"
-$releaseBaseUrl = if ($env:AMBULANCE_RETURN_RELEASE_BASE_URL) { $env:AMBULANCE_RETURN_RELEASE_BASE_URL.TrimEnd("/") } else { "https://github.com/seaflun/ambulance-return-bot/releases/latest/download" }
-$remoteVersionUrl = "$releaseBaseUrl/ambulance-return-version.txt"
-$remoteZipUrl = "$releaseBaseUrl/ambulance-return-public-package.zip"
-$remoteSha256Url = "$releaseBaseUrl/ambulance-return-public-package.zip.sha256.txt"
+$releaseBaseUrl = if ($env:AMBULANCE_RETURN_RELEASE_BASE_URL) { $env:AMBULANCE_RETURN_RELEASE_BASE_URL.TrimEnd("/") } else { "" }
+$downloadCacheKey = Get-Date -Format "yyyyMMddHHmmss"
+$latestReleaseApiUrl = "https://api.github.com/repos/seaflun/ambulance-return-bot/releases/latest"
 $backupRoot = Join-Path $env:LOCALAPPDATA "AmbulanceReturnBot"
 $backupDir = Join-Path $backupRoot "update_backups"
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -515,6 +563,46 @@ function Get-Sha256FromText {
     return $firstToken.ToLowerInvariant()
 }
 
+function Add-DownloadCacheBust {
+    param([string]$Url)
+    $separator = if ($Url.Contains("?")) { "&" } else { "?" }
+    return "$Url${separator}cachebust=$downloadCacheKey"
+}
+
+function Get-ReleaseAssetUrl {
+    param(
+        [object]$Release,
+        [string]$Name
+    )
+
+    $asset = $Release.assets | Where-Object { $_.name -eq $Name } | Select-Object -First 1
+    if (-not $asset -or -not $asset.browser_download_url) {
+        throw "Latest GitHub release is missing asset: $Name"
+    }
+    return [string]$asset.browser_download_url
+}
+
+function Resolve-RemoteDownloadUrls {
+    if (-not [string]::IsNullOrWhiteSpace($releaseBaseUrl)) {
+        return [pscustomobject]@{
+            Version = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-version.txt"
+            Zip = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-public-package.zip"
+            Sha256 = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-public-package.zip.sha256.txt"
+        }
+    }
+
+    $release = Invoke-RestMethod -Uri $latestReleaseApiUrl -UseBasicParsing -Headers @{
+        "Accept" = "application/vnd.github+json"
+        "User-Agent" = "AmbulanceReturnBotUpdater"
+    }
+    Write-Host "Latest release: $($release.tag_name)"
+    return [pscustomobject]@{
+        Version = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-version.txt")
+        Zip = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-public-package.zip")
+        Sha256 = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-public-package.zip.sha256.txt")
+    }
+}
+
 function Copy-UpdateTree {
     param(
         [string]$SourceDir,
@@ -522,7 +610,7 @@ function Copy-UpdateTree {
     )
 
     $skipDirs = @("logs", "runtime_outputs", "tmp", "temp", "cache", ".cache", "snapshots", "__pycache__", "artifacts")
-    $alwaysSkipFiles = @(".env", "update_urls.json")
+    $alwaysSkipFiles = @(".env", "update_urls.json", "UPDATE_PACKAGE.bat")
     $slash = [string][char]92
     $sourceRoot = $SourceDir.TrimEnd([char]92) + $slash
 
@@ -548,11 +636,16 @@ function Copy-UpdateTree {
 }
 
 function Get-WorkerPackageProcesses {
+    $packagePath = [System.IO.Path]::GetFullPath($packageDir)
     Get-CimInstance Win32_Process |
         Where-Object {
-            $_.CommandLine -and
-            ($_.CommandLine -match "worker_gui\.py|app\.py") -and
-            ($_.CommandLine -match "ambulance_return_bot|WinPython_公務電腦使用包")
+            $commandLine = [string]$_.CommandLine
+            $commandLine -and
+            ($commandLine -match "worker_gui\.py|app\.py") -and
+            (
+                $commandLine.IndexOf($packagePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                $commandLine -match "ambulance_return_bot|WinPython_"
+            )
         }
 }
 
@@ -577,11 +670,28 @@ function Start-WorkerGui {
     }
 }
 
+function Install-StartupLaunchers {
+    $installer = Join-Path $packageDir "install_startup_shortcut.ps1"
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        Write-Warning "Cannot refresh startup launcher because installer is missing: $installer"
+        return
+    }
+    Write-Host "Refreshing startup launcher..."
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -SkipScheduledTask
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Startup launcher refresh exited with code $LASTEXITCODE"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $localVersionPath)) {
     "0" | Set-Content -LiteralPath $localVersionPath -Encoding UTF8
 }
 
 $localVersion = (Get-Content -LiteralPath $localVersionPath -Raw -Encoding UTF8).Trim().TrimStart([char]0xFEFF)
+$remoteUrls = Resolve-RemoteDownloadUrls
+$remoteVersionUrl = $remoteUrls.Version
+$remoteZipUrl = $remoteUrls.Zip
+$remoteSha256Url = $remoteUrls.Sha256
 $remoteVersion = Get-TextFromUrl -Url $remoteVersionUrl
 $remoteSha256 = Get-Sha256FromText -Text (Get-TextFromUrl -Url $remoteSha256Url)
 
@@ -650,6 +760,7 @@ try {
     $packageVersion | Set-Content -LiteralPath $localVersionPath -Encoding UTF8
 
     Write-Host "Update completed."
+    Install-StartupLaunchers
     Start-WorkerGui
 } finally {
     try {
@@ -676,9 +787,11 @@ try {
     $releaseVersionPath = Join-Path $updateDir $releaseVersionAsset
     $releaseZipPath = Join-Path $updateDir $releaseZipAsset
     $releaseShaPath = Join-Path $updateDir $releaseShaAsset
+    $releaseUpdaterPath = Join-Path $updateDir $releaseUpdaterAsset
     $Version | Set-Content -LiteralPath $releaseVersionPath -Encoding UTF8
     Copy-Item -LiteralPath $zipPath -Destination $releaseZipPath -Force
     "$hash  $releaseZipAsset" | Set-Content -LiteralPath $releaseShaPath -Encoding UTF8
+    Copy-Item -LiteralPath (Join-Path $packageDir "update_package.ps1") -Destination $releaseUpdaterPath -Force
 } finally {
     Remove-SafeDirectory -Path $stageRoot -ExpectedRoot (Join-Path $project "tmp")
 }
@@ -689,5 +802,5 @@ try {
     UpdateDir = $updateDir
     Zip = $zipPath
     Sha256 = (Get-Content -LiteralPath $shaPath -Raw -Encoding UTF8).Trim()
-    ReleaseAssets = @($releaseVersionAsset, $releaseZipAsset, $releaseShaAsset) -join ", "
+    ReleaseAssets = @($releaseVersionAsset, $releaseZipAsset, $releaseShaAsset, $releaseUpdaterAsset) -join ", "
 } | Format-List

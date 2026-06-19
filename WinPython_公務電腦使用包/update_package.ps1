@@ -2,10 +2,9 @@
 
 $packageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $localVersionPath = Join-Path $packageDir "VERSION.txt"
-$releaseBaseUrl = if ($env:AMBULANCE_RETURN_RELEASE_BASE_URL) { $env:AMBULANCE_RETURN_RELEASE_BASE_URL.TrimEnd("/") } else { "https://github.com/seaflun/ambulance-return-bot/releases/latest/download" }
-$remoteVersionUrl = "$releaseBaseUrl/ambulance-return-version.txt"
-$remoteZipUrl = "$releaseBaseUrl/ambulance-return-public-package.zip"
-$remoteSha256Url = "$releaseBaseUrl/ambulance-return-public-package.zip.sha256.txt"
+$releaseBaseUrl = if ($env:AMBULANCE_RETURN_RELEASE_BASE_URL) { $env:AMBULANCE_RETURN_RELEASE_BASE_URL.TrimEnd("/") } else { "" }
+$downloadCacheKey = Get-Date -Format "yyyyMMddHHmmss"
+$latestReleaseApiUrl = "https://api.github.com/repos/seaflun/ambulance-return-bot/releases/latest"
 $backupRoot = Join-Path $env:LOCALAPPDATA "AmbulanceReturnBot"
 $backupDir = Join-Path $backupRoot "update_backups"
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -45,6 +44,46 @@ function Get-Sha256FromText {
     return $firstToken.ToLowerInvariant()
 }
 
+function Add-DownloadCacheBust {
+    param([string]$Url)
+    $separator = if ($Url.Contains("?")) { "&" } else { "?" }
+    return "$Url${separator}cachebust=$downloadCacheKey"
+}
+
+function Get-ReleaseAssetUrl {
+    param(
+        [object]$Release,
+        [string]$Name
+    )
+
+    $asset = $Release.assets | Where-Object { $_.name -eq $Name } | Select-Object -First 1
+    if (-not $asset -or -not $asset.browser_download_url) {
+        throw "Latest GitHub release is missing asset: $Name"
+    }
+    return [string]$asset.browser_download_url
+}
+
+function Resolve-RemoteDownloadUrls {
+    if (-not [string]::IsNullOrWhiteSpace($releaseBaseUrl)) {
+        return [pscustomobject]@{
+            Version = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-version.txt"
+            Zip = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-public-package.zip"
+            Sha256 = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-public-package.zip.sha256.txt"
+        }
+    }
+
+    $release = Invoke-RestMethod -Uri $latestReleaseApiUrl -UseBasicParsing -Headers @{
+        "Accept" = "application/vnd.github+json"
+        "User-Agent" = "AmbulanceReturnBotUpdater"
+    }
+    Write-Host "Latest release: $($release.tag_name)"
+    return [pscustomobject]@{
+        Version = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-version.txt")
+        Zip = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-public-package.zip")
+        Sha256 = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-public-package.zip.sha256.txt")
+    }
+}
+
 function Copy-UpdateTree {
     param(
         [string]$SourceDir,
@@ -52,7 +91,7 @@ function Copy-UpdateTree {
     )
 
     $skipDirs = @("logs", "runtime_outputs", "tmp", "temp", "cache", ".cache", "snapshots", "__pycache__", "artifacts")
-    $alwaysSkipFiles = @(".env", "update_urls.json")
+    $alwaysSkipFiles = @(".env", "update_urls.json", "UPDATE_PACKAGE.bat")
     $slash = [string][char]92
     $sourceRoot = $SourceDir.TrimEnd([char]92) + $slash
 
@@ -78,11 +117,16 @@ function Copy-UpdateTree {
 }
 
 function Get-WorkerPackageProcesses {
+    $packagePath = [System.IO.Path]::GetFullPath($packageDir)
     Get-CimInstance Win32_Process |
         Where-Object {
-            $_.CommandLine -and
-            ($_.CommandLine -match "worker_gui\.py|app\.py") -and
-            ($_.CommandLine -match "ambulance_return_bot|WinPython_公務電腦使用包")
+            $commandLine = [string]$_.CommandLine
+            $commandLine -and
+            ($commandLine -match "worker_gui\.py|app\.py") -and
+            (
+                $commandLine.IndexOf($packagePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                $commandLine -match "ambulance_return_bot|WinPython_"
+            )
         }
 }
 
@@ -107,11 +151,28 @@ function Start-WorkerGui {
     }
 }
 
+function Install-StartupLaunchers {
+    $installer = Join-Path $packageDir "install_startup_shortcut.ps1"
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        Write-Warning "Cannot refresh startup launcher because installer is missing: $installer"
+        return
+    }
+    Write-Host "Refreshing startup launcher..."
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -SkipScheduledTask
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Startup launcher refresh exited with code $LASTEXITCODE"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $localVersionPath)) {
     "0" | Set-Content -LiteralPath $localVersionPath -Encoding UTF8
 }
 
 $localVersion = (Get-Content -LiteralPath $localVersionPath -Raw -Encoding UTF8).Trim().TrimStart([char]0xFEFF)
+$remoteUrls = Resolve-RemoteDownloadUrls
+$remoteVersionUrl = $remoteUrls.Version
+$remoteZipUrl = $remoteUrls.Zip
+$remoteSha256Url = $remoteUrls.Sha256
 $remoteVersion = Get-TextFromUrl -Url $remoteVersionUrl
 $remoteSha256 = Get-Sha256FromText -Text (Get-TextFromUrl -Url $remoteSha256Url)
 
@@ -180,6 +241,7 @@ try {
     $packageVersion | Set-Content -LiteralPath $localVersionPath -Encoding UTF8
 
     Write-Host "Update completed."
+    Install-StartupLaunchers
     Start-WorkerGui
 } finally {
     try {

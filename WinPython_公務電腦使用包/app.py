@@ -49,6 +49,7 @@ from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, SITE_STAGE_DEFINIT
 from ambulance_bot.sinposmart_backend import (
     SinpoSmartBackendStore,
     sinposmart_fire_day_label,
+    sinposmart_person_label,
     sinposmart_record_type_label,
     sinposmart_status_class,
     sinposmart_status_label,
@@ -65,6 +66,8 @@ artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
 store = JsonTaskStore(artifacts_dir / "tasks")
 runner = TaskRunner(artifacts_dir, store=store)
 desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
+_local_case_lookup_thread_lock = threading.Lock()
+_local_case_lookup_thread: threading.Thread | None = None
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
 SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"]
 SITE_SHORT_NAMES = {
@@ -115,8 +118,8 @@ def new_task():
 def query_cases():
     lookup_range = "24h"
     source = case_lookup_source_label(request.host)
-    write_case_lookup_request(lookup_range, source=source)
     mode = effective_task_execution_mode()
+    write_case_lookup_request(lookup_range, source=source, mode=mode)
     print(f"[case_lookup] query requested host={request.host} source={source} range={lookup_range} mode={mode}", flush=True)
     if mode == "desktop_fast":
         start_local_case_lookup(lookup_range)
@@ -356,7 +359,7 @@ def admin_vehicles():
 @app.get("/admin/public-pc")
 def admin_public_pc():
     reports = public_pc_reports()
-    return render_template("admin_public_pc.html", reports=reports)
+    return render_template("admin_public_pc.html", reports=reports, version_info=worker_admin_version_info(reports))
 
 
 @app.get("/admin/sinposmart")
@@ -372,6 +375,7 @@ def admin_sinposmart():
         days=days,
         selected_day=selected_day,
         selected_fire_day=selected_fire_day,
+        version_info=sinposmart_admin_version_info(selected_day),
     )
 
 
@@ -586,6 +590,57 @@ def package_version() -> str:
     return ""
 
 
+def _read_text_url(url: str, timeout_seconds: float = 2.0) -> str:
+    with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+        content = response.read()
+    return content.decode("utf-8-sig").strip()
+
+
+def sinposmart_installed_version_info(selected_day: dict | None) -> dict[str, str] | None:
+    if not isinstance(selected_day, dict):
+        return None
+    events = selected_day.get("events") if isinstance(selected_day.get("events"), list) else []
+    latest: tuple[str, str] | None = None
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+        version = str(snapshot.get("app_version") or snapshot.get("package_version") or "").strip()
+        if not version:
+            continue
+        event_time = str(event.get("last_occurred_at") or event.get("occurred_at") or "")
+        if latest is None or event_time >= latest[0]:
+            latest = (event_time, version)
+    if latest is None:
+        return None
+    return {"label": "SinpoSmart 公務電腦", "version": latest[1], "detail": "公務電腦已安裝"}
+
+
+def sinposmart_admin_version_info(selected_day: dict | None = None) -> dict[str, str]:
+    installed = sinposmart_installed_version_info(selected_day)
+    if installed:
+        return installed
+    url = os.getenv(
+        "SINPOSMART_VERSION_URL",
+        "https://github.com/seaflun/sinposmart/releases/latest/download/sinposmart-version.txt",
+    ).strip()
+    if not url:
+        return {"label": "SinpoSmart 公務電腦", "version": "未設定", "detail": "未設定版本來源"}
+    try:
+        version = _read_text_url(url)
+    except (OSError, urllib.error.URLError, UnicodeError):
+        return {"label": "SinpoSmart 公務電腦", "version": "無法取得", "detail": "版本來源暫時無法連線"}
+    return {"label": "SinpoSmart 公務電腦", "version": version or "未標示", "detail": "GitHub latest"}
+
+
+def worker_admin_version_info(reports: list[dict] | None = None) -> dict[str, str]:
+    for report in reports or []:
+        version = str(report.get("package_version") or "").strip()
+        if version:
+            return {"label": "救護 worker", "version": version, "detail": "公務電腦已安裝"}
+    return {"label": "救護 worker", "version": package_version() or "未標示", "detail": "目前後台"}
+
+
 def credential_sync_relay_file() -> Path:
     return artifacts_dir / "credential_sync" / "pending.json"
 
@@ -688,6 +743,7 @@ def upsert_public_pc_report(data: dict) -> dict:
         "user": operator_label,
         "synced_account": synced_account,
         "worker_id": str(data.get("worker_id") or ""),
+        "package_version": str(data.get("package_version") or ""),
         "action": str(data.get("action") or "更新"),
         "status": str(data.get("status") or ""),
         "detail": str(data.get("detail") or ""),
@@ -713,6 +769,7 @@ def upsert_public_pc_report(data: dict) -> dict:
         "synced_account": synced_account,
         "site_login_accounts": site_login_accounts,
         "worker_id": event["worker_id"],
+        "package_version": event["package_version"] or str(existing.get("package_version") or ""),
         "overall_status": str(data.get("overall_status") or existing.get("overall_status") or ""),
         "site_statuses": data.get("site_statuses") if isinstance(data.get("site_statuses"), dict) else existing.get("site_statuses", {}),
         "created_at": str(data.get("created_at") or existing.get("created_at") or now),
@@ -805,6 +862,7 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
         "synced_account": operator_label,
         "site_login_accounts": site_login_accounts,
         "worker_id": os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"),
+        "package_version": package_version(),
         "action": action,
         "status": str(latest_event.get("status") or payload.get("overall_status") or ""),
         "detail": str(latest_event.get("detail") or ""),
@@ -1044,13 +1102,14 @@ def read_case_lookup_request() -> dict:
         return {}
 
 
-def write_case_lookup_request(lookup_range: str, source: str = "") -> dict:
+def write_case_lookup_request(lookup_range: str, source: str = "", mode: str = "worker_queue") -> dict:
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
     range_label = case_lookup_range_label(lookup_range)
     payload = {
         "status": "case_lookup_requested",
         "lookup_range": lookup_range,
+        "mode": mode,
         "source": source or "未知來源",
         "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "detail": f"已送出案件查詢，正在查詢{range_label}案件。",
@@ -1067,6 +1126,41 @@ def case_lookup_source_label(host: str) -> str:
     return "本機端" if _host_without_port(host).lower() in local_host_candidates() else "NAS端"
 
 
+def case_lookup_request_stale_seconds() -> int:
+    try:
+        return max(60, int(os.getenv("CASE_LOOKUP_STALE_SECONDS", "180")))
+    except ValueError:
+        return 180
+
+
+def case_lookup_request_age_seconds(payload: dict) -> float | None:
+    requested_at = str(payload.get("requested_at") or "").strip()
+    if not requested_at:
+        return None
+    try:
+        requested = datetime.fromisoformat(requested_at)
+    except ValueError:
+        return None
+    return max(0.0, (datetime.now() - requested).total_seconds())
+
+
+def case_lookup_request_is_stale(payload: dict) -> bool:
+    age_seconds = case_lookup_request_age_seconds(payload)
+    return age_seconds is not None and age_seconds > case_lookup_request_stale_seconds()
+
+
+def case_lookup_request_needs_local_thread(payload: dict) -> bool:
+    mode = str(payload.get("mode") or "").strip().lower()
+    if mode == "desktop_fast":
+        return True
+    if mode:
+        return False
+    try:
+        return effective_task_execution_mode() == "desktop_fast"
+    except RuntimeError:
+        return False
+
+
 def mark_case_lookup_request_completed(latest_payload: dict) -> None:
     current = read_case_lookup_request()
     if current.get("status") != "case_lookup_requested":
@@ -1081,8 +1175,42 @@ def mark_case_lookup_request_completed(latest_payload: dict) -> None:
     write_json_atomic(case_lookup_request_path(), payload)
 
 
+def mark_case_lookup_request_failed(latest_payload: dict) -> None:
+    current = read_case_lookup_request()
+    if current.get("status") != "case_lookup_requested":
+        return
+    payload = {
+        **current,
+        "status": "case_lookup_failed",
+        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "detail": str(latest_payload.get("detail") or "案件查詢失敗，請重新查詢。"),
+        "case_count": len(latest_payload.get("cases") or []),
+    }
+    write_json_atomic(case_lookup_request_path(), payload)
+
+
+def local_case_lookup_thread_is_running() -> bool:
+    with _local_case_lookup_thread_lock:
+        return _local_case_lookup_thread is not None and _local_case_lookup_thread.is_alive()
+
+
+def _run_and_clear_local_case_lookup(lookup_range: str) -> None:
+    global _local_case_lookup_thread
+    try:
+        run_local_case_lookup(lookup_range)
+    finally:
+        with _local_case_lookup_thread_lock:
+            if _local_case_lookup_thread is threading.current_thread():
+                _local_case_lookup_thread = None
+
+
 def start_local_case_lookup(lookup_range: str) -> threading.Thread:
-    thread = threading.Thread(target=run_local_case_lookup, args=(lookup_range,), daemon=True)
+    global _local_case_lookup_thread
+    with _local_case_lookup_thread_lock:
+        if _local_case_lookup_thread is not None and _local_case_lookup_thread.is_alive():
+            return _local_case_lookup_thread
+        thread = threading.Thread(target=_run_and_clear_local_case_lookup, args=(lookup_range,), daemon=True)
+        _local_case_lookup_thread = thread
     thread.start()
     return thread
 
@@ -1090,7 +1218,23 @@ def start_local_case_lookup(lookup_range: str) -> threading.Thread:
 def run_local_case_lookup(lookup_range: str) -> None:
     from ambulance_bot.selenium_local import query_duty_emergency_cases
 
-    result = query_duty_emergency_cases(artifacts_dir, lookup_range=lookup_range)
+    try:
+        result = query_duty_emergency_cases(artifacts_dir, lookup_range=lookup_range)
+    except Exception as exc:
+        payload = {
+            "status": "case_lookup_failed",
+            "detail": f"案件查詢失敗：{exc}",
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "lookup_range": lookup_range,
+            "source": "local_public_duty_pc",
+            "case_hash": "",
+            "case_count": 0,
+            "cases": [],
+        }
+        write_json_atomic(artifacts_dir / "cases" / "latest.json", payload)
+        mark_case_lookup_request_failed(payload)
+        print("[worker] case lookup result status=case_lookup_failed count=0 detail=failed", flush=True)
+        return
     cases = result.cases if isinstance(result.cases, list) else []
     payload = read_case_lookup()
     if not payload:
@@ -1105,7 +1249,11 @@ def run_local_case_lookup(lookup_range: str) -> None:
     payload["case_hash"] = hash_cases(cases)
     payload["case_count"] = len(cases)
     write_json_atomic(artifacts_dir / "cases" / "latest.json", payload)
-    mark_case_lookup_request_completed(payload)
+    if result.ok and result.status == "cases_loaded":
+        mark_case_lookup_request_completed(payload)
+    else:
+        mark_case_lookup_request_failed(payload)
+    print(f"[worker] case lookup result status={result.status} count={len(cases)} detail={result.detail}", flush=True)
 
 
 def hash_cases(cases: list[dict[str, object]]) -> str:
@@ -1614,6 +1762,7 @@ def template_helpers() -> dict:
         "site_stage_rows": site_stage_rows,
         "show_public_pc_admin_button": show_public_pc_admin_button,
         "sinposmart_fire_day_label": sinposmart_fire_day_label,
+        "sinposmart_person_label": sinposmart_person_label,
         "sinposmart_record_type_label": sinposmart_record_type_label,
         "sinposmart_status_class": sinposmart_status_class,
         "sinposmart_status_label": sinposmart_status_label,
@@ -1726,8 +1875,19 @@ def prepared_case_lookup() -> dict:
     if lookup_request.get("status") == "case_lookup_requested":
         lookup_range = str(lookup_request.get("lookup_range") or case_lookup.get("lookup_range") or "24h")
         range_label = case_lookup_range_label(lookup_range)
-        case_lookup["detail"] = f"正在查詢{range_label}案件，請稍候。"
-        case_lookup["is_running"] = True
+        if case_lookup_request_needs_local_thread(lookup_request) and not local_case_lookup_thread_is_running():
+            case_lookup["detail"] = f"上一輪本機案件查詢已中斷，請重新查詢{range_label}案件。"
+            case_lookup["is_running"] = False
+            mark_case_lookup_request_failed({"detail": case_lookup["detail"], "cases": []})
+        elif case_lookup_request_is_stale(lookup_request):
+            case_lookup["detail"] = f"案件查詢逾時，請確認公務電腦 Worker 是否啟動後再重新查詢{range_label}案件。"
+            case_lookup["is_running"] = False
+        else:
+            case_lookup["detail"] = f"正在查詢{range_label}案件，請稍候。"
+            case_lookup["is_running"] = True
+    elif lookup_request.get("status") == "case_lookup_failed":
+        case_lookup["detail"] = str(lookup_request.get("detail") or case_lookup.get("detail") or "案件查詢失敗，請重新查詢。")
+        case_lookup["is_running"] = False
     elif not cases and (
         lookup_request.get("status") == "case_lookup_completed"
         or case_lookup.get("status") == "cases_loaded"

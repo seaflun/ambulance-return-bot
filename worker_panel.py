@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, abort, redirect, render_template, url_for
@@ -16,7 +17,9 @@ from ambulance_bot.chrome_launcher import open_url_in_worker_chrome
 
 load_dotenv()
 
-app = Flask(__name__)
+PUBLIC_DUTY_TEMPLATES = Path(__file__).resolve().parent / "WinPython_公務電腦使用包" / "templates"
+
+app = Flask(__name__, template_folder=str(PUBLIC_DUTY_TEMPLATES))
 worker_thread: threading.Thread | None = None
 worker_started_at = ""
 last_opened: dict[str, str] = {}

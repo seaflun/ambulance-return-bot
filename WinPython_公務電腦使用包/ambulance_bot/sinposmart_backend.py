@@ -485,11 +485,52 @@ def sinposmart_login_status_label(event: dict[str, Any]) -> str:
     return "登入成功"
 
 
+def sinposmart_admin_login_event(login_state: dict[str, dict[str, Any]], preferred_people: dict[str, str]) -> dict[str, Any]:
+    latest_event = login_state.get("latest") or login_state.get("logout") or login_state.get("login") or login_state.get("failed") or {}
+    label = sinposmart_login_status_label(latest_event)
+    actor_no = str(latest_event.get("actor_no") or "").strip()
+    current_person = sinposmart_person_label(latest_event)
+    preferred_person = preferred_people.get(actor_no, "")
+    if sinposmart_person_label_score(preferred_person) > sinposmart_person_label_score(current_person):
+        current_person = preferred_person
+    card = sinposmart_admin_event(latest_event, label, current_person)
+    login_event = login_state.get("login") or login_state.get("failed")
+    logout_event = login_state.get("logout")
+    login_at = sinposmart_event_time(login_event) if login_event else ""
+    logout_at = sinposmart_event_time(logout_event) if logout_event else ""
+    steps: list[dict[str, str]] = []
+    if login_event:
+        login_label = sinposmart_login_status_label(login_event)
+        steps.append(
+            {
+                "label": "登入時間",
+                "occurred_at": login_at,
+                "status_label": login_label,
+                "status_class": sinposmart_display_status_class(login_label, str(login_event.get("status") or "")),
+            }
+        )
+    if logout_event:
+        logout_label = sinposmart_login_status_label(logout_event)
+        steps.append(
+            {
+                "label": "登出時間",
+                "occurred_at": logout_at,
+                "status_label": logout_label,
+                "status_class": sinposmart_display_status_class(logout_label, str(logout_event.get("status") or "")),
+            }
+        )
+    card["login_at"] = login_at
+    card["logout_at"] = logout_at
+    card["steps"] = steps
+    card["last_occurred_at"] = sinposmart_event_time(latest_event)
+    return card
+
+
 def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
     action_groups: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     tool_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     background_updates: dict[tuple[str, ...], dict[str, Any]] = {}
-    login_events: dict[tuple[str, ...], dict[str, Any]] = {}
+    login_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     compacted_events = compact_sinposmart_events(events)
     preferred_people = build_sinposmart_preferred_person_labels(compacted_events)
 
@@ -520,7 +561,14 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         if record_type in {"login", "login_failed", "logout"}:
             key = sinposmart_login_key(event)
-            login_events[key] = newer_sinposmart_event(login_events.get(key), event)
+            login_state = login_events.setdefault(key, {})
+            login_state["latest"] = newer_sinposmart_event(login_state.get("latest"), event)
+            if record_type == "logout":
+                login_state["logout"] = newer_sinposmart_event(login_state.get("logout"), event)
+            elif record_type == "login_failed":
+                login_state["failed"] = newer_sinposmart_event(login_state.get("failed"), event)
+            else:
+                login_state["login"] = newer_sinposmart_event(login_state.get("login"), event)
 
     action_events = [sinposmart_admin_action_event(action_state) for action_state in action_groups.values()]
     action_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
@@ -531,15 +579,7 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
     background_update_events = [sinposmart_admin_event(event) for event in background_updates.values()]
     background_update_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
 
-    login_update_events = []
-    for event in login_events.values():
-        label = sinposmart_login_status_label(event)
-        actor_no = str(event.get("actor_no") or "").strip()
-        current_person = sinposmart_person_label(event)
-        preferred_person = preferred_people.get(actor_no, "")
-        if sinposmart_person_label_score(preferred_person) > sinposmart_person_label_score(current_person):
-            current_person = preferred_person
-        login_update_events.append(sinposmart_admin_event(event, label, current_person))
+    login_update_events = [sinposmart_admin_login_event(login_state, preferred_people) for login_state in login_events.values()]
     login_update_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
 
     summary = {

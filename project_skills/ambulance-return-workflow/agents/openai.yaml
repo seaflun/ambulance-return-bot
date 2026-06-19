@@ -1,4 +1,4 @@
 interface:
-  display_name: "救護返隊工作流"
-  short_description: "維護救護返隊 NAS、公務電腦 worker、四站登打與部署同步流程。"
-  default_prompt: "依照救護返隊專案工作流處理這個需求，完成修改、同步、測試、打包與重啟。"
+  display_name: "Ambulance Return Workflow"
+  short_description: "Maintain the ambulance return NAS task center, public-duty worker, package build, and release workflow."
+  default_prompt: "Use $ambulance-return-workflow to update ambulance_return_bot and verify the public-duty plus generated NAS package workflow."

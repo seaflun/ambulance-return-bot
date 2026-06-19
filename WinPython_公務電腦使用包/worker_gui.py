@@ -134,6 +134,31 @@ def format_worker_output_line(line: str) -> str:
     if text in exact_replacements:
         return exact_replacements[text]
 
+    if text.startswith("[case_lookup] step="):
+        step_match = re.search(r"step=([^ ]+)", text)
+        count_match = re.search(r"count=(\d+)", text)
+        index_match = re.search(r"index=([^ ]+)", text)
+        step = step_match.group(1) if step_match else ""
+        step_labels = {
+            "waiting_lock": "等待查詢程序",
+            "chrome_starting": "啟動 Chrome",
+            "chrome_ready": "Chrome 已啟動",
+            "duty_login": "登入消防勤務",
+            "duty_login_ok": "消防勤務已登入",
+            "open_query": "開啟案件查詢",
+            "read_rows": "讀取案件列表",
+            "rows_loaded": "已讀取案件列表",
+            "read_details": "讀取案件詳情",
+            "read_detail": "讀取單筆案件詳情",
+            "details_loaded": "案件詳情讀取完成",
+        }
+        message = f"案件查詢｜{step_labels.get(step, step or '處理中')}"
+        if count_match:
+            message += f"｜{count_match.group(1)} 筆"
+        if index_match:
+            message += f"｜{index_match.group(1)}"
+        return message
+
     if text.startswith("[worker] starting "):
         server = re.search(r"server=([^ ]+)", text)
         worker_id = re.search(r"worker_id=([^ ]+)", text)
@@ -319,6 +344,7 @@ class WorkerGui(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self._refresh_credential_choices(apply_first_if_empty=True)
         self.after(500, self.ensure_startup_tray_icon)
+        self.after(1200, self._refresh_startup_launcher)
         self.after(250, self._drain_log)
 
     def _configure_styles(self) -> None:
@@ -560,10 +586,16 @@ class WorkerGui(ctk.CTk):
         return True
 
     def _start_local_web_app(self) -> None:
-        if self._local_web_reachable():
+        status = self._local_web_status()
+        if self._local_web_status_matches(status):
             self.local_web_status.set("服務狀態：可使用")
             self._log(f"本機網頁已可使用：{self.local_web_url.get()}")
             self._open_local_web_app()
+            return
+        if status is not None:
+            app_dir = str(status.get("app_dir") or "").strip() if isinstance(status, dict) else ""
+            self.local_web_status.set("服務狀態：8090 已被其他套件占用")
+            self._log(f"本機網頁 8090 不是目前套件，請先關閉舊 Worker GUI 或 Python：app_dir={app_dir or '(missing)'}")
             return
         if self.local_web_process is not None and self.local_web_process.poll() is None:
             self.local_web_status.set("服務狀態：啟動中")
@@ -611,10 +643,18 @@ class WorkerGui(ctk.CTk):
             self.log_queue.put(f"本機網頁啟動失敗：{exc}")
 
     def _local_web_reachable(self) -> bool:
+        return self._local_web_status_matches(self._local_web_status())
+
+    def _local_web_status(self) -> dict[str, Any] | None:
         try:
-            status = worker.request_json(f"{local_web_base_url()}/status")
+            payload = worker.request_json(f"{local_web_base_url()}/status")
         except Exception:
-            return False
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def _local_web_status_matches(self, status: dict[str, Any] | None) -> bool:
         app_dir = str(status.get("app_dir") or "").strip() if isinstance(status, dict) else ""
         if not app_dir:
             return False
@@ -626,8 +666,14 @@ class WorkerGui(ctk.CTk):
     def _open_local_web_app(self) -> None:
         url = self.local_web_url.get().strip() or local_web_url()
         try:
+            chrome = chrome_executable_path()
+            if chrome:
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                subprocess.Popen([str(chrome), url], creationflags=creationflags)
+                self._log(f"已用 Chrome 開啟本機網頁：{url}")
+                return
             webbrowser.open_new_tab(url)
-            self._log(f"已開啟本機網頁：{url}")
+            self._log(f"已用預設瀏覽器開啟本機網頁：{url}")
         except Exception as exc:
             self._log(f"開啟本機網頁失敗：{exc}")
 
@@ -686,6 +732,34 @@ class WorkerGui(ctk.CTk):
 
     def ensure_startup_tray_icon(self) -> None:
         self.ensure_tray_icon()
+
+    def _refresh_startup_launcher(self) -> None:
+        threading.Thread(target=self._refresh_startup_launcher_background, daemon=True).start()
+
+    def _refresh_startup_launcher_background(self) -> None:
+        installer = Path(__file__).with_name("install_startup_shortcut.ps1")
+        if not installer.exists():
+            return
+        try:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(installer), "-SkipScheduledTask"],
+                cwd=Path(__file__).resolve().parent,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=creationflags,
+                timeout=30,
+            )
+        except Exception as exc:
+            self.log_queue.put(f"開機啟動設定失敗：{exc}")
+            return
+        if result.returncode == 0:
+            self.log_queue.put("開機啟動已確認。")
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            self.log_queue.put(f"開機啟動設定失敗：{detail or result.returncode}")
 
     def ensure_tray_icon(self) -> bool:
         if not self.tray_available:
@@ -1389,6 +1463,21 @@ def local_web_base_url() -> str:
 
 def local_web_url() -> str:
     return f"{local_web_base_url()}/app"
+
+
+def chrome_executable_path() -> Path | None:
+    configured = os.getenv("CHROME_PATH", "").strip().strip('"')
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured))
+    for root_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        root = os.getenv(root_name, "").strip()
+        if root:
+            candidates.append(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def local_web_process_env() -> dict[str, str]:

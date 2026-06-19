@@ -91,7 +91,7 @@ class SeleniumLocalTests(unittest.TestCase):
                 os.environ["SAVE_DISINFECTION_PROBE"] = previous_probe
 
     def test_vehicle_mileage_message_does_not_use_attempted_confirm_wording(self):
-        source = Path("ambulance_bot/selenium_local.py").read_text(encoding="utf-8")
+        source = Path(selenium_local_module.__file__).read_text(encoding="utf-8")
 
         self.assertNotIn("\\u5617\\u8a66\\u78ba\\u8a8d", source)
         self.assertIn("\\u6309\\u4e0b\\u78ba\\u8a8d", source)
@@ -420,7 +420,7 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._set_window_size_if_enabled = lambda *args, **kwargs: None
             selenium_local_module._open_case_query = lambda *args, **kwargs: None
             selenium_local_module._extract_all_emergency_cases = lambda driver: [{"case_id": "case-1"}]
-            selenium_local_module._attach_case_form_details = lambda driver, cases, artifacts_dir, previous_cases: cases
+            selenium_local_module._attach_case_form_details = lambda driver, cases, artifacts_dir, previous_cases, deadline=None: cases
             selenium_local_module._save_artifacts = lambda *args, **kwargs: None
 
             with tempfile.TemporaryDirectory() as tmp:

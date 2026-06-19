@@ -399,6 +399,40 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["login_events"][0]["status_label"], "登出")
         self.assertEqual(view["login_events"][0]["person_label"], "27番 隊員 林宏為")
 
+    def test_admin_view_login_card_keeps_login_and_logout_times(self):
+        events = [
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-login-time",
+                    "occurred_at": "2026-06-18T16:30:40",
+                    "record_type": "login",
+                    "status": "ok",
+                    "actor_no": "27",
+                    "display_name": "27番 隊員 林宏為 - tyfd01027",
+                },
+                now=datetime(2026, 6, 18, 16, 30),
+            ),
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-logout-time",
+                    "occurred_at": "2026-06-18T18:05:12",
+                    "record_type": "logout",
+                    "status": "ok",
+                    "actor_no": "27",
+                    "display_name": "27番 隊員 林宏為",
+                },
+                now=datetime(2026, 6, 18, 18, 5),
+            ),
+        ]
+
+        view = build_sinposmart_admin_view(events)
+        card = view["login_events"][0]
+
+        self.assertEqual(card["login_at"], "2026-06-18T16:30:40")
+        self.assertEqual(card["logout_at"], "2026-06-18T18:05:12")
+        self.assertEqual([step["label"] for step in card["steps"]], ["登入時間", "登出時間"])
+        self.assertEqual([step["occurred_at"] for step in card["steps"]], ["2026-06-18T16:30:40", "2026-06-18T18:05:12"])
+
     def test_admin_view_login_section_prefers_known_person_name(self):
         events = [
             normalize_sinposmart_event(

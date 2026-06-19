@@ -75,6 +75,8 @@
     .summary-card { padding: 12px; }
     .summary-label { color: var(--muted); font-size: var(--text-sm); }
     .summary-value { margin-top: 3px; font-size: 24px; font-weight: 820; }
+    .version-strip { margin-bottom: 14px; }
+    .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
     .event-list { display: grid; gap: 10px; }
     .event-card { padding: 14px; }
     .event-head { display: grid; grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; align-items: start; }
@@ -120,6 +122,16 @@
       <h1>SinpoSmart 值班後台</h1>
       <a class="button" href="/app">返回首頁</a>
     </header>
+
+    {% if version_info %}
+      <section class="summary-card version-strip" aria-label="系統版本">
+        <div class="summary-label">系統版本</div>
+        <div class="version-value">{{ version_info.label }}｜{{ version_info.version }}</div>
+        {% if version_info.detail %}
+          <div class="event-meta">{{ version_info.detail }}</div>
+        {% endif %}
+      </section>
+    {% endif %}
 
     {% if days %}
       <nav class="day-nav" aria-label="消防日">
@@ -264,6 +276,17 @@
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
               </div>
             </div>
+            {% if event.steps %}
+              <div class="event-steps">
+                {% for step in event.steps %}
+                  <div class="event-step">
+                    <div class="event-step-name">{{ step.label }}</div>
+                    <time>{{ step.occurred_at or '未記錄' }}</time>
+                    <span class="status {{ step.status_class }}">{{ step.status_label }}</span>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
           </article>
         {% else %}
           <section class="empty">目前沒有登入紀錄。</section>

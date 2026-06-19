@@ -70,6 +70,16 @@
       padding: 16px;
       box-shadow: var(--shadow);
     }
+    .version-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .version-label { color: var(--muted); font-size: var(--text-sm); }
+    .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
     .card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; margin-bottom: 12px; }
     .title { font-size: 17px; font-weight: 800; overflow-wrap: anywhere; }
     .meta { margin-top: 4px; color: var(--muted); font-size: 13px; }
@@ -173,6 +183,16 @@
       <h1>救護後台</h1>
       <a class="button secondary" href="/app">返回首頁</a>
     </header>
+
+    {% if version_info %}
+      <section class="version-card" aria-label="系統版本">
+        <div class="version-label">系統版本</div>
+        <div class="version-value">{{ version_info.label }}｜{{ version_info.version }}</div>
+        {% if version_info.detail %}
+          <div class="meta">{{ version_info.detail }}</div>
+        {% endif %}
+      </section>
+    {% endif %}
 
     {% if reports %}
       <section class="task-list" aria-label="公務電腦任務">

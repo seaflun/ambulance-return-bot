@@ -80,6 +80,14 @@ class WorkerGuiEnvTests(unittest.TestCase):
             "案件查詢｜完成｜已查到 3 筆",
         )
         self.assertEqual(
+            worker_gui.format_worker_output_line("[case_lookup] step=rows_loaded range=24h count=3"),
+            "案件查詢｜已讀取案件列表｜3 筆",
+        )
+        self.assertEqual(
+            worker_gui.format_worker_output_line("[case_lookup] step=read_detail index=2/5 case_id=20260618000000001"),
+            "案件查詢｜讀取單筆案件詳情｜2/5",
+        )
+        self.assertEqual(
             worker_gui.format_worker_output_line("[case_lookup] query requested host=localhost range=24h mode=desktop_fast"),
             "案件查詢｜本機端按下查詢｜24h，desktop_fast",
         )
@@ -203,6 +211,21 @@ class WorkerGuiEnvTests(unittest.TestCase):
             else:
                 os.environ["DESKTOP_WEB_PORT"] = old_port
 
+    def test_chrome_executable_path_prefers_configured_chrome(self):
+        old_chrome_path = os.environ.get("CHROME_PATH")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                chrome = Path(tmp) / "chrome.exe"
+                chrome.write_text("", encoding="utf-8")
+                os.environ["CHROME_PATH"] = str(chrome)
+
+                self.assertEqual(worker_gui.chrome_executable_path(), chrome)
+        finally:
+            if old_chrome_path is None:
+                os.environ.pop("CHROME_PATH", None)
+            else:
+                os.environ["CHROME_PATH"] = old_chrome_path
+
     def test_local_web_process_env_forces_fast_mode_auto(self):
         old_fast_mode = os.environ.get("DESKTOP_FAST_MODE")
         try:
@@ -265,6 +288,24 @@ class WorkerGuiEnvTests(unittest.TestCase):
             nested_launcher.write_text("@echo off\n", encoding="utf-8")
 
             self.assertEqual(worker_gui.find_update_launcher(root), nested_launcher)
+
+    def test_update_launcher_self_repairs_parse_broken_updater(self):
+        package_dir = Path("WinPython_公務電腦使用包")
+        launcher = (package_dir / "UPDATE_PACKAGE.bat").read_text(encoding="ascii")
+        repair_script = (package_dir / "repair_update_package.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[System.Management.Automation.Language.Parser]::ParseFile", launcher)
+        self.assertIn("repair_update_package.ps1", launcher)
+        self.assertIn("update_package.ps1", repair_script)
+        self.assertIn("ambulance-return-public-package.zip", repair_script)
+        self.assertIn("Get-LatestRelease", repair_script)
+
+    def test_build_public_package_publishes_standalone_updater(self):
+        source = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('$releaseUpdaterAsset = "update_package.ps1"', source)
+        self.assertIn('Copy-Item -LiteralPath (Join-Path $packageDir "update_package.ps1")', source)
+        self.assertIn("@($releaseVersionAsset, $releaseZipAsset, $releaseShaAsset, $releaseUpdaterAsset)", source)
 
     def test_credential_choice_label_uses_display_name(self):
         credential = DutyCredential(user_id="user1", password="pass", actor_no="8", display_name="8番 王小明")

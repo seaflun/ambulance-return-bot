@@ -251,11 +251,15 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "latest.json"
     previous_cases = _previous_case_details(output_path)
+    deadline = time.monotonic() + _case_lookup_timeout_seconds()
     print(f"[case_lookup] starting duty emergency case lookup range={lookup_range}", flush=True)
     driver = None
     lock_acquired = False
     try:
+        _case_lookup_log_step("waiting_lock", range=lookup_range)
         lock_acquired = _acquire_selenium_session(f"case_lookup {lookup_range}")
+        _check_case_lookup_deadline(deadline, "waiting for selenium lock")
+        _case_lookup_log_step("chrome_starting", range=lookup_range)
         driver = _create_driver(
             artifacts_dir,
             profile_name=f"case_lookup_profile_{int(time.time())}",
@@ -263,6 +267,8 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
             attach_existing=False,
             headless=True,
         )
+        _set_case_lookup_driver_timeouts(driver)
+        _case_lookup_log_step("chrome_ready", range=lookup_range)
     except Exception as exc:
         _quit_driver(driver)
         if lock_acquired:
@@ -278,6 +284,7 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
     try:
         _set_window_size_if_enabled(driver, "case_lookup")
         driver.implicitly_wait(2)
+        _case_lookup_log_step("duty_login", range=lookup_range)
         if not _ensure_duty_login(driver):
             _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_login")
             login_error = _login_error_text(driver)
@@ -295,9 +302,18 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
             _write_json_atomic(output_path, payload)
             return DutyCaseLookupResult(True, payload["status"], payload["detail"], [], output_path)
 
+        _check_case_lookup_deadline(deadline, "duty login")
+        _case_lookup_log_step("duty_login_ok", range=lookup_range)
+        _case_lookup_log_step("open_query", range=lookup_range)
         _open_case_query(driver, lookup_range=lookup_range)
+        _check_case_lookup_deadline(deadline, "opening case query")
+        _case_lookup_log_step("read_rows", range=lookup_range)
         cases = _extract_all_emergency_cases(driver)
-        cases = _attach_case_form_details(driver, cases, artifacts_dir, previous_cases)
+        _case_lookup_log_step("rows_loaded", range=lookup_range, count=len(cases))
+        _check_case_lookup_deadline(deadline, "reading case rows")
+        _case_lookup_log_step("read_details", range=lookup_range, count=len(cases))
+        cases = _attach_case_form_details(driver, cases, artifacts_dir, previous_cases, deadline=deadline)
+        _case_lookup_log_step("details_loaded", range=lookup_range, count=len(cases))
         _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_cases")
         payload = _case_lookup_payload(
             "cases_loaded",
@@ -306,6 +322,14 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
         )
         _write_json_atomic(output_path, payload)
         return DutyCaseLookupResult(True, payload["status"], payload["detail"], cases, output_path)
+    except TimeoutException as exc:
+        payload = _case_lookup_payload(
+            "case_lookup_timeout",
+            f"案件查詢逾時：{exc}",
+            [],
+        )
+        _write_json_atomic(output_path, payload)
+        return DutyCaseLookupResult(False, payload["status"], payload["detail"], [], output_path)
     except Exception as exc:
         payload = _case_lookup_payload(
             "case_lookup_failed",
@@ -382,6 +406,43 @@ def _case_lookup_payload(status: str, detail: str, cases: list[dict[str, str]]) 
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "cases": cases,
     }
+
+
+def _case_lookup_timeout_seconds() -> int:
+    try:
+        return max(30, int(os.getenv("CASE_LOOKUP_TIMEOUT_SECONDS", "120")))
+    except ValueError:
+        return 120
+
+
+def _case_lookup_command_timeout_seconds() -> int:
+    try:
+        return max(10, int(os.getenv("CASE_LOOKUP_COMMAND_TIMEOUT_SECONDS", "20")))
+    except ValueError:
+        return 20
+
+
+def _set_case_lookup_driver_timeouts(driver: webdriver.Chrome) -> None:
+    timeout = _case_lookup_command_timeout_seconds()
+    try:
+        set_page_timeout = getattr(driver, "set_page_load_timeout", None)
+        set_script_timeout = getattr(driver, "set_script_timeout", None)
+        if callable(set_page_timeout):
+            set_page_timeout(timeout)
+        if callable(set_script_timeout):
+            set_script_timeout(timeout)
+    except WebDriverException as exc:
+        print(f"[case_lookup] step=timeout_setup_skipped reason={_short_webdriver_error(exc)}", flush=True)
+
+
+def _check_case_lookup_deadline(deadline: float, stage: str) -> None:
+    if time.monotonic() > deadline:
+        raise TimeoutException(f"{stage} exceeded {_case_lookup_timeout_seconds()} seconds")
+
+
+def _case_lookup_log_step(step: str, **fields: object) -> None:
+    suffix = "".join(f" {key}={str(value).replace(' ', '_')}" for key, value in fields.items())
+    print(f"[case_lookup] step={step}{suffix}", flush=True)
 
 
 def _previous_case_details(path: Path) -> dict[str, dict[str, object]]:
@@ -2252,9 +2313,12 @@ def _attach_case_form_details(
     cases: list[dict[str, str]],
     artifacts_dir: Path,
     previous_cases: dict[str, dict[str, object]] | None = None,
+    deadline: float | None = None,
 ) -> list[dict[str, str]]:
     previous_cases = previous_cases or {}
-    for case in cases:
+    for index, case in enumerate(cases, start=1):
+        if deadline is not None:
+            _check_case_lookup_deadline(deadline, "reading case details")
         case_id = case.get("case_id", "")
         if not case_id:
             continue
@@ -2271,6 +2335,7 @@ def _attach_case_form_details(
             case["detail_status"] = "case_detail_cached"
             continue
         try:
+            _case_lookup_log_step("read_detail", index=f"{index}/{len(cases)}", case_id=case_id)
             if not _try_switch_to_window_containing(driver, case_id):
                 _open_case_query(driver)
             if not _try_switch_to_window_containing(driver, case_id):
@@ -2282,6 +2347,8 @@ def _attach_case_form_details(
             selected = _extract_selected_case_form(driver)
             case.update(selected)
             _save_artifacts(driver, artifacts_dir / "selenium", case_id, "selected_case")
+        except TimeoutException:
+            raise
         except WebDriverException:
             case["detail_status"] = "case_detail_failed"
     return cases
