@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
 from ambulance_bot.models import AmbulanceReturnRequest
@@ -10,6 +11,7 @@ from consumables_login import (
     _case_id_sid_fragments,
     _consumable_sid_score,
     _emm_temsis_id_from_href,
+    _find_consumable_detail_href,
     _load_acs_credentials,
     _wait_for_consumable_detail_page,
     save_consumables_record_enabled,
@@ -74,6 +76,46 @@ class ConsumablesLoginTests(unittest.TestCase):
     def test_extracts_emm_temsis_id_from_href(self):
         href = "/ACS/ACS15002?emmTemsisid=2026060210100301165202"
         self.assertEqual(_emm_temsis_id_from_href(href), "2026060210100301165202")
+
+    def test_consumable_detail_prefers_matching_vehicle_text_for_two_vehicle_cases(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeDriver:
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026060201165201",
+                        "sid": "2026060201165201",
+                        "text": "01:16 \u65b0\u576191 \u6025\u75c5",
+                    },
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026060210100301165202",
+                        "sid": "2026060210100301165202",
+                        "text": "01:16 \u65b0\u576192 \u6025\u75c5",
+                    },
+                ]
+
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="2026060201165201",
+            case_time="0116",
+            vehicle="\u65b0\u576192",
+            case_reason="\u6025\u75c5",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait):
+            href = _find_consumable_detail_href(FakeDriver(), request)
+
+        self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026060210100301165202")
 
     def test_consumable_detail_wait_fails_when_session_returns_to_sso(self):
         class FakeElement:

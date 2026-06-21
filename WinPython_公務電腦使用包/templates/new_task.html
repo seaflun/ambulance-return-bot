@@ -175,6 +175,11 @@
     }
     .check-item input { width: 20px; height: 20px; min-height: 20px; margin: 0; transform: scale(1.35); accent-color: var(--accent); }
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
+    .two-vehicle-toggle { width: fit-content; margin: 0 0 16px; }
+    .vehicle-section-title { display: none; margin: 4px 0 14px; padding-top: 2px; color: var(--accent); font-size: var(--text-xl); line-height: 1.2; }
+    .two-vehicle-enabled .vehicle-section-title { display: block; }
+    .two-vehicle-panel { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
+    .two-vehicle-panel[hidden] { display: none; }
     .consumables { margin: 0 0 14px; }
     .consumable-head { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
     .consumable-actions { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; min-width: 0; }
@@ -291,7 +296,8 @@
       .package-cluster { align-items: stretch; flex-direction: column; }
       .package-buttons { justify-content: flex-start; }
       .package-button { flex: 1 1 calc(50% - 8px); }
-      #add-consumable { width: 100%; }
+      #add-consumable,
+      #add-consumable-2 { width: 100%; }
       .consumable-row { grid-template-columns: 38px minmax(0, 1fr) 50px; }
       .consumable-index { grid-column: 1; }
       .consumable-category,
@@ -368,6 +374,17 @@
       <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
       <input type="hidden" name="personnel" value="{{ selected_case.personnel | join(',') if selected_case.personnel else '' }}">
       <input type="hidden" name="personnel_accounts" value="{{ selected_case.personnel_hidden_raw or (selected_case.personnel_accounts | join(',')) or '' }}">
+      <input type="hidden" name="two_vehicle_available" value="{{ '1' if two_vehicle_available else '' }}">
+      {% set vehicle_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [] %}
+      {% set second_vehicle = vehicle_entries[1] if vehicle_entries|length > 1 else {} %}
+      {% set second_consumables = second_vehicle.consumables if second_vehicle and second_vehicle.consumables is defined else default_consumables %}
+      {% set second_disinfection_items = second_vehicle.disinfection_items if second_vehicle and second_vehicle.disinfection_items is defined else default_disinfection_items %}
+      {% if two_vehicle_available %}
+        <label class="check-item two-vehicle-toggle">
+          <input type="checkbox" name="two_vehicle" id="two-vehicle-toggle" value="1"{% if selected_case.two_vehicle %} checked{% endif %}>
+          <span>2車出勤</span>
+        </label>
+      {% endif %}
       <div class="address-row">
         <label>案發地址
           <input name="case_address" autocomplete="off" value="{{ selected_case_address(selected_case) }}">
@@ -376,20 +393,25 @@
           <button class="clear-button" type="submit" formaction="/cases/clear" formmethod="post" formnovalidate>清除</button>
         {% endif %}
       </div>
+      {% if two_vehicle_available %}
+        <h2 class="vehicle-section-title" id="primary-vehicle-title">1車</h2>
+      {% endif %}
       <div class="grid time-grid">
-        <label>案件時間
+        <label class="field-visual" data-field-name="case_time">
+          <span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span>
           <div class="time-field">
             <input type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_case_date_input(selected_case) }}">
             <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_case.case_time_hhmm or '' }}">
           </div>
         </label>
-        <label class="field-visual" data-field-name="return_time">
-          <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <div class="time-field return-time-field">
-            <input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}">
-            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(selected_case) }}">
-            <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
-          </div>
+        <label class="field-visual" data-field-name="case_reason">
+          <span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <select name="case_reason" required>
+            <option value="">請選擇</option>
+            {% for reason in case_reason_options %}
+              <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
+            {% endfor %}
+          </select>
         </label>
       </div>
       <div class="grid">
@@ -412,28 +434,28 @@
           </select>
         </label>
       </div>
-      <div class="grid">
-        <label>事由
-          <select name="case_reason" required>
-            <option value="">請選擇</option>
-            {% for reason in case_reason_options %}
-              <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
-            {% endfor %}
-          </select>
+      <div class="grid time-grid">
+        <label class="field-visual" data-field-name="return_time">
+          <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <div class="time-field return-time-field">
+            <input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}">
+            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(selected_case) }}">
+            <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
+          </div>
         </label>
-        <label class="field-visual" data-field-name="patient_summary">
-          <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <select name="patient_summary">
-            <option value="">請選擇</option>
-            <option value="男一名"{% if selected_case.patient_summary == '男一名' %} selected{% endif %}>男</option>
-            <option value="女一名"{% if selected_case.patient_summary == '女一名' %} selected{% endif %}>女</option>
-            <option value="無"{% if selected_case.patient_summary == '無' %} selected{% endif %}>無</option>
-          </select>
+        <label class="field-visual" data-field-name="mileage">
+          <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <input name="mileage" inputmode="numeric" pattern="[0-9]*" value="{{ selected_case.mileage or '' }}">
         </label>
       </div>
-      <label class="field-visual" data-field-name="mileage">
-        <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
-        <input name="mileage" inputmode="numeric" pattern="[0-9]*" value="{{ selected_case.mileage or '' }}">
+      <label class="field-visual" data-field-name="patient_summary">
+        <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
+        <select name="patient_summary">
+          <option value="">請選擇</option>
+          <option value="男一名"{% if selected_case.patient_summary == '男一名' %} selected{% endif %}>男</option>
+          <option value="女一名"{% if selected_case.patient_summary == '女一名' %} selected{% endif %}>女</option>
+          <option value="無"{% if selected_case.patient_summary == '無' %} selected{% endif %}>無</option>
+        </select>
       </label>
 
       <section class="consumables form-section-divider">
@@ -446,11 +468,11 @@
             <div class="package-cluster">
               <span class="package-group-label">套餐帶入</span>
               <div class="package-buttons" aria-label="耗材套餐">
-                <button type="button" class="secondary package-button" data-consumable-package="glucose" aria-pressed="false">血糖套餐</button>
-                <button type="button" class="secondary package-button" data-consumable-package="iv" aria-pressed="false">IV套餐</button>
-                <button type="button" class="secondary package-button" data-consumable-package="io" aria-pressed="false">IO套餐</button>
-                <button type="button" class="secondary package-button" data-consumable-package="ecg" aria-pressed="false">心電圖套餐</button>
-                <button type="button" class="secondary package-button" data-consumable-package="ohca" aria-pressed="false">OHCA套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="glucose" data-consumable-target="1" aria-pressed="false">血糖套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="iv" data-consumable-target="1" aria-pressed="false">IV套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="io" data-consumable-target="1" aria-pressed="false">IO套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="ecg" data-consumable-target="1" aria-pressed="false">心電圖套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="ohca" data-consumable-target="1" aria-pressed="false">OHCA套餐</button>
               </div>
             </div>
             <button type="button" class="add-consumable-button" id="add-consumable">＋ 新增耗材</button>
@@ -469,6 +491,102 @@
           </label>
         {% endfor %}
       </div>
+      {% if two_vehicle_available %}
+      <section class="two-vehicle-panel" id="second-vehicle-section" hidden>
+        <h2 class="vehicle-section-title">2車</h2>
+        <div class="grid time-grid">
+          <label class="field-visual" data-field-name="case_time_2_display">
+            <span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <div class="time-field">
+              <input type="text" id="case-date-2-display" value="{{ selected_case_date_input(selected_case) }}" readonly>
+              <input id="case-time-2-display" value="{{ selected_case.case_time_hhmm or '' }}" readonly>
+            </div>
+          </label>
+          <label class="field-visual" data-field-name="case_reason_2_display">
+            <span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <select id="case-reason-2-display" disabled>
+              <option value="">請選擇</option>
+              {% for reason in case_reason_options %}
+                <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="grid">
+          <label class="field-visual" data-field-name="vehicle_2">
+            <span class="field-label-title">車號<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <select name="vehicle_2">
+              <option value="">請選擇</option>
+              {% for vehicle in vehicle_options %}
+                <option value="{{ vehicle }}"{% if second_vehicle.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field-visual" data-field-name="driver_2">
+            <span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <select name="driver_2">
+              <option value="">請選擇</option>
+              {% for number, name in person_options %}
+                <option value="{{ name }}"{% if second_vehicle.driver == name %} selected{% endif %}>{{ name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="grid time-grid">
+          <label class="field-visual" data-field-name="return_time_2">
+            <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <div class="time-field return-time-field">
+              <input type="text" name="return_date_2" id="return-date-2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(second_vehicle) }}">
+              <input name="return_time_2" id="return-time-2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(second_vehicle) }}">
+              <button type="button" class="clock-button" id="return-now-2" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
+            </div>
+          </label>
+          <label class="field-visual" data-field-name="mileage_2">
+            <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <input name="mileage_2" inputmode="numeric" pattern="[0-9]*" value="{{ second_vehicle.mileage or '' }}">
+          </label>
+        </div>
+        <label class="field-visual" data-field-name="patient_summary_2">
+          <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <select name="patient_summary_2">
+            <option value="">請選擇</option>
+            <option value="男一名"{% if second_vehicle.patient_summary == '男一名' %} selected{% endif %}>男</option>
+            <option value="女一名"{% if second_vehicle.patient_summary == '女一名' %} selected{% endif %}>女</option>
+            <option value="無"{% if second_vehicle.patient_summary == '無' %} selected{% endif %}>無</option>
+          </select>
+        </label>
+        <section class="consumables form-section-divider">
+          <input type="hidden" name="consumables_2" id="consumables-value-2">
+          <div class="consumable-head">
+            <span>耗材</span>
+            <div class="consumable-actions">
+              <div class="package-cluster">
+                <span class="package-group-label">套餐帶入</span>
+                <div class="package-buttons" aria-label="2車耗材套餐">
+                  <button type="button" class="secondary package-button" data-consumable-package="glucose" data-consumable-target="2" aria-pressed="false">血糖套餐</button>
+                  <button type="button" class="secondary package-button" data-consumable-package="iv" data-consumable-target="2" aria-pressed="false">IV套餐</button>
+                  <button type="button" class="secondary package-button" data-consumable-package="io" data-consumable-target="2" aria-pressed="false">IO套餐</button>
+                  <button type="button" class="secondary package-button" data-consumable-package="ecg" data-consumable-target="2" aria-pressed="false">心電圖套餐</button>
+                  <button type="button" class="secondary package-button" data-consumable-package="ohca" data-consumable-target="2" aria-pressed="false">OHCA套餐</button>
+                </div>
+              </div>
+              <button type="button" class="add-consumable-button" id="add-consumable-2">新增耗材</button>
+            </div>
+          </div>
+          <div class="package-reminder" id="consumable-package-reminder-2" role="status" aria-live="polite" hidden></div>
+          <div class="consumable-list" id="consumable-list-2"></div>
+        </section>
+        <label class="form-section-divider">消毒項目</label>
+        <div class="check-grid">
+          {% for item in disinfection_item_options %}
+            <label class="check-item">
+              <input type="checkbox" name="disinfection_items_2" value="{{ item }}"{% if item in second_disinfection_items %} checked{% endif %}>
+              <span>{{ loop.index }}. {{ item }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
       <div class="form-actions">
         <button type="submit">{{ submit_label or '建立任務' }}</button>
         {% if cancel_url %}
@@ -500,10 +618,15 @@
     const formErrors = {{ form_errors | tojson }};
     const consumableOptions = {{ consumable_options | tojson }};
     const defaultConsumables = {{ default_consumables | tojson }};
+    const defaultConsumables2 = {{ second_consumables | tojson }};
     const baselineConsumablesLoaded = {{ baseline_consumables_loaded | default(false) | tojson }};
     const selectedConsumablePackages = {{ selected_consumable_packages | default([]) | tojson }};
+    const twoVehicleToggle = document.getElementById("two-vehicle-toggle");
+    const secondVehicleSection = document.getElementById("second-vehicle-section");
     const consumableList = document.getElementById("consumable-list");
     const consumablesValue = document.getElementById("consumables-value");
+    const consumableList2 = document.getElementById("consumable-list-2");
+    const consumablesValue2 = document.getElementById("consumables-value-2");
     const consumablePackagesValue = document.getElementById("consumable-packages-value");
     const fallbackConsumableCategory = "未分類";
     const categoryPlaceholder = "類別選擇";
@@ -573,8 +696,14 @@
     const packageConsumableContributions = new Map();
     const packageConsumableRemovals = new Map();
     const autoCheckedDisinfectionItems = new Map();
-    const packageButtons = Array.from(document.querySelectorAll("[data-consumable-package]"));
+    const activeConsumablePackages2 = new Set();
+    const packageConsumableContributions2 = new Map();
+    const packageConsumableRemovals2 = new Map();
+    const autoCheckedDisinfectionItems2 = new Map();
+    const packageButtons = Array.from(document.querySelectorAll('[data-consumable-package][data-consumable-target="1"]'));
+    const packageButtons2 = Array.from(document.querySelectorAll('[data-consumable-package][data-consumable-target="2"]'));
     const packageReminder = document.getElementById("consumable-package-reminder");
+    const packageReminder2 = document.getElementById("consumable-package-reminder-2");
     const categories = [...new Set(consumableOptions.map((item) => item.category || fallbackConsumableCategory))];
     const lookupForm = document.getElementById("lookup-form");
     const lookupStatus = document.getElementById("lookup-status");
@@ -600,6 +729,19 @@
     if (taskForm) {
       taskForm.addEventListener("input", () => { taskFormDirty = true; });
       taskForm.addEventListener("change", () => { taskFormDirty = true; });
+    }
+
+    function updateTwoVehicleUi() {
+      const enabled = Boolean(twoVehicleToggle && twoVehicleToggle.checked);
+      if (taskForm) taskForm.classList.toggle("two-vehicle-enabled", enabled);
+      if (secondVehicleSection) secondVehicleSection.hidden = !enabled;
+    }
+
+    if (twoVehicleToggle) {
+      twoVehicleToggle.addEventListener("change", () => {
+        updateTwoVehicleUi();
+        updateFieldVisualHints();
+      });
     }
 
     function taskFieldValue(fieldName) {
@@ -792,6 +934,91 @@
       }).filter(Boolean);
       consumablesValue.value = values.join(",");
       updateConsumableNotes();
+    }
+
+    function addConsumableRow2(name = "", qty = 1) {
+      if (!consumableList2) return null;
+      const row = document.createElement("div");
+      row.className = "consumable-row";
+      row.innerHTML = `
+        <span class="consumable-index"></span>
+        <select class="consumable-category" aria-label="耗材分類">${categoryHtml}</select>
+        <select class="consumable-name">${consumableOptionHtml}</select>
+        <div class="qty-control">
+          <button type="button" class="qty-button qty-minus" aria-label="減少數量">-</button>
+          <input class="consumable-qty" type="number" min="1" step="1" inputmode="numeric" value="${Number(qty) || 1}" aria-label="耗材數量">
+          <button type="button" class="qty-button qty-plus" aria-label="增加數量">+</button>
+        </div>
+        <button type="button" class="icon-button" aria-label="移除耗材">×</button>
+        <div class="consumable-note"></div>
+      `;
+      const category = row.querySelector(".consumable-category");
+      const select = row.querySelector(".consumable-name");
+      if (name && !Array.from(select.options).some((option) => option.value === name)) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        option.dataset.category = "自訂";
+        select.prepend(option);
+        if (!Array.from(category.options).some((option) => option.value === "自訂")) {
+          category.add(new Option("自訂", "自訂"));
+        }
+      }
+      const matchedOption = name ? Array.from(select.options).find((option) => option.value === name) : null;
+      if (matchedOption) {
+        category.value = matchedOption.dataset.category || fallbackConsumableCategory;
+        filterConsumableOptions(row);
+        select.value = matchedOption.value;
+      } else {
+        category.value = "";
+        filterConsumableOptions(row);
+        select.value = "";
+      }
+      row.querySelector(".icon-button").addEventListener("click", () => {
+        row.remove();
+        renumberConsumables2();
+        syncConsumables2();
+      });
+      row.querySelector(".qty-minus").addEventListener("click", () => changeQuantity2(row, -1));
+      row.querySelector(".qty-plus").addEventListener("click", () => changeQuantity2(row, 1));
+      category.addEventListener("change", () => {
+        filterConsumableOptions(row);
+        row.querySelector(".consumable-name").value = "";
+        syncConsumables2();
+      });
+      row.querySelectorAll("select,input").forEach((element) => {
+        element.addEventListener("change", syncConsumables2);
+        element.addEventListener("input", syncConsumables2);
+      });
+      consumableList2.appendChild(row);
+      renumberConsumables2();
+      syncConsumables2();
+      return row;
+    }
+
+    function renumberConsumables2() {
+      if (!consumableList2) return;
+      consumableList2.querySelectorAll(".consumable-row").forEach((row, index) => {
+        row.querySelector(".consumable-index").textContent = `${index + 1}.`;
+      });
+    }
+
+    function changeQuantity2(row, delta) {
+      const input = row.querySelector(".consumable-qty");
+      const current = parseInt(input.value, 10) || 1;
+      input.value = Math.max(1, current + delta);
+      syncConsumables2();
+    }
+
+    function syncConsumables2() {
+      if (!consumableList2 || !consumablesValue2) return;
+      const values = Array.from(consumableList2.querySelectorAll(".consumable-row")).map((row) => {
+        const name = row.querySelector(".consumable-name").value.trim();
+        const qty = parseInt(row.querySelector(".consumable-qty").value, 10) || 0;
+        return name && qty > 0 ? `${name}=${qty}` : "";
+      }).filter(Boolean);
+      consumablesValue2.value = values.join(",");
+      updateConsumableNotes2();
     }
 
     function consumableRows() {
@@ -993,6 +1220,189 @@
       });
     }
 
+    function consumableRows2() {
+      if (!consumableList2) return [];
+      return Array.from(consumableList2.querySelectorAll(".consumable-row"));
+    }
+
+    function rowConsumableName2(row) {
+      return row.querySelector(".consumable-name").value.trim();
+    }
+
+    function rowConsumableQuantity2(row) {
+      return parseInt(row.querySelector(".consumable-qty").value, 10) || 0;
+    }
+
+    function setRowConsumableQuantity2(row, qty) {
+      row.querySelector(".consumable-qty").value = Math.max(1, qty);
+    }
+
+    function findConsumableRowsByName2(name) {
+      return consumableRows2().filter((row) => rowConsumableName2(row) === name);
+    }
+
+    function adjustConsumableQuantity2(name, delta) {
+      if (!name || !delta) return;
+      if (delta > 0) {
+        const existingRow = findConsumableRowsByName2(name)[0];
+        if (existingRow) {
+          setRowConsumableQuantity2(existingRow, rowConsumableQuantity2(existingRow) + delta);
+          syncConsumables2();
+          return;
+        }
+        addConsumableRow2(name, delta);
+        return;
+      }
+
+      let remaining = Math.abs(delta);
+      for (const row of findConsumableRowsByName2(name)) {
+        const current = rowConsumableQuantity2(row);
+        if (current > remaining) {
+          setRowConsumableQuantity2(row, current - remaining);
+          remaining = 0;
+          break;
+        }
+        row.remove();
+        remaining -= current;
+        if (remaining <= 0) break;
+      }
+      renumberConsumables2();
+      syncConsumables2();
+    }
+
+    function removeConsumableRowsByName2(name) {
+      let removedQty = 0;
+      findConsumableRowsByName2(name).forEach((row) => {
+        removedQty += rowConsumableQuantity2(row);
+        row.remove();
+      });
+      if (removedQty > 0) {
+        renumberConsumables2();
+        syncConsumables2();
+      }
+      return removedQty;
+    }
+
+    function applyPackageConsumableRemovals2(packageKey, preset) {
+      const removed = {};
+      (preset.removals || []).forEach((name) => {
+        const qty = removeConsumableRowsByName2(name);
+        if (qty > 0) removed[name] = qty;
+      });
+      if (Object.keys(removed).length > 0) {
+        packageConsumableRemovals2.set(packageKey, removed);
+      }
+    }
+
+    function restorePackageConsumableRemovals2(packageKey) {
+      const removed = packageConsumableRemovals2.get(packageKey) || {};
+      Object.entries(removed).forEach(([name, qty]) => {
+        if (findConsumableRowsByName2(name).length === 0) {
+          adjustConsumableQuantity2(name, qty);
+        }
+      });
+      packageConsumableRemovals2.delete(packageKey);
+    }
+
+    function disinfectionCheckbox2(itemName) {
+      return Array.from(document.querySelectorAll('input[name="disinfection_items_2"]')).find((checkbox) => checkbox.value === itemName);
+    }
+
+    function applyPackageDisinfectionItems2(packageKey, preset) {
+      (preset.disinfectionItems || []).forEach((itemName) => {
+        const checkbox = disinfectionCheckbox2(itemName);
+        if (!checkbox) return;
+        const currentOwners = autoCheckedDisinfectionItems2.get(itemName);
+        if (!checkbox.checked || currentOwners) {
+          checkbox.checked = true;
+          const owners = currentOwners || new Set();
+          owners.add(packageKey);
+          autoCheckedDisinfectionItems2.set(itemName, owners);
+        }
+      });
+    }
+
+    function clearPackageDisinfectionItems2(packageKey, preset) {
+      (preset.disinfectionItems || []).forEach((itemName) => {
+        const owners = autoCheckedDisinfectionItems2.get(itemName);
+        if (!owners) return;
+        owners.delete(packageKey);
+        if (owners.size > 0) return;
+        const checkbox = disinfectionCheckbox2(itemName);
+        if (checkbox) checkbox.checked = false;
+        autoCheckedDisinfectionItems2.delete(itemName);
+      });
+    }
+
+    function toggleConsumablePackage2(packageKey) {
+      const preset = consumablePackages[packageKey];
+      if (!preset) return;
+      taskFormDirty = true;
+      if (activeConsumablePackages2.has(packageKey)) {
+        const contribution = packageConsumableContributions2.get(packageKey) || packageContributionMap(preset);
+        Object.entries(contribution).forEach(([name, qty]) => adjustConsumableQuantity2(name, -qty));
+        packageConsumableContributions2.delete(packageKey);
+        activeConsumablePackages2.delete(packageKey);
+        restorePackageConsumableRemovals2(packageKey);
+        clearPackageDisinfectionItems2(packageKey, preset);
+      } else {
+        const contribution = packageContributionMap(preset);
+        Object.entries(contribution).forEach(([name, qty]) => adjustConsumableQuantity2(name, qty));
+        packageConsumableContributions2.set(packageKey, contribution);
+        activeConsumablePackages2.add(packageKey);
+        applyPackageConsumableRemovals2(packageKey, preset);
+        applyPackageDisinfectionItems2(packageKey, preset);
+      }
+      updateConsumablePackageUi2();
+    }
+
+    function activePackageLabels2() {
+      return Array.from(activeConsumablePackages2).map((packageKey) => consumablePackages[packageKey].label);
+    }
+
+    function activePackageConsumableNames2() {
+      const names = new Set();
+      activeConsumablePackages2.forEach((packageKey) => {
+        (consumablePackages[packageKey].consumables || []).forEach(([name]) => names.add(name));
+      });
+      return names;
+    }
+
+    function updateConsumablePackageUi2() {
+      packageButtons2.forEach((button) => {
+        const isActive = activeConsumablePackages2.has(button.dataset.consumablePackage);
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-pressed", isActive ? "true" : "false");
+      });
+      if (packageReminder2) {
+        const labels = activePackageLabels2();
+        packageReminder2.hidden = labels.length === 0;
+        packageReminder2.textContent = labels.length ? `已帶入：${labels.join("、")}` : "";
+      }
+      updateConsumableNotes2();
+    }
+
+    function activeNotesForConsumable2(name) {
+      const notes = [];
+      activeConsumablePackages2.forEach((packageKey) => {
+        const note = consumablePackages[packageKey].notes?.[name];
+        if (note && !notes.includes(note)) notes.push(note);
+      });
+      return notes;
+    }
+
+    function updateConsumableNotes2() {
+      const activeNames = activePackageConsumableNames2();
+      consumableRows2().forEach((row) => {
+        const note = row.querySelector(".consumable-note");
+        row.classList.toggle("is-package-consumable", activeNames.has(rowConsumableName2(row)));
+        if (!note) return;
+        const notes = activeNotesForConsumable2(rowConsumableName2(row));
+        note.textContent = notes.join("、");
+        note.classList.toggle("is-visible", notes.length > 0);
+      });
+    }
+
     function pad2(value) {
       return String(value).padStart(2, "0");
     }
@@ -1004,7 +1414,18 @@
       updateFieldVisualHints();
     });
 
+    const returnNow2 = document.getElementById("return-now-2");
+    if (returnNow2) {
+      returnNow2.addEventListener("click", () => {
+        const now = new Date();
+        document.getElementById("return-date-2").value = `${now.getFullYear()}/${pad2(now.getMonth() + 1)}/${pad2(now.getDate())}`;
+        document.getElementById("return-time-2").value = `${pad2(now.getHours())}${pad2(now.getMinutes())}`;
+        updateFieldVisualHints();
+      });
+    }
+
     Object.entries(defaultConsumables).forEach(([name, qty]) => addConsumableRow(name, qty));
+    Object.entries(defaultConsumables2).forEach(([name, qty]) => addConsumableRow2(name, qty));
     selectedConsumablePackages.forEach((packageKey) => {
       const preset = consumablePackages[packageKey];
       if (!preset) return;
@@ -1014,12 +1435,26 @@
     packageButtons.forEach((button) => {
       button.addEventListener("click", () => toggleConsumablePackage(button.dataset.consumablePackage));
     });
+    packageButtons2.forEach((button) => {
+      button.addEventListener("click", () => toggleConsumablePackage2(button.dataset.consumablePackage));
+    });
     document.querySelectorAll('input[name="disinfection_items"]').forEach((checkbox) => {
       checkbox.addEventListener("change", () => {
         autoCheckedDisinfectionItems.delete(checkbox.value);
       });
     });
+    document.querySelectorAll('input[name="disinfection_items_2"]').forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        autoCheckedDisinfectionItems2.delete(checkbox.value);
+      });
+    });
+    const addConsumable2Button = document.getElementById("add-consumable-2");
+    if (addConsumable2Button) {
+      addConsumable2Button.addEventListener("click", () => addConsumableRow2());
+    }
+    updateTwoVehicleUi();
     updateConsumablePackageUi();
+    updateConsumablePackageUi2();
     updateFieldVisualHints();
     document.getElementById("add-consumable").addEventListener("click", () => addConsumableRow());
   </script>

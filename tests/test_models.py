@@ -161,6 +161,75 @@ class ModelParsingTests(unittest.TestCase):
 
         self.assertEqual(request.duty_status_text, "\u65b0\u576191;\u66fe\u5f65\u7db8")
 
+    def test_two_vehicle_form_parses_independent_vehicle_entries(self):
+        request = request_from_form(
+            {
+                "two_vehicle": "1",
+                "case_id": "20260602011652012",
+                "case_date": "2026/06/02",
+                "case_time": "0116",
+                "vehicle": "\u65b0\u576191",
+                "driver": "\u66fe\u5f65\u7db8",
+                "return_date": "2026/06/02",
+                "return_time": "0200",
+                "mileage": "101",
+                "patient_summary": "\u7537\u4e00\u540d",
+                "consumables": "\u53e3\u7f69=2,\u624b\u5957=2",
+                "disinfection_items": ["\u6551\u8b77\u8eca\u9ad4"],
+                "vehicle_2": "\u65b0\u576192",
+                "driver_2": "\u9673\u5c0f\u660e",
+                "return_date_2": "2026/06/02",
+                "return_time_2": "0210",
+                "mileage_2": "202",
+                "patient_summary_2": "\u7121",
+                "consumables_2": "\u8033\u6eab\u5957=1",
+                "disinfection_items_2": ["\u64d4\u67b6\u5e8a"],
+            }
+        )
+
+        self.assertTrue(request.two_vehicle)
+        self.assertEqual(len(request.vehicle_entries), 2)
+        self.assertEqual(request.vehicle_entries[0].vehicle, "\u65b0\u576191")
+        self.assertEqual(request.vehicle_entries[0].return_time, "0200")
+        self.assertEqual(request.vehicle_entries[1].vehicle, "\u65b0\u576192")
+        self.assertEqual(request.vehicle_entries[1].return_time, "0210")
+        self.assertEqual(request.vehicle_entries[1].consumables, {"\u8033\u6eab\u5957": 1})
+        self.assertEqual(request.vehicle_entries[1].disinfection_items, ["\u64d4\u67b6\u5e8a"])
+        self.assertEqual(
+            request.duty_status_text,
+            "1.\u65b0\u576191:\u66fe\u5f65\u7db8 \u65b0\u576192:\u9673\u5c0f\u660e\n2.\u7537\u4e00\u540d",
+        )
+
+    def test_two_vehicle_requests_expand_to_single_vehicle_requests(self):
+        request = request_from_form(
+            {
+                "two_vehicle": "1",
+                "vehicle": "\u65b0\u576191",
+                "driver": "\u66fe\u5f65\u7db8",
+                "return_time": "0200",
+                "mileage": "101",
+                "patient_summary": "\u7537\u4e00\u540d",
+                "consumables": "\u53e3\u7f69=2",
+                "vehicle_2": "\u65b0\u576192",
+                "driver_2": "\u9673\u5c0f\u660e",
+                "return_time_2": "0210",
+                "mileage_2": "202",
+                "patient_summary_2": "\u7121",
+                "consumables_2": "\u624b\u5957=2",
+            }
+        )
+
+        first, second = request.vehicle_requests()
+
+        self.assertFalse(first.two_vehicle)
+        self.assertEqual(first.vehicle, "\u65b0\u576191")
+        self.assertEqual(first.return_time, "0200")
+        self.assertEqual(first.consumables, {"\u53e3\u7f69": 2})
+        self.assertEqual(second.vehicle, "\u65b0\u576192")
+        self.assertEqual(second.return_time, "0210")
+        self.assertEqual(second.patient_summary, "\u7121")
+        self.assertEqual(second.consumables, {"\u624b\u5957": 2})
+
     def test_missing_case_date_falls_back_to_cross_day_created_at(self):
         request = AmbulanceReturnRequest(
             task_id="task-1",

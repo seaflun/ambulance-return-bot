@@ -125,6 +125,20 @@ class WebAppTests(unittest.TestCase):
         data.update(overrides)
         return data
 
+    def import_case_for_form(self, case: dict) -> None:
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True, exist_ok=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "updated_at": "2026-06-03T08:00:00",
+                "cases": [case],
+            },
+        )
+        response = self.client.post("/cases/import", data={"case_id": case["case_id"]}, follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+
     def credential_sync_payload(self) -> dict:
         return {
             "sync_code": "sync-test-1",
@@ -316,6 +330,83 @@ class WebAppTests(unittest.TestCase):
         io_section = body[body.index("io: {") : body.index("ecg: {")]
         self.assertIn('"桃-注射用-生理食鹽水500ml(包)": "請確認輸液"', iv_section)
         self.assertNotIn('"桃-注射用-生理食鹽水500ml(包)": "請確認輸液"', io_section)
+
+    def test_app_page_hides_two_vehicle_fields_until_eligible_case_is_imported(self):
+        response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertNotIn('name="two_vehicle"', body)
+        self.assertNotIn('id="second-vehicle-section"', body)
+
+    def test_imported_ambulance_case_with_four_personnel_shows_two_vehicle_fields(self):
+        self.import_case_for_form(
+            {
+                "case_id": "case-two-vehicle",
+                "category": "\u7dca\u6025\u6551\u8b77-\u6025\u75c5",
+                "address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+                "case_time_hhmm": "0911",
+                "personnel": ["\u7532", "\u4e59", "\u4e19", "\u4e01"],
+            }
+        )
+
+        response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn('name="two_vehicle"', body)
+        self.assertIn("2\u8eca\u51fa\u52e4", body)
+        self.assertIn("1\u8eca", body)
+        self.assertIn("2\u8eca", body)
+        self.assertLess(body.index('id="primary-vehicle-title"'), body.index('name="case_time"'))
+        self.assertLess(body.index('id="primary-vehicle-title"'), body.index('name="case_reason"'))
+        self.assertIn('id="case-time-2-display"', body)
+        self.assertIn('id="case-reason-2-display"', body)
+        self.assertIn('name="vehicle_2"', body)
+        self.assertIn('name="driver_2"', body)
+        self.assertIn('name="return_time_2"', body)
+        self.assertIn('name="mileage_2"', body)
+        self.assertIn('name="patient_summary_2"', body)
+        self.assertIn('name="consumables_2"', body)
+        self.assertIn('name="disinfection_items_2"', body)
+        self.assertIn('data-consumable-target="1"', body)
+        self.assertIn('data-consumable-target="2"', body)
+        for package_key in ("glucose", "iv", "io", "ecg", "ohca"):
+            self.assertIn(f'data-consumable-package="{package_key}" data-consumable-target="2"', body)
+
+    def test_imported_case_requires_more_than_three_ambulance_personnel_for_two_vehicle(self):
+        self.import_case_for_form(
+            {
+                "case_id": "case-three-personnel",
+                "category": "\u7dca\u6025\u6551\u8b77-\u6025\u75c5",
+                "address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+                "case_time_hhmm": "0911",
+                "personnel": ["\u7532", "\u4e59", "\u4e19"],
+            }
+        )
+
+        response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertNotIn('name="two_vehicle"', body)
+
+    def test_imported_non_ambulance_case_hides_two_vehicle_fields(self):
+        self.import_case_for_form(
+            {
+                "case_id": "case-fire",
+                "category": "\u706b\u707d",
+                "address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+                "case_time_hhmm": "0911",
+                "personnel": ["\u7532", "\u4e59", "\u4e19", "\u4e01"],
+            }
+        )
+
+        response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertNotIn('name="two_vehicle"', body)
 
     def test_status_includes_runtime_consumable_diagnostics(self):
         response = self.client.get("/status")
@@ -2204,6 +2295,51 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_needs_update")
         self.assertIn("\u66f4\u65b0\u5de5\u4f5c", body)
         self.assertIn("\u66f4\u65b0\u91cc\u7a0b", body)
+
+    def test_two_vehicle_validation_requires_second_vehicle_fields(self):
+        task_request = app_module.request_from_form(
+            self.valid_task_data(
+                two_vehicle="1",
+                vehicle_2="",
+                driver_2="",
+                return_time_2="",
+                mileage_2="",
+                patient_summary_2="",
+                consumables_2="",
+            )
+        )
+
+        errors = app_module.validate_task_form(task_request)
+
+        self.assertTrue(any("2\u8eca" in error for error in errors))
+
+    def test_task_edit_second_vehicle_fields_mark_saved_sites_for_update(self):
+        previous_request = app_module.request_from_form(
+            self.valid_task_data(
+                two_vehicle="1",
+                vehicle_2="\u65b0\u576192",
+                driver_2="\u9673\u5c0f\u660e",
+                return_time_2="1210",
+                mileage_2="200",
+                patient_summary_2="\u7121",
+                consumables_2="\u624b\u5957=2",
+            )
+        )
+        current_request = app_module.request_from_form(
+            self.valid_task_data(
+                two_vehicle="1",
+                vehicle_2="\u65b0\u576193",
+                driver_2="\u9673\u5c0f\u660e",
+                return_time_2="1220",
+                mileage_2="220",
+                patient_summary_2="\u5973\u4e00\u540d",
+                consumables_2="\u53e3\u7f69=2",
+            )
+        )
+
+        changed = app_module.changed_sites_for_task_edit(previous_request.to_dict(), current_request.to_dict())
+
+        self.assertEqual(changed, {"duty_work_log", "vehicle_mileage", "consumables", "disinfection"})
 
     def test_task_detail_card_order_is_work_mileage_consumables_disinfection(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())

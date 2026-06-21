@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 import json
 import os
@@ -224,6 +224,43 @@ def vehicle_ppe_names(base_dir: Path | None = None) -> dict[str, str]:
 
 
 @dataclass(slots=True)
+class VehicleEntry:
+    vehicle: str = ""
+    driver: str = ""
+    mileage: str = ""
+    return_date: str = ""
+    return_time: str = ""
+    patient_summary: str = "\u7537\u4e00\u540d"
+    disinfection: str = "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002"
+    disinfection_items: list[str] = field(default_factory=lambda: list(DEFAULT_DISINFECTION_ITEMS))
+    consumables: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_CONSUMABLES))
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "VehicleEntry":
+        if isinstance(payload, VehicleEntry):
+            return payload
+        if not isinstance(payload, dict):
+            return cls()
+        return cls(
+            vehicle=str(payload.get("vehicle") or "").strip(),
+            driver=str(payload.get("driver") or "").strip(),
+            mileage=str(payload.get("mileage") or "").strip(),
+            return_date=normalize_case_date(str(payload.get("return_date") or "")),
+            return_time=str(payload.get("return_time") or "").strip(),
+            patient_summary=str(payload.get("patient_summary") or cls.__dataclass_fields__["patient_summary"].default).strip(),
+            disinfection=str(payload.get("disinfection") or cls.__dataclass_fields__["disinfection"].default).strip(),
+            disinfection_items=parse_list(payload.get("disinfection_items") or DEFAULT_DISINFECTION_ITEMS),
+            consumables=parse_consumable_payload(payload.get("consumables"), default=DEFAULT_CONSUMABLES),
+        )
+
+    def is_blank(self) -> bool:
+        return not any(
+            str(value or "").strip()
+            for value in (self.vehicle, self.driver, self.mileage, self.return_date, self.return_time, self.patient_summary)
+        )
+
+
+@dataclass(slots=True)
 class AmbulanceReturnRequest:
     task_id: str
     created_at: datetime
@@ -245,6 +282,8 @@ class AmbulanceReturnRequest:
     disinfection_items: list[str] = field(default_factory=lambda: list(DEFAULT_DISINFECTION_ITEMS))
     work_note: str = "\u6551\u8b77\u6848\u4ef6\u8fd4\u968a\u5f8c\u5b8c\u6210\u8eca\u8f1b\u3001\u8017\u6750\u53ca\u6d88\u6bd2\u767b\u6253\u3002"
     consumables: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_CONSUMABLES))
+    two_vehicle: bool = False
+    vehicle_entries: list[VehicleEntry] = field(default_factory=list)
 
     @property
     def consumable_summary(self) -> str:
@@ -310,12 +349,70 @@ class AmbulanceReturnRequest:
 
     @property
     def duty_status_text(self) -> str:
+        entries = self.effective_vehicle_entries()
+        if len(entries) > 1:
+            vehicle_line = " ".join(_vehicle_driver_text(entry) for entry in entries if entry.vehicle or entry.driver).strip()
+            patient_entries = [
+                (entry.vehicle, (entry.patient_summary or "").strip())
+                for entry in entries
+                if (entry.patient_summary or "").strip() and (entry.patient_summary or "").strip() != "\u7121"
+            ]
+            if not patient_entries:
+                return " ".join(_vehicle_driver_short_text(entry) for entry in entries if entry.vehicle or entry.driver).strip()
+            if len(patient_entries) == 1:
+                patient_text = patient_entries[0][1]
+            else:
+                patient_text = " ".join(f"{vehicle}:{patient}" for vehicle, patient in patient_entries if vehicle or patient)
+            return f"1.{vehicle_line}\n2.{patient_text}"
         vehicle = self.vehicle or "\u672a\u586b\u8eca\u8f1b"
         driver = self.driver or "\u672a\u586b\u53f8\u6a5f"
         patient = self.patient_summary or "\u7537\u4e00\u540d"
         if patient == "\u7121":
             return f"{vehicle};{driver}"
         return f"1.{vehicle}:{driver}\n2.{patient}"
+
+    def primary_vehicle_entry(self) -> VehicleEntry:
+        return VehicleEntry(
+            vehicle=self.vehicle,
+            driver=self.driver,
+            mileage=self.mileage,
+            return_date=self.return_date,
+            return_time=self.return_time,
+            patient_summary=self.patient_summary,
+            disinfection=self.disinfection,
+            disinfection_items=list(self.disinfection_items),
+            consumables=dict(self.consumables),
+        )
+
+    def effective_vehicle_entries(self) -> list[VehicleEntry]:
+        entries = [VehicleEntry.from_dict(entry) for entry in self.vehicle_entries]
+        if self.two_vehicle and entries:
+            return entries
+        return [self.primary_vehicle_entry()]
+
+    def vehicle_requests(self) -> list["AmbulanceReturnRequest"]:
+        entries = self.effective_vehicle_entries()
+        if len(entries) == 1 and not self.two_vehicle:
+            return [self]
+        requests: list[AmbulanceReturnRequest] = []
+        for entry in entries:
+            requests.append(
+                replace(
+                    self,
+                    vehicle=entry.vehicle,
+                    driver=entry.driver,
+                    mileage=entry.mileage,
+                    return_date=entry.return_date,
+                    return_time=entry.return_time,
+                    patient_summary=entry.patient_summary,
+                    disinfection=entry.disinfection,
+                    disinfection_items=list(entry.disinfection_items),
+                    consumables=dict(entry.consumables),
+                    two_vehicle=False,
+                    vehicle_entries=[],
+                )
+            )
+        return requests
 
     @property
     def return_time_hhmm(self) -> str:
@@ -359,6 +456,7 @@ class AmbulanceReturnRequest:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "AmbulanceReturnRequest":
         created_at_raw = payload.get("created_at") or datetime.now().isoformat(timespec="seconds")
+        vehicle_entries = [VehicleEntry.from_dict(item) for item in payload.get("vehicle_entries") or []]
         return cls(
             task_id=str(payload.get("task_id") or new_task_id()),
             created_at=datetime.fromisoformat(created_at_raw),
@@ -379,7 +477,9 @@ class AmbulanceReturnRequest:
             disinfection=str(payload.get("disinfection") or cls.__dataclass_fields__["disinfection"].default),
             disinfection_items=parse_list(payload.get("disinfection_items") or DEFAULT_DISINFECTION_ITEMS),
             work_note=str(payload.get("work_note") or cls.__dataclass_fields__["work_note"].default),
-            consumables={str(k): int(v) for k, v in dict(payload.get("consumables") or DEFAULT_CONSUMABLES).items()},
+            consumables=parse_consumable_payload(payload.get("consumables"), default=DEFAULT_CONSUMABLES),
+            two_vehicle=form_flag_enabled(payload.get("two_vehicle")),
+            vehicle_entries=vehicle_entries,
         )
 
 
@@ -419,6 +519,37 @@ def normalize_case_date(value: str) -> str:
     return parsed.strftime("%Y/%m/%d") if parsed else str(value or "").strip()
 
 
+def form_flag_enabled(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_consumable_payload(value: object, default: dict[str, int] | None = None) -> dict[str, int]:
+    if not isinstance(value, dict):
+        value = default or {}
+    parsed: dict[str, int] = {}
+    for key, item_value in value.items():
+        name = str(key).strip()
+        try:
+            qty = int(item_value)
+        except (TypeError, ValueError):
+            qty = 0
+        if name and qty > 0:
+            parsed[name] = qty
+    return parsed
+
+
+def _vehicle_driver_text(entry: VehicleEntry) -> str:
+    vehicle = entry.vehicle or "\u672a\u586b\u8eca\u8f1b"
+    driver = entry.driver or "\u672a\u586b\u53f8\u6a5f"
+    return f"{vehicle}:{driver}"
+
+
+def _vehicle_driver_short_text(entry: VehicleEntry) -> str:
+    vehicle = entry.vehicle or "\u672a\u586b\u8eca\u8f1b"
+    driver = entry.driver or "\u672a\u586b\u53f8\u6a5f"
+    return f"{vehicle};{driver}"
+
+
 def example_command() -> str:
     return (
         "\u6551\u8b77\u56de\u7a0b\n"
@@ -439,6 +570,40 @@ def example_command() -> str:
 def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
     consumables = parse_consumables(str(form.get("consumables") or ""))
     disinfection_items = parse_disinfection_items_from_form(form)
+    two_vehicle = form_flag_enabled(form.get("two_vehicle"))
+    primary_vehicle = VehicleEntry(
+        vehicle=str(form.get("vehicle") or "").strip(),
+        driver=str(form.get("driver") or "").strip(),
+        mileage=str(form.get("mileage") or "").strip(),
+        return_date=normalize_case_date(str(form.get("return_date") or "")),
+        return_time=str(form.get("return_time") or "").strip(),
+        patient_summary=str(form.get("patient_summary") or "").strip(),
+        disinfection=str(form.get("disinfection") or "").strip()
+        or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
+        disinfection_items=list(disinfection_items),
+        consumables=dict(consumables),
+    )
+    vehicle_entries: list[VehicleEntry] = []
+    if two_vehicle:
+        vehicle_entries = [
+            primary_vehicle,
+            VehicleEntry(
+                vehicle=str(form.get("vehicle_2") or "").strip(),
+                driver=str(form.get("driver_2") or "").strip(),
+                mileage=str(form.get("mileage_2") or "").strip(),
+                return_date=normalize_case_date(str(form.get("return_date_2") or "")),
+                return_time=str(form.get("return_time_2") or "").strip(),
+                patient_summary=str(form.get("patient_summary_2") or "").strip(),
+                disinfection=str(form.get("disinfection_2") or "").strip()
+                or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
+                disinfection_items=parse_disinfection_items_from_form(
+                    form,
+                    field_name="disinfection_items_2",
+                    custom_field_name="disinfection_items_custom_2",
+                ),
+                consumables=parse_consumables(str(form.get("consumables_2") or "")),
+            ),
+        ]
     return AmbulanceReturnRequest(
         task_id=new_task_id(),
         created_at=datetime.now(),
@@ -462,6 +627,8 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         work_note=str(form.get("work_note") or "").strip()
         or "\u6551\u8b77\u6848\u4ef6\u8fd4\u968a\u5f8c\u5b8c\u6210\u8eca\u8f1b\u3001\u8017\u6750\u53ca\u6d88\u6bd2\u767b\u6253\u3002",
         consumables=consumables,
+        two_vehicle=two_vehicle,
+        vehicle_entries=vehicle_entries,
     )
 
 
@@ -525,9 +692,13 @@ def parse_consumables(value: str) -> dict[str, int]:
     return result
 
 
-def parse_disinfection_items_from_form(form: dict[str, Any]) -> list[str]:
-    selected = _form_values(form, "disinfection_items")
-    custom = str(form.get("disinfection_items_custom") or "")
+def parse_disinfection_items_from_form(
+    form: dict[str, Any],
+    field_name: str = "disinfection_items",
+    custom_field_name: str = "disinfection_items_custom",
+) -> list[str]:
+    selected = _form_values(form, field_name)
+    custom = str(form.get(custom_field_name) or "")
     items = selected + parse_list(custom)
     return items
 

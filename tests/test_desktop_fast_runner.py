@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
 from ambulance_bot.manual_task_lock import manual_task_lock_path
-from ambulance_bot.models import AmbulanceReturnRequest
+from ambulance_bot.models import AmbulanceReturnRequest, request_from_form
 from ambulance_bot.task_store import JsonTaskStore
 
 
@@ -234,6 +234,56 @@ class DesktopFastRunnerTests(unittest.TestCase):
 
             mileage_mock.assert_called_once()
             self.assertEqual(mileage_mock.call_args.kwargs["update_context"], context)
+
+    def test_two_vehicle_site_rerun_skips_saved_vehicle_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = request_from_form(
+                {
+                    "two_vehicle": "1",
+                    "vehicle": "\u65b0\u576191",
+                    "driver": "\u66fe\u5f65\u7db8",
+                    "return_time": "0200",
+                    "mileage": "101",
+                    "patient_summary": "\u7537\u4e00\u540d",
+                    "consumables": "\u53e3\u7f69=2",
+                    "vehicle_2": "\u65b0\u576192",
+                    "driver_2": "\u9673\u5c0f\u660e",
+                    "return_time_2": "0210",
+                    "mileage_2": "202",
+                    "patient_summary_2": "\u7121",
+                    "consumables_2": "\u624b\u5957=2",
+                }
+            )
+            request.task_id = "task-two-vehicle"
+            store.create(request)
+            payload = store.get("task-two-vehicle")
+            payload["site_statuses"]["vehicle_mileage"]["status"] = "vehicle_mileage_failed"
+            payload["site_statuses"]["vehicle_mileage"]["vehicle_results"] = {
+                "\u65b0\u576191": {"status": "vehicle_mileage_saved", "detail": "first done"}
+            }
+            store.save_payload("task-two-vehicle", payload)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch(
+                "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
+                return_value=SimpleNamespace(ok=True, status="vehicle_mileage_saved", detail="second ok"),
+            ) as mileage_mock:
+                runner.start_site("task-two-vehicle", "vehicle_mileage")
+                self.assertTrue(runner.wait_for_idle())
+
+            mileage_mock.assert_called_once()
+            self.assertEqual(mileage_mock.call_args.args[0].vehicle, "\u65b0\u576192")
+            payload = store.get("task-two-vehicle")
+            self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
+            self.assertEqual(
+                payload["site_statuses"]["vehicle_mileage"]["vehicle_results"]["\u65b0\u576191"]["status"],
+                "vehicle_mileage_saved",
+            )
+            self.assertEqual(
+                payload["site_statuses"]["vehicle_mileage"]["vehicle_results"]["\u65b0\u576192"]["status"],
+                "vehicle_mileage_saved",
+            )
 
 
 if __name__ == "__main__":

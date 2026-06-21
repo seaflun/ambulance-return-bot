@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import threading
 import time
 import urllib.request
@@ -143,6 +144,7 @@ def run_local_selenium_task(
 def run_vehicle_mileage_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
+    existing_driver: webdriver.Chrome | None = None,
     profile_name: str = "chrome_profile",
     debugger_port: int | None = None,
     use_session_lock: bool = True,
@@ -155,8 +157,9 @@ def run_vehicle_mileage_task(
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
 
-    driver = None
+    driver = existing_driver
     lock_acquired = False
+    owns_driver = existing_driver is None
     keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
         "0",
         "false",
@@ -167,14 +170,15 @@ def run_vehicle_mileage_task(
     try:
         if use_session_lock:
             lock_acquired = _acquire_selenium_session(f"vehicle_mileage {request.task_id}")
-        if debugger_port is None and not force_new_driver:
-            debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
-        driver = _create_driver(
-            artifacts_dir,
-            profile_name=profile_name,
-            debugger_port=debugger_port,
-            attach_existing=not force_new_driver,
-        )
+        if driver is None:
+            if debugger_port is None and not force_new_driver:
+                debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+            driver = _create_driver(
+                artifacts_dir,
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                attach_existing=not force_new_driver,
+            )
         apply_tile(driver, tile_name)
         _set_window_size_if_enabled(driver, "vehicle_mileage")
         driver.implicitly_wait(2)
@@ -186,7 +190,7 @@ def run_vehicle_mileage_task(
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_error")
         return SeleniumRunResult(False, "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}", summary_path)
     finally:
-        if not keep_browser_open:
+        if owns_driver and not keep_browser_open:
             _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"vehicle_mileage {request.task_id}")
@@ -859,7 +863,7 @@ def _match_case_for_request(cases: list[dict[str, str]], request: AmbulanceRetur
 
 
 def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
-    status_text = f"1.{request.vehicle}:{request.driver}  2.{request.patient_summary}"
+    status_text = request.duty_status_text
     item_missing = driver.execute_script(
         """
         const value = arguments[0];
@@ -1258,7 +1262,7 @@ def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceRet
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_query")
     _assert_disinfection_not_login(driver, "query")
 
-    if not _open_disinfection_detail_for_case(driver, request.case_time):
+    if not _open_disinfection_detail_for_case(driver, request.case_time, request.vehicle):
         raise WebDriverException(f"missing disinfection detail for case time {request.case_time or 'empty'}")
     _wait_for_disinfection_detail_ready(driver)
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
@@ -1376,7 +1380,35 @@ def _save_disinfection_progress_artifacts(driver: webdriver.Chrome, output_dir: 
 def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
     return request.service_case_date().strftime("%Y-%m-%d")
 
-def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str) -> bool:
+def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str, vehicle: str = "") -> bool:
+    rows = driver.execute_script(
+        """
+        return Array.from(document.querySelectorAll('tr')).map((tr, index) => ({
+          index,
+          text: tr.innerText || ''
+        }));
+        """
+    )
+    row_index = _select_disinfection_detail_row(rows, case_time, vehicle)
+    if row_index is not None:
+        return bool(
+            driver.execute_script(
+                """
+                const rows = Array.from(document.querySelectorAll('tr'));
+                const row = rows[arguments[0]];
+                if (!row) return false;
+                const controls = Array.from(row.querySelectorAll('a, button, input[type=button], input[type=submit]'));
+                const detail = controls.find(el => {
+                  const text = [el.innerText, el.value, el.title, el.getAttribute('aria-label')].map(x => String(x || '')).join(' ');
+                  return text.includes('?敦');
+                }) || controls[controls.length - 1];
+                if (!detail) return false;
+                detail.click();
+                return true;
+                """,
+                row_index,
+            )
+        )
     digits = normalize_hhmm_local(case_time)
     return bool(
         driver.execute_script(
@@ -1401,6 +1433,41 @@ def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str)
             digits,
         )
     )
+
+
+def _select_disinfection_detail_row(rows: object, case_time: str, vehicle: str = "") -> int | None:
+    if not isinstance(rows, list):
+        return None
+    digits = normalize_hhmm_local(case_time)
+    variants = [digits, f"{digits[:2]}:{digits[2:]}"] if len(digits) == 4 else []
+    best_index: int | None = None
+    best_score = -1
+    for fallback_index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "")
+        if variants and not any(variant in text for variant in variants):
+            continue
+        score = 1
+        if _disinfection_text_matches_vehicle(text, vehicle):
+            score += 10
+        try:
+            row_index = int(row.get("index"))
+        except (TypeError, ValueError):
+            row_index = fallback_index
+        if score > best_score:
+            best_score = score
+            best_index = row_index
+    return best_index
+
+
+def _disinfection_text_matches_vehicle(text: str, vehicle: str) -> bool:
+    needle = re.sub(r"\s+", "", str(vehicle or ""))
+    if not needle:
+        return False
+    haystack = re.sub(r"\s+", "", str(text or ""))
+    return needle in haystack
+
 
 def _effective_disinfection_items(items: list[str]) -> list[str]:
     legacy_default = ["\u6551\u8b77\u8eca\u9ad4", "\u64d4\u67b6\u5e8a"]

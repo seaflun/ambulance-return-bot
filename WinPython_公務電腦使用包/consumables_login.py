@@ -308,6 +308,11 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
             sid_scored.append((score, href, text))
         scored.append((score, href, text))
 
+    vehicle_scored = [item for item in scored if _text_matches_vehicle(item[2], request.vehicle)]
+    vehicle_scored.sort(key=lambda item: item[0], reverse=True)
+    if vehicle_scored:
+        return vehicle_scored[0][1]
+
     sid_scored.sort(key=lambda item: item[0], reverse=True)
     if sid_scored:
         tied = [item for item in sid_scored if item[0] == sid_scored[0][0]]
@@ -357,6 +362,14 @@ def _case_id_sid_fragments(case_id: str) -> list[str]:
     else:
         fragments.append(digits[-6:])
     return [fragment for fragment in dict.fromkeys(fragments) if len(fragment) >= 6]
+
+
+def _text_matches_vehicle(text: str, vehicle: str) -> bool:
+    needle = re.sub(r"\s+", "", str(vehicle or ""))
+    if not needle:
+        return False
+    haystack = re.sub(r"\s+", "", str(text or ""))
+    return needle in haystack
 
 
 def _find_consumable_href_by_vehicle_code(driver: webdriver.Chrome, hrefs: list[str], vehicle: str) -> str:

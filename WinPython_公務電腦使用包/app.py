@@ -108,6 +108,7 @@ def new_task():
         default_consumables=DEFAULT_CONSUMABLES if selected_case else {},
         baseline_consumables_loaded=bool(selected_case),
         selected_consumable_packages=[],
+        two_vehicle_available=two_vehicle_option_available(selected_case),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
         form_errors=[],
@@ -157,6 +158,7 @@ def create_task():
             form_errors=errors,
             baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
             selected_consumable_packages=selected_consumable_packages_from_form(request.form),
+            two_vehicle_available=form_flag_enabled(request.form.get("two_vehicle_available")) or task_request.two_vehicle,
         ), 400
     payload = store.create(task_request)
     report_public_pc_task_event(payload, "建立任務")
@@ -173,6 +175,7 @@ def edit_task(task_id: str):
     except FileNotFoundError:
         abort(404)
     task = dict(payload.get("task") or {})
+    selected_case = task_form_values(task)
     return render_template(
         "new_task.html",
         form_action=url_for("update_task", task_id=task_id),
@@ -180,7 +183,7 @@ def edit_task(task_id: str):
         cancel_url=url_for("task_detail", task_id=task_id),
         recent_tasks=[],
         case_lookup={"cases": [], "case_count": 0, "debug_artifacts": []},
-        selected_case=task_form_values(task),
+        selected_case=selected_case,
         vehicle_options=vehicle_options(artifacts_dir),
         person_options=PERSON_OPTIONS,
         case_reason_options=CASE_REASON_OPTIONS,
@@ -188,6 +191,7 @@ def edit_task(task_id: str):
         default_consumables=dict(task.get("consumables") or {}),
         baseline_consumables_loaded=False,
         selected_consumable_packages=[],
+        two_vehicle_available=two_vehicle_option_available(selected_case),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task.get("disinfection_items") or []),
         form_errors=[],
@@ -213,6 +217,7 @@ def update_task(task_id: str):
             form_errors=errors,
             baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
             selected_consumable_packages=selected_consumable_packages_from_form(request.form),
+            two_vehicle_available=form_flag_enabled(request.form.get("two_vehicle_available")) or task_request.two_vehicle,
         ), 400
     changed_site_keys = changed_sites_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict())
     site_update_contexts = site_update_contexts_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict(), changed_site_keys)
@@ -1272,6 +1277,8 @@ def write_json_atomic(path: Path, payload: dict) -> None:
 
 def changed_sites_for_task_edit(previous_task: dict, current_task: dict) -> set[str]:
     changed_sites: set[str] = set()
+    if task_fields_changed(previous_task, current_task, ("two_vehicle",)):
+        changed_sites.update({"duty_work_log", "vehicle_mileage", "consumables", "disinfection"})
     if task_fields_changed(previous_task, current_task, ("vehicle", "driver")):
         changed_sites.update({"duty_work_log", "vehicle_mileage"})
     if task_fields_changed(previous_task, current_task, ("mileage", "return_date", "return_time")):
@@ -1281,6 +1288,14 @@ def changed_sites_for_task_edit(previous_task: dict, current_task: dict) -> set[
     if task_fields_changed(previous_task, current_task, ("consumables",)):
         changed_sites.add("consumables")
     if task_fields_changed(previous_task, current_task, ("disinfection", "disinfection_items")):
+        changed_sites.add("disinfection")
+    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "driver", "patient_summary")):
+        changed_sites.add("duty_work_log")
+    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "driver", "mileage", "return_date", "return_time")):
+        changed_sites.add("vehicle_mileage")
+    if task_vehicle_entries_changed(previous_task, current_task, ("consumables",)):
+        changed_sites.add("consumables")
+    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "disinfection", "disinfection_items")):
         changed_sites.add("disinfection")
     return changed_sites
 
@@ -1297,6 +1312,33 @@ def site_update_contexts_for_task_edit(previous_task: dict, current_task: dict, 
 
 def task_fields_changed(previous_task: dict, current_task: dict, field_names: tuple[str, ...]) -> bool:
     return any(normalized_task_edit_value(previous_task.get(name)) != normalized_task_edit_value(current_task.get(name)) for name in field_names)
+
+
+def task_vehicle_entries_changed(previous_task: dict, current_task: dict, field_names: tuple[str, ...]) -> bool:
+    return normalized_vehicle_entry_values(previous_task, field_names) != normalized_vehicle_entry_values(current_task, field_names)
+
+
+def normalized_vehicle_entry_values(task: dict, field_names: tuple[str, ...]) -> tuple[tuple[object, ...], ...]:
+    raw_entries = task.get("vehicle_entries")
+    entries = raw_entries if isinstance(raw_entries, list) and raw_entries else [
+        {
+            "vehicle": task.get("vehicle"),
+            "driver": task.get("driver"),
+            "mileage": task.get("mileage"),
+            "return_date": task.get("return_date"),
+            "return_time": task.get("return_time"),
+            "patient_summary": task.get("patient_summary"),
+            "consumables": task.get("consumables"),
+            "disinfection": task.get("disinfection"),
+            "disinfection_items": task.get("disinfection_items"),
+        }
+    ]
+    normalized: list[tuple[object, ...]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        normalized.append(tuple(normalized_task_edit_value(entry.get(name)) for name in field_names))
+    return tuple(normalized)
 
 
 def normalized_task_edit_value(value: object) -> object:
@@ -1832,6 +1874,24 @@ def person_options_from_personnel(personnel: object) -> list[tuple[str, str]]:
     return [(name, name) for name in people]
 
 
+def two_vehicle_option_available(case: dict) -> bool:
+    if form_flag_enabled(case.get("two_vehicle")):
+        return True
+    if str(case.get("status") or "") != "case_imported":
+        return False
+    if len(person_options_from_personnel(case.get("personnel") or [])) <= 3:
+        return False
+    return selected_case_is_ambulance_case(case)
+
+
+def selected_case_is_ambulance_case(case: dict) -> bool:
+    text = " ".join(
+        str(case.get(key) or "")
+        for key in ("category", "case_type", "title", "description", "detail")
+    )
+    return "\u6551\u8b77" in text
+
+
 def read_selected_case() -> dict:
     path = artifacts_dir / "cases" / "selected.json"
     if not path.exists():
@@ -1903,6 +1963,43 @@ def prepared_case_lookup() -> dict:
 
 def validate_task_form(task_request) -> list[str]:
     errors: list[str] = []
+    if task_request.two_vehicle:
+        for index, vehicle_request in enumerate(task_request.vehicle_requests(), start=1):
+            label = f"{index}\u8eca"
+            if not vehicle_request.return_time.strip():
+                errors.append(f"\u8acb\u586b\u5beb{label}\u8fd4\u968a\u6642\u9593")
+            if not vehicle_request.vehicle.strip():
+                errors.append(f"\u8acb\u9078\u64c7{label}\u8eca\u865f")
+            if not vehicle_request.driver.strip():
+                errors.append(f"\u8acb\u9078\u64c7{label}\u53f8\u6a5f")
+            if not vehicle_request.patient_summary.strip():
+                errors.append(f"\u8acb\u9078\u64c7{label}\u50b7\u75c5\u60a3")
+            if not vehicle_request.mileage.strip():
+                errors.append(f"\u8acb\u586b\u5beb{label}\u91cc\u7a0b")
+            elif not re.fullmatch(r"\d+", vehicle_request.mileage.strip()):
+                errors.append(f"{label}\u91cc\u7a0b\u53ea\u80fd\u8f38\u5165\u6578\u5b57")
+            if not vehicle_request.consumables:
+                errors.append(f"\u8acb\u586b\u5beb{label}\u8017\u6750")
+
+            case_time = normalize_hhmm(vehicle_request.case_time)
+            return_time = normalize_hhmm(vehicle_request.return_time)
+            if len(case_time) == 4 and len(return_time) == 4:
+                case_datetime = vehicle_request.service_case_date().replace(
+                    hour=int(case_time[:2]),
+                    minute=int(case_time[2:]),
+                    second=0,
+                    microsecond=0,
+                )
+                return_datetime = vehicle_request.service_return_date().replace(
+                    hour=int(return_time[:2]),
+                    minute=int(return_time[2:]),
+                    second=0,
+                    microsecond=0,
+                )
+                if return_datetime < case_datetime:
+                    errors.append(f"{label}\u8fd4\u968a\u6642\u9593\u4e0d\u80fd\u65e9\u65bc\u6848\u4ef6\u6642\u9593")
+        return errors
+
     if not task_request.return_time.strip():
         errors.append("請填寫返隊時間")
     if not task_request.vehicle.strip():
@@ -1962,6 +2059,7 @@ def render_task_form_from_request(
     form_errors: list[str],
     baseline_consumables_loaded: bool = False,
     selected_consumable_packages: list[str] | None = None,
+    two_vehicle_available: bool = False,
 ) -> str:
     selected_case = task_form_values(asdict(task_request))
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
@@ -1980,6 +2078,7 @@ def render_task_form_from_request(
         default_consumables=dict(task_request.consumables or {}),
         baseline_consumables_loaded=baseline_consumables_loaded,
         selected_consumable_packages=selected_consumable_packages or [],
+        two_vehicle_available=two_vehicle_available,
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task_request.disinfection_items or []),
         form_errors=form_errors,

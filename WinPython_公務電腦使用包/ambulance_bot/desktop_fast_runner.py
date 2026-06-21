@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import os
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
@@ -13,7 +15,7 @@ from .login_audit import login_audit_for_site, with_login_audit
 from .manual_task_lock import clear_manual_task_lock, set_manual_task_lock
 from .selenium_local import run_disinfection_task, run_local_selenium_task, run_vehicle_mileage_task
 from .site_diagnostics import make_site_result
-from .task_store import JsonTaskStore
+from .task_store import JsonTaskStore, now_text
 from .window_layout import maximize_worker_site_windows
 
 
@@ -88,14 +90,7 @@ class DesktopFastRunner:
             ),
             (
                 "vehicle_mileage",
-                lambda: run_vehicle_mileage_task(
-                    request,
-                    self.artifacts_dir,
-                    profile_name=f"vehicle_mileage_profile_{profile_suffix}",
-                    use_session_lock=False,
-                    tile_name="vehicle_mileage",
-                    force_new_driver=True,
-                ),
+                lambda: self._run_vehicle_mileage(request, profile_suffix),
             ),
             (
                 "consumables",
@@ -107,6 +102,9 @@ class DesktopFastRunner:
             ),
         ]
         try:
+            folder_detail = self._ensure_record_folders(request)
+            if folder_detail:
+                self.store.set_overall_status(task_id, "desktop_fast_running", folder_detail)
             for site_key, action in site_runners:
                 failed = self._run_site(task_id, site_key, action)
                 if failed:
@@ -163,15 +161,7 @@ class DesktopFastRunner:
                 force_new_driver=True,
             )
         if site_key == "vehicle_mileage":
-            return lambda: run_vehicle_mileage_task(
-                request,
-                self.artifacts_dir,
-                profile_name=f"vehicle_mileage_profile_{profile_suffix}",
-                use_session_lock=False,
-                tile_name="vehicle_mileage",
-                force_new_driver=True,
-                update_context=self._site_update_context(request.task_id, site_key),
-            )
+            return lambda: self._run_vehicle_mileage(request, profile_suffix)
         if site_key == "disinfection":
             return lambda: self._run_disinfection(request, profile_suffix)
         if site_key == "consumables":
@@ -221,30 +211,147 @@ class DesktopFastRunner:
         context = site.get("update_context")
         return context if isinstance(context, dict) else None
 
+    def _run_vehicle_mileage(self, request, profile_suffix: str) -> SiteAutomationResult:
+        vehicle_requests = request.vehicle_requests()
+        if len(vehicle_requests) <= 1:
+            return run_vehicle_mileage_task(
+                request,
+                self.artifacts_dir,
+                profile_name=f"vehicle_mileage_profile_{profile_suffix}",
+                use_session_lock=False,
+                tile_name="vehicle_mileage",
+                force_new_driver=True,
+                update_context=self._site_update_context(request.task_id, "vehicle_mileage"),
+            )
+        debugger_port = _site_debugger_port("VEHICLE_MILEAGE_DEBUGGER_PORT", 9234)
+        return self._run_per_vehicle_site(
+            request,
+            "vehicle_mileage",
+            lambda vehicle_request, index: run_vehicle_mileage_task(
+                vehicle_request,
+                self.artifacts_dir,
+                profile_name=f"vehicle_mileage_profile_{profile_suffix}",
+                debugger_port=debugger_port,
+                use_session_lock=False,
+                tile_name="vehicle_mileage",
+                force_new_driver=index == 1,
+                update_context=self._site_update_context(request.task_id, "vehicle_mileage"),
+            ),
+        )
+
     def _run_consumables(self, request, profile_suffix: str) -> SiteAutomationResult:
         driver = login_acs_and_get_driver(
             profile_name=f"consumables_profile_{profile_suffix}",
             tile_name="consumables",
             task=request,
         )
-        detail = open_consumable_record_for_task(driver, request)
-        status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
-        return SiteAutomationResult("consumables", SITE_NAMES["consumables"], status, detail)
+        if len(request.vehicle_requests()) <= 1:
+            detail = open_consumable_record_for_task(driver, request)
+            status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
+            return SiteAutomationResult("consumables", SITE_NAMES["consumables"], status, detail)
+        return self._run_per_vehicle_site(
+            request,
+            "consumables",
+            lambda vehicle_request, index: SiteAutomationResult(
+                "consumables",
+                SITE_NAMES["consumables"],
+                "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled",
+                open_consumable_record_for_task(driver, vehicle_request),
+            ),
+        )
 
     def _run_disinfection(self, request, profile_suffix: str):
         driver = login_disinfection_and_get_driver(
             profile_name=f"disinfection_profile_{profile_suffix}",
             tile_name="disinfection",
         )
-        return run_disinfection_task(
+        if len(request.vehicle_requests()) <= 1:
+            return run_disinfection_task(
+                request,
+                self.artifacts_dir,
+                existing_driver=driver,
+                profile_name=f"disinfection_profile_{profile_suffix}",
+                use_session_lock=False,
+                tile_name="disinfection",
+                force_new_driver=True,
+            )
+        return self._run_per_vehicle_site(
             request,
-            self.artifacts_dir,
-            existing_driver=driver,
-            profile_name=f"disinfection_profile_{profile_suffix}",
-            use_session_lock=False,
-            tile_name="disinfection",
-            force_new_driver=True,
+            "disinfection",
+            lambda vehicle_request, index: run_disinfection_task(
+                vehicle_request,
+                self.artifacts_dir,
+                existing_driver=driver,
+                profile_name=f"disinfection_profile_{profile_suffix}",
+                use_session_lock=False,
+                tile_name="disinfection",
+                force_new_driver=True,
+            ),
         )
+
+    def _run_per_vehicle_site(self, request, site_key: str, action) -> SiteAutomationResult:
+        site_name = SITE_NAMES[site_key]
+        details: list[str] = []
+        failures = 0
+        ran = 0
+        for index, vehicle_request in enumerate(request.vehicle_requests(), start=1):
+            vehicle_key = _vehicle_result_key(vehicle_request, index)
+            if _vehicle_site_result_is_complete(self._vehicle_site_results(request.task_id, site_key).get(vehicle_key)):
+                details.append(f"{vehicle_key}: skipped")
+                continue
+            ran += 1
+            try:
+                result = action(vehicle_request, index)
+            except Exception as exc:
+                result = make_site_result(site_key, site_name, f"{site_key}_failed", str(exc), exc)
+            self._record_vehicle_site_result(request.task_id, site_key, vehicle_key, result)
+            details.append(f"{vehicle_key}: {getattr(result, 'detail', '')}")
+            if _result_blocks_next(result):
+                failures += 1
+        if failures:
+            status = f"{site_key}_failed"
+        elif ran == 0:
+            status = f"{site_key}_saved"
+        else:
+            status = _aggregate_vehicle_site_status(site_key, request.vehicle_requests(), self._vehicle_site_results(request.task_id, site_key))
+        return SiteAutomationResult(site_key, site_name, status, " | ".join(details))
+
+    def _vehicle_site_results(self, task_id: str, site_key: str) -> dict[str, dict[str, str]]:
+        site = dict(self.store.get(task_id).get("site_statuses", {}).get(site_key) or {})
+        results = site.get("vehicle_results")
+        if not isinstance(results, dict):
+            return {}
+        return {str(key): dict(value) for key, value in results.items() if isinstance(value, dict)}
+
+    def _record_vehicle_site_result(self, task_id: str, site_key: str, vehicle_key: str, result) -> None:
+        payload = self.store.get(task_id)
+        site = payload["site_statuses"][site_key]
+        results = dict(site.get("vehicle_results") or {})
+        results[vehicle_key] = {
+            "status": str(getattr(result, "status", "") or ""),
+            "detail": str(getattr(result, "detail", "") or ""),
+            "updated_at": now_text(),
+        }
+        site["vehicle_results"] = results
+        self.store.save_payload(task_id, payload)
+
+    def _ensure_record_folders(self, request) -> str:
+        root = Path(os.getenv("AMBULANCE_RECORD_ROOT") or r"W:\救護硬碟\救護登錄器及行車紀錄器")
+        created: list[str] = []
+        errors: list[str] = []
+        for index, vehicle_request in enumerate(request.vehicle_requests(), start=1):
+            try:
+                folder = root / f"{vehicle_request.service_case_date().year}" / f"{vehicle_request.service_case_date().month}月" / _record_folder_name(vehicle_request, index)
+                for child in ("1", "2", "車"):
+                    (folder / child).mkdir(parents=True, exist_ok=True)
+                created.append(str(folder))
+            except Exception as exc:
+                errors.append(f"{_vehicle_result_key(vehicle_request, index)}: {exc}")
+        if errors:
+            return f"record folder warning: {' | '.join(errors)}"
+        if created:
+            return f"record folders ready: {' | '.join(created)}"
+        return ""
 
 
 def _result_blocks_next(result) -> bool:
@@ -269,3 +376,46 @@ def _result_with_login_audit(result, audit: str):
 def _site_is_complete(status: str) -> bool:
     value = str(status or "")
     return value == "completed_by_user" or value.endswith("_saved")
+
+
+def _vehicle_site_result_is_complete(result: object) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return _site_is_complete(str(result.get("status") or ""))
+
+
+def _vehicle_result_key(request, index: int) -> str:
+    vehicle = str(getattr(request, "vehicle", "") or "").strip()
+    return vehicle or f"{index}車"
+
+
+def _aggregate_vehicle_site_status(site_key: str, vehicle_requests: list, results: dict[str, dict[str, str]]) -> str:
+    statuses: list[str] = []
+    for index, vehicle_request in enumerate(vehicle_requests, start=1):
+        vehicle_key = _vehicle_result_key(vehicle_request, index)
+        status = str(dict(results.get(vehicle_key) or {}).get("status") or "")
+        if status:
+            statuses.append(status)
+    if statuses and all(_site_is_complete(status) for status in statuses):
+        return f"{site_key}_saved"
+    if statuses and all("failed" not in status and "error" not in status for status in statuses):
+        return statuses[-1]
+    return f"{site_key}_failed"
+
+
+def _site_debugger_port(env_name: str, default: int) -> int:
+    try:
+        return int(os.getenv(env_name, str(default)))
+    except ValueError:
+        return default
+
+
+def _record_folder_name(request, index: int) -> str:
+    case_date = request.service_case_date()
+    hhmm = re.sub(r"\D", "", str(getattr(request, "case_time", "") or ""))[:4]
+    if len(hhmm) != 4:
+        hhmm = "0000"
+    vehicle = str(getattr(request, "vehicle", "") or "").strip()
+    vehicle_digits = "".join(ch for ch in vehicle if ch.isdigit())
+    vehicle_label = vehicle_digits or re.sub(r'[<>:"/\\|?*\s]+', "", vehicle) or str(index)
+    return f"{case_date:%m%d}{hhmm}-{vehicle_label}"

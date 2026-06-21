@@ -15,6 +15,7 @@ from ambulance_bot.selenium_local import (
     _click_save_control,
     _click_vehicle_mileage_save,
     _disinfection_query_date,
+    _open_disinfection_detail_for_case,
     _set_disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
     _create_local_driver_with_retry,
@@ -178,6 +179,28 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertTrue(_click_disinfection_query(driver))
         self.assertIn("_btnQuery", driver.script)
+
+    def test_open_disinfection_detail_prefers_matching_vehicle_when_times_match(self):
+        class FakeDriver:
+            def __init__(self):
+                self.clicked: list[int] = []
+
+            def execute_script(self, script: str, *args):
+                if "querySelectorAll('tr')" in script and "tr, index" in script:
+                    return [
+                        {"index": 0, "text": "2026/06/02 01:16:52 \u65b0\u576191"},
+                        {"index": 1, "text": "2026/06/02 01:16:52 \u65b0\u576192"},
+                    ]
+                if args and isinstance(args[0], int):
+                    self.clicked.append(args[0])
+                    return True
+                self.clicked.append(0)
+                return True
+
+        driver = FakeDriver()
+
+        self.assertTrue(_open_disinfection_detail_for_case(driver, "0116", "\u65b0\u576192"))
+        self.assertEqual(driver.clicked, [1])
 
     def test_assert_disinfection_not_login_raises_on_login_page(self):
         class FakeDriver:
