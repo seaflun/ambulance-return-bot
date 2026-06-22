@@ -1963,6 +1963,16 @@ def prepared_case_lookup() -> dict:
 
 def validate_task_form(task_request) -> list[str]:
     errors: list[str] = []
+    if not task_request.case_id.strip():
+        errors.append("請先從上方案件按「帶入」")
+        return errors
+    if not task_request.case_date.strip():
+        errors.append("請填寫案件日期")
+    if not normalize_hhmm(task_request.case_time):
+        errors.append("請填寫案件時間")
+    if not task_request.case_address.strip():
+        errors.append("請填寫案發地址")
+
     if task_request.two_vehicle:
         for index, vehicle_request in enumerate(task_request.vehicle_requests(), start=1):
             label = f"{index}\u8eca"

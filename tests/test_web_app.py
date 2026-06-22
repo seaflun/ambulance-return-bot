@@ -112,6 +112,7 @@ class WebAppTests(unittest.TestCase):
 
     def valid_task_data(self, **overrides):
         data = {
+            "case_id": "case-test-001",
             "vehicle": "\u65b0\u576191",
             "driver": "\u66fe\u5f65\u7db8",
             "mileage": "12345",
@@ -119,6 +120,7 @@ class WebAppTests(unittest.TestCase):
             "case_time": "1024",
             "return_date": "2026-06-07",
             "return_time": "1119",
+            "case_address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def1\u865f",
             "case_reason": "\u6025\u75c5",
             "patient_summary": "\u7537\u4e00\u540d",
             "consumables": "\u6843-\u53e3\u7f69(\u7247)=2",
@@ -211,18 +213,15 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('href="/admin/sinposmart"', body)
         self.assertNotIn("救護後台", body)
         self.assertNotIn("值班後台", body)
-        self.assertIn('id="task-form" autocomplete="off" novalidate', body)
-        self.assertIn("\u65b0\u576191", body)
-        self.assertIn(">\u5433\u5b97\u8015</option>", body)
+        self.assertNotIn('id="task-form" autocomplete="off" novalidate', body)
+        self.assertIn("請先從上方案件按「帶入」", body)
         self.assertNotIn("6 : \u5433\u5b97\u8015", body)
-        self.assertIn('value="\u7121"', body)
         self.assertNotIn('placeholder="1420"', body)
         self.assertNotIn('placeholder="1505"', body)
         self.assertNotIn('placeholder="12345"', body)
-        self.assertIn('name="mileage" inputmode="numeric" pattern="[0-9]*"', body)
-        self.assertIn(">\u8acb\u9078\u64c7</option>", body)
-        self.assertIn('type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD"', body)
-        self.assertIn('type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD"', body)
+        self.assertNotIn('name="mileage" inputmode="numeric" pattern="[0-9]*"', body)
+        self.assertNotIn('type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD"', body)
+        self.assertNotIn('type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD"', body)
         self.assertNotIn('type="date" name="case_date"', body)
         self.assertIn('const categoryPlaceholder = "\u985e\u5225\u9078\u64c7";', body)
         self.assertIn('const consumablePlaceholder = "\u8acb\u9078\u64c7";', body)
@@ -230,15 +229,15 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("查詢24小時案件", body)
         self.assertNotIn('button.textContent = "查詢中"', body)
         self.assertIn(".form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }", body)
-        self.assertIn('<section class="consumables form-section-divider">', body)
-        self.assertIn('<label class="form-section-divider">消毒項目</label>', body)
-        self.assertIn('name="case_address"', body)
+        self.assertNotIn('<section class="consumables form-section-divider">', body)
+        self.assertNotIn('<label class="form-section-divider">消毒項目</label>', body)
+        self.assertNotIn('name="case_address"', body)
         self.assertNotIn('name="work_note"', body)
         self.assertIn("const defaultConsumables = {};", body)
         self.assertIn("const baselineConsumablesLoaded = false;", body)
         self.assertIn("const selectedConsumablePackages = [];", body)
-        self.assertIn('name="consumable_packages" id="consumable-packages-value" value=""', body)
-        self.assertIn('name="baseline_consumables_loaded" value=""', body)
+        self.assertNotIn('name="consumable_packages" id="consumable-packages-value" value=""', body)
+        self.assertNotIn('name="baseline_consumables_loaded" value=""', body)
         self.assertIn('consumablePackagesValue.value = Array.from(activeConsumablePackages).join(",");', body)
         self.assertIn("selectedConsumablePackages.forEach((packageKey) => {", body)
         self.assertNotIn(" checked", body)
@@ -261,15 +260,15 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('id="field-summary"', body)
         self.assertIn('const formErrors = [];', body)
         self.assertIn('const requiredTaskFields = [', body)
-        self.assertIn('data-field-name="return_time"', body)
-        self.assertIn('data-field-name="vehicle"', body)
-        self.assertIn('data-field-name="driver"', body)
-        self.assertIn('data-field-name="patient_summary"', body)
-        self.assertIn('data-field-name="mileage"', body)
+        self.assertNotIn('data-field-name="return_time"', body)
+        self.assertNotIn('data-field-name="vehicle"', body)
+        self.assertNotIn('data-field-name="driver"', body)
+        self.assertNotIn('data-field-name="patient_summary"', body)
+        self.assertNotIn('data-field-name="mileage"', body)
         self.assertIn(".field-visual.is-pending .field-error-mark", body)
         self.assertIn(".field-visual.has-error .field-error-mark", body)
-        self.assertIn('class="field-label-title"', body)
-        self.assertIn('class="field-error-mark" aria-hidden="true">*</span>', body)
+        self.assertNotIn('class="field-label-title"', body)
+        self.assertNotIn('class="field-error-mark" aria-hidden="true">*</span>', body)
         self.assertNotIn("background: #fffaf0", body)
         self.assertNotIn("background: #fff7f6", body)
         self.assertNotIn(".field-visual.has-error input", body)
@@ -280,6 +279,13 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('setFieldState(field.name, "pending");', body)
 
     def test_app_page_includes_consumable_package_shortcuts(self):
+        self.import_case_for_form(
+            {
+                "case_id": "case-consumable-package",
+                "address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+                "case_time_hhmm": "0905",
+            }
+        )
         response = self.client.get("/app")
 
         self.assertEqual(response.status_code, 200)
@@ -493,6 +499,27 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".consumable-qty::-webkit-inner-spin-button", body)
         self.assertIn("appearance: textfield", body)
 
+    def test_app_page_hides_task_form_until_case_imported(self):
+        response = self.client.get("/app")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('id="task-form"', body)
+        self.assertIn("請先從上方案件按「帶入」", body)
+
+    def test_create_task_requires_imported_case(self):
+        response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(case_id="", case_date="", case_time="", case_address=""),
+            follow_redirects=False,
+        )
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.store.list_recent(), [])
+        self.assertIn("請先從上方案件按「帶入」", body)
+        self.assertNotIn('id="task-form"', body)
+
     def test_create_task_writes_json_and_redirects(self):
         response = self.client.post(
             "/tasks",
@@ -632,6 +659,16 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         settings_path = Path(self.tmp.name) / "settings" / "vehicles.json"
         self.assertIn("新坡96", settings_path.read_text(encoding="utf-8"))
+        app_response = self.client.get("/app")
+        body = html.unescape(app_response.data.decode("utf-8"))
+        self.assertIn("請先從上方案件按「帶入」", body)
+        self.import_case_for_form(
+            {
+                "case_id": "case-vehicle-option",
+                "address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+                "case_time_hhmm": "0905",
+            }
+        )
         app_response = self.client.get("/app")
         body = html.unescape(app_response.data.decode("utf-8"))
         self.assertIn('<option value="新坡96">新坡96</option>', body)
@@ -2240,11 +2277,15 @@ class WebAppTests(unittest.TestCase):
         update_response = self.client.post(
             f"/tasks/{task_id}/edit",
             data={
+                "case_id": "case-test-001",
                 "vehicle": "\u65b0\u576192",
                 "driver": "\u5305\u83ef\u5148",
                 "mileage": "200",
+                "case_date": "2026-06-07",
                 "case_time": "1024",
+                "return_date": "2026-06-07",
                 "return_time": "1119",
+                "case_address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def1\u865f",
                 "case_reason": "\u8eca\u798d",
                 "patient_summary": "\u5973\u4e00\u540d",
                 "consumables": "\u624b\u5957=1",

@@ -131,6 +131,8 @@
     .lookup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .lookup-form { display: flex; align-items: center; gap: 10px; padding: 0; border: 0; box-shadow: none; background: transparent; }
     .lookup-form button { min-width: 148px; }
+    .task-form-locked { margin-top: 16px; color: var(--muted); font-weight: 720; }
+    .task-form-locked p { margin: 0; }
     .lookup-status { display: none; color: var(--running); font-weight: 760; white-space: nowrap; }
     .lookup-status.is-visible { display: inline-flex; align-items: center; }
     .lookup-message { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-weight: 720; }
@@ -361,6 +363,12 @@
       </section>
     {% endif %}
 
+    {% set task_form_enabled = cancel_url or selected_case.case_id %}
+    {% set vehicle_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [] %}
+    {% set second_vehicle = vehicle_entries[1] if vehicle_entries|length > 1 else {} %}
+    {% set second_consumables = second_vehicle.consumables if second_vehicle and second_vehicle.consumables is defined else default_consumables %}
+    {% set second_disinfection_items = second_vehicle.disinfection_items if second_vehicle and second_vehicle.disinfection_items is defined else default_disinfection_items %}
+    {% if task_form_enabled %}
     <form method="post" action="{{ form_action or '/tasks' }}" id="task-form" autocomplete="off" novalidate>
       {% if form_errors %}
         <div class="form-errors" role="alert">
@@ -375,10 +383,6 @@
       <input type="hidden" name="personnel" value="{{ selected_case.personnel | join(',') if selected_case.personnel else '' }}">
       <input type="hidden" name="personnel_accounts" value="{{ selected_case.personnel_hidden_raw or (selected_case.personnel_accounts | join(',')) or '' }}">
       <input type="hidden" name="two_vehicle_available" value="{{ '1' if two_vehicle_available else '' }}">
-      {% set vehicle_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [] %}
-      {% set second_vehicle = vehicle_entries[1] if vehicle_entries|length > 1 else {} %}
-      {% set second_consumables = second_vehicle.consumables if second_vehicle and second_vehicle.consumables is defined else default_consumables %}
-      {% set second_disinfection_items = second_vehicle.disinfection_items if second_vehicle and second_vehicle.disinfection_items is defined else default_disinfection_items %}
       {% if two_vehicle_available %}
         <label class="check-item two-vehicle-toggle">
           <input type="checkbox" name="two_vehicle" id="two-vehicle-toggle" value="1"{% if selected_case.two_vehicle %} checked{% endif %}>
@@ -594,6 +598,20 @@
         {% endif %}
       </div>
     </form>
+    {% else %}
+    <section class="panel task-form-locked" role="status" aria-live="polite">
+      {% if form_errors %}
+        <div class="form-errors" role="alert">
+          <ul>
+            {% for error in form_errors %}
+              <li>{{ error }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+      <p>請先從上方案件按「帶入」，下方輸入欄位才會開啟。</p>
+    </section>
+    {% endif %}
 
     {% if recent_tasks %}
     <section class="panel recent">
@@ -841,6 +859,7 @@
     }
 
     function addConsumableRow(name = "", qty = 1) {
+      if (!consumableList) return null;
       const row = document.createElement("div");
       row.className = "consumable-row";
       row.innerHTML = `
@@ -900,6 +919,7 @@
     }
 
     function renumberConsumables() {
+      if (!consumableList) return;
       consumableList.querySelectorAll(".consumable-row").forEach((row, index) => {
         row.querySelector(".consumable-index").textContent = `${index + 1}.`;
       });
@@ -927,6 +947,7 @@
     }
 
     function syncConsumables() {
+      if (!consumableList || !consumablesValue) return;
       const values = Array.from(consumableList.querySelectorAll(".consumable-row")).map((row) => {
         const name = row.querySelector(".consumable-name").value.trim();
         const qty = parseInt(row.querySelector(".consumable-qty").value, 10) || 0;
@@ -1022,6 +1043,7 @@
     }
 
     function consumableRows() {
+      if (!consumableList) return [];
       return Array.from(consumableList.querySelectorAll(".consumable-row"));
     }
 
@@ -1407,12 +1429,15 @@
       return String(value).padStart(2, "0");
     }
 
-    document.getElementById("return-now").addEventListener("click", () => {
-      const now = new Date();
-      document.getElementById("return-date").value = `${now.getFullYear()}/${pad2(now.getMonth() + 1)}/${pad2(now.getDate())}`;
-      document.getElementById("return-time").value = `${pad2(now.getHours())}${pad2(now.getMinutes())}`;
-      updateFieldVisualHints();
-    });
+    const returnNow = document.getElementById("return-now");
+    if (returnNow) {
+      returnNow.addEventListener("click", () => {
+        const now = new Date();
+        document.getElementById("return-date").value = `${now.getFullYear()}/${pad2(now.getMonth() + 1)}/${pad2(now.getDate())}`;
+        document.getElementById("return-time").value = `${pad2(now.getHours())}${pad2(now.getMinutes())}`;
+        updateFieldVisualHints();
+      });
+    }
 
     const returnNow2 = document.getElementById("return-now-2");
     if (returnNow2) {
@@ -1456,7 +1481,10 @@
     updateConsumablePackageUi();
     updateConsumablePackageUi2();
     updateFieldVisualHints();
-    document.getElementById("add-consumable").addEventListener("click", () => addConsumableRow());
+    const addConsumableButton = document.getElementById("add-consumable");
+    if (addConsumableButton) {
+      addConsumableButton.addEventListener("click", () => addConsumableRow());
+    }
   </script>
 </body>
 </html>
