@@ -20,6 +20,7 @@ from .window_layout import maximize_worker_site_windows
 
 
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
+DEFAULT_RECORD_ROOT = Path(r"W:\救護硬碟\救護密錄器及行車紀錄器")
 
 
 class DesktopFastRunner:
@@ -336,7 +337,7 @@ class DesktopFastRunner:
         self.store.save_payload(task_id, payload)
 
     def _ensure_record_folders(self, request) -> str:
-        root = Path(os.getenv("AMBULANCE_RECORD_ROOT") or r"W:\救護硬碟\救護登錄器及行車紀錄器")
+        root = DEFAULT_RECORD_ROOT
         created: list[str] = []
         errors: list[str] = []
         for index, vehicle_request in enumerate(request.vehicle_requests(), start=1):

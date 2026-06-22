@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from ambulance_bot.desktop_fast_runner import DesktopFastRunner
+from ambulance_bot.desktop_fast_runner import DEFAULT_RECORD_ROOT, DesktopFastRunner
 from ambulance_bot.manual_task_lock import manual_task_lock_path
 from ambulance_bot.models import AmbulanceReturnRequest, request_from_form
 from ambulance_bot.task_store import JsonTaskStore
@@ -284,6 +284,24 @@ class DesktopFastRunnerTests(unittest.TestCase):
                 payload["site_statuses"]["vehicle_mileage"]["vehicle_results"]["\u65b0\u576192"]["status"],
                 "vehicle_mileage_saved",
             )
+
+    def test_record_folders_ignore_env_and_use_existing_nas_record_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = DesktopFastRunner(Path(tmp))
+            request = request_from_form(
+                {
+                    "case_date": "2026-06-02",
+                    "case_time": "1010",
+                    "vehicle": "\u65b0\u576191",
+                }
+            )
+
+            with patch.dict("os.environ", {"AMBULANCE_RECORD_ROOT": r"W:\救護硬碟\救護登錄器及行車紀錄器"}), patch("pathlib.Path.mkdir"):
+                detail = runner._ensure_record_folders(request)
+
+            self.assertIn(str(DEFAULT_RECORD_ROOT), detail)
+            self.assertIn("\u6551\u8b77\u5bc6\u9304\u5668\u53ca\u884c\u8eca\u7d00\u9304\u5668", detail)
+            self.assertNotIn("\u6551\u8b77\u767b\u9304\u5668", detail)
 
 
 if __name__ == "__main__":
