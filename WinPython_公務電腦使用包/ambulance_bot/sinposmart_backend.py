@@ -221,7 +221,12 @@ def sinposmart_display_status_class(label: str, value: str) -> str:
 
 
 def sinposmart_action_group_key(event: dict[str, Any]) -> tuple[str, ...]:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    completion_key = sanitize_scalar(snapshot.get("completion_key"), 160) if snapshot else ""
+    if completion_key:
+        return ("completion_key", completion_key)
     return (
+        "fields",
         str(event.get("target_time") or ""),
         str(event.get("item_kind") or ""),
         str(event.get("item_title") or ""),

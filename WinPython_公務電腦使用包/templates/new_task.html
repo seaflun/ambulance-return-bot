@@ -404,14 +404,13 @@
             <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_case.case_time_hhmm or '' }}">
           </div>
         </label>
-        <label class="field-visual" data-field-name="case_reason">
-          <span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <select name="case_reason" required>
-            <option value="">請選擇</option>
-            {% for reason in case_reason_options %}
-              <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
-            {% endfor %}
-          </select>
+        <label class="field-visual" data-field-name="return_time">
+          <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <div class="time-field return-time-field">
+            <input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}">
+            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(selected_case) }}">
+            <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
+          </div>
         </label>
       </div>
       <div class="grid">
@@ -434,28 +433,29 @@
           </select>
         </label>
       </div>
-      <div class="grid time-grid">
-        <label class="field-visual" data-field-name="return_time">
-          <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <div class="time-field return-time-field">
-            <input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}">
-            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(selected_case) }}">
-            <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
-          </div>
+      <div class="grid">
+        <label class="field-visual" data-field-name="case_reason">
+          <span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <select name="case_reason" required>
+            <option value="">請選擇</option>
+            {% for reason in case_reason_options %}
+              <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
+            {% endfor %}
+          </select>
         </label>
-        <label class="field-visual" data-field-name="mileage">
-          <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <input name="mileage" inputmode="numeric" pattern="[0-9]*" value="{{ selected_case.mileage or '' }}">
+        <label class="field-visual" data-field-name="patient_summary">
+          <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <select name="patient_summary">
+            <option value="">請選擇</option>
+            <option value="男一名"{% if selected_case.patient_summary == '男一名' %} selected{% endif %}>男</option>
+            <option value="女一名"{% if selected_case.patient_summary == '女一名' %} selected{% endif %}>女</option>
+            <option value="無"{% if selected_case.patient_summary == '無' %} selected{% endif %}>無</option>
+          </select>
         </label>
       </div>
-      <label class="field-visual" data-field-name="patient_summary">
-        <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
-        <select name="patient_summary">
-          <option value="">請選擇</option>
-          <option value="男一名"{% if selected_case.patient_summary == '男一名' %} selected{% endif %}>男</option>
-          <option value="女一名"{% if selected_case.patient_summary == '女一名' %} selected{% endif %}>女</option>
-          <option value="無"{% if selected_case.patient_summary == '無' %} selected{% endif %}>無</option>
-        </select>
+      <label class="field-visual" data-field-name="mileage">
+        <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
+        <input name="mileage" inputmode="numeric" pattern="[0-9]*" value="{{ selected_case.mileage or '' }}">
       </label>
 
       <section class="consumables form-section-divider">
@@ -502,14 +502,13 @@
               <input id="case-time-2-display" value="{{ selected_case.case_time_hhmm or '' }}" readonly>
             </div>
           </label>
-          <label class="field-visual" data-field-name="case_reason_2_display">
-            <span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span>
-            <select id="case-reason-2-display" disabled>
-              <option value="">請選擇</option>
-              {% for reason in case_reason_options %}
-                <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
-              {% endfor %}
-            </select>
+          <label class="field-visual" data-field-name="return_time_2">
+            <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <div class="time-field return-time-field">
+              <input type="text" name="return_date_2" id="return-date-2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(second_vehicle) }}">
+              <input name="return_time_2" id="return-time-2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(second_vehicle) }}">
+              <button type="button" class="clock-button" id="return-now-2" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
+            </div>
           </label>
         </div>
         <div class="grid">
@@ -532,28 +531,29 @@
             </select>
           </label>
         </div>
-        <div class="grid time-grid">
-          <label class="field-visual" data-field-name="return_time_2">
-            <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
-            <div class="time-field return-time-field">
-              <input type="text" name="return_date_2" id="return-date-2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(second_vehicle) }}">
-              <input name="return_time_2" id="return-time-2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(second_vehicle) }}">
-              <button type="button" class="clock-button" id="return-now-2" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
-            </div>
+        <div class="grid">
+          <label class="field-visual" data-field-name="case_reason_2_display">
+            <span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <select id="case-reason-2-display" disabled>
+              <option value="">請選擇</option>
+              {% for reason in case_reason_options %}
+                <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
+              {% endfor %}
+            </select>
           </label>
-          <label class="field-visual" data-field-name="mileage_2">
-            <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
-            <input name="mileage_2" inputmode="numeric" pattern="[0-9]*" value="{{ second_vehicle.mileage or '' }}">
+          <label class="field-visual" data-field-name="patient_summary_2">
+            <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <select name="patient_summary_2">
+              <option value="">請選擇</option>
+              <option value="男一名"{% if second_vehicle.patient_summary == '男一名' %} selected{% endif %}>男</option>
+              <option value="女一名"{% if second_vehicle.patient_summary == '女一名' %} selected{% endif %}>女</option>
+              <option value="無"{% if second_vehicle.patient_summary == '無' %} selected{% endif %}>無</option>
+            </select>
           </label>
         </div>
-        <label class="field-visual" data-field-name="patient_summary_2">
-          <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <select name="patient_summary_2">
-            <option value="">請選擇</option>
-            <option value="男一名"{% if second_vehicle.patient_summary == '男一名' %} selected{% endif %}>男</option>
-            <option value="女一名"{% if second_vehicle.patient_summary == '女一名' %} selected{% endif %}>女</option>
-            <option value="無"{% if second_vehicle.patient_summary == '無' %} selected{% endif %}>無</option>
-          </select>
+        <label class="field-visual" data-field-name="mileage_2">
+          <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <input name="mileage_2" inputmode="numeric" pattern="[0-9]*" value="{{ second_vehicle.mileage or '' }}">
         </label>
         <section class="consumables form-section-divider">
           <input type="hidden" name="consumables_2" id="consumables-value-2">

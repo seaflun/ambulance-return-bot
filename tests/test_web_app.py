@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 import urllib.error
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import app as app_module
@@ -360,8 +361,30 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("2\u8eca", body)
         self.assertLess(body.index('id="primary-vehicle-title"'), body.index('name="case_time"'))
         self.assertLess(body.index('id="primary-vehicle-title"'), body.index('name="case_reason"'))
+        primary_field_order = [
+            'name="case_time"',
+            'name="return_time"',
+            'name="vehicle"',
+            'name="driver"',
+            'name="case_reason"',
+            'name="patient_summary"',
+            'name="mileage"',
+        ]
+        primary_field_positions = [body.index(field) for field in primary_field_order]
+        self.assertEqual(primary_field_positions, sorted(primary_field_positions))
         self.assertIn('id="case-time-2-display"', body)
         self.assertIn('id="case-reason-2-display"', body)
+        second_field_order = [
+            'id="case-time-2-display"',
+            'name="return_time_2"',
+            'name="vehicle_2"',
+            'name="driver_2"',
+            'id="case-reason-2-display"',
+            'name="patient_summary_2"',
+            'name="mileage_2"',
+        ]
+        second_field_positions = [body.index(field) for field in second_field_order]
+        self.assertEqual(second_field_positions, sorted(second_field_positions))
         self.assertIn('name="vehicle_2"', body)
         self.assertIn('name="driver_2"', body)
         self.assertIn('name="return_time_2"', body)
@@ -734,12 +757,13 @@ class WebAppTests(unittest.TestCase):
 
     def test_sinposmart_event_api_receives_and_lists_backend_events(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
         response = self.client.post(
             "/api/sinposmart/events",
             headers={"X-Credential-Sync-Token": "sync-token"},
             json={
                 "event_id": "evt-sinpo-1",
-                "occurred_at": "2026-06-15T09:10:00",
+                "occurred_at": f"{fire_day}T09:10:00",
                 "record_type": "action_result",
                 "actor_no": "8",
                 "user_id": "tyfd01510",
@@ -762,7 +786,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(page.data.decode("utf-8"))
 
         self.assertIn("SinpoSmart 值班後台", body)
-        self.assertIn("2026-06-15", body)
+        self.assertIn(fire_day, body)
         self.assertIn("手動", body)
         self.assertIn("8番 曾彥綸", body)
         self.assertNotIn("tyfd01510", body)
@@ -772,12 +796,13 @@ class WebAppTests(unittest.TestCase):
 
     def test_sinposmart_admin_lists_tool_started_events(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
         response = self.client.post(
             "/api/sinposmart/events",
             headers={"X-Credential-Sync-Token": "sync-token"},
             json={
                 "event_id": "evt-tool-start",
-                "occurred_at": "2026-06-15T12:10:00",
+                "occurred_at": f"{fire_day}T12:10:00",
                 "record_type": "tool_action_started",
                 "trigger_type": "tool_start",
                 "status": "started",
@@ -845,8 +870,9 @@ class WebAppTests(unittest.TestCase):
 
     def test_sinposmart_admin_merges_repeated_events_and_hides_raw_snapshot(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
         base_payload = {
-            "occurred_at": "2026-06-15T12:10:00",
+            "occurred_at": f"{fire_day}T12:10:00",
             "record_type": "action_result",
             "trigger_type": "manual",
             "status": "submitted",
@@ -868,7 +894,7 @@ class WebAppTests(unittest.TestCase):
         second = self.client.post(
             "/api/sinposmart/events",
             headers={"X-Credential-Sync-Token": "sync-token"},
-            json={**base_payload, "event_id": "evt-merge-web-2", "occurred_at": "2026-06-15T12:11:00"},
+            json={**base_payload, "event_id": "evt-merge-web-2", "occurred_at": f"{fire_day}T12:11:00"},
         )
 
         self.assertEqual(first.status_code, 200)
@@ -1160,12 +1186,14 @@ class WebAppTests(unittest.TestCase):
     def test_sinposmart_backend_hides_old_fire_days(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}
+        old_fire_day = (datetime.now().date() - timedelta(days=30)).isoformat()
+        current_fire_day = datetime.now().date().isoformat()
         old_response = self.client.post(
             "/api/sinposmart/events",
             headers=headers,
             json={
                 "event_id": "evt-old-hidden",
-                "occurred_at": "2026-06-01T09:00:00",
+                "occurred_at": f"{old_fire_day}T09:00:00",
                 "record_type": "login",
                 "status": "ok",
             },
@@ -1175,7 +1203,7 @@ class WebAppTests(unittest.TestCase):
             headers=headers,
             json={
                 "event_id": "evt-current-visible",
-                "occurred_at": "2026-06-15T09:00:00",
+                "occurred_at": f"{current_fire_day}T09:00:00",
                 "record_type": "login",
                 "status": "ok",
             },
@@ -1186,8 +1214,8 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/sinposmart")
         body = html.unescape(page.data.decode("utf-8"))
 
-        self.assertNotIn("2026-06-01", body)
-        self.assertIn("2026-06-15", body)
+        self.assertNotIn(old_fire_day, body)
+        self.assertIn(current_fire_day, body)
 
     def test_admin_public_pc_deduplicates_same_event_id(self):
         os.environ["WORKER_TOKEN"] = "test-token"

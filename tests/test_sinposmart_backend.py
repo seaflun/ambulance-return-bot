@@ -250,6 +250,47 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["action_events"][0]["pause_reason"], "尚未收到完成結果，可能仍在等待登打或流程已暫停。")
         self.assertNotEqual(view["action_events"][0]["status_label"], "pending_write_automation")
 
+    def test_admin_view_combines_manual_action_by_completion_key_when_times_differ(self):
+        events = [
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-manual-queue",
+                    "occurred_at": "2026-06-18T07:58:00",
+                    "record_type": "action_queued",
+                    "status": "manual_marked",
+                    "trigger_type": "manual",
+                    "item_kind": "工作",
+                    "item_title": "救護返隊｜測試案件",
+                    "target": "8番 曾彥綸（隊員）",
+                    "target_time": "07:58",
+                    "snapshot": {"completion_key": "work-log-case-1"},
+                },
+                now=datetime(2026, 6, 18, 7, 58),
+            ),
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-manual-result",
+                    "occurred_at": "2026-06-18T08:00:00",
+                    "record_type": "action_result",
+                    "status": "submitted",
+                    "trigger_type": "manual",
+                    "item_kind": "工作",
+                    "item_title": "救護返隊｜測試案件",
+                    "target": "8番 曾彥綸（隊員）",
+                    "target_time": "08:00",
+                    "snapshot": {"completion_key": "work-log-case-1"},
+                },
+                now=datetime(2026, 6, 18, 8, 0),
+            ),
+        ]
+
+        view = build_sinposmart_admin_view(events)
+
+        self.assertEqual(len(view["action_events"]), 1)
+        self.assertEqual(view["action_events"][0]["started_at"], "2026-06-18T07:58:00")
+        self.assertEqual(view["action_events"][0]["completed_at"], "2026-06-18T08:00:00")
+        self.assertEqual(view["action_events"][0]["status_label"], "已登打")
+
     def test_admin_view_failed_action_shows_pause_reason(self):
         event = normalize_sinposmart_event(
             {
