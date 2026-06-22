@@ -22,7 +22,7 @@ class WorkerPanelTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.data.decode("utf-8")
-        self.assertIn("救護回程 Worker 面板", body)
+        self.assertIn("SinpoSmart - 救護Worker 面板", body)
         self.assertIn("車輛里程", body)
         self.assertIn("消防勤務工作紀錄", body)
         self.assertNotIn("開啟全部四站", body)

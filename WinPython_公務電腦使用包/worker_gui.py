@@ -168,7 +168,10 @@ def format_worker_output_line(line: str) -> str:
         if server:
             detail_parts.append(server.group(1))
         return "系統｜Worker 已啟動" + (f"｜{'，'.join(detail_parts)}" if detail_parts else "")
-    if text.startswith("[app] starting ambulance return web app on "):
+    if text.startswith((
+        "[app] starting ambulance return web app on ",
+        "[app] starting SinpoSmart ambulance worker web app on ",
+    )):
         return ""
     if text.startswith("[worker] loop error:") and "timed out" in text.lower():
         return "連線｜NAS逾時｜等待下次重試"
@@ -309,7 +312,7 @@ def current_package_version(root: Path | None = None) -> str:
 class WorkerGui(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("救護回程小幫手")
+        self.title("SinpoSmart - 救護Worker")
         self.geometry("680x760")
         self.minsize(600, 680)
 
@@ -366,7 +369,7 @@ class WorkerGui(ctk.CTk):
         title_block.grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(
             title_block,
-            text="救護回程小幫手",
+            text="SinpoSmart - 救護Worker",
             text_color=theme["ink"],
             font=ctk.CTkFont(family="Microsoft JhengHei UI", size=28, weight="bold"),
         ).pack(anchor="w")
@@ -775,9 +778,9 @@ class WorkerGui(ctk.CTk):
         self.tray_icon = pystray.Icon(
             "ambulance_return_worker",
             image,
-            "救護回程小幫手",
+            "SinpoSmart - 救護Worker",
             pystray.Menu(
-                pystray.MenuItem("救護回程小幫手", lambda _icon, _item: None, enabled=False),
+                pystray.MenuItem("SinpoSmart - 救護Worker", lambda _icon, _item: None, enabled=False),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("顯示控制台", lambda _icon, _item: self.after(0, self.show_from_tray), default=True),
                 pystray.MenuItem("縮小到背景", lambda _icon, _item: self.after(0, self.hide_to_tray)),
@@ -1549,14 +1552,14 @@ def show_single_instance_message() -> None:
 
             ctypes.windll.user32.MessageBoxW(
                 None,
-                "救護回程小幫手已在執行中，請查看右下角系統匣圖示。",
-                "救護回程小幫手",
+                "SinpoSmart - 救護Worker 已在執行中，請查看右下角系統匣圖示。",
+                "SinpoSmart - 救護Worker",
                 0x40,
             )
             return
         except Exception:
             pass
-    print("Ambulance return worker is already running.", file=sys.stderr)
+    print("SinpoSmart ambulance worker is already running.", file=sys.stderr)
 
 
 def main() -> None:

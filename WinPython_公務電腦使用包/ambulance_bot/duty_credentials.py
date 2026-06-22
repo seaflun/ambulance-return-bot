@@ -494,7 +494,7 @@ def _crypt_dpapi_ctypes(data: bytes, protect: bool) -> bytes:
         if protect:
             ok = crypt32.CryptProtectData(
                 ctypes.byref(blob_in),
-                "Ambulance return credential sync",
+                "SinpoSmart ambulance credential sync",
                 None,
                 None,
                 None,

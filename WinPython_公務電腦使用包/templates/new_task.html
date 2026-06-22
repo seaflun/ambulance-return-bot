@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f766e">
-  <title>{{ '救護返隊小幫手-編輯狀態' if cancel_url else '救護返隊小幫手' }}</title>
+  <title>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</title>
   <style>
     :root {
       color-scheme: light;
@@ -314,12 +314,12 @@
 <body>
   <main>
     <header>
-      <h1>{{ '救護返隊小幫手-編輯狀態' if cancel_url else '救護返隊小幫手' }}</h1>
+      <h1>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</h1>
       {% if not cancel_url %}
         <div class="header-actions">
           <a class="button secondary" href="/admin/vehicles">救護車設定</a>
           {% if show_public_pc_admin_button() %}
-            <a class="button secondary" href="/admin/public-pc">救護後台</a>
+            <a class="button secondary" href="/admin/public-pc">SinpoSmart - 救護Worker 後台</a>
             <a class="button secondary" href="/admin/sinposmart">值班後台</a>
           {% endif %}
         </div>

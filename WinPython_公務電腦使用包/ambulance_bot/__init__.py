@@ -1,1 +1,1 @@
-"""LINE bot for ambulance return data-entry automation."""
+"""SinpoSmart ambulance worker data-entry automation."""

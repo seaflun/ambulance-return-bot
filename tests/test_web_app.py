@@ -207,11 +207,11 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("救護返隊小幫手", body)
+        self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertIn("救護車設定", body)
         self.assertNotIn('href="/admin/public-pc"', body)
         self.assertNotIn('href="/admin/sinposmart"', body)
-        self.assertNotIn("救護後台", body)
+        self.assertNotIn("SinpoSmart - 救護Worker 後台", body)
         self.assertNotIn("值班後台", body)
         self.assertNotIn('id="task-form" autocomplete="off" novalidate', body)
         self.assertIn("請先從上方案件按「帶入」", body)
@@ -466,7 +466,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("救護車設定", body)
         self.assertIn('href="/admin/public-pc"', body)
         self.assertIn('href="/admin/sinposmart"', body)
-        self.assertIn("救護後台", body)
+        self.assertIn("SinpoSmart - 救護Worker 後台", body)
         self.assertIn("值班後台", body)
         self.assertIn('class="header-actions"', body)
 
@@ -488,7 +488,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("救護返隊小幫手-編輯狀態", body)
+        self.assertIn("SinpoSmart - 救護Worker - 編輯狀態", body)
         self.assertNotIn('formaction="/cases/clear"', body)
         self.assertNotIn(">清除</button>", body)
 
@@ -751,7 +751,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.get_json()["ack_id"], "evt-1")
         page = self.client.get("/admin/public-pc")
         body = html.unescape(page.data.decode("utf-8"))
-        self.assertIn("救護後台", body)
+        self.assertIn("SinpoSmart - 救護Worker 後台", body)
         self.assertIn('<details class="task-details">', body)
         self.assertIn("<summary>完整事件</summary>", body)
         self.assertIn("任務司機：曾彥綸", body)
@@ -1347,7 +1347,7 @@ class WebAppTests(unittest.TestCase):
     def test_admin_public_pc_shows_worker_version(self):
         original_version_info = getattr(app_module, "worker_admin_version_info", None)
         app_module.worker_admin_version_info = lambda _reports=None: {
-            "label": "救護 worker",
+            "label": "SinpoSmart - 救護Worker",
             "version": "2026.06.19.0715",
             "detail": "目前後台",
         }
@@ -1356,7 +1356,7 @@ class WebAppTests(unittest.TestCase):
             body = html.unescape(page.data.decode("utf-8"))
 
             self.assertIn("系統版本", body)
-            self.assertIn("救護 worker", body)
+            self.assertIn("SinpoSmart - 救護Worker", body)
             self.assertIn("2026.06.19.0715", body)
             self.assertIn("目前後台", body)
         finally:
@@ -1385,7 +1385,7 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/public-pc")
         body = html.unescape(page.data.decode("utf-8"))
 
-        self.assertIn("救護 worker", body)
+        self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertIn("2026.06.19.0801-installed", body)
         self.assertIn("公務電腦已安裝", body)
 
@@ -2266,10 +2266,10 @@ class WebAppTests(unittest.TestCase):
         edit_response = self.client.get(f"/tasks/{task_id}/edit")
         edit_body = html.unescape(edit_response.data.decode("utf-8"))
         self.assertEqual(edit_response.status_code, 200)
-        self.assertIn("救護返隊小幫手-編輯狀態", edit_body)
+        self.assertIn("SinpoSmart - 救護Worker - 編輯狀態", edit_body)
         self.assertNotIn("勤務案件", edit_body)
         self.assertNotIn("救護車設定", edit_body)
-        self.assertNotIn("救護後台", edit_body)
+        self.assertNotIn("SinpoSmart - 救護Worker 後台", edit_body)
         self.assertIn("儲存修改", edit_body)
         self.assertIn('class="form-actions"', edit_body)
         self.assertIn('value="100"', edit_body)

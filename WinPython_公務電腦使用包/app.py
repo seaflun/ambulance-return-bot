@@ -642,8 +642,8 @@ def worker_admin_version_info(reports: list[dict] | None = None) -> dict[str, st
     for report in reports or []:
         version = str(report.get("package_version") or "").strip()
         if version:
-            return {"label": "救護 worker", "version": version, "detail": "公務電腦已安裝"}
-    return {"label": "救護 worker", "version": package_version() or "未標示", "detail": "目前後台"}
+            return {"label": "SinpoSmart - 救護Worker", "version": version, "detail": "公務電腦已安裝"}
+    return {"label": "SinpoSmart - 救護Worker", "version": package_version() or "未標示", "detail": "目前後台"}
 
 
 def credential_sync_relay_file() -> Path:
@@ -2133,7 +2133,7 @@ desktop_runner.event_callback = report_public_pc_task_event
 def run_web_app(host: str | None = None, port: int | None = None) -> None:
     host = host or os.getenv("WEB_HOST", "0.0.0.0")
     port = port or int(os.getenv("WEB_PORT", "8080"))
-    print(f"[app] starting ambulance return web app on {host}:{port}", flush=True)
+    print(f"[app] starting SinpoSmart ambulance worker web app on {host}:{port}", flush=True)
     try:
         from waitress import serve
     except ImportError:

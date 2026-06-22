@@ -38,7 +38,7 @@ function Install-StartupFolderShortcut {
     $shortcut.Arguments = "`"$target`""
     $shortcut.WorkingDirectory = $packageDir
     $shortcut.WindowStyle = 7
-    $shortcut.Description = "Ambulance return worker GUI"
+    $shortcut.Description = "SinpoSmart - 救護Worker GUI"
     $shortcut.Save()
     Write-Host "Installed startup folder shortcut: $shortcutPath"
     Write-Host "Target: $target"

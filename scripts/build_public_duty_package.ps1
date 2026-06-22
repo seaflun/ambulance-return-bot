@@ -146,7 +146,7 @@ $Version | Set-Content -LiteralPath (Join-Path $packageDir "VERSION.txt") -Encod
 $Version | Set-Content -LiteralPath (Join-Path $updateDir "VERSION.txt") -Encoding UTF8
 
 Write-PackageText -RelativePath "README_公務電腦.txt" -Text @'
-# 救護回程公務電腦使用包
+# SinpoSmart - 救護Worker 公務電腦使用包
 
 ## 第一次設定
 
@@ -160,7 +160,7 @@ Write-PackageText -RelativePath "README_公務電腦.txt" -Text @'
 
 1. 管理端更新專案後執行 `scripts\build_public_duty_package.ps1`。
 2. 預設更新來源是 `https://github.com/seaflun/ambulance-return-bot/releases/latest/download`。
-3. 建立救護回程專用 GitHub Release，並上傳 `ambulance-return-version.txt`、`ambulance-return-public-package.zip`、`ambulance-return-public-package.zip.sha256.txt`。
+3. 建立 SinpoSmart - 救護Worker 專用 GitHub Release，並上傳 `ambulance-return-version.txt`、`ambulance-return-public-package.zip`、`ambulance-return-public-package.zip.sha256.txt`。
 4. 之後按 `UPDATE_PACKAGE.bat` 即可從 GitHub latest release 比對版本、下載 zip、驗證 sha256、備份後更新。
 5. 若 GitHub repo 名稱不同，可在 `.env` 設定 `AMBULANCE_RETURN_RELEASE_BASE_URL` 覆蓋下載來源。
 
@@ -313,7 +313,7 @@ function Install-StartupFolderShortcut {
     $shortcut.Arguments = "`"$target`""
     $shortcut.WorkingDirectory = $packageDir
     $shortcut.WindowStyle = 7
-    $shortcut.Description = "Ambulance return worker GUI"
+    $shortcut.Description = "SinpoSmart - 救護Worker GUI"
     $shortcut.Save()
     Write-Host "Installed startup folder shortcut: $shortcutPath"
     Write-Host "Target: $target"
@@ -404,7 +404,7 @@ Write-PackageText -RelativePath "UPDATE_PACKAGE.bat" -Encoding "ASCII" -Text @'
 setlocal
 cd /d "%~dp0"
 
-echo Ambulance return worker package updater
+echo SinpoSmart Ambulance Worker package updater
 echo Package: %CD%
 echo.
 
@@ -447,7 +447,7 @@ if errorlevel 1 (
 
 Write-PackageText -RelativePath "check_environment.py" -Text @'
 # -*- coding: utf-8 -*-
-"""Quick environment check for the ambulance return public-duty worker."""
+"""Quick environment check for the SinpoSmart ambulance public-duty worker."""
 
 from __future__ import annotations
 

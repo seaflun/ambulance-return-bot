@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-"""Quick environment check for the ambulance return public-duty worker."""
+"""Quick environment check for the SinpoSmart ambulance public-duty worker."""
 
 from __future__ import annotations
 

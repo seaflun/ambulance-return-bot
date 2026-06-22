@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo Ambulance return worker package updater
+echo SinpoSmart Ambulance Worker package updater
 echo Package: %CD%
 echo.
 

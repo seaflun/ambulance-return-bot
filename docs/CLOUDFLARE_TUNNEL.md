@@ -1,6 +1,6 @@
 # Cloudflare Tunnel 外部入口
 
-不在 NAS 同網路時，可以用 Cloudflare Tunnel 對外提供救護回程網頁，不需要開路由器 port。
+不在 NAS 同網路時，可以用 Cloudflare Tunnel 對外提供 SinpoSmart - 救護Worker 網頁，不需要開路由器 port。
 
 ## Cloudflare 設定
 
