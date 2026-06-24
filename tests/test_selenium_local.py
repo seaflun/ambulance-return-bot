@@ -386,7 +386,10 @@ class SeleniumLocalTests(unittest.TestCase):
         calls: dict[str, object] = {"count": 0, "sleep": []}
         original_webdriver_chrome = selenium_local_module.webdriver.Chrome
         original_sleep = selenium_local_module.time.sleep
+        original_cleanup = selenium_local_module.cleanup_worker_chrome_residue
         original_attempts = os.environ.get("SELENIUM_LOCAL_SESSION_ATTEMPTS")
+        cleanups = []
+        options = object()
         try:
             os.environ["SELENIUM_LOCAL_SESSION_ATTEMPTS"] = "2"
 
@@ -398,11 +401,13 @@ class SeleniumLocalTests(unittest.TestCase):
 
             selenium_local_module.webdriver.Chrome = fake_chrome
             selenium_local_module.time.sleep = lambda seconds: calls["sleep"].append(seconds)
+            selenium_local_module.cleanup_worker_chrome_residue = lambda opts, label="Chrome": cleanups.append((opts, label)) or 1
 
-            result = _create_local_driver_with_retry(object())
+            result = _create_local_driver_with_retry(options)
         finally:
             selenium_local_module.webdriver.Chrome = original_webdriver_chrome
             selenium_local_module.time.sleep = original_sleep
+            selenium_local_module.cleanup_worker_chrome_residue = original_cleanup
             if original_attempts is None:
                 os.environ.pop("SELENIUM_LOCAL_SESSION_ATTEMPTS", None)
             else:
@@ -411,6 +416,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIsInstance(result, FakeDriver)
         self.assertEqual(calls["count"], 2)
         self.assertEqual(calls["sleep"], [2])
+        self.assertEqual(cleanups, [(options, "local selenium")])
 
     def test_case_lookup_closes_driver_after_success(self):
         class FakeDriver:

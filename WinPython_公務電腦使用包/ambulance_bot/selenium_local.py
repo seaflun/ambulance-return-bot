@@ -20,6 +20,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITION_BY_KEY, SITE_DEFINITIONS
+from .chrome_startup import cleanup_worker_chrome_residue
 from .duty_credentials import load_duty_credential, load_synced_worker_credential
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .window_layout import apply_tile
@@ -563,6 +564,7 @@ def _create_local_driver_with_retry(options: Options) -> webdriver.Chrome:
             if not _is_local_chrome_startup_error(exc) or attempt >= attempts:
                 raise
             print(f"[selenium] local chrome session attempt {attempt} failed: {_short_webdriver_error(exc)}", flush=True)
+            cleanup_worker_chrome_residue(options, "local selenium")
             time.sleep(2)
     raise WebDriverException(f"local chrome session failed after {attempts} attempts: {_short_webdriver_error(last_error)}")
 
