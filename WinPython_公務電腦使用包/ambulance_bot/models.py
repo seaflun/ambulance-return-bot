@@ -820,6 +820,15 @@ def clean_case_address(value: str) -> str:
     if not text:
         return ""
     text = text.replace("\uff0d", "-").replace("\u2010", "-").replace("\u2011", "-").replace("\u2013", "-").replace("\u2014", "-")
+    paren_depth = 0
+    for index, char in enumerate(text):
+        if char in "(（":
+            paren_depth += 1
+        elif char in ")）":
+            paren_depth = max(0, paren_depth - 1)
+        elif char == "-" and paren_depth == 0:
+            text = text[:index]
+            break
     for marker in (
         "-\u6025\u75c5\u653e\u68c4\u6025\u6551",
         "-\u6848\u4ef6\u91cd\u8907",

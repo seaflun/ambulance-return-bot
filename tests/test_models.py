@@ -285,6 +285,18 @@ class ModelParsingTests(unittest.TestCase):
             clean_case_address("\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def\u4e8c\u6bb5705\u865f3\u6a13(OHCA-D)-\u6025\u75c5\u653e\u68c4\u6025\u6551\u52e4\u5340\u8655\u7406"),
             "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def\u4e8c\u6bb5705\u865f3\u6a13(OHCA-D)",
         )
+        self.assertEqual(
+            clean_case_address("\u6843\u5712\u5e02\u4e2d\u58e2\u5340\u5c71\u6771\u4e00\u8def313\u5df721\u865f-\u9577\u5e9a"),
+            "\u6843\u5712\u5e02\u4e2d\u58e2\u5340\u5c71\u6771\u4e00\u8def313\u5df721\u865f",
+        )
+        self.assertEqual(
+            clean_case_address("\u6843\u5712\u5e02\u89c0\u97f3\u5340\u6210\u529f\u8def\u4e00\u6bb5123\u865f-\u8aa4\u5831(\u81ea\u884c\u64b2\u6ec5)"),
+            "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u6210\u529f\u8def\u4e00\u6bb5123\u865f",
+        )
+        self.assertEqual(
+            clean_case_address("\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def\u4e8c\u6bb5705\u865f3\u6a13(OHCA-D)"),
+            "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def\u4e8c\u6bb5705\u865f3\u6a13(OHCA-D)",
+        )
 
 
 if __name__ == "__main__":
