@@ -11,7 +11,9 @@ def login_audit_for_site(site_key: str, request: AmbulanceReturnRequest) -> str:
     if site_key == "duty_work_log":
         return duty_work_log_login_audit(request)
     if site_key == "vehicle_mileage":
-        return vehicle_mileage_login_audit()
+        return vehicle_mileage_login_audit(request)
+    if site_key == "fuel_record":
+        return fuel_record_login_audit(request)
     if site_key == "disinfection":
         return disinfection_login_audit()
     if site_key == "consumables":
@@ -22,7 +24,8 @@ def login_audit_for_site(site_key: str, request: AmbulanceReturnRequest) -> str:
 def site_login_account_summaries(request: AmbulanceReturnRequest) -> dict[str, str]:
     return {
         "duty_work_log": duty_work_log_login_summary(request),
-        "vehicle_mileage": vehicle_mileage_login_summary(),
+        "vehicle_mileage": vehicle_mileage_login_summary(request),
+        "fuel_record": fuel_record_login_summary(request),
         "disinfection": disinfection_login_summary(),
         "consumables": consumables_login_summary(),
     }
@@ -35,7 +38,10 @@ def duty_work_log_login_summary(request: AmbulanceReturnRequest) -> str:
     return f"{credential_public_label(credential)}（任務司機優先）"
 
 
-def vehicle_mileage_login_summary() -> str:
+def vehicle_mileage_login_summary(request: AmbulanceReturnRequest) -> str:
+    credential = load_duty_credential(request.duty_login_account_candidates, fallback_user_id="", allow_default=False)
+    if credential is not None:
+        return f"{credential_public_label(credential)}（司機帳號優先，失敗一次改同步帳號）"
     credential = load_synced_worker_credential()
     if credential is not None:
         return f"{credential_public_label(credential)}（同步帳號）"
@@ -44,6 +50,10 @@ def vehicle_mileage_login_summary() -> str:
     if account and password:
         return f"{mask_login_account(account)}（環境設定）"
     return "未取得"
+
+
+def fuel_record_login_summary(request: AmbulanceReturnRequest) -> str:
+    return vehicle_mileage_login_summary(request)
 
 
 def disinfection_login_summary() -> str:
@@ -72,7 +82,10 @@ def duty_work_log_login_audit(request: AmbulanceReturnRequest) -> str:
     return f"登入帳號：工作=任務司機優先，{credential_public_label(credential)}"
 
 
-def vehicle_mileage_login_audit() -> str:
+def vehicle_mileage_login_audit(request: AmbulanceReturnRequest) -> str:
+    credential = load_duty_credential(request.duty_login_account_candidates, fallback_user_id="", allow_default=False)
+    if credential is not None:
+        return f"登入帳號：里程=司機帳號優先，失敗一次改同步帳號，{credential_public_label(credential)}"
     credential = load_synced_worker_credential()
     if credential is not None:
         return f"登入帳號：里程=公務電腦同步帳號，{credential_public_label(credential)}"
@@ -81,6 +94,10 @@ def vehicle_mileage_login_audit() -> str:
     if account and password:
         return f"登入帳號：里程=環境設定，{mask_login_account(account)}"
     return "登入帳號：里程=未取得可用帳號"
+
+
+def fuel_record_login_audit(request: AmbulanceReturnRequest) -> str:
+    return vehicle_mileage_login_audit(request).replace("里程", "加油", 1)
 
 
 def disinfection_login_audit() -> str:

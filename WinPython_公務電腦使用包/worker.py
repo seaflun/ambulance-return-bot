@@ -23,6 +23,7 @@ from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
     query_duty_emergency_cases,
     run_disinfection_task,
+    run_fuel_record_task,
     run_local_selenium_task,
     run_vehicle_mileage_task,
 )
@@ -241,7 +242,7 @@ def run_all_sites_task(
 ) -> object | None:
     request = AmbulanceReturnRequest.from_dict(task)
     profile_suffix = request.task_id.replace("-", "_")
-    post_status(server_url, request.task_id, "desktop_fast_running", "公務電腦 worker 四站登打已啟動。")
+    post_status(server_url, request.task_id, "desktop_fast_running", "公務電腦 worker 五站登打已啟動。")
     runners = [
         (
             "duty_work_log",
@@ -270,6 +271,20 @@ def run_all_sites_task(
                 force_new_driver=True,
                 update_overall=False,
                 update_context=site_update_context_from_payload(payload, "vehicle_mileage"),
+            ),
+        ),
+        (
+            "fuel_record",
+            lambda payload: run_fuel_worker_task(
+                server_url,
+                worker_id,
+                dict(payload.get("task") or task),
+                artifacts_dir,
+                profile_name=f"fuel_record_profile_{profile_suffix}",
+                use_session_lock=False,
+                tile_name="fuel_record",
+                force_new_driver=True,
+                update_overall=False,
             ),
         ),
         (
@@ -306,12 +321,12 @@ def run_all_sites_task(
             try:
                 payload = fetch_task_payload(server_url, request.task_id)
             except Exception as exc:
-                detail = f"讀取任務狀態失敗，四站流程已停止：{exc}"
+                detail = f"讀取任務狀態失敗，五站流程已停止：{exc}"
                 result = make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail, exc)
                 post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
                 return result
             if not isinstance(payload, dict):
-                detail = "讀取任務狀態失敗，NAS 未回傳任務內容，四站流程已停止。"
+                detail = "讀取任務狀態失敗，NAS 未回傳任務內容，五站流程已停止。"
                 result = make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail)
                 post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
                 return result
@@ -330,11 +345,11 @@ def run_all_sites_task(
             server_url,
             request.task_id,
             "desktop_fast_completed_with_errors",
-            f"公務電腦 worker 四站登打完成，{len(failed_results)} 站失敗；已略過失敗站並接續後續站別。",
+            f"公務電腦 worker 五站登打完成，{len(failed_results)} 站失敗；已略過失敗站並接續後續站別。",
         )
         maximize_worker_site_windows()
         return failed_results[-1]
-    post_status(server_url, request.task_id, "desktop_fast_completed", "公務電腦 worker 四站登打完成。")
+    post_status(server_url, request.task_id, "desktop_fast_completed", "公務電腦 worker 五站登打完成。")
     maximize_worker_site_windows()
     return last_result
 
@@ -403,6 +418,60 @@ def run_vehicle_task(
             result.detail,
         )
     print(f"[worker] finished vehicle mileage {request.task_id}: {result.status}", flush=True)
+    return result
+
+
+def run_fuel_worker_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+    profile_name: str = "chrome_profile",
+    debugger_port: int | None = None,
+    use_session_lock: bool = True,
+    tile_name: str = "",
+    force_new_driver: bool = False,
+    update_overall: bool = True,
+) -> object:
+    request = AmbulanceReturnRequest.from_dict(task)
+    login_audit = login_audit_for_site("fuel_record", request)
+    print(f"[worker] fuel record task {request.task_id}", flush=True)
+    post_status(
+        server_url,
+        request.task_id,
+        "fuel_record_running",
+        with_login_audit(f"公務電腦 worker 登打加油紀錄：{worker_id}", login_audit),
+    )
+    try:
+        result = run_fuel_record_task(
+            request,
+            artifacts_dir,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+        )
+    except Exception as exc:
+        result = make_site_result("fuel_record", "登打加油紀錄", "fuel_record_failed", f"加油紀錄操作失敗：{exc}", exc)
+    result = _result_with_login_audit(result, login_audit)
+    post_status(
+        server_url,
+        request.task_id,
+        result.status,
+        result.detail,
+        site_key="fuel_record",
+        site_name="登打加油紀錄",
+        **_result_diagnostic_kwargs(result),
+    )
+    if update_overall:
+        post_status(
+            server_url,
+            request.task_id,
+            "desktop_fast_completed_with_errors" if _status_blocks_progress(result.status) else "desktop_fast_completed",
+            result.detail,
+        )
+    print(f"[worker] finished fuel record {request.task_id}: {result.status}", flush=True)
     return result
 
 

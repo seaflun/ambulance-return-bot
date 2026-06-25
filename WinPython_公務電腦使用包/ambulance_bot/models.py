@@ -11,6 +11,7 @@ from uuid import uuid4
 
 
 DEFAULT_CONSUMABLES = {"桃-口罩(片)": 2, "桃-9吋手套-L(雙)": 2, "桃-可拋棄式耳溫槍耳套-福爾TD-1118(個)": 1}
+DEFAULT_FUEL_PRODUCT = "超級柴油"
 DISINFECTION_ITEM_OPTIONS = [
     "\u6551\u8b77\u8eca\u9ad4",
     "\u64d4\u67b6\u5e8a",
@@ -224,6 +225,33 @@ def vehicle_ppe_names(base_dir: Path | None = None) -> dict[str, str]:
 
 
 @dataclass(slots=True)
+class FuelRecord:
+    enabled: bool = False
+    date: str = ""
+    time: str = ""
+    driver: str = ""
+    product: str = DEFAULT_FUEL_PRODUCT
+    quantity: str = ""
+    unit_price: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "FuelRecord":
+        if isinstance(payload, FuelRecord):
+            return payload
+        if not isinstance(payload, dict):
+            return cls()
+        return cls(
+            enabled=form_flag_enabled(payload.get("enabled")),
+            date=compact_case_date(str(payload.get("date") or "")),
+            time=normalize_hhmm(str(payload.get("time") or "")),
+            driver=str(payload.get("driver") or "").strip(),
+            product=str(payload.get("product") or DEFAULT_FUEL_PRODUCT).strip() or DEFAULT_FUEL_PRODUCT,
+            quantity=str(payload.get("quantity") or "").strip(),
+            unit_price=str(payload.get("unit_price") or "").strip(),
+        )
+
+
+@dataclass(slots=True)
 class VehicleEntry:
     vehicle: str = ""
     driver: str = ""
@@ -234,6 +262,7 @@ class VehicleEntry:
     disinfection: str = "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002"
     disinfection_items: list[str] = field(default_factory=lambda: list(DEFAULT_DISINFECTION_ITEMS))
     consumables: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_CONSUMABLES))
+    fuel_record: FuelRecord = field(default_factory=FuelRecord)
 
     @classmethod
     def from_dict(cls, payload: object) -> "VehicleEntry":
@@ -251,6 +280,7 @@ class VehicleEntry:
             disinfection=str(payload.get("disinfection") or cls.__dataclass_fields__["disinfection"].default).strip(),
             disinfection_items=parse_list(payload.get("disinfection_items") or DEFAULT_DISINFECTION_ITEMS),
             consumables=parse_consumable_payload(payload.get("consumables"), default=DEFAULT_CONSUMABLES),
+            fuel_record=FuelRecord.from_dict(payload.get("fuel_record")),
         )
 
     def is_blank(self) -> bool:
@@ -284,6 +314,7 @@ class AmbulanceReturnRequest:
     consumables: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_CONSUMABLES))
     two_vehicle: bool = False
     vehicle_entries: list[VehicleEntry] = field(default_factory=list)
+    fuel_record: FuelRecord = field(default_factory=FuelRecord)
 
     @property
     def consumable_summary(self) -> str:
@@ -382,6 +413,7 @@ class AmbulanceReturnRequest:
             disinfection=self.disinfection,
             disinfection_items=list(self.disinfection_items),
             consumables=dict(self.consumables),
+            fuel_record=FuelRecord.from_dict(self.fuel_record),
         )
 
     def effective_vehicle_entries(self) -> list[VehicleEntry]:
@@ -408,6 +440,7 @@ class AmbulanceReturnRequest:
                     disinfection=entry.disinfection,
                     disinfection_items=list(entry.disinfection_items),
                     consumables=dict(entry.consumables),
+                    fuel_record=FuelRecord.from_dict(entry.fuel_record),
                     two_vehicle=False,
                     vehicle_entries=[],
                 )
@@ -480,6 +513,7 @@ class AmbulanceReturnRequest:
             consumables=parse_consumable_payload(payload.get("consumables"), default=DEFAULT_CONSUMABLES),
             two_vehicle=form_flag_enabled(payload.get("two_vehicle")),
             vehicle_entries=vehicle_entries,
+            fuel_record=FuelRecord.from_dict(payload.get("fuel_record")),
         )
 
 
@@ -519,8 +553,34 @@ def normalize_case_date(value: str) -> str:
     return parsed.strftime("%Y/%m/%d") if parsed else str(value or "").strip()
 
 
+def compact_case_date(value: str) -> str:
+    parsed = parse_case_date(value)
+    return parsed.strftime("%Y%m%d") if parsed else re.sub(r"\D", "", str(value or "").strip())
+
+
 def form_flag_enabled(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def fuel_record_from_form(
+    form: dict[str, Any],
+    *,
+    suffix: str = "",
+    default_date: str = "",
+    default_driver: str = "",
+) -> FuelRecord:
+    enabled = form_flag_enabled(form.get(f"fuel_record{suffix}"))
+    date = compact_case_date(str(form.get(f"fuel_date{suffix}") or "")) or compact_case_date(default_date)
+    driver = str(form.get(f"fuel_driver{suffix}") or "").strip() or default_driver
+    return FuelRecord(
+        enabled=enabled,
+        date=date if enabled else "",
+        time=normalize_hhmm(str(form.get(f"fuel_time{suffix}") or "")),
+        driver=driver,
+        product=DEFAULT_FUEL_PRODUCT,
+        quantity=str(form.get(f"fuel_quantity{suffix}") or "").strip(),
+        unit_price=str(form.get(f"fuel_unit_price{suffix}") or "").strip(),
+    )
 
 
 def parse_consumable_payload(value: object, default: dict[str, int] | None = None) -> dict[str, int]:
@@ -571,9 +631,11 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
     consumables = parse_consumables(str(form.get("consumables") or ""))
     disinfection_items = parse_disinfection_items_from_form(form)
     two_vehicle = form_flag_enabled(form.get("two_vehicle"))
+    case_date = normalize_case_date(str(form.get("case_date") or ""))
+    primary_driver = str(form.get("driver") or "").strip()
     primary_vehicle = VehicleEntry(
         vehicle=str(form.get("vehicle") or "").strip(),
-        driver=str(form.get("driver") or "").strip(),
+        driver=primary_driver,
         mileage=str(form.get("mileage") or "").strip(),
         return_date=normalize_case_date(str(form.get("return_date") or "")),
         return_time=str(form.get("return_time") or "").strip(),
@@ -582,14 +644,16 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
         disinfection_items=list(disinfection_items),
         consumables=dict(consumables),
+        fuel_record=fuel_record_from_form(form, default_date=case_date, default_driver=primary_driver),
     )
     vehicle_entries: list[VehicleEntry] = []
     if two_vehicle:
+        second_driver = str(form.get("driver_2") or "").strip()
         vehicle_entries = [
             primary_vehicle,
             VehicleEntry(
                 vehicle=str(form.get("vehicle_2") or "").strip(),
-                driver=str(form.get("driver_2") or "").strip(),
+                driver=second_driver,
                 mileage=str(form.get("mileage_2") or "").strip(),
                 return_date=normalize_case_date(str(form.get("return_date_2") or "")),
                 return_time=str(form.get("return_time_2") or "").strip(),
@@ -602,6 +666,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
                     custom_field_name="disinfection_items_custom_2",
                 ),
                 consumables=parse_consumables(str(form.get("consumables_2") or "")),
+                fuel_record=fuel_record_from_form(form, suffix="_2", default_date=case_date, default_driver=second_driver),
             ),
         ]
     return AmbulanceReturnRequest(
@@ -609,12 +674,12 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         created_at=datetime.now(),
         raw_text="",
         vehicle=str(form.get("vehicle") or "").strip(),
-        driver=str(form.get("driver") or "").strip(),
+        driver=primary_driver,
         mileage=str(form.get("mileage") or "").strip(),
         case_id=str(form.get("case_id") or "").strip(),
         personnel=parse_list(form.get("personnel") or ""),
         personnel_accounts=parse_account_list(form.get("personnel_accounts") or ""),
-        case_date=normalize_case_date(str(form.get("case_date") or "")),
+        case_date=case_date,
         case_time=str(form.get("case_time") or "").strip(),
         return_date=normalize_case_date(str(form.get("return_date") or "")),
         return_time=str(form.get("return_time") or "").strip(),
@@ -629,6 +694,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         consumables=consumables,
         two_vehicle=two_vehicle,
         vehicle_entries=vehicle_entries,
+        fuel_record=FuelRecord.from_dict(primary_vehicle.fuel_record),
     )
 
 

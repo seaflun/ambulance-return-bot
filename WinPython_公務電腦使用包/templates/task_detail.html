@@ -337,7 +337,7 @@
       <div class="task-submit">
         {% if show_task_entry_controls() %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
-            <button type="submit">四站登打啟動</button>
+            <button type="submit">五站登打啟動</button>
           </form>
         {% endif %}
         <a class="button secondary" href="/tasks/{{ payload.task.task_id }}/edit">返回編輯</a>
@@ -405,6 +405,26 @@
           </ul>
         </article>
 
+        {% set fuel_site = payload.site_statuses.get('fuel_record', {}) %}
+        <article class="task-card {{ status_class(fuel_site.status) }}">
+          <div class="card-head">
+            <h3>加油</h3>
+            <div class="card-state">
+              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'fuel_record') %}
+                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/fuel_record/run">
+                  <button class="secondary" type="submit">{{ site_action_button_label(fuel_site.status, 'fuel_record') }}</button>
+                </form>
+              {% endif %}
+              <span class="status {{ status_class(fuel_site.status) }}">{{ status_label(fuel_site.status) }}</span>
+            </div>
+          </div>
+          <ul class="line-list">
+            {% for entry in vehicle_entries %}
+              <li><span class="label">{{ entry.label if vehicle_entries|length > 1 else '紀錄' }}</span><span class="value">{{ entry.fuel_summary or '未勾選' }}</span></li>
+            {% endfor %}
+          </ul>
+        </article>
+
         {% set consumables_site = payload.site_statuses.get('consumables', {}) %}
         <article class="task-card {{ status_class(consumables_site.status) }}">
           <div class="card-head">
@@ -457,12 +477,12 @@
       </div>
     </section>
 
-    <section class="stage-panel" aria-label="四站階段檢查">
+    <section class="stage-panel" aria-label="五站階段檢查">
       <div class="section-head">
-        <h2>四站階段檢查</h2>
+        <h2>五站階段檢查</h2>
       </div>
       <div class="stage-grid">
-        {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
+        {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('fuel_record', '加油'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
           <article class="stage-card">
             <h3>{{ title }}</h3>
             <ul class="stage-list">

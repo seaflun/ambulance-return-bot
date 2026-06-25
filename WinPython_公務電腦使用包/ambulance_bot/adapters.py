@@ -35,6 +35,7 @@ SITE_DEFINITIONS = [
         "\u8eca\u8f1b\u91cc\u7a0b",
         "https://ppe.tyfd.gov.tw/Account/Login?ReturnUrl=%2FCarRecord%2FList",
     ),
+    SiteDefinition("fuel_record", "\u767b\u6253\u52a0\u6cb9\u7d00\u9304", "https://ppe.tyfd.gov.tw/FUC04100/Query"),
     SiteDefinition("consumables", "\u4e00\u7ad9\u901a\u8017\u6750", "https://nfaemsap3.nfa.gov.tw/SSO/"),
     SiteDefinition("disinfection", "\u7dca\u6025\u6551\u8b77\u6d88\u6bd2", "https://emsdt.tyfd.gov.tw/EmmWeb/"),
 ]
@@ -83,6 +84,21 @@ class ConsumablesAdapter(SiteAdapter):
         )
 
 
+class FuelRecordAdapter(SiteAdapter):
+    definition = SITE_DEFINITION_BY_KEY["fuel_record"]
+
+    def run(self, request: AmbulanceReturnRequest) -> SiteAutomationResult:
+        enabled = [item for item in request.vehicle_requests() if item.fuel_record.enabled]
+        if not enabled:
+            return SiteAutomationResult(self.key, self.name, "fuel_record_saved", "\u672a\u52fe\u9078\u52a0\u6cb9\u7d00\u9304\uff0c\u5df2\u7565\u904e\u3002")
+        missing = "\u672a\u586b"
+        detail = "\u3001".join(
+            f"{item.vehicle or missing} {item.fuel_record.date or missing} {item.fuel_record.time or missing}"
+            for item in enabled
+        )
+        return SiteAutomationResult(self.key, self.name, "local_pc_ready", f"\u5f85\u767b\u6253\u52a0\u6cb9\u7d00\u9304\uff1a{detail}")
+
+
 class DisinfectionAdapter(SiteAdapter):
     definition = SITE_DEFINITION_BY_KEY["disinfection"]
     requires_manual_captcha = True
@@ -113,6 +129,7 @@ def default_adapters() -> list[SiteAdapter]:
     return [
         DutyWorkLogAdapter(),
         VehicleMileageAdapter(),
+        FuelRecordAdapter(),
         ConsumablesAdapter(),
         DisinfectionAdapter(),
     ]

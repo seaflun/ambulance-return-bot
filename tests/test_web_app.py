@@ -11,6 +11,7 @@ from pathlib import Path
 
 import app as app_module
 import ambulance_bot.selenium_local as selenium_local_module
+from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import DutyCaseLookupResult
 from ambulance_bot.task_runner import TaskRunner
 from ambulance_bot.task_store import JsonTaskStore
@@ -240,7 +241,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('name="baseline_consumables_loaded" value=""', body)
         self.assertIn('consumablePackagesValue.value = Array.from(activeConsumablePackages).join(",");', body)
         self.assertIn("selectedConsumablePackages.forEach((packageKey) => {", body)
-        self.assertNotIn(" checked", body)
+        self.assertNotIn(" checked>", body)
         self.assertIn("main { max-width: 1080px;", body)
         self.assertIn("--text-md: 17px;", body)
         self.assertIn(".check-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));", body)
@@ -771,7 +772,7 @@ class WebAppTests(unittest.TestCase):
                     "consumables": "8番 曾彥綸 - C123***789（同步帳號）",
                 },
                 "worker_id": "public-duty-pc",
-                "action": "四站登打成功",
+                "action": "五站登打成功",
                 "status": "desktop_fast_completed",
                 "detail": "本機快速執行完成。",
                 "overall_status": "desktop_fast_completed",
@@ -814,7 +815,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("里程已保存。", body)
         self.assertNotIn("2026-06-12T14:30:00", body)
         self.assertIn("緊急救護-急病 - 桃園市觀音區中山路", body)
-        self.assertIn("四站登打成功", body)
+        self.assertIn("五站登打成功", body)
         reports = app_module.public_pc_reports()
         self.assertEqual(reports[0]["operator"], "8番 曾彥綸 - tyfd01510")
         self.assertEqual(reports[0]["synced_account"], "8番 曾彥綸 - tyfd01510")
@@ -1392,7 +1393,7 @@ class WebAppTests(unittest.TestCase):
                     "case_reason": "急病",
                     "case_address": "桃園市觀音區中山路",
                 },
-                "action": "四站登打部分失敗",
+                "action": "五站登打部分失敗",
                 "status": "desktop_fast_completed_with_errors",
                 "overall_status": "desktop_fast_completed_with_errors",
                 "site_statuses": {
@@ -1527,7 +1528,7 @@ class WebAppTests(unittest.TestCase):
             self.assertTrue(app_module.public_pc_pending_report_file().exists())
 
             task_payload["events"].append({"status": "desktop_fast_running", "detail": "本機快速執行已啟動。"})
-            app_module.report_public_pc_task_event(task_payload, "按下四站登打")
+            app_module.report_public_pc_task_event(task_payload, "按下五站登打")
         finally:
             app_module._post_public_pc_report = original_post
             app_module.current_public_pc_user_label = original_current_user_label
@@ -1538,7 +1539,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(sent_payloads), 2)
         self.assertFalse(app_module.public_pc_pending_report_file().exists())
         self.assertEqual(sent_payloads[0]["action"], "建立任務")
-        self.assertEqual(sent_payloads[1]["action"], "按下四站登打")
+        self.assertEqual(sent_payloads[1]["action"], "按下五站登打")
         self.assertEqual(sent_payloads[0]["synced_account"], "8番 曾彥綸 - tyfd01510")
         self.assertEqual(sent_payloads[0]["package_version"], "2026.06.19.0801-local")
         self.assertEqual(
@@ -1705,7 +1706,7 @@ class WebAppTests(unittest.TestCase):
     def test_app_page_auto_refreshes_while_recent_task_is_running(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
-        self.store.set_overall_status(task_id, "desktop_fast_running", "四站登打中")
+        self.store.set_overall_status(task_id, "desktop_fast_running", "五站登打中")
         self.store.update_site_result(
             task_id,
             app_module.SiteAutomationResult("duty_work_log", "消防勤務工作紀錄", "duty_work_log_saved", "saved"),
@@ -1720,12 +1721,16 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("window.location.reload()", running_body)
         self.assertIn("taskFormDirty", running_body)
-        self.assertIn("已完成 1/4；目前：里程執行中", running_body)
+        self.assertIn("已完成 1/5；目前：里程執行中", running_body)
 
-        self.store.set_overall_status(task_id, "desktop_fast_completed", "四站登打完成")
+        self.store.set_overall_status(task_id, "desktop_fast_completed", "五站登打完成")
         self.store.update_site_result(
             task_id,
             app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_saved", "saved"),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("fuel_record", "登打加油紀錄", "fuel_record_saved", "saved"),
         )
         self.store.update_site_result(
             task_id,
@@ -1739,7 +1744,7 @@ class WebAppTests(unittest.TestCase):
         completed_body = html.unescape(completed_response.data.decode("utf-8"))
 
         self.assertNotIn("window.location.reload()", completed_body)
-        self.assertIn("四站完成", completed_body)
+        self.assertIn("5站完成", completed_body)
 
     def test_app_page_shows_empty_case_lookup_result(self):
         cases_dir = app_module.artifacts_dir / "cases"
@@ -2110,7 +2115,7 @@ class WebAppTests(unittest.TestCase):
         imported_response = self.client.get("/app")
         imported_body = html.unescape(imported_response.data.decode("utf-8"))
         self.assertIn("0905", imported_body)
-        self.assertIn(" checked", imported_body)
+        self.assertIn(" checked>", imported_body)
         self.assertIn('formaction="/cases/clear"', imported_body)
         self.assertIn("const baselineConsumablesLoaded = true;", imported_body)
         self.assertEqual(app_module.read_selected_case(), {})
@@ -2119,7 +2124,7 @@ class WebAppTests(unittest.TestCase):
         refreshed_body = html.unescape(refreshed_response.data.decode("utf-8"))
         self.assertNotIn('value="0905"', refreshed_body)
         self.assertNotIn('value="桃園市觀音區"', refreshed_body)
-        self.assertNotIn(" checked", refreshed_body)
+        self.assertNotIn(" checked>", refreshed_body)
         self.assertIn("const baselineConsumablesLoaded = false;", refreshed_body)
 
         clear_response = self.client.post("/cases/clear", follow_redirects=False)
@@ -2130,7 +2135,7 @@ class WebAppTests(unittest.TestCase):
         cleared_body = html.unescape(cleared_response.data.decode("utf-8"))
         self.assertNotIn('value="0905"', cleared_body)
         self.assertNotIn('value="桃園市觀音區"', cleared_body)
-        self.assertNotIn(" checked", cleared_body)
+        self.assertNotIn(" checked>", cleared_body)
         self.assertIn("const defaultConsumables = {};", cleared_body)
         self.assertIn("const baselineConsumablesLoaded = false;", cleared_body)
 
@@ -2154,7 +2159,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(detail_response.status_code, 200)
         detail_body = html.unescape(detail_response.data.decode("utf-8"))
         self.assertEqual(detail_body.count("\u55ae\u7368\u767b\u6253"), 0)
-        self.assertIn("四站登打啟動", detail_body)
+        self.assertIn("五站登打啟動", detail_body)
         self.assertNotIn("送到公務電腦", detail_body)
         self.assertIn("main { max-width: 1080px;", detail_body)
         self.assertIn("repeating-linear-gradient", detail_body)
@@ -2193,13 +2198,13 @@ class WebAppTests(unittest.TestCase):
         consumables_card = body[body.index("<h3>\u8017\u6750</h3>") : body.index("<h3>\u6d88\u6bd2</h3>")]
         self.assertLess(consumables_card.index("\u55ae\u7368\u767b\u6253"), consumables_card.index("\u5931\u6557"))
         self.assertNotIn("\u932f\u8aa4\u6307\u5f15", body)
-        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('aria-label="\u56db\u7ad9\u968e\u6bb5\u6aa2\u67e5"')]
+        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('aria-label="\u4e94\u7ad9\u968e\u6bb5\u6aa2\u67e5"')]
         self.assertNotIn("\u672a\u5b8c\u6210\u9ede", task_section)
         self.assertNotIn("\u586b\u5beb\u8017\u6750\u54c1\u9805", task_section)
         self.assertNotIn("\u9801\u9762\u6309\u9215\u6216\u6b04\u4f4d\u8207\u7a0b\u5f0f\u9810\u671f\u4e0d\u540c", task_section)
         self.assertIn("\u8017\u6750\uff1a\u5931\u6557", body)
         self.assertNotIn("\u6d88\u6bd2\uff1a\u672a\u63a5\u7e8c", body)
-        self.assertNotIn("\u56db\u7ad9\u6d41\u7a0b\u5df2\u505c\u6b62", body)
+        self.assertNotIn("\u4e94\u7ad9\u6d41\u7a0b\u5df2\u505c\u6b62", body)
 
     def test_task_detail_shows_failure_stage_reason_and_next_action(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -2217,12 +2222,12 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertLess(body.index("四站登打啟動"), body.index("<h2>任務內容</h2>"))
-        task_section = body[body.index('aria-label="任務內容"') : body.index('aria-label="四站階段檢查"')]
+        self.assertLess(body.index("五站登打啟動"), body.index("<h2>任務內容</h2>"))
+        task_section = body[body.index('aria-label="任務內容"') : body.index('aria-label="五站階段檢查"')]
         self.assertNotIn("未完成點", task_section)
         self.assertNotIn("原因", task_section)
         self.assertNotIn("下一步", task_section)
-        stage_section = body[body.index('aria-label="四站階段檢查"') :]
+        stage_section = body[body.index('aria-label="五站階段檢查"') :]
         self.assertIn("失敗點", stage_section)
         self.assertIn("未完成", stage_section)
 
@@ -2244,7 +2249,7 @@ class WebAppTests(unittest.TestCase):
         app_body = html.unescape(app_response.data.decode("utf-8"))
 
         self.assertIn("window.location.reload()", detail_body)
-        self.assertIn("已完成 0/4；目前：里程執行中", app_body)
+        self.assertIn("已完成 0/5；目前：里程執行中", app_body)
 
     def test_task_detail_auto_refreshes_while_running(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -2321,7 +2326,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("https://ppe.tyfd.gov.tw", body)
         task_section = body.split('aria-label="任務內容"', 1)[1]
         task_section_head = task_section.split('<div class="task-grid">', 1)[0]
-        self.assertLess(task_section_head.index("四站登打啟動"), task_section_head.index("<h2>任務內容</h2>"))
+        self.assertLess(task_section_head.index("五站登打啟動"), task_section_head.index("<h2>任務內容</h2>"))
         self.assertIn("任務內容", task_section_head)
         self.assertNotIn("待確認", task_section_head)
 
@@ -2349,7 +2354,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("06/06 1633", header)
         self.assertNotIn("\u65b0\u576192 / \u5305\u83ef\u5148", header)
         self.assertNotIn("\u9001\u5230\u516c\u52d9\u96fb\u8166", header)
-        self.assertLess(body.index("\u56db\u7ad9\u767b\u6253\u555f\u52d5"), body.index("\u8fd4\u56de\u7de8\u8f2f"))
+        self.assertLess(body.index("\u4e94\u7ad9\u767b\u6253\u555f\u52d5"), body.index("\u8fd4\u56de\u7de8\u8f2f"))
 
     def test_task_edit_updates_existing_task_and_marks_changed_saved_sites_for_update(self):
         create_response = self.client.post(
@@ -2481,6 +2486,61 @@ class WebAppTests(unittest.TestCase):
 
         self.assertTrue(any("2\u8eca" in error for error in errors))
 
+    def test_fuel_record_validation_requires_time_and_decimal_numbers(self):
+        task_request = app_module.request_from_form(
+            self.valid_task_data(
+                fuel_record="1",
+                fuel_date="20260607",
+                fuel_time="2460",
+                fuel_quantity="abc",
+                fuel_unit_price="30.3",
+            )
+        )
+
+        errors = app_module.validate_task_form(task_request)
+
+        self.assertIn("1\u8eca\u52a0\u6cb9\u6642\u9593\u683c\u5f0f\u9700\u70ba HHmm", errors)
+        self.assertIn("1\u8eca\u6cb9\u91cf\u9700\u70ba\u6578\u5b57", errors)
+
+    def test_new_task_page_shows_fuel_record_controls_under_each_mileage(self):
+        selected_case = AmbulanceReturnRequest(
+            task_id="case-two-fuel",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="case-two-fuel",
+            case_date="2026/06/07",
+            case_time="1024",
+            return_date="2026/06/07",
+            return_time="1119",
+            case_address="\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def1\u865f",
+            vehicle="\u65b0\u576191",
+            driver="\u66fe\u5f65\u7db8",
+            mileage="12345",
+            personnel=["\u66fe\u5f65\u7db8", "\u738b\u6631\u52db", "\u9673\u5c0f\u660e", "\u6797\u5fd7\u5049"],
+            personnel_accounts=["tyfd01510", "tyfd01111", "tyfd02222", "tyfd03333"],
+        )
+        with app_module.app.test_request_context("/app"):
+            body = html.unescape(
+                app_module.render_task_form_from_request(
+                    selected_case,
+                    form_action="/tasks",
+                    submit_label="建立任務",
+                    cancel_url="",
+                    recent_tasks=[],
+                    case_lookup={"cases": [], "case_count": 0, "debug_artifacts": []},
+                    form_errors=[],
+                    baseline_consumables_loaded=True,
+                    two_vehicle_available=True,
+                )
+            )
+
+        self.assertIn('name="fuel_record"', body)
+        self.assertIn('name="fuel_record_2"', body)
+        self.assertLess(body.index('name="mileage"'), body.index('name="fuel_record"'))
+        self.assertLess(body.index('name="mileage_2"'), body.index('name="fuel_record_2"'))
+        self.assertIn('value="20260607"', body)
+        self.assertIn('value="\u8d85\u7d1a\u67f4\u6cb9"', body)
+
     def test_task_edit_second_vehicle_fields_mark_saved_sites_for_update(self):
         previous_request = app_module.request_from_form(
             self.valid_task_data(
@@ -2507,28 +2567,42 @@ class WebAppTests(unittest.TestCase):
 
         changed = app_module.changed_sites_for_task_edit(previous_request.to_dict(), current_request.to_dict())
 
-        self.assertEqual(changed, {"duty_work_log", "vehicle_mileage", "consumables", "disinfection"})
+        self.assertEqual(changed, {"duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"})
 
-    def test_task_detail_card_order_is_work_mileage_consumables_disinfection(self):
-        create_response = self.client.post("/tasks", data=self.valid_task_data())
+    def test_task_detail_card_order_is_work_mileage_fuel_consumables_disinfection(self):
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                fuel_record="1",
+                fuel_time="1720",
+                fuel_quantity="42.122",
+                fuel_unit_price="30.3",
+            ),
+        )
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertLess(body.index("<h3>\u5de5\u4f5c</h3>"), body.index("<h3>\u91cc\u7a0b</h3>"))
-        self.assertLess(body.index("<h3>\u91cc\u7a0b</h3>"), body.index("<h3>\u8017\u6750</h3>"))
+        self.assertLess(body.index("<h3>\u91cc\u7a0b</h3>"), body.index("<h3>\u52a0\u6cb9</h3>"))
+        self.assertLess(body.index("<h3>\u52a0\u6cb9</h3>"), body.index("<h3>\u8017\u6750</h3>"))
         self.assertLess(body.index("<h3>\u8017\u6750</h3>"), body.index("<h3>\u6d88\u6bd2</h3>"))
         work = body[body.index("<h3>\u5de5\u4f5c</h3>") : body.index("<h3>\u91cc\u7a0b</h3>")]
         self.assertLess(work.index("\u5730\u5740"), work.index("\u4e8b\u7531"))
         self.assertLess(work.index("\u4e8b\u7531"), work.index("\u8eca\u8f1b"))
         self.assertLess(work.index("\u8eca\u8f1b"), work.index("\u53f8\u6a5f"))
         self.assertLess(work.index("\u53f8\u6a5f"), work.index("\u50b7\u75c5\u60a3"))
-        mileage = body[body.index("<h3>\u91cc\u7a0b</h3>") : body.index("<h3>\u8017\u6750</h3>")]
+        mileage = body[body.index("<h3>\u91cc\u7a0b</h3>") : body.index("<h3>\u52a0\u6cb9</h3>")]
         self.assertLess(mileage.index(">\u8eca\u8f1b</span>"), mileage.index(">\u51fa\u52d5</span>"))
         self.assertLess(mileage.index(">\u51fa\u52d5</span>"), mileage.index(">\u8fd4\u968a</span>"))
         self.assertLess(mileage.index(">\u8fd4\u968a</span>"), mileage.index(">\u91cc\u7a0b</span>"))
         self.assertLess(mileage.index(">\u91cc\u7a0b</span>"), mileage.index(">\u53f8\u6a5f</span>"))
+        fuel = body[body.index("<h3>\u52a0\u6cb9</h3>") : body.index("<h3>\u8017\u6750</h3>")]
+        self.assertIn("20260607", fuel)
+        self.assertIn("1720", fuel)
+        self.assertIn("42.122", fuel)
+        self.assertIn("30.3", fuel)
 
     def test_task_detail_shows_second_vehicle_values(self):
         create_response = self.client.post(
@@ -2561,14 +2635,15 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertIn("四站階段檢查", body)
+        self.assertIn("五站階段檢查", body)
         self.assertIn("登入勤務系統", body)
         self.assertIn("登入 PPE", body)
         self.assertIn("登入消毒系統", body)
         self.assertIn("登入一站通", body)
-        stage_section = body[body.index('aria-label="四站階段檢查"') :]
+        stage_section = body[body.index('aria-label="五站階段檢查"') :]
         self.assertLess(stage_section.index("<h3>工作</h3>"), stage_section.index("<h3>里程</h3>"))
-        self.assertLess(stage_section.index("<h3>里程</h3>"), stage_section.index("<h3>耗材</h3>"))
+        self.assertLess(stage_section.index("<h3>里程</h3>"), stage_section.index("<h3>加油</h3>"))
+        self.assertLess(stage_section.index("<h3>加油</h3>"), stage_section.index("<h3>耗材</h3>"))
         self.assertLess(stage_section.index("<h3>耗材</h3>"), stage_section.index("<h3>消毒</h3>"))
         self.assertIn("未執行", body)
         self.assertNotIn("未開始", body)
@@ -2625,7 +2700,7 @@ class WebAppTests(unittest.TestCase):
                 "site_key": "duty_work_log",
                 "site_name": "\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304",
                 "overall_status": "desktop_fast_completed",
-                "overall_detail": "四站登打完成。",
+                "overall_detail": "五站登打完成。",
             },
         )
         self.assertEqual(status_response.status_code, 200)
@@ -2699,7 +2774,7 @@ class WebAppTests(unittest.TestCase):
 
         detail_response = self.client.get(f"/tasks/{task_id}", base_url="http://100.114.126.58:8080")
         body = html.unescape(detail_response.data.decode("utf-8"))
-        self.assertNotIn("四站登打啟動", body)
+        self.assertNotIn("五站登打啟動", body)
         self.assertNotIn("單獨登打", body)
         self.assertIn("返回編輯", body)
 

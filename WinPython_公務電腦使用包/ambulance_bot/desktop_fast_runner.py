@@ -13,7 +13,7 @@ from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .login_audit import login_audit_for_site, with_login_audit
 from .manual_task_lock import clear_manual_task_lock, set_manual_task_lock
-from .selenium_local import run_disinfection_task, run_local_selenium_task, run_vehicle_mileage_task
+from .selenium_local import run_disinfection_task, run_fuel_record_task, run_local_selenium_task, run_vehicle_mileage_task
 from .site_diagnostics import make_site_result
 from .task_store import JsonTaskStore, now_text
 from .window_layout import maximize_worker_site_windows
@@ -74,7 +74,7 @@ class DesktopFastRunner:
         lock_owner = f"desktop_fast:{task_id}"
         set_manual_task_lock(self.artifacts_dir, lock_owner)
         self.store.set_overall_status(task_id, "desktop_fast_running", "本機快速執行已啟動。")
-        self._notify(task_id, "四站登打開始")
+        self._notify(task_id, "五站登打開始")
         request = self.store.request_for(task_id)
         profile_suffix = task_id.replace("-", "_")
         site_runners = [
@@ -92,6 +92,10 @@ class DesktopFastRunner:
             (
                 "vehicle_mileage",
                 lambda: self._run_vehicle_mileage(request, profile_suffix),
+            ),
+            (
+                "fuel_record",
+                lambda: self._run_fuel_record(request, profile_suffix),
             ),
             (
                 "consumables",
@@ -116,10 +120,10 @@ class DesktopFastRunner:
                     "desktop_fast_completed_with_errors",
                     f"本機快速執行完成，{failures} 站失敗；已略過失敗站並接續後續站別。",
                 )
-                self._notify(task_id, "四站登打部分失敗")
+                self._notify(task_id, "五站登打部分失敗")
             else:
                 self.store.set_overall_status(task_id, "desktop_fast_completed", "本機快速執行完成。")
-                self._notify(task_id, "四站登打成功")
+                self._notify(task_id, "五站登打成功")
         finally:
             maximize_worker_site_windows()
             clear_manual_task_lock(self.artifacts_dir, lock_owner)
@@ -163,6 +167,8 @@ class DesktopFastRunner:
             )
         if site_key == "vehicle_mileage":
             return lambda: self._run_vehicle_mileage(request, profile_suffix)
+        if site_key == "fuel_record":
+            return lambda: self._run_fuel_record(request, profile_suffix)
         if site_key == "disinfection":
             return lambda: self._run_disinfection(request, profile_suffix)
         if site_key == "consumables":
@@ -259,6 +265,16 @@ class DesktopFastRunner:
                 "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled",
                 open_consumable_record_for_task(driver, vehicle_request),
             ),
+        )
+
+    def _run_fuel_record(self, request, profile_suffix: str) -> SiteAutomationResult:
+        return run_fuel_record_task(
+            request,
+            self.artifacts_dir,
+            profile_name=f"fuel_record_profile_{profile_suffix}",
+            use_session_lock=False,
+            tile_name="fuel_record",
+            force_new_driver=True,
         )
 
     def _run_disinfection(self, request, profile_suffix: str):

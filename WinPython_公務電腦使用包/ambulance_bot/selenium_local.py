@@ -73,6 +73,10 @@ def _save_vehicle_mileage_enabled() -> bool:
     return _env_enabled("SAVE_VEHICLE_MILEAGE", default="true")
 
 
+def _save_fuel_record_enabled() -> bool:
+    return _env_enabled("SAVE_FUEL_RECORD", default="true")
+
+
 def _save_duty_work_log_enabled() -> bool:
     return _env_enabled("SAVE_DUTY_WORK_LOG", default="true")
 
@@ -157,6 +161,8 @@ def run_vehicle_mileage_task(
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
+    if not any(item.fuel_record.enabled for item in request.vehicle_requests()):
+        return SeleniumRunResult(True, "fuel_record_saved", "未勾選加油紀錄，已略過。", summary_path)
 
     driver = existing_driver
     lock_acquired = False
@@ -195,6 +201,60 @@ def run_vehicle_mileage_task(
             _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"vehicle_mileage {request.task_id}")
+
+
+def run_fuel_record_task(
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path,
+    existing_driver: webdriver.Chrome | None = None,
+    profile_name: str = "chrome_profile",
+    debugger_port: int | None = None,
+    use_session_lock: bool = True,
+    tile_name: str = "",
+    force_new_driver: bool = False,
+) -> SeleniumRunResult:
+    output_dir = artifacts_dir / "selenium"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = output_dir / f"{request.task_id}.txt"
+    summary_path.write_text(_task_text(request), encoding="utf-8")
+
+    driver = existing_driver
+    lock_acquired = False
+    owns_driver = existing_driver is None
+    keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+    try:
+        if use_session_lock:
+            lock_acquired = _acquire_selenium_session(f"fuel_record {request.task_id}")
+        if driver is None:
+            if debugger_port is None and not force_new_driver:
+                debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
+            driver = _create_driver(
+                artifacts_dir,
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                attach_existing=not force_new_driver,
+            )
+        apply_tile(driver, tile_name)
+        _set_window_size_if_enabled(driver, "fuel_record")
+        driver.implicitly_wait(2)
+        detail = _open_fuel_record_page(driver, request, output_dir)
+        status = "fuel_record_saved" if _save_fuel_record_enabled() else "fuel_record_prefilled"
+        return SeleniumRunResult(True, status, detail, summary_path)
+    except Exception as exc:
+        if driver is not None:
+            _save_artifacts(driver, output_dir, request.task_id, "fuel_record_error")
+        return SeleniumRunResult(False, "fuel_record_failed", f"加油紀錄操作失敗：{exc}", summary_path)
+    finally:
+        if owns_driver and not keep_browser_open:
+            _quit_driver(driver)
+        if lock_acquired:
+            _release_selenium_session(f"fuel_record {request.task_id}")
 
 
 def run_disinfection_task(
@@ -777,7 +837,7 @@ def _open_vehicle_mileage_page(
     update_context: dict[str, object] | None = None,
 ) -> str:
     try:
-        if not _ensure_ppe_vehicle_mileage_session(driver):
+        if not _ensure_ppe_vehicle_mileage_session(driver, request):
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_login")
             raise WebDriverException("PPE login did not reach vehicle mileage page")
         detail = _prepare_vehicle_mileage_form(driver, request, output_dir.parent, update_context=update_context)
@@ -789,29 +849,50 @@ def _open_vehicle_mileage_page(
     return detail
 
 
-def _ensure_ppe_vehicle_mileage_session(driver: webdriver.Chrome) -> bool:
-    username, password = _ppe_credentials()
-    attempts = int(os.getenv("PPE_LOGIN_ATTEMPTS", "3"))
-    for attempt in range(1, max(attempts, 1) + 1):
-        driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
-        if _wait_for_ppe_vehicle_mileage_page(driver, timeout=8):
+def _ensure_ppe_vehicle_mileage_session(driver: webdriver.Chrome, request: AmbulanceReturnRequest | None = None) -> bool:
+    return _ensure_ppe_session(
+        driver,
+        request,
+        target_url="https://ppe.tyfd.gov.tw/CarRecord/List",
+        wait_for_target=_wait_for_ppe_vehicle_mileage_page,
+    )
+
+
+def _ensure_ppe_fuel_record_session(driver: webdriver.Chrome, request: AmbulanceReturnRequest | None = None) -> bool:
+    return _ensure_ppe_session(
+        driver,
+        request,
+        target_url="https://ppe.tyfd.gov.tw/FUC04100/Query",
+        wait_for_target=_wait_for_ppe_fuel_record_page,
+    )
+
+
+def _ensure_ppe_session(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest | None,
+    *,
+    target_url: str,
+    wait_for_target,
+) -> bool:
+    credential_attempts = _ppe_credential_attempts(request)
+    if not credential_attempts:
+        raise WebDriverException("missing PPE login credentials")
+    for username, password in credential_attempts:
+        driver.get(target_url)
+        if wait_for_target(driver, timeout=8):
             return True
         if not _is_ppe_login_page(driver):
             continue
-        if not (username and password):
-            raise WebDriverException("missing PPE login credentials")
-
         driver.find_element(By.ID, "Account").clear()
         driver.find_element(By.ID, "Account").send_keys(username)
         driver.find_element(By.ID, "Password").clear()
         driver.find_element(By.ID, "Password").send_keys(password)
         _click_ppe_login(driver)
         if _wait_for_ppe_login_result(driver, timeout=12):
-            driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
-        if _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
+            driver.get(target_url)
+        if wait_for_target(driver, timeout=12):
             return True
-        if attempt < attempts:
-            time.sleep(1)
+        time.sleep(1)
     return False
 
 
@@ -824,6 +905,37 @@ def _ppe_credentials() -> tuple[str, str]:
             return username, password
         return "", ""
     return saved.user_id, saved.password
+
+
+def _ppe_credential_attempts(request: AmbulanceReturnRequest | None = None) -> list[tuple[str, str]]:
+    attempts: list[tuple[str, str]] = []
+    if request is not None:
+        driver_credential = load_duty_credential(
+            request.duty_login_account_candidates,
+            fallback_user_id="",
+            allow_default=False,
+        )
+        if driver_credential is not None:
+            attempts.append((driver_credential.user_id, driver_credential.password))
+    synced = load_synced_worker_credential()
+    if synced is not None:
+        attempts.append((synced.user_id, synced.password))
+    else:
+        username = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
+        password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
+        if username and password:
+            attempts.append((username, password))
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for username, password in attempts:
+        if not (username and password):
+            continue
+        key = username.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((username, password))
+    return deduped
 
 
 def _click_ppe_login(driver: webdriver.Chrome) -> None:
@@ -1104,6 +1216,19 @@ def _is_ppe_vehicle_mileage_page(driver: webdriver.Chrome) -> bool:
     )
 
 
+def _is_ppe_fuel_record_page(driver: webdriver.Chrome) -> bool:
+    return bool(
+        driver.execute_script(
+            """
+            if (!!document.getElementById('Account') && !!document.getElementById('Password')) return false;
+            const path = String(location.pathname || '');
+            const text = document.body ? document.body.innerText : '';
+            return path.includes('/FUC04100') || text.includes('登打油耗里程') || text.includes('加油紀錄');
+            """
+        )
+    )
+
+
 def _wait_for_ppe_vehicle_mileage_page(driver: webdriver.Chrome, timeout: int = 12) -> bool:
     try:
         WebDriverWait(driver, timeout).until(
@@ -1112,6 +1237,16 @@ def _wait_for_ppe_vehicle_mileage_page(driver: webdriver.Chrome, timeout: int = 
     except TimeoutException:
         return False
     return _is_ppe_vehicle_mileage_page(driver)
+
+
+def _wait_for_ppe_fuel_record_page(driver: webdriver.Chrome, timeout: int = 12) -> bool:
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda current: _is_ppe_fuel_record_page(current) or _is_ppe_login_page(current)
+        )
+    except TimeoutException:
+        return False
+    return _is_ppe_fuel_record_page(driver)
 
 
 def _wait_for_ppe_login_result(driver: webdriver.Chrome, timeout: int = 12) -> bool:
@@ -1171,6 +1306,210 @@ def _prepare_vehicle_mileage_form(
         return "已修正原車輛里程列，未按儲存。"
 
     return _add_vehicle_mileage_record(driver, request, artifacts_dir)
+
+
+def _open_fuel_record_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
+    fuel_requests = [item for item in request.vehicle_requests() if item.fuel_record.enabled]
+    if not fuel_requests:
+        return "未勾選加油紀錄，已略過。"
+    if not _ensure_ppe_fuel_record_session(driver, request):
+        _save_artifacts(driver, output_dir, request.task_id, "fuel_record_login")
+        raise WebDriverException("PPE login did not reach fuel record page")
+    details: list[str] = []
+    for vehicle_request in fuel_requests:
+        details.append(_prepare_fuel_record_form(driver, vehicle_request, output_dir.parent))
+    _save_artifacts(driver, output_dir, request.task_id, "fuel_record")
+    return " ".join(details)
+
+
+def _prepare_fuel_record_form(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path | None = None,
+) -> str:
+    fuel = request.fuel_record
+    driver.get("https://ppe.tyfd.gov.tw/FUC04100/Query")
+    if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
+        raise WebDriverException("PPE session returned to login page before fuel record query")
+    target_period = f"{fuel.date[:4]}/{fuel.date[4:6]}"
+    current_period = _fuel_query_period(driver)
+    if current_period and current_period != target_period:
+        raise WebDriverException(f"fuel period mismatch: page={current_period} task={target_period}")
+    vehicle_label = vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
+    _click_fuel_card_register(driver, vehicle_label)
+    if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
+        raise WebDriverException("fuel detail page did not open")
+    _click_fuel_add_row(driver)
+    _fill_fuel_grid_record(driver, request)
+    _assert_fuel_grid_record_present(driver, request)
+    if _save_fuel_record_enabled():
+        return _save_fuel_record_form(driver, request)
+    return f"{request.vehicle} 已填寫加油紀錄，未按儲存。"
+
+
+def _fuel_query_period(driver: webdriver.Chrome) -> str:
+    try:
+        return str(
+            driver.execute_script(
+                "return document.getElementById('FuelUseYM') ? document.getElementById('FuelUseYM').value : '';"
+            )
+            or ""
+        ).strip()
+    except WebDriverException:
+        return ""
+
+
+def _click_fuel_card_register(driver: webdriver.Chrome, vehicle_label: str) -> None:
+    clicked = bool(
+        driver.execute_script(
+            """
+            const vehicle = arguments[0];
+            const rows = Array.from(document.querySelectorAll('tr,[role="row"]'));
+            for (const row of rows) {
+              const rowText = String(row.innerText || '').replace(/\\s+/g, ' ');
+              if (!rowText.includes(vehicle)) continue;
+              const controls = Array.from(row.querySelectorAll('button,a,input[type=button],input[type=submit]'));
+              const target = controls.find(el => {
+                const text = [el.innerText, el.value, el.textContent, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
+                return text.includes('登錄') && !text.includes('送出審核');
+              });
+              if (target) {
+                target.scrollIntoView({block: 'center', inline: 'center'});
+                target.click();
+                return true;
+              }
+            }
+            return false;
+            """,
+            vehicle_label,
+        )
+    )
+    if not clicked:
+        raise WebDriverException(f"fuel card not found: {vehicle_label}")
+    time.sleep(1.5)
+
+
+def _click_fuel_add_row(driver: webdriver.Chrome) -> None:
+    clicked = bool(
+        driver.execute_script(
+            """
+            const controls = Array.from(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));
+            const target = controls.find(el => {
+              if (!el || el.disabled) return false;
+              const text = [el.innerText, el.value, el.textContent, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
+              return text.includes('新增') && !text.includes('送出審核');
+            });
+            if (!target) return false;
+            target.scrollIntoView({block: 'center', inline: 'center'});
+            target.click();
+            return true;
+            """
+        )
+    )
+    if not clicked:
+        raise WebDriverException("missing fuel add button")
+    time.sleep(1)
+
+
+def _fill_fuel_grid_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> None:
+    fuel = request.fuel_record
+    result = driver.execute_script(
+        """
+        const fuel = arguments[0];
+        const grid = window.jQuery ? jQuery('#grid').data('kendoGrid') : null;
+        if (!grid) return {ok: false, reason: 'missing grid'};
+        let item = Array.from(grid.dataSource.data()).find(row => Number(row.FCUseID || 0) === 0);
+        if (!item) {
+          grid.addRow();
+          item = Array.from(grid.dataSource.data()).find(row => Number(row.FCUseID || 0) === 0);
+        }
+        if (!item) return {ok: false, reason: 'missing new row'};
+        const scripts = Array.from(document.scripts).map(s => String(s.textContent || '')).join('\\n');
+        const escapeRegex = value => String(value).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+        function lookupValue(text, fieldName) {
+          const direct = new RegExp('"Value"\\\\s*:\\\\s*"([^"]+)"\\\\s*,\\\\s*"Text"\\\\s*:\\\\s*"' + escapeRegex(text) + '"').exec(scripts);
+          if (direct) return direct[1];
+          const rows = Array.from(grid.dataSource.data());
+          const matched = rows.find(row => String(row[fieldName + 'Name'] || '') === text);
+          return matched ? matched[fieldName] : null;
+        }
+        const driverValue = lookupValue(fuel.driver, 'Driver');
+        const fuelTypeValue = lookupValue(fuel.product, 'FuelType') || 535;
+        if (!driverValue) return {ok: false, reason: 'missing driver'};
+        const date = `${fuel.date.slice(0, 4)}-${fuel.date.slice(4, 6)}-${fuel.date.slice(6, 8)}T${fuel.time.slice(0, 2)}:${fuel.time.slice(2, 4)}:00`;
+        const qty = Number(fuel.quantity);
+        const price = Number(fuel.unit_price);
+        item.set('FuelDate', date);
+        item.set('FuelTime', fuel.time);
+        item.set('DriverName', fuel.driver);
+        item.set('Driver', Number(driverValue));
+        item.set('FuelTypeName', fuel.product);
+        item.set('FuelType', Number(fuelTypeValue));
+        item.set('FuelQty', qty);
+        item.set('FuelPrice', price);
+        item.set('FuelAmount', Math.round(qty * price));
+        item.set('MUserName', fuel.driver);
+        item.set('CreateBy', fuel.driver);
+        grid.refresh();
+        return {ok: true};
+        """,
+        {
+            "date": fuel.date,
+            "time": fuel.time,
+            "driver": fuel.driver or request.driver,
+            "product": fuel.product,
+            "quantity": fuel.quantity,
+            "unit_price": fuel.unit_price,
+        },
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        raise WebDriverException(f"fuel grid fill failed: {result}")
+
+
+def _assert_fuel_grid_record_present(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> None:
+    fuel = request.fuel_record
+    present = bool(
+        driver.execute_script(
+            """
+            const fuel = arguments[0];
+            const text = document.body ? document.body.innerText : '';
+            return text.includes(fuel.date) && text.includes(fuel.time) && text.includes(fuel.driver)
+              && text.includes(fuel.product) && text.includes(String(fuel.quantity)) && text.includes(String(fuel.unit_price));
+            """,
+            {
+                "date": fuel.date,
+                "time": fuel.time,
+                "driver": fuel.driver or request.driver,
+                "product": fuel.product,
+                "quantity": fuel.quantity,
+                "unit_price": fuel.unit_price,
+            },
+        )
+    )
+    if not present:
+        raise WebDriverException("fuel grid values not visible after fill")
+
+
+def _save_fuel_record_form(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
+    called = bool(
+        driver.execute_script(
+            """
+            if (typeof SaveData !== 'function') return false;
+            SaveData('save');
+            return true;
+            """
+        )
+    )
+    if not called:
+        raise WebDriverException("missing fuel save function")
+    alert_text = _accept_alert_if_present(driver)
+    sweetalert_text = _confirm_sweetalert_if_present(driver)
+    final_alert_text = _accept_alert_if_present(driver, timeout=1)
+    if _is_ppe_login_page(driver):
+        raise WebDriverException("PPE session returned to login page after fuel save")
+    confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
+    suffix = f"：{' / '.join(confirmations)}" if confirmations else "。"
+    return f"{request.vehicle} 已填寫加油紀錄並按下儲存{suffix}"
 
 
 def _add_vehicle_mileage_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest, artifacts_dir: Path | None = None) -> str:

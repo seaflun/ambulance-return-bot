@@ -30,6 +30,9 @@ class DesktopFastRunnerTests(unittest.TestCase):
                 "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
                 return_value=SimpleNamespace(status="vehicle_mileage_saved", detail="mileage ok"),
             ) as mileage_mock, patch(
+                "ambulance_bot.desktop_fast_runner.run_fuel_record_task",
+                return_value=SimpleNamespace(status="fuel_record_saved", detail="fuel ok"),
+            ) as fuel_mock, patch(
                 "ambulance_bot.desktop_fast_runner.login_disinfection_and_get_driver",
                 return_value=Mock(name="disinfection_driver"),
             ) as disinfection_login_mock, patch(
@@ -50,10 +53,12 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertFalse(manual_task_lock_path(Path(tmp)).exists())
             self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
             self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
+            self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
             self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_saved")
             self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_saved")
             duty_mock.assert_called_once()
             mileage_mock.assert_called_once()
+            fuel_mock.assert_called_once()
             self.assertEqual(mileage_mock.call_args.kwargs["profile_name"], "vehicle_mileage_profile_task_1")
             self.assertTrue(mileage_mock.call_args.kwargs["force_new_driver"])
             disinfection_login_mock.assert_called_once()
@@ -80,6 +85,9 @@ class DesktopFastRunnerTests(unittest.TestCase):
             ), patch(
                 "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
                 return_value=SimpleNamespace(ok=True, status="vehicle_mileage_saved", detail="mileage ok"),
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.run_fuel_record_task",
+                return_value=SimpleNamespace(ok=True, status="fuel_record_saved", detail="fuel ok"),
             ), patch(
                 "ambulance_bot.desktop_fast_runner.login_disinfection_and_get_driver",
                 return_value=Mock(name="disinfection_driver"),
@@ -127,6 +135,9 @@ class DesktopFastRunnerTests(unittest.TestCase):
             ) as duty_mock, patch(
                 "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
             ) as mileage_mock, patch(
+                "ambulance_bot.desktop_fast_runner.run_fuel_record_task",
+                return_value=SimpleNamespace(ok=True, status="fuel_record_saved", detail="fuel skipped"),
+            ) as fuel_mock, patch(
                 "ambulance_bot.desktop_fast_runner.login_disinfection_and_get_driver",
                 return_value=Mock(name="disinfection_driver"),
             ) as disinfection_login_mock, patch(
@@ -179,6 +190,9 @@ class DesktopFastRunnerTests(unittest.TestCase):
             ) as duty_mock, patch(
                 "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
             ) as mileage_mock, patch(
+                "ambulance_bot.desktop_fast_runner.run_fuel_record_task",
+                return_value=SimpleNamespace(ok=True, status="fuel_record_saved", detail="fuel skipped"),
+            ) as fuel_mock, patch(
                 "ambulance_bot.desktop_fast_runner.login_disinfection_and_get_driver",
                 return_value=Mock(name="disinfection_driver"),
             ) as disinfection_login_mock, patch(
@@ -198,10 +212,12 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertEqual(payload["overall_status"], "desktop_fast_completed")
             self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
             self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
+            self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
             self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_saved")
             self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_saved")
             duty_mock.assert_not_called()
             mileage_mock.assert_not_called()
+            fuel_mock.assert_called_once()
             disinfection_login_mock.assert_called_once()
             disinfection_mock.assert_called_once()
             acs_login_mock.assert_called_once()

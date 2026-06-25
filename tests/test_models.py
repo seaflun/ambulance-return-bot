@@ -176,6 +176,11 @@ class ModelParsingTests(unittest.TestCase):
                 "patient_summary": "\u7537\u4e00\u540d",
                 "consumables": "\u53e3\u7f69=2,\u624b\u5957=2",
                 "disinfection_items": ["\u6551\u8b77\u8eca\u9ad4"],
+                "fuel_record": "1",
+                "fuel_date": "",
+                "fuel_time": "1720",
+                "fuel_quantity": "42.122",
+                "fuel_unit_price": "30.3",
                 "vehicle_2": "\u65b0\u576192",
                 "driver_2": "\u9673\u5c0f\u660e",
                 "return_date_2": "2026/06/02",
@@ -184,6 +189,11 @@ class ModelParsingTests(unittest.TestCase):
                 "patient_summary_2": "\u7121",
                 "consumables_2": "\u8033\u6eab\u5957=1",
                 "disinfection_items_2": ["\u64d4\u67b6\u5e8a"],
+                "fuel_record_2": "1",
+                "fuel_date_2": "20260603",
+                "fuel_time_2": "1735",
+                "fuel_quantity_2": "40.5",
+                "fuel_unit_price_2": "31",
             }
         )
 
@@ -195,6 +205,17 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.vehicle_entries[1].return_time, "0210")
         self.assertEqual(request.vehicle_entries[1].consumables, {"\u8033\u6eab\u5957": 1})
         self.assertEqual(request.vehicle_entries[1].disinfection_items, ["\u64d4\u67b6\u5e8a"])
+        self.assertTrue(request.vehicle_entries[0].fuel_record.enabled)
+        self.assertEqual(request.vehicle_entries[0].fuel_record.date, "20260602")
+        self.assertEqual(request.vehicle_entries[0].fuel_record.time, "1720")
+        self.assertEqual(request.vehicle_entries[0].fuel_record.driver, "\u66fe\u5f65\u7db8")
+        self.assertEqual(request.vehicle_entries[0].fuel_record.product, "\u8d85\u7d1a\u67f4\u6cb9")
+        self.assertEqual(request.vehicle_entries[0].fuel_record.quantity, "42.122")
+        self.assertEqual(request.vehicle_entries[0].fuel_record.unit_price, "30.3")
+        self.assertTrue(request.vehicle_entries[1].fuel_record.enabled)
+        self.assertEqual(request.vehicle_entries[1].fuel_record.date, "20260603")
+        self.assertEqual(request.vehicle_entries[1].fuel_record.time, "1735")
+        self.assertEqual(request.vehicle_entries[1].fuel_record.driver, "\u9673\u5c0f\u660e")
         self.assertEqual(
             request.duty_status_text,
             "1.\u65b0\u576191:\u66fe\u5f65\u7db8 \u65b0\u576192:\u9673\u5c0f\u660e\n2.\u7537\u4e00\u540d",

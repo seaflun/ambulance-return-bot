@@ -285,12 +285,14 @@ class SeleniumLocalTests(unittest.TestCase):
         class FakeInput:
             def __init__(self):
                 self.values: list[str] = []
+                self.history: list[str] = []
 
             def clear(self):
                 self.values.clear()
 
             def send_keys(self, value: str):
                 self.values.append(value)
+                self.history.append(value)
 
         class FakeDriver:
             def __init__(self):
@@ -303,7 +305,7 @@ class SeleniumLocalTests(unittest.TestCase):
             def find_element(self, by, value: str):
                 return self.inputs[value]
 
-        original_credentials = selenium_local_module._ppe_credentials
+        original_credentials = selenium_local_module._ppe_credential_attempts
         original_wait = selenium_local_module._wait_for_ppe_vehicle_mileage_page
         original_wait_login = selenium_local_module._wait_for_ppe_login_result
         original_is_login = selenium_local_module._is_ppe_login_page
@@ -312,7 +314,7 @@ class SeleniumLocalTests(unittest.TestCase):
         try:
             wait_results = iter([False, True])
             click_count = {"value": 0}
-            selenium_local_module._ppe_credentials = lambda: ("tyfd00008", "pass")
+            selenium_local_module._ppe_credential_attempts = lambda request=None: [("tyfd00008", "pass")]
             selenium_local_module._wait_for_ppe_vehicle_mileage_page = lambda driver, timeout=12: next(wait_results)
             selenium_local_module._wait_for_ppe_login_result = lambda driver, timeout=12: True
             selenium_local_module._is_ppe_login_page = lambda driver: True
@@ -322,7 +324,7 @@ class SeleniumLocalTests(unittest.TestCase):
             driver = FakeDriver()
             result = _ensure_ppe_vehicle_mileage_session(driver)
         finally:
-            selenium_local_module._ppe_credentials = original_credentials
+            selenium_local_module._ppe_credential_attempts = original_credentials
             selenium_local_module._wait_for_ppe_vehicle_mileage_page = original_wait
             selenium_local_module._wait_for_ppe_login_result = original_wait_login
             selenium_local_module._is_ppe_login_page = original_is_login
@@ -334,6 +336,93 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(click_count["value"], 1)
         self.assertEqual(driver.inputs["Account"].values, ["tyfd00008"])
         self.assertEqual(driver.inputs["Password"].values, ["pass"])
+
+    def test_ppe_session_falls_back_to_synced_account_after_one_driver_login_failure(self):
+        class FakeInput:
+            def __init__(self):
+                self.values: list[str] = []
+                self.history: list[str] = []
+
+            def clear(self):
+                self.values.clear()
+
+            def send_keys(self, value: str):
+                self.values.append(value)
+                self.history.append(value)
+
+        class FakeDriver:
+            def __init__(self):
+                self.get_calls: list[str] = []
+                self.inputs = {"Account": FakeInput(), "Password": FakeInput()}
+
+            def get(self, url: str):
+                self.get_calls.append(url)
+
+            def find_element(self, by, value: str):
+                return self.inputs[value]
+
+        previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+        previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+        request = AmbulanceReturnRequest(
+            task_id="task-ppe-fallback",
+            created_at=datetime.now(),
+            raw_text="",
+            driver="司機甲",
+            personnel=["司機甲"],
+            personnel_accounts=["tyfd01111"],
+        )
+        original_wait = selenium_local_module._wait_for_ppe_vehicle_mileage_page
+        original_wait_login = selenium_local_module._wait_for_ppe_login_result
+        original_is_login = selenium_local_module._is_ppe_login_page
+        original_click = selenium_local_module._click_ppe_login
+        original_sleep = selenium_local_module.time.sleep
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_duty_automation_credentials(
+                    [
+                        {"actor_no": "11", "name": "司機甲", "user_id": "tyfd01111", "password": "driver-pass"},
+                        {"actor_no": "22", "name": "同步員", "user_id": "tyfd02222", "password": "synced-pass"},
+                    ],
+                    last_selected="tyfd02222",
+                )
+                page_checks = iter([False, False, False, True])
+                login_results = iter([False, True])
+                selenium_local_module._wait_for_ppe_vehicle_mileage_page = lambda driver, timeout=12: next(page_checks)
+                selenium_local_module._wait_for_ppe_login_result = lambda driver, timeout=12: next(login_results)
+                selenium_local_module._is_ppe_login_page = lambda driver: True
+                selenium_local_module._click_ppe_login = lambda driver: None
+                selenium_local_module.time.sleep = lambda seconds: None
+
+                driver = FakeDriver()
+                result = _ensure_ppe_vehicle_mileage_session(driver, request)
+        finally:
+            selenium_local_module._wait_for_ppe_vehicle_mileage_page = original_wait
+            selenium_local_module._wait_for_ppe_login_result = original_wait_login
+            selenium_local_module._is_ppe_login_page = original_is_login
+            selenium_local_module._click_ppe_login = original_click
+            selenium_local_module.time.sleep = original_sleep
+            if previous_path is None:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+            else:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+            if previous_override is None:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+            else:
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertTrue(result)
+        self.assertEqual(driver.inputs["Account"].history, ["tyfd01111", "tyfd02222"])
+        self.assertEqual(driver.inputs["Password"].history, ["driver-pass", "synced-pass"])
+        self.assertEqual(
+            driver.get_calls,
+            [
+                "https://ppe.tyfd.gov.tw/CarRecord/List",
+                "https://ppe.tyfd.gov.tw/CarRecord/List",
+                "https://ppe.tyfd.gov.tw/CarRecord/List",
+            ],
+        )
 
     def test_case_lookup_runs_headless_and_closes_driver_after_login_failure(self):
         class FakeDriver:
@@ -507,6 +596,12 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertTrue(_click_disinfection_save(disinfection_driver))
         self.assertIn("SaveData", mileage_driver.scripts[0])
         self.assertIn("_btnSave", disinfection_driver.scripts[0])
+
+    def test_fuel_record_save_never_uses_submit_action(self):
+        source = Path(selenium_local_module.__file__).read_text(encoding="utf-8")
+
+        self.assertIn("SaveData('save')", source)
+        self.assertNotIn("SaveData('submit')", source)
 
     def test_duty_work_log_login_uses_personnel_accounts(self):
         class FakeDriver:

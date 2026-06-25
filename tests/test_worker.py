@@ -306,6 +306,7 @@ class WorkerTests(unittest.TestCase):
         original_fetch_payload = worker_module.fetch_task_payload
         original_run_task = worker_module.run_task
         original_run_vehicle = worker_module.run_vehicle_task
+        original_run_fuel = worker_module.run_fuel_worker_task
         original_run_disinfection = worker_module.run_disinfection_worker_task
         original_run_consumables = worker_module.run_consumables_worker_task
         original_post_status = worker_module.post_status
@@ -318,6 +319,9 @@ class WorkerTests(unittest.TestCase):
             )
             worker_module.run_vehicle_task = lambda *args, **kwargs: calls.append("vehicle_mileage") or SimpleNamespace(
                 ok=True, status="vehicle_mileage_saved", detail="mileage ok"
+            )
+            worker_module.run_fuel_worker_task = lambda *args, **kwargs: calls.append("fuel_record") or SimpleNamespace(
+                ok=True, status="fuel_record_saved", detail="fuel ok"
             )
             worker_module.run_disinfection_worker_task = lambda *args, **kwargs: calls.append("disinfection") or SimpleNamespace(
                 ok=True, status="disinfection_saved", detail="disinfection ok"
@@ -339,11 +343,12 @@ class WorkerTests(unittest.TestCase):
             worker_module.fetch_task_payload = original_fetch_payload
             worker_module.run_task = original_run_task
             worker_module.run_vehicle_task = original_run_vehicle
+            worker_module.run_fuel_worker_task = original_run_fuel
             worker_module.run_disinfection_worker_task = original_run_disinfection
             worker_module.run_consumables_worker_task = original_run_consumables
             worker_module.post_status = original_post_status
 
-        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"])
+        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"])
         self.assertEqual(result.status, "disinfection_saved")
         self.assertEqual(statuses[-1][0], "desktop_fast_completed")
         self.assertEqual(statuses[-1][2], "")
@@ -352,6 +357,7 @@ class WorkerTests(unittest.TestCase):
         original_fetch_payload = worker_module.fetch_task_payload
         original_run_task = worker_module.run_task
         original_run_vehicle = worker_module.run_vehicle_task
+        original_run_fuel = worker_module.run_fuel_worker_task
         original_run_disinfection = worker_module.run_disinfection_worker_task
         original_run_consumables = worker_module.run_consumables_worker_task
         original_post_status = worker_module.post_status
@@ -364,6 +370,9 @@ class WorkerTests(unittest.TestCase):
             )
             worker_module.run_vehicle_task = lambda *args, **kwargs: calls.append("vehicle_mileage") or SimpleNamespace(
                 ok=True, status="vehicle_mileage_saved", detail="mileage ok"
+            )
+            worker_module.run_fuel_worker_task = lambda *args, **kwargs: calls.append("fuel_record") or SimpleNamespace(
+                ok=True, status="fuel_record_saved", detail="fuel ok"
             )
             worker_module.run_consumables_worker_task = lambda *args, **kwargs: calls.append("consumables") or SimpleNamespace(
                 ok=False, status="consumables_failed", detail="login failed"
@@ -385,11 +394,12 @@ class WorkerTests(unittest.TestCase):
             worker_module.fetch_task_payload = original_fetch_payload
             worker_module.run_task = original_run_task
             worker_module.run_vehicle_task = original_run_vehicle
+            worker_module.run_fuel_worker_task = original_run_fuel
             worker_module.run_disinfection_worker_task = original_run_disinfection
             worker_module.run_consumables_worker_task = original_run_consumables
             worker_module.post_status = original_post_status
 
-        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"])
+        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"])
         self.assertEqual(result.status, "consumables_failed")
         self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
         self.assertIn("1 站失敗", statuses[-1][1])
@@ -423,7 +433,7 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("讀取任務狀態失敗", result.detail)
         self.assertIn("NAS timeout", result.detail)
         self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
-        self.assertIn("四站流程已停止", statuses[-1][1])
+        self.assertIn("五站流程已停止", statuses[-1][1])
 
     def test_auto_claim_run_all_sites_marks_error_when_status_payload_is_missing(self):
         original_fetch_payload = worker_module.fetch_task_payload

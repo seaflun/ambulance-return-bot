@@ -69,16 +69,18 @@ desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 _local_case_lookup_thread_lock = threading.Lock()
 _local_case_lookup_thread: threading.Thread | None = None
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
-SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"]
+SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"]
 SITE_SHORT_NAMES = {
     "duty_work_log": "工作",
     "vehicle_mileage": "里程",
+    "fuel_record": "加油",
     "disinfection": "消毒",
     "consumables": "耗材",
 }
 SITE_UPDATE_BUTTON_LABELS = {
     "duty_work_log": "更新工作",
     "vehicle_mileage": "更新里程",
+    "fuel_record": "更新加油",
     "consumables": "更新耗材",
     "disinfection": "更新消毒",
 }
@@ -253,7 +255,7 @@ def run_task(task_id: str):
         abort(404)
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
-        report_public_pc_task_event(store.get(task_id), "按下四站登打")
+        report_public_pc_task_event(store.get(task_id), "按下五站登打")
         desktop_runner.start_existing(task_id)
         return redirect(url_for("task_detail", task_id=task_id))
     if mode == "worker_queue":
@@ -279,7 +281,7 @@ def run_task_site(task_id: str, site_key: str):
         store.set_overall_status(
             task_id,
             "desktop_fast_unavailable",
-            "單站登打只能在本機網頁使用；手機/NAS 請使用四站登打或公務電腦 worker。",
+            "單站登打只能在本機網頁使用；手機/NAS 請使用五站登打或公務電腦 worker。",
         )
     return redirect(url_for("task_detail", task_id=task_id))
 
@@ -1284,6 +1286,8 @@ def changed_sites_for_task_edit(previous_task: dict, current_task: dict) -> set[
         changed_sites.update({"duty_work_log", "vehicle_mileage"})
     if task_fields_changed(previous_task, current_task, ("mileage", "return_date", "return_time")):
         changed_sites.add("vehicle_mileage")
+    if task_fields_changed(previous_task, current_task, ("fuel_record",)):
+        changed_sites.add("fuel_record")
     if task_fields_changed(previous_task, current_task, ("case_reason", "patient_summary", "work_note")):
         changed_sites.add("duty_work_log")
     if task_fields_changed(previous_task, current_task, ("consumables",)):
@@ -1294,6 +1298,8 @@ def changed_sites_for_task_edit(previous_task: dict, current_task: dict) -> set[
         changed_sites.add("duty_work_log")
     if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "driver", "mileage", "return_date", "return_time")):
         changed_sites.add("vehicle_mileage")
+    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "driver", "fuel_record")):
+        changed_sites.add("fuel_record")
     if task_vehicle_entries_changed(previous_task, current_task, ("consumables",)):
         changed_sites.add("consumables")
     if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "disinfection", "disinfection_items")):
@@ -1533,7 +1539,7 @@ def task_progress_summary(payload: dict) -> str:
         return f"已完成 {completed_count}/{total_count}；待確認：{waiting_site}"
 
     if completed_count == total_count:
-        return "四站完成"
+        return f"{total_count}\u7ad9\u5b8c\u6210"
     if len(failed_sites) == 1:
         return f"已完成 {completed_count}/{total_count}；失敗：{failed_sites[0]}"
     if failed_sites:
@@ -1545,7 +1551,7 @@ def task_progress_summary(payload: dict) -> str:
     if overall_status == "claimed_by_worker":
         return f"已完成 {completed_count}/{total_count}；worker 已接手"
     if status_class(effective_task_status(payload)) == "running":
-        return f"已完成 {completed_count}/{total_count}；四站登打中"
+        return f"已完成 {completed_count}/{total_count}；{total_count}\u7ad9\u767b\u6253\u4e2d"
     if status_class(effective_task_status(payload)) == "failed":
         return f"已完成 {completed_count}/{total_count}；流程有錯誤"
     return f"已完成 {completed_count}/{total_count}；尚未開始"
@@ -1579,6 +1585,16 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
             for name, qty in consumables.items()
             if str(name or "").strip() and _positive_quantity(qty)
         ]
+        fuel_record = entry.get("fuel_record") if isinstance(entry.get("fuel_record"), dict) else {}
+        fuel_enabled = form_flag_enabled(fuel_record.get("enabled")) if fuel_record else False
+        fuel_parts = [
+            str(fuel_record.get("date") or "").strip(),
+            str(fuel_record.get("time") or "").strip(),
+            str(fuel_record.get("driver") or "").strip(),
+            str(fuel_record.get("product") or "").strip(),
+            str(fuel_record.get("quantity") or "").strip(),
+            str(fuel_record.get("unit_price") or "").strip(),
+        ]
         display_entries.append(
             {
                 "label": f"{index}\u8eca" if multiple else "\u8eca\u8f1b",
@@ -1589,6 +1605,7 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
                 "return_time": str(entry.get("return_time") or "").strip(),
                 "patient_summary": str(entry.get("patient_summary") or "").strip(),
                 "consumables_summary": "\u3001".join(consumable_parts),
+                "fuel_summary": " / ".join(part for part in fuel_parts if part) if fuel_enabled else "\u672a\u52fe\u9078",
                 "disinfection": str(entry.get("disinfection") or "").strip(),
                 "disinfection_items": [
                     str(item).strip()
@@ -1743,7 +1760,7 @@ def visible_events(events: list[dict]) -> list[dict]:
             continue
         seen_sites.add(site_key)
         important.append(event)
-        if len(important) >= 4:
+        if len(important) >= len(SITE_RUN_ORDER):
             break
     return list(reversed(important))
 
@@ -1753,6 +1770,8 @@ def event_site_key(event: dict) -> str:
     detail = str(event.get("detail") or "")
     if status.startswith("vehicle_mileage") or "車輛里程" in detail:
         return "vehicle_mileage"
+    if status.startswith("fuel_record") or "加油" in detail or "油耗" in detail:
+        return "fuel_record"
     if status.startswith("consumables") or "一站通耗材" in detail:
         return "consumables"
     if status.startswith("disinfection") or "緊急救護消毒" in detail:
@@ -1838,6 +1857,8 @@ def event_site_name(event: dict) -> str:
     detail = str(event.get("detail") or "")
     if status.startswith("vehicle_mileage") or "車輛里程" in detail:
         return "里程"
+    if status.startswith("fuel_record") or "加油" in detail or "油耗" in detail:
+        return "加油"
     if status.startswith("consumables") or "一站通耗材" in detail or "耗材" in detail:
         return "耗材"
     if status.startswith("disinfection") or "緊急救護消毒" in detail or "消毒" in detail:
@@ -2054,6 +2075,7 @@ def validate_task_form(task_request) -> list[str]:
                 errors.append(f"{label}\u91cc\u7a0b\u53ea\u80fd\u8f38\u5165\u6578\u5b57")
             if not vehicle_request.consumables:
                 errors.append(f"\u8acb\u586b\u5beb{label}\u8017\u6750")
+            errors.extend(validate_fuel_record(vehicle_request.fuel_record, label))
 
             case_time = normalize_hhmm(vehicle_request.case_time)
             return_time = normalize_hhmm(vehicle_request.return_time)
@@ -2088,6 +2110,7 @@ def validate_task_form(task_request) -> list[str]:
         errors.append("里程只能輸入數字")
     if not task_request.consumables:
         errors.append("請選擇耗材")
+    errors.extend(validate_fuel_record(task_request.fuel_record, "1\u8eca"))
 
     case_time = normalize_hhmm(task_request.case_time)
     return_time = normalize_hhmm(task_request.return_time)
@@ -2106,6 +2129,25 @@ def validate_task_form(task_request) -> list[str]:
         )
         if return_datetime < case_datetime:
             errors.append("返隊日期時間不能早於案件日期時間")
+    return errors
+
+
+def validate_fuel_record(fuel_record, label: str) -> list[str]:
+    if not getattr(fuel_record, "enabled", False):
+        return []
+    errors: list[str] = []
+    date = str(getattr(fuel_record, "date", "") or "").strip()
+    time_value = str(getattr(fuel_record, "time", "") or "").strip()
+    quantity = str(getattr(fuel_record, "quantity", "") or "").strip()
+    unit_price = str(getattr(fuel_record, "unit_price", "") or "").strip()
+    if not re.fullmatch(r"\d{8}", date):
+        errors.append(f"{label}\u52a0\u6cb9\u65e5\u671f\u683c\u5f0f\u9700\u70ba YYYYMMDD")
+    if not re.fullmatch(r"([01]\d|2[0-3])[0-5]\d", time_value):
+        errors.append(f"{label}\u52a0\u6cb9\u6642\u9593\u683c\u5f0f\u9700\u70ba HHmm")
+    if not re.fullmatch(r"\d+(?:\.\d+)?", quantity):
+        errors.append(f"{label}\u6cb9\u91cf\u9700\u70ba\u6578\u5b57")
+    if not re.fullmatch(r"\d+(?:\.\d+)?", unit_price):
+        errors.append(f"{label}\u55ae\u50f9\u9700\u70ba\u6578\u5b57")
     return errors
 
 

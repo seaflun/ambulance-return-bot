@@ -179,6 +179,10 @@
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
     .two-vehicle-toggle { width: fit-content; margin: 0 0 16px; }
     .mileage-hint { min-height: 22px; margin: 6px 0 0; color: var(--muted); font-size: var(--text-sm); font-weight: 650; }
+    .fuel-record-toggle { width: fit-content; margin: 8px 0 14px; }
+    .fuel-record-fields { margin: -4px 0 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .fuel-record-fields[hidden] { display: none; }
+    .fuel-record-fields .grid:last-child label { margin-bottom: 0; }
     .vehicle-section-title { display: none; margin: 4px 0 14px; padding-top: 2px; color: var(--accent); font-size: var(--text-xl); line-height: 1.2; }
     .two-vehicle-enabled .vehicle-section-title { display: block; }
     .two-vehicle-panel { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
@@ -367,6 +371,9 @@
     {% set task_form_enabled = cancel_url or selected_case.case_id %}
     {% set vehicle_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [] %}
     {% set second_vehicle = vehicle_entries[1] if vehicle_entries|length > 1 else {} %}
+    {% set primary_fuel = selected_case.fuel_record if selected_case.fuel_record is defined else {} %}
+    {% set second_fuel = second_vehicle.fuel_record if second_vehicle and second_vehicle.fuel_record is defined else {} %}
+    {% set default_fuel_date = (selected_case_date_input(selected_case) | replace('/', '') | replace('-', '')) %}
     {% set second_consumables = second_vehicle.consumables if second_vehicle and second_vehicle.consumables is defined else default_consumables %}
     {% set second_disinfection_items = second_vehicle.disinfection_items if second_vehicle and second_vehicle.disinfection_items is defined else default_disinfection_items %}
     {% if task_form_enabled %}
@@ -463,6 +470,36 @@
         <input name="mileage" inputmode="numeric" pattern="[0-9]*" value="{{ selected_case.mileage or '' }}">
         <div class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></div>
       </label>
+      <label class="check-item fuel-record-toggle">
+        <input type="checkbox" name="fuel_record" id="fuel-record-toggle" value="1"{% if primary_fuel.enabled %} checked{% endif %}>
+        <span>登打加油紀錄</span>
+      </label>
+      <section class="fuel-record-fields" id="fuel-record-fields" data-fuel-fields="1" hidden>
+        <div class="grid">
+          <label>加油日期
+            <input name="fuel_date" inputmode="numeric" maxlength="8" value="{{ primary_fuel.date or default_fuel_date }}">
+          </label>
+          <label>加油時間
+            <input name="fuel_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ primary_fuel.time or '' }}">
+          </label>
+        </div>
+        <div class="grid">
+          <label>駕駛人
+            <input name="fuel_driver" value="{{ primary_fuel.driver or selected_case.driver or '' }}" readonly>
+          </label>
+          <label>油品
+            <input name="fuel_product" value="超級柴油" readonly>
+          </label>
+        </div>
+        <div class="grid">
+          <label>油量
+            <input name="fuel_quantity" inputmode="decimal" value="{{ primary_fuel.quantity or '' }}">
+          </label>
+          <label>單價
+            <input name="fuel_unit_price" inputmode="decimal" value="{{ primary_fuel.unit_price or '' }}">
+          </label>
+        </div>
+      </section>
 
       <section class="consumables form-section-divider">
         <input type="hidden" name="consumables" id="consumables-value">
@@ -562,6 +599,36 @@
           <input name="mileage_2" inputmode="numeric" pattern="[0-9]*" value="{{ second_vehicle.mileage or '' }}">
           <div class="mileage-hint" data-last-mileage-for="vehicle_2" aria-live="polite"></div>
         </label>
+        <label class="check-item fuel-record-toggle">
+          <input type="checkbox" name="fuel_record_2" id="fuel-record-toggle-2" value="1"{% if second_fuel.enabled %} checked{% endif %}>
+          <span>登打加油紀錄</span>
+        </label>
+        <section class="fuel-record-fields" id="fuel-record-fields-2" data-fuel-fields="2" hidden>
+          <div class="grid">
+            <label>加油日期
+              <input name="fuel_date_2" inputmode="numeric" maxlength="8" value="{{ second_fuel.date or default_fuel_date }}">
+            </label>
+            <label>加油時間
+              <input name="fuel_time_2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ second_fuel.time or '' }}">
+            </label>
+          </div>
+          <div class="grid">
+            <label>駕駛人
+              <input name="fuel_driver_2" value="{{ second_fuel.driver or second_vehicle.driver or '' }}" readonly>
+            </label>
+            <label>油品
+              <input name="fuel_product_2" value="超級柴油" readonly>
+            </label>
+          </div>
+          <div class="grid">
+            <label>油量
+              <input name="fuel_quantity_2" inputmode="decimal" value="{{ second_fuel.quantity or '' }}">
+            </label>
+            <label>單價
+              <input name="fuel_unit_price_2" inputmode="decimal" value="{{ second_fuel.unit_price or '' }}">
+            </label>
+          </div>
+        </section>
         <section class="consumables form-section-divider">
           <input type="hidden" name="consumables_2" id="consumables-value-2">
           <div class="consumable-head">
@@ -645,6 +712,10 @@
     const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
     const twoVehicleToggle = document.getElementById("two-vehicle-toggle");
     const secondVehicleSection = document.getElementById("second-vehicle-section");
+    const fuelRecordToggle = document.getElementById("fuel-record-toggle");
+    const fuelRecordFields = document.getElementById("fuel-record-fields");
+    const fuelRecordToggle2 = document.getElementById("fuel-record-toggle-2");
+    const fuelRecordFields2 = document.getElementById("fuel-record-fields-2");
     const consumableList = document.getElementById("consumable-list");
     const consumablesValue = document.getElementById("consumables-value");
     const consumableList2 = document.getElementById("consumable-list-2");
@@ -772,12 +843,58 @@
       updateLastMileageHint("vehicle_2");
     }
 
+    function updateFuelRecordUi() {
+      if (fuelRecordFields) fuelRecordFields.hidden = !(fuelRecordToggle && fuelRecordToggle.checked);
+      if (fuelRecordFields2) fuelRecordFields2.hidden = !(fuelRecordToggle2 && fuelRecordToggle2.checked);
+    }
+
+    function syncFuelDrivers() {
+      const driver = document.querySelector('select[name="driver"]');
+      const fuelDriver = document.querySelector('input[name="fuel_driver"]');
+      if (driver && fuelDriver) fuelDriver.value = driver.value;
+      const driver2 = document.querySelector('select[name="driver_2"]');
+      const fuelDriver2 = document.querySelector('input[name="fuel_driver_2"]');
+      if (driver2 && fuelDriver2) fuelDriver2.value = driver2.value;
+    }
+
+    function fuelDecimalValid(value) {
+      return /^\d+(\.\d+)?$/.test(String(value || "").trim());
+    }
+
+    function validateFuelRecord(prefix, label) {
+      const checked = document.querySelector(`input[name="fuel_record${prefix}"]`)?.checked;
+      if (!checked) return true;
+      const date = document.querySelector(`input[name="fuel_date${prefix}"]`)?.value.trim() || "";
+      const time = document.querySelector(`input[name="fuel_time${prefix}"]`)?.value.trim() || "";
+      const quantity = document.querySelector(`input[name="fuel_quantity${prefix}"]`)?.value.trim() || "";
+      const unitPrice = document.querySelector(`input[name="fuel_unit_price${prefix}"]`)?.value.trim() || "";
+      if (!/^\d{8}$/.test(date)) {
+        alert(`${label}加油日期格式需為 20260625`);
+        return false;
+      }
+      if (!/^([01]\d|2[0-3])[0-5]\d$/.test(time)) {
+        alert(`${label}加油時間格式需為 1720`);
+        return false;
+      }
+      if (!fuelDecimalValid(quantity)) {
+        alert(`${label}油量需為數字`);
+        return false;
+      }
+      if (!fuelDecimalValid(unitPrice)) {
+        alert(`${label}單價需為數字`);
+        return false;
+      }
+      return true;
+    }
+
     if (twoVehicleToggle) {
       twoVehicleToggle.addEventListener("change", () => {
         updateTwoVehicleUi();
         updateFieldVisualHints();
       });
     }
+    if (fuelRecordToggle) fuelRecordToggle.addEventListener("change", updateFuelRecordUi);
+    if (fuelRecordToggle2) fuelRecordToggle2.addEventListener("change", updateFuelRecordUi);
 
     function taskFieldValue(fieldName) {
       const field = requiredTaskFields.find((item) => item.name === fieldName);
@@ -830,11 +947,26 @@
       input.addEventListener("change", updateFieldVisualHints);
     });
 
+    ["driver", "driver_2"].forEach((driverFieldName) => {
+      const select = document.querySelector(`select[name="${driverFieldName}"]`);
+      if (!select) return;
+      select.addEventListener("change", syncFuelDrivers);
+    });
+
     ["vehicle", "vehicle_2"].forEach((vehicleFieldName) => {
       const select = document.querySelector(`select[name="${vehicleFieldName}"]`);
       if (!select) return;
       select.addEventListener("change", updateLastMileageHints);
     });
+
+    if (taskForm) {
+      taskForm.addEventListener("submit", (event) => {
+        syncFuelDrivers();
+        if (!validateFuelRecord("", "1車") || !validateFuelRecord("_2", "2車")) {
+          event.preventDefault();
+        }
+      });
+    }
 
     {% if form_errors %}
       window.addEventListener("load", () => {
@@ -1501,6 +1633,8 @@
       addConsumable2Button.addEventListener("click", () => addConsumableRow2());
     }
     updateTwoVehicleUi();
+    updateFuelRecordUi();
+    syncFuelDrivers();
     updateLastMileageHints();
     updateConsumablePackageUi();
     updateConsumablePackageUi2();

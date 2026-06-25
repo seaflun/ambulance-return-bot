@@ -275,9 +275,9 @@ def format_gui_log_message(message: str, now: str | None = None) -> str:
         ("耗材系統已開啟案件內容：", "耗材｜已開啟案件｜"),
         ("執行耗材失敗：", "錯誤｜耗材｜"),
         ("耗材失敗狀態回寫失敗：", "錯誤｜耗材回寫｜"),
-        ("四站登打啟動：", "四站｜啟動｜"),
-        ("四站登打已啟動：", "四站｜已啟動｜"),
-        ("四站登打流程結束：", "四站｜流程結束｜"),
+        ("五站登打啟動：", "五站｜啟動｜"),
+        ("五站登打已啟動：", "五站｜已啟動｜"),
+        ("五站登打流程結束：", "五站｜流程結束｜"),
         ("Chrome 已預先啟動：", "Chrome｜已預先啟動｜"),
         ("Chrome 預先啟動失敗：", "錯誤｜Chrome｜"),
     ]
@@ -974,8 +974,8 @@ class WorkerGui(ctk.CTk):
         if not task_id:
             return
         self._apply_server_url()
-        self.worker_status.set(f"四站登打：{task_id}")
-        self._log(f"四站登打啟動：{task_id}")
+        self.worker_status.set(f"五站登打：{task_id}")
+        self._log(f"五站登打啟動：{task_id}")
         threading.Thread(target=self._run_selected_all_sites_background, args=(task_id,), daemon=True).start()
 
     def _selected_task_id(self) -> str:
@@ -1179,6 +1179,60 @@ class WorkerGui(ctk.CTk):
             if manage_manual_lock:
                 worker.MANUAL_TASK_ACTIVE.clear()
 
+    def _run_selected_fuel_record_background(
+        self,
+        task_id: str,
+        profile_name: str = "fuel_record_profile",
+        debugger_port: int | None = None,
+        use_session_lock: bool = True,
+        tile_name: str = "",
+        force_new_driver: bool = False,
+        manage_manual_lock: bool = True,
+        update_overall: bool | None = None,
+    ):
+        server_url = self.server_url.get().strip().rstrip("/")
+        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        if update_overall is None:
+            update_overall = manage_manual_lock
+        if manage_manual_lock:
+            worker.MANUAL_TASK_ACTIVE.set()
+        started_at = time.monotonic()
+        try:
+            if use_session_lock and not _worker_chrome_is_running():
+                self.log_queue.put("加油紀錄：預先喚起 Chrome...")
+                open_url_in_worker_chrome("about:blank")
+            self.log_queue.put("加油紀錄：向 NAS 取任務...")
+            task = worker.fetch_task(server_url, task_id)
+            self.log_queue.put(f"加油紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
+            if not task:
+                self.log_queue.put(f"找不到任務：{task_id}")
+                return
+            self.log_queue.put(f"開始執行加油紀錄：{task_id}")
+            selenium_started_at = time.monotonic()
+            result = worker.run_fuel_worker_task(
+                server_url,
+                worker_id,
+                task,
+                Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                use_session_lock=use_session_lock,
+                tile_name=tile_name,
+                force_new_driver=force_new_driver,
+                update_overall=update_overall,
+            )
+            if result is not None:
+                self.log_queue.put(f"加油紀錄結果：{result.status}；{result.detail}")
+            self.log_queue.put(f"加油紀錄已執行完成：{task_id}，登打耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
+            self._refresh_tasks()
+            return result
+        except Exception as exc:
+            self.log_queue.put(f"執行加油紀錄失敗：{task_id} {exc}")
+            return None
+        finally:
+            if manage_manual_lock:
+                worker.MANUAL_TASK_ACTIVE.clear()
+
     def _run_selected_consumables_background(
         self,
         task_id: str,
@@ -1245,8 +1299,9 @@ class WorkerGui(ctk.CTk):
         runners = [
             ("工作紀錄", "duty_work_log", self._run_selected_task_background, f"duty_work_log_profile_{profile_suffix}", None, "duty_work_log"),
             ("車輛里程", "vehicle_mileage", self._run_selected_vehicle_mileage_background, f"vehicle_mileage_profile_{profile_suffix}", None, "vehicle_mileage"),
-            ("消毒紀錄", "disinfection", self._run_selected_disinfection_background, f"disinfection_profile_{profile_suffix}", None, "disinfection"),
+            ("加油紀錄", "fuel_record", self._run_selected_fuel_record_background, f"fuel_record_profile_{profile_suffix}", None, "fuel_record"),
             ("耗材", "consumables", self._run_selected_consumables_background, f"consumables_profile_{profile_suffix}", None, "consumables"),
+            ("消毒紀錄", "disinfection", self._run_selected_disinfection_background, f"disinfection_profile_{profile_suffix}", None, "disinfection"),
         ]
         server_url = self.server_url.get().strip().rstrip("/")
         worker.MANUAL_TASK_ACTIVE.set()
@@ -1261,9 +1316,9 @@ class WorkerGui(ctk.CTk):
                 site_statuses = payload.get("site_statuses") if isinstance(payload.get("site_statuses"), dict) else {}
                 current_status = str((site_statuses.get(site_key) or {}).get("status") or "")
                 if _gui_site_is_complete(current_status):
-                    self.log_queue.put(f"四站登打略過：{name} 已完成")
+                    self.log_queue.put(f"五站登打略過：{name} 已完成")
                     continue
-                self.log_queue.put(f"四站登打已啟動：{name}")
+                self.log_queue.put(f"五站登打已啟動：{name}")
                 target(task_id, profile_name, debugger_port, False, tile_name, True, False)
                 payload = worker.fetch_task_payload(server_url, task_id)
                 if not payload:
@@ -1277,8 +1332,8 @@ class WorkerGui(ctk.CTk):
             if blocked_site:
                 worker.post_status(server_url, task_id, "desktop_fast_completed_with_errors", f"{blocked_site} 未完成，已停止後續站別。")
             else:
-                worker.post_status(server_url, task_id, "desktop_fast_completed", "四站登打完成。")
-            self.log_queue.put(f"四站登打流程結束：{task_id}")
+                worker.post_status(server_url, task_id, "desktop_fast_completed", "五站登打完成。")
+            self.log_queue.put(f"五站登打流程結束：{task_id}")
             self._refresh_tasks()
         finally:
             worker.MANUAL_TASK_ACTIVE.clear()

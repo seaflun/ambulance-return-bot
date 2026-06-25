@@ -238,7 +238,7 @@
               <section class="login-summary" aria-label="各站登入帳號">
                 <div class="login-title">各站登入帳號</div>
                 <div class="login-grid">
-                  {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
+                  {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('fuel_record', '加油'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
                     <div class="login-account">
                       <span class="login-account-name">{{ title }}</span>
                       <span class="login-account-value">{{ site_login_accounts.get(site_key) or '尚未回報' }}</span>
@@ -249,7 +249,7 @@
             {% endif %}
 
             <div class="site-grid">
-              {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
+              {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('fuel_record', '加油'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
                 {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
                 {% set diag = site_diagnostic(site) %}
                 <div class="site">

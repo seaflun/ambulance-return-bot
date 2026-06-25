@@ -11,6 +11,7 @@ DIAGNOSTIC_FIELDS = ("failure_stage", "failure_reason", "next_action", "exceptio
 SITE_STAGE_DEFINITIONS = {
     "duty_work_log": ["啟動 Chrome", "登入勤務系統", "新增工作紀錄", "由案件帶入", "填寫勤務資料", "儲存"],
     "vehicle_mileage": ["啟動 Chrome", "登入 PPE", "開啟車輛里程", "填寫返隊時間與里程", "儲存"],
+    "fuel_record": ["啟動 Chrome", "登入 PPE", "開啟登打油耗", "填寫加油紀錄", "儲存"],
     "consumables": ["啟動 Chrome", "登入一站通", "開啟耗材紀錄", "填寫耗材品項", "儲存"],
     "disinfection": ["啟動 Chrome", "登入消毒系統", "查詢案件", "開啟消毒紀錄", "填寫消毒項目", "儲存"],
 }
@@ -18,6 +19,7 @@ SITE_STAGE_DEFINITIONS = {
 SITE_SHORT_NAMES = {
     "duty_work_log": "工作",
     "vehicle_mileage": "里程",
+    "fuel_record": "加油",
     "consumables": "耗材",
     "disinfection": "消毒",
 }
@@ -32,6 +34,7 @@ SITE_STATUS_STAGE = {
     "duty_work_log_prefilled": "儲存",
     "duty_work_log_save_failed": "儲存",
     "vehicle_mileage_prefilled": "儲存",
+    "fuel_record_prefilled": "儲存",
     "manual_captcha_required": "登入一站通",
     "consumables_prefilled": "儲存",
     "disinfection_session_ready": "儲存",
@@ -42,6 +45,7 @@ SITE_STATUS_STAGE = {
 SITE_DEFAULT_FAILURE_STAGE = {
     "duty_work_log": "登入勤務系統",
     "vehicle_mileage": "開啟車輛里程",
+    "fuel_record": "開啟登打油耗",
     "consumables": "開啟耗材紀錄",
     "disinfection": "查詢案件",
 }
@@ -161,6 +165,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
             return "填寫耗材品項"
         if site_key == "vehicle_mileage":
             return "填寫返隊時間與里程"
+        if site_key == "fuel_record":
+            return "填寫加油紀錄"
         if site_key == "disinfection":
             return "填寫消毒項目"
         return "填寫勤務資料"
@@ -177,6 +183,7 @@ def _login_stage(site_key: str) -> str:
     return {
         "duty_work_log": "登入勤務系統",
         "vehicle_mileage": "登入 PPE",
+        "fuel_record": "登入 PPE",
         "consumables": "登入一站通",
         "disinfection": "登入消毒系統",
     }.get(site_key, "登入系統")
@@ -187,6 +194,8 @@ def _field_stage(site_key: str, detail: str) -> str:
         return "填寫勤務資料"
     if site_key == "vehicle_mileage":
         return "填寫返隊時間與里程"
+    if site_key == "fuel_record":
+        return "填寫加油紀錄"
     if site_key == "consumables":
         return "填寫耗材品項"
     if site_key == "disinfection":
@@ -220,7 +229,7 @@ def _next_action_for(site_key: str, category: str) -> str:
     if category == "chrome_session":
         return "關閉殘留 Chrome/ChromeDriver，重啟 worker，再重新登打。"
     if category == "worker_api":
-        return "確認 NAS 網址與 WORKER_TOKEN，重啟 worker 後重試四站登打。"
+        return "確認 NAS 網址與 WORKER_TOKEN，重啟 worker 後重試五站登打。"
     if category == "login":
         return f"到公務電腦完成{site_name}登入或驗證碼，再回任務頁按「單獨登打」重試。"
     if category == "case_not_found":

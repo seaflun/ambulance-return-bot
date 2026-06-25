@@ -22,6 +22,7 @@ class DutyCredential:
 def load_duty_credential(
     preferred_user_ids: Iterable[str] | None = None,
     fallback_user_id: str = "",
+    allow_default: bool = True,
 ) -> DutyCredential | None:
     preferred = _normalized_user_ids(preferred_user_ids)
     fallback = str(fallback_user_id or "").strip()
@@ -41,6 +42,9 @@ def load_duty_credential(
         env_credential = _env_credential()
         if env_credential is not None and _credential_matches_any(env_credential, [fallback]):
             return env_credential
+
+    if not allow_default:
+        return None
 
     saved = load_saved_duty_work_credential()
     if saved is not None:

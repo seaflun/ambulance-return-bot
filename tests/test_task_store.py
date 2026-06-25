@@ -24,7 +24,7 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(payload["worker_queue"]["status"], "idle")
             self.assertEqual(
                 list(payload["site_statuses"]),
-                ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"],
+                ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"],
             )
             self.assertTrue((Path(tmp) / "task-1.json").exists())
 
