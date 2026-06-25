@@ -337,7 +337,7 @@
       <div class="task-submit">
         {% if show_task_entry_controls() %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
-            <button type="submit">五站登打啟動</button>
+            <button type="submit">{{ task_site_count_label(payload.task) }}登打啟動</button>
           </form>
         {% endif %}
         <a class="button secondary" href="/tasks/{{ payload.task.task_id }}/edit">返回編輯</a>
@@ -379,7 +379,7 @@
         {% set mileage_site = payload.site_statuses.get('vehicle_mileage', {}) %}
         <article class="task-card {{ status_class(mileage_site.status) }}">
           <div class="card-head">
-            <h3>里程</h3>
+            <h3>{{ '里程+加油' if task_has_fuel_record(payload.task) else '里程' }}</h3>
             <div class="card-state">
               {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'vehicle_mileage') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/vehicle_mileage/run">
@@ -402,25 +402,12 @@
               <li><span class="label">里程</span><span class="value">{{ entry.mileage or '未填' }}</span></li>
               <li><span class="label">司機</span><span class="value">{{ entry.driver or '未填' }}</span></li>
             {% endif %}
-          </ul>
-        </article>
-
-        {% set fuel_site = payload.site_statuses.get('fuel_record', {}) %}
-        <article class="task-card {{ status_class(fuel_site.status) }}">
-          <div class="card-head">
-            <h3>加油</h3>
-            <div class="card-state">
-              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'fuel_record') %}
-                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/fuel_record/run">
-                  <button class="secondary" type="submit">{{ site_action_button_label(fuel_site.status, 'fuel_record') }}</button>
-                </form>
-              {% endif %}
-              <span class="status {{ status_class(fuel_site.status) }}">{{ status_label(fuel_site.status) }}</span>
-            </div>
-          </div>
-          <ul class="line-list">
-            {% for entry in vehicle_entries %}
-              <li><span class="label">{{ entry.label if vehicle_entries|length > 1 else '紀錄' }}</span><span class="value">{{ entry.fuel_summary or '未勾選' }}</span></li>
+            {% for entry in vehicle_entries if entry.fuel_enabled %}
+              {% set prefix = entry.label ~ ' ' if vehicle_entries|length > 1 else '' %}
+              <li><span class="label">{{ prefix }}加油時間</span><span class="value">{{ entry.fuel_time or '未填' }}</span></li>
+              <li><span class="label">{{ prefix }}油品</span><span class="value">{{ entry.fuel_product or '未填' }}</span></li>
+              <li><span class="label">{{ prefix }}油量</span><span class="value">{{ entry.fuel_quantity or '未填' }}</span></li>
+              <li><span class="label">{{ prefix }}單價</span><span class="value">{{ entry.fuel_unit_price or '未填' }}</span></li>
             {% endfor %}
           </ul>
         </article>
@@ -477,12 +464,12 @@
       </div>
     </section>
 
-    <section class="stage-panel" aria-label="五站階段檢查">
+    <section class="stage-panel" aria-label="{{ task_site_count_label(payload.task) }}階段檢查">
       <div class="section-head">
-        <h2>五站階段檢查</h2>
+        <h2>{{ task_site_count_label(payload.task) }}階段檢查</h2>
       </div>
       <div class="stage-grid">
-        {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('fuel_record', '加油'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
+        {% for site_key, title in task_site_display_pairs(payload.task) %}
           <article class="stage-card">
             <h3>{{ title }}</h3>
             <ul class="stage-list">

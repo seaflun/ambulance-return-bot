@@ -21,22 +21,30 @@ def open_task_on_local_desktop(request: AmbulanceReturnRequest, artifacts_dir: P
     summary_path.write_text(_task_text(request), encoding="utf-8")
 
     delay = float(os.getenv("BROWSER_OPEN_DELAY_SECONDS", "0.4"))
-    for site in SITE_DEFINITIONS:
+    for site in _active_site_definitions(request):
         webbrowser.open_new_tab(site.url)
         if delay > 0:
             time.sleep(delay)
     return summary_path
 
 
+def _active_site_definitions(request: AmbulanceReturnRequest):
+    has_fuel_record = any(item.fuel_record.enabled for item in request.vehicle_requests())
+    if has_fuel_record:
+        return SITE_DEFINITIONS
+    return [site for site in SITE_DEFINITIONS if site.key != "fuel_record"]
+
+
 def _task_text(request: AmbulanceReturnRequest) -> str:
+    site_definitions = _active_site_definitions(request)
     lines = [
         "\u6551\u8b77\u56de\u7a0b\u4efb\u52d9",
         "",
         request.summary,
         "",
-        "\u56db\u7ad9\u9023\u7d50",
+        f"{len(site_definitions)}\u7ad9\u9023\u7d50",
     ]
-    lines.extend(f"- {site.name}: {site.url}" for site in SITE_DEFINITIONS)
+    lines.extend(f"- {site.name}: {site.url}" for site in site_definitions)
     lines.append("")
     lines.append("\u7b2c\u4e00\u7248\u53ea\u958b\u9801\u8207\u63d0\u4f9b\u6458\u8981\uff0c\u4e0d\u6703\u81ea\u52d5\u6309\u6700\u5f8c\u9001\u51fa\u3002")
     return "\n".join(lines)

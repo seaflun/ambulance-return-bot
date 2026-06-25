@@ -207,6 +207,7 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/app")
 
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(app_module.app.config["TEMPLATES_AUTO_RELOAD"])
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertIn("救護車設定", body)
@@ -246,6 +247,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("--text-md: 17px;", body)
         self.assertIn(".check-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));", body)
         self.assertIn(".check-item input { width: 20px; height: 20px; min-height: 20px; margin: 0; transform: scale(1.35);", body)
+        self.assertIn(".disinfection-grid .check-item { min-height: 46px; padding: 8px 12px;", body)
         self.assertIn(".case-card button { min-width: 88px; min-height: 50px;", body)
         self.assertIn(".consumable-list { display: grid; gap: 10px; align-items: start; }", body)
         self.assertIn(".consumable-row { display: grid; grid-template-columns: 38px 142px minmax(0, 1fr) 196px 50px;", body)
@@ -512,7 +514,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("救護車設定", body)
         self.assertIn('href="/admin/public-pc"', body)
         self.assertIn('href="/admin/sinposmart"', body)
-        self.assertIn("SinpoSmart - 救護Worker 後台", body)
+        self.assertIn("救護後台", body)
+        self.assertNotIn("SinpoSmart - 救護Worker 後台", body)
         self.assertIn("值班後台", body)
         self.assertIn('class="header-actions"', body)
 
@@ -724,8 +727,10 @@ class WebAppTests(unittest.TestCase):
         vehicle_body = html.unescape(self.client.get("/admin/vehicles").data.decode("utf-8"))
         public_pc_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
 
+        self.assertIn("main { max-width: 960px;", vehicle_body)
+        self.assertIn("main { max-width: 1180px;", public_pc_body)
+        self.assertIn("repeat(auto-fit, minmax(150px, 1fr))", public_pc_body)
         for body in (vehicle_body, public_pc_body):
-            self.assertIn("main { max-width: 960px;", body)
             self.assertIn("--text-md: 15px;", body)
             self.assertIn("--text-xl: 28px;", body)
             self.assertIn("repeating-linear-gradient", body)
@@ -815,7 +820,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("里程已保存。", body)
         self.assertNotIn("2026-06-12T14:30:00", body)
         self.assertIn("緊急救護-急病 - 桃園市觀音區中山路", body)
-        self.assertIn("五站登打成功", body)
+        self.assertIn("四站登打成功", body)
+        self.assertNotIn("五站登打成功", body)
         reports = app_module.public_pc_reports()
         self.assertEqual(reports[0]["operator"], "8番 曾彥綸 - tyfd01510")
         self.assertEqual(reports[0]["synced_account"], "8番 曾彥綸 - tyfd01510")
@@ -969,10 +975,11 @@ class WebAppTests(unittest.TestCase):
     def test_sinposmart_admin_combines_tool_start_finish_and_result(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}
+        fire_day = datetime.now().date().isoformat()
         for event in [
             {
                 "event_id": "evt-tool-start-finish-web-1",
-                "occurred_at": "2026-06-18T16:30:52",
+                "occurred_at": f"{fire_day}T16:30:52",
                 "record_type": "tool_action_started",
                 "trigger_type": "tool_start",
                 "status": "started",
@@ -982,7 +989,7 @@ class WebAppTests(unittest.TestCase):
             },
             {
                 "event_id": "evt-tool-start-finish-web-2",
-                "occurred_at": "2026-06-18T16:31:30",
+                "occurred_at": f"{fire_day}T16:31:30",
                 "record_type": "tool_action_finished",
                 "trigger_type": "tool_finish",
                 "status": "completed",
@@ -1049,10 +1056,11 @@ class WebAppTests(unittest.TestCase):
     def test_sinposmart_admin_collapses_queue_snapshot_and_login_noise(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}
+        fire_day = datetime.now().date().isoformat()
         events = [
             {
                 "event_id": "evt-login-27",
-                "occurred_at": "2026-06-18T16:30:40",
+                "occurred_at": f"{fire_day}T16:30:40",
                 "record_type": "login",
                 "status": "ok",
                 "actor_no": "27",
@@ -1060,7 +1068,7 @@ class WebAppTests(unittest.TestCase):
             },
             {
                 "event_id": "evt-schedule-27",
-                "occurred_at": "2026-06-18T16:31:12",
+                "occurred_at": f"{fire_day}T16:31:12",
                 "record_type": "schedule_snapshot",
                 "trigger_type": "schedule",
                 "status": "success",
@@ -1070,7 +1078,7 @@ class WebAppTests(unittest.TestCase):
             },
             {
                 "event_id": "evt-queue-27",
-                "occurred_at": "2026-06-18T18:00:00",
+                "occurred_at": f"{fire_day}T18:00:00",
                 "record_type": "action_queued",
                 "trigger_type": "due",
                 "status": "pending_write_automation",
@@ -1083,7 +1091,7 @@ class WebAppTests(unittest.TestCase):
             },
             {
                 "event_id": "evt-result-27",
-                "occurred_at": "2026-06-18T18:00:22",
+                "occurred_at": f"{fire_day}T18:00:22",
                 "record_type": "action_result",
                 "trigger_type": "due",
                 "status": "submitted",
@@ -1122,13 +1130,18 @@ class WebAppTests(unittest.TestCase):
 
     def test_sinposmart_admin_splits_schedule_snapshot_by_fire_day_scope(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day_date = datetime.now().date()
+        fire_day = fire_day_date.isoformat()
+        fire_day_roc = f"{fire_day_date.year - 1911:03d}{fire_day_date.month:02d}{fire_day_date.day:02d}"
+        next_fire_day_date = fire_day_date + timedelta(days=1)
+        next_fire_day_roc = f"{next_fire_day_date.year - 1911:03d}{next_fire_day_date.month:02d}{next_fire_day_date.day:02d}"
         response = self.client.post(
             "/api/sinposmart/events",
             headers={"X-Credential-Sync-Token": "sync-token"},
             json={
                 "event_id": "evt-schedule-days-web",
-                "occurred_at": "2026-06-18T22:00:33",
-                "fire_day": "2026-06-18",
+                "occurred_at": f"{fire_day}T22:00:33",
+                "fire_day": fire_day,
                 "record_type": "schedule_snapshot",
                 "trigger_type": "schedule",
                 "status": "success",
@@ -1136,8 +1149,8 @@ class WebAppTests(unittest.TestCase):
                 "display_name": "27番 隊員 林宏為",
                 "snapshot": {
                     "days": [
-                        {"target_date": "1150618", "action_count": 3},
-                        {"target_date": "1150619", "action_count": 5},
+                        {"target_date": fire_day_roc, "action_count": 3},
+                        {"target_date": next_fire_day_roc, "action_count": 5},
                     ]
                 },
             },
@@ -1153,12 +1166,13 @@ class WebAppTests(unittest.TestCase):
 
     def test_sinposmart_admin_waiting_event_shows_pause_reason(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
         response = self.client.post(
             "/api/sinposmart/events",
             headers={"X-Credential-Sync-Token": "sync-token"},
             json={
                 "event_id": "evt-queue-only-web",
-                "occurred_at": "2026-06-18T19:00:00",
+                "occurred_at": f"{fire_day}T19:00:00",
                 "record_type": "action_queued",
                 "trigger_type": "due",
                 "status": "pending_write_automation",
@@ -1185,10 +1199,11 @@ class WebAppTests(unittest.TestCase):
     def test_sinposmart_admin_login_section_can_show_logout(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}
+        fire_day = datetime.now().date().isoformat()
         for event in [
             {
                 "event_id": "evt-login-web",
-                "occurred_at": "2026-06-18T16:30:40",
+                "occurred_at": f"{fire_day}T16:30:40",
                 "record_type": "login",
                 "status": "ok",
                 "actor_no": "27",
@@ -1196,7 +1211,7 @@ class WebAppTests(unittest.TestCase):
             },
             {
                 "event_id": "evt-logout-web",
-                "occurred_at": "2026-06-18T18:05:12",
+                "occurred_at": f"{fire_day}T18:05:12",
                 "record_type": "logout",
                 "status": "ok",
                 "actor_no": "27",
@@ -1217,6 +1232,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_sinposmart_admin_shows_login_logout_times_and_sinposmart_version(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
         original_version_info = getattr(app_module, "sinposmart_admin_version_info", None)
         app_module.sinposmart_admin_version_info = lambda _selected_day=None: {
             "label": "SinpoSmart 公務電腦",
@@ -1228,7 +1244,7 @@ class WebAppTests(unittest.TestCase):
             for event in [
                 {
                     "event_id": "evt-login-logout-version-web-1",
-                    "occurred_at": "2026-06-18T16:30:40",
+                    "occurred_at": f"{fire_day}T16:30:40",
                     "record_type": "login",
                     "status": "ok",
                     "actor_no": "27",
@@ -1236,7 +1252,7 @@ class WebAppTests(unittest.TestCase):
                 },
                 {
                     "event_id": "evt-login-logout-version-web-2",
-                    "occurred_at": "2026-06-18T18:05:12",
+                    "occurred_at": f"{fire_day}T18:05:12",
                     "record_type": "logout",
                     "status": "ok",
                     "actor_no": "27",
@@ -1265,12 +1281,13 @@ class WebAppTests(unittest.TestCase):
 
     def test_sinposmart_admin_prefers_reported_installed_version(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
         response = self.client.post(
             "/api/sinposmart/events",
             headers={"X-Credential-Sync-Token": "sync-token"},
             json={
                 "event_id": "evt-sinposmart-installed-version",
-                "occurred_at": "2026-06-18T20:00:00",
+                "occurred_at": f"{fire_day}T20:00:00",
                 "record_type": "login",
                 "status": "ok",
                 "actor_no": "5",
@@ -1290,10 +1307,11 @@ class WebAppTests(unittest.TestCase):
     def test_sinposmart_admin_login_section_prefers_person_name_over_account(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}
+        fire_day = datetime.now().date().isoformat()
         for event in [
             {
                 "event_id": "evt-login-account-web",
-                "occurred_at": "2026-06-18T11:08:39",
+                "occurred_at": f"{fire_day}T11:08:39",
                 "record_type": "login",
                 "status": "ok",
                 "actor_no": "8",
@@ -1301,7 +1319,7 @@ class WebAppTests(unittest.TestCase):
             },
             {
                 "event_id": "evt-login-name-web",
-                "occurred_at": "2026-06-18T10:47:28",
+                "occurred_at": f"{fire_day}T10:47:28",
                 "record_type": "login",
                 "status": "ok",
                 "actor_no": "8",
@@ -1539,7 +1557,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(sent_payloads), 2)
         self.assertFalse(app_module.public_pc_pending_report_file().exists())
         self.assertEqual(sent_payloads[0]["action"], "建立任務")
-        self.assertEqual(sent_payloads[1]["action"], "按下五站登打")
+        self.assertEqual(sent_payloads[1]["action"], "按下四站登打")
         self.assertEqual(sent_payloads[0]["synced_account"], "8番 曾彥綸 - tyfd01510")
         self.assertEqual(sent_payloads[0]["package_version"], "2026.06.19.0801-local")
         self.assertEqual(
@@ -1721,7 +1739,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("window.location.reload()", running_body)
         self.assertIn("taskFormDirty", running_body)
-        self.assertIn("已完成 1/5；目前：里程執行中", running_body)
+        self.assertIn("已完成 1/4；目前：里程執行中", running_body)
 
         self.store.set_overall_status(task_id, "desktop_fast_completed", "五站登打完成")
         self.store.update_site_result(
@@ -1744,7 +1762,7 @@ class WebAppTests(unittest.TestCase):
         completed_body = html.unescape(completed_response.data.decode("utf-8"))
 
         self.assertNotIn("window.location.reload()", completed_body)
-        self.assertIn("5站完成", completed_body)
+        self.assertIn("4站完成", completed_body)
 
     def test_app_page_shows_empty_case_lookup_result(self):
         cases_dir = app_module.artifacts_dir / "cases"
@@ -2159,7 +2177,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(detail_response.status_code, 200)
         detail_body = html.unescape(detail_response.data.decode("utf-8"))
         self.assertEqual(detail_body.count("\u55ae\u7368\u767b\u6253"), 0)
-        self.assertIn("五站登打啟動", detail_body)
+        self.assertIn("四站登打啟動", detail_body)
         self.assertNotIn("送到公務電腦", detail_body)
         self.assertIn("main { max-width: 1080px;", detail_body)
         self.assertIn("repeating-linear-gradient", detail_body)
@@ -2198,7 +2216,7 @@ class WebAppTests(unittest.TestCase):
         consumables_card = body[body.index("<h3>\u8017\u6750</h3>") : body.index("<h3>\u6d88\u6bd2</h3>")]
         self.assertLess(consumables_card.index("\u55ae\u7368\u767b\u6253"), consumables_card.index("\u5931\u6557"))
         self.assertNotIn("\u932f\u8aa4\u6307\u5f15", body)
-        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('aria-label="\u4e94\u7ad9\u968e\u6bb5\u6aa2\u67e5"')]
+        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('aria-label="\u56db\u7ad9\u968e\u6bb5\u6aa2\u67e5"')]
         self.assertNotIn("\u672a\u5b8c\u6210\u9ede", task_section)
         self.assertNotIn("\u586b\u5beb\u8017\u6750\u54c1\u9805", task_section)
         self.assertNotIn("\u9801\u9762\u6309\u9215\u6216\u6b04\u4f4d\u8207\u7a0b\u5f0f\u9810\u671f\u4e0d\u540c", task_section)
@@ -2222,12 +2240,12 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertLess(body.index("五站登打啟動"), body.index("<h2>任務內容</h2>"))
-        task_section = body[body.index('aria-label="任務內容"') : body.index('aria-label="五站階段檢查"')]
+        self.assertLess(body.index("四站登打啟動"), body.index("<h2>任務內容</h2>"))
+        task_section = body[body.index('aria-label="任務內容"') : body.index('aria-label="四站階段檢查"')]
         self.assertNotIn("未完成點", task_section)
         self.assertNotIn("原因", task_section)
         self.assertNotIn("下一步", task_section)
-        stage_section = body[body.index('aria-label="五站階段檢查"') :]
+        stage_section = body[body.index('aria-label="四站階段檢查"') :]
         self.assertIn("失敗點", stage_section)
         self.assertIn("未完成", stage_section)
 
@@ -2249,7 +2267,7 @@ class WebAppTests(unittest.TestCase):
         app_body = html.unescape(app_response.data.decode("utf-8"))
 
         self.assertIn("window.location.reload()", detail_body)
-        self.assertIn("已完成 0/5；目前：里程執行中", app_body)
+        self.assertIn("已完成 0/4；目前：里程執行中", app_body)
 
     def test_task_detail_auto_refreshes_while_running(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -2326,7 +2344,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("https://ppe.tyfd.gov.tw", body)
         task_section = body.split('aria-label="任務內容"', 1)[1]
         task_section_head = task_section.split('<div class="task-grid">', 1)[0]
-        self.assertLess(task_section_head.index("五站登打啟動"), task_section_head.index("<h2>任務內容</h2>"))
+        self.assertLess(task_section_head.index("四站登打啟動"), task_section_head.index("<h2>任務內容</h2>"))
         self.assertIn("任務內容", task_section_head)
         self.assertNotIn("待確認", task_section_head)
 
@@ -2354,7 +2372,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("06/06 1633", header)
         self.assertNotIn("\u65b0\u576192 / \u5305\u83ef\u5148", header)
         self.assertNotIn("\u9001\u5230\u516c\u52d9\u96fb\u8166", header)
-        self.assertLess(body.index("\u4e94\u7ad9\u767b\u6253\u555f\u52d5"), body.index("\u8fd4\u56de\u7de8\u8f2f"))
+        self.assertLess(body.index("\u56db\u7ad9\u767b\u6253\u555f\u52d5"), body.index("\u8fd4\u56de\u7de8\u8f2f"))
 
     def test_task_edit_updates_existing_task_and_marks_changed_saved_sites_for_update(self):
         create_response = self.client.post(
@@ -2502,6 +2520,23 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("1\u8eca\u52a0\u6cb9\u6642\u9593\u683c\u5f0f\u9700\u70ba HHmm", errors)
         self.assertIn("1\u8eca\u6cb9\u91cf\u9700\u70ba\u6578\u5b57", errors)
 
+    def test_two_vehicle_validation_rejects_duplicate_vehicle(self):
+        task_request = app_module.request_from_form(
+            self.valid_task_data(
+                two_vehicle="1",
+                vehicle="\u65b0\u576191",
+                vehicle_2="\u65b0\u576191",
+                driver_2="\u738b\u6631\u52db",
+                patient_summary_2="\u5973\u4e00\u540d",
+                mileage_2="200",
+                consumables_2="\u53e3\u7f69=2",
+            )
+        )
+
+        errors = app_module.validate_task_form(task_request)
+
+        self.assertIn("1\u8eca\u82072\u8eca\u4e0d\u53ef\u9078\u64c7\u540c\u4e00\u53f0\u6551\u8b77\u8eca", errors)
+
     def test_new_task_page_shows_fuel_record_controls_under_each_mileage(self):
         selected_case = AmbulanceReturnRequest(
             task_id="case-two-fuel",
@@ -2538,7 +2573,23 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="fuel_record_2"', body)
         self.assertLess(body.index('name="mileage"'), body.index('name="fuel_record"'))
         self.assertLess(body.index('name="mileage_2"'), body.index('name="fuel_record_2"'))
-        self.assertIn('value="20260607"', body)
+        self.assertIn('class="mileage-row"', body)
+        self.assertIn(".mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);", body)
+        self.assertIn("#task-form input,", body)
+        self.assertIn("#task-form select { min-height: 46px;", body)
+        self.assertIn('data-numeric="integer"', body)
+        self.assertIn('data-numeric="decimal"', body)
+        self.assertIn('id="client-form-errors"', body)
+        self.assertIn("function updateVehicleOptionAvailability()", body)
+        self.assertIn("option.disabled = duplicated;", body)
+        self.assertIn("option.hidden = duplicated;", body)
+        self.assertIn("function fuelRecordErrors(prefix, label)", body)
+        self.assertIn("function loadedConsumableLabels2()", body)
+        self.assertIn('if (baselineConsumablesLoaded) labels.push("基礎三項");', body)
+        self.assertIn("const labels = loadedConsumableLabels2();", body)
+        self.assertNotIn("alert(`${label}", body)
+        self.assertIn('name="fuel_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="2026/06/07"', body)
+        self.assertIn('name="fuel_date_2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="2026/06/07"', body)
         self.assertIn('value="\u8d85\u7d1a\u67f4\u6cb9"', body)
 
     def test_task_edit_second_vehicle_fields_mark_saved_sites_for_update(self):
@@ -2569,7 +2620,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(changed, {"duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"})
 
-    def test_task_detail_card_order_is_work_mileage_fuel_consumables_disinfection(self):
+    def test_task_detail_combines_mileage_and_fuel_record_when_enabled(self):
         create_response = self.client.post(
             "/tasks",
             data=self.valid_task_data(
@@ -2583,26 +2634,44 @@ class WebAppTests(unittest.TestCase):
 
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
+        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('class="stage-panel"')]
 
-        self.assertLess(body.index("<h3>\u5de5\u4f5c</h3>"), body.index("<h3>\u91cc\u7a0b</h3>"))
-        self.assertLess(body.index("<h3>\u91cc\u7a0b</h3>"), body.index("<h3>\u52a0\u6cb9</h3>"))
-        self.assertLess(body.index("<h3>\u52a0\u6cb9</h3>"), body.index("<h3>\u8017\u6750</h3>"))
-        self.assertLess(body.index("<h3>\u8017\u6750</h3>"), body.index("<h3>\u6d88\u6bd2</h3>"))
-        work = body[body.index("<h3>\u5de5\u4f5c</h3>") : body.index("<h3>\u91cc\u7a0b</h3>")]
+        self.assertLess(task_section.index("<h3>\u5de5\u4f5c</h3>"), task_section.index("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>"))
+        self.assertIn("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>", task_section)
+        self.assertNotIn("<h3>\u52a0\u6cb9</h3>", task_section)
+        self.assertLess(task_section.index("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>"), task_section.index("<h3>\u8017\u6750</h3>"))
+        self.assertLess(task_section.index("<h3>\u8017\u6750</h3>"), task_section.index("<h3>\u6d88\u6bd2</h3>"))
+        work = task_section[task_section.index("<h3>\u5de5\u4f5c</h3>") : task_section.index("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>")]
         self.assertLess(work.index("\u5730\u5740"), work.index("\u4e8b\u7531"))
         self.assertLess(work.index("\u4e8b\u7531"), work.index("\u8eca\u8f1b"))
         self.assertLess(work.index("\u8eca\u8f1b"), work.index("\u53f8\u6a5f"))
         self.assertLess(work.index("\u53f8\u6a5f"), work.index("\u50b7\u75c5\u60a3"))
-        mileage = body[body.index("<h3>\u91cc\u7a0b</h3>") : body.index("<h3>\u52a0\u6cb9</h3>")]
+        mileage = task_section[task_section.index("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>") : task_section.index("<h3>\u8017\u6750</h3>")]
         self.assertLess(mileage.index(">\u8eca\u8f1b</span>"), mileage.index(">\u51fa\u52d5</span>"))
         self.assertLess(mileage.index(">\u51fa\u52d5</span>"), mileage.index(">\u8fd4\u968a</span>"))
         self.assertLess(mileage.index(">\u8fd4\u968a</span>"), mileage.index(">\u91cc\u7a0b</span>"))
         self.assertLess(mileage.index(">\u91cc\u7a0b</span>"), mileage.index(">\u53f8\u6a5f</span>"))
-        fuel = body[body.index("<h3>\u52a0\u6cb9</h3>") : body.index("<h3>\u8017\u6750</h3>")]
-        self.assertIn("20260607", fuel)
-        self.assertIn("1720", fuel)
-        self.assertIn("42.122", fuel)
-        self.assertIn("30.3", fuel)
+        self.assertIn(">\u52a0\u6cb9\u6642\u9593</span>", mileage)
+        self.assertIn(">\u6cb9\u54c1</span>", mileage)
+        self.assertIn(">\u6cb9\u91cf</span>", mileage)
+        self.assertIn(">\u55ae\u50f9</span>", mileage)
+        self.assertIn("1720", mileage)
+        self.assertIn("\u8d85\u7d1a\u67f4\u6cb9", mileage)
+        self.assertIn("42.122", mileage)
+        self.assertIn("30.3", mileage)
+
+    def test_task_detail_uses_mileage_title_when_fuel_record_not_enabled(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(response.data.decode("utf-8"))
+        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('class="stage-panel"')]
+
+        self.assertIn("<h3>\u91cc\u7a0b</h3>", task_section)
+        self.assertNotIn("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>", task_section)
+        self.assertNotIn("<h3>\u52a0\u6cb9</h3>", task_section)
+        self.assertNotIn("\u672a\u52fe\u9078", task_section)
 
     def test_task_detail_shows_second_vehicle_values(self):
         create_response = self.client.post(
@@ -2635,15 +2704,15 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertIn("五站階段檢查", body)
+        self.assertIn("四站階段檢查", body)
         self.assertIn("登入勤務系統", body)
         self.assertIn("登入 PPE", body)
         self.assertIn("登入消毒系統", body)
         self.assertIn("登入一站通", body)
-        stage_section = body[body.index('aria-label="五站階段檢查"') :]
+        stage_section = body[body.index('aria-label="四站階段檢查"') :]
         self.assertLess(stage_section.index("<h3>工作</h3>"), stage_section.index("<h3>里程</h3>"))
-        self.assertLess(stage_section.index("<h3>里程</h3>"), stage_section.index("<h3>加油</h3>"))
-        self.assertLess(stage_section.index("<h3>加油</h3>"), stage_section.index("<h3>耗材</h3>"))
+        self.assertLess(stage_section.index("<h3>里程</h3>"), stage_section.index("<h3>耗材</h3>"))
+        self.assertNotIn("<h3>加油</h3>", stage_section)
         self.assertLess(stage_section.index("<h3>耗材</h3>"), stage_section.index("<h3>消毒</h3>"))
         self.assertIn("未執行", body)
         self.assertNotIn("未開始", body)
@@ -2774,6 +2843,7 @@ class WebAppTests(unittest.TestCase):
 
         detail_response = self.client.get(f"/tasks/{task_id}", base_url="http://100.114.126.58:8080")
         body = html.unescape(detail_response.data.decode("utf-8"))
+        self.assertNotIn("四站登打啟動", body)
         self.assertNotIn("五站登打啟動", body)
         self.assertNotIn("單獨登打", body)
         self.assertIn("返回編輯", body)

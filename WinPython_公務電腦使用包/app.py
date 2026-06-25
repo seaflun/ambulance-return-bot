@@ -62,6 +62,7 @@ from ambulance_bot.task_store import JsonTaskStore
 load_dotenv()
 
 app = Flask(__name__)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
 store = JsonTaskStore(artifacts_dir / "tasks")
 runner = TaskRunner(artifacts_dir, store=store)
@@ -76,6 +77,13 @@ SITE_SHORT_NAMES = {
     "fuel_record": "加油",
     "disinfection": "消毒",
     "consumables": "耗材",
+}
+SITE_DISPLAY_NAMES = {
+    "duty_work_log": "工作",
+    "vehicle_mileage": "里程",
+    "fuel_record": "加油",
+    "consumables": "耗材",
+    "disinfection": "消毒",
 }
 SITE_UPDATE_BUTTON_LABELS = {
     "duty_work_log": "更新工作",
@@ -250,12 +258,12 @@ def delete_task(task_id: str):
 @app.post("/tasks/<task_id>/run")
 def run_task(task_id: str):
     try:
-        store.get(task_id)
+        payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
-        report_public_pc_task_event(store.get(task_id), "按下五站登打")
+        report_public_pc_task_event(payload, f"按下{task_site_count_label(payload.get('task') or {})}登打")
         desktop_runner.start_existing(task_id)
         return redirect(url_for("task_detail", task_id=task_id))
     if mode == "worker_queue":
@@ -752,7 +760,7 @@ def upsert_public_pc_report(data: dict) -> dict:
         "synced_account": synced_account,
         "worker_id": str(data.get("worker_id") or ""),
         "package_version": str(data.get("package_version") or ""),
-        "action": str(data.get("action") or "更新"),
+        "action": public_pc_action_for_task(task, str(data.get("action") or "更新")),
         "status": str(data.get("status") or ""),
         "detail": str(data.get("detail") or ""),
     }
@@ -871,7 +879,7 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
         "site_login_accounts": site_login_accounts,
         "worker_id": os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"),
         "package_version": package_version(),
-        "action": action,
+        "action": public_pc_action_for_task(task, action),
         "status": str(latest_event.get("status") or payload.get("overall_status") or ""),
         "detail": str(latest_event.get("detail") or ""),
         "overall_status": str(payload.get("overall_status") or ""),
@@ -901,6 +909,14 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
 def public_pc_reporting_enabled() -> bool:
     value = os.getenv("PUBLIC_PC_REPORT_ENABLED", "false").strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def public_pc_action_for_task(task: dict, action: str) -> str:
+    site_count = task_site_count_label(task)
+    text = str(action or "")
+    for old_count in ("四站", "五站"):
+        text = text.replace(f"{old_count}登打", f"{site_count}登打")
+    return text
 
 
 def public_pc_report_server_url() -> str:
@@ -1480,7 +1496,8 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
 
 
 def effective_task_status(payload: dict) -> str:
-    sites = list(dict(payload.get("site_statuses") or {}).values())
+    site_statuses = dict(payload.get("site_statuses") or {})
+    sites = [dict(site_statuses.get(site_key) or {}) for site_key in active_site_keys_for_task(payload.get("task") or {})]
     if any(status_class(str(site.get("status") or "")) == "running" for site in sites):
         return "desktop_fast_running"
     if any(status_class(str(site.get("status") or "")) == "failed" for site in sites):
@@ -1505,13 +1522,14 @@ def recent_tasks_need_refresh(recent_tasks: list[dict]) -> bool:
 def task_progress_summary(payload: dict) -> str:
     site_statuses = dict(payload.get("site_statuses") or {})
     completed_count = 0
-    total_count = len(SITE_RUN_ORDER)
+    site_keys = active_site_keys_for_task(payload.get("task") or {})
+    total_count = len(site_keys)
     failed_sites: list[str] = []
     updated_sites: list[str] = []
     waiting_site = ""
     running_site = ""
 
-    for site_key in SITE_RUN_ORDER:
+    for site_key in site_keys:
         site = dict(site_statuses.get(site_key) or {})
         site_status = str(site.get("status") or "")
         site_class = status_class(site_status)
@@ -1605,7 +1623,12 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
                 "return_time": str(entry.get("return_time") or "").strip(),
                 "patient_summary": str(entry.get("patient_summary") or "").strip(),
                 "consumables_summary": "\u3001".join(consumable_parts),
-                "fuel_summary": " / ".join(part for part in fuel_parts if part) if fuel_enabled else "\u672a\u52fe\u9078",
+                "fuel_enabled": fuel_enabled,
+                "fuel_time": str(fuel_record.get("time") or "").strip() if fuel_enabled else "",
+                "fuel_product": str(fuel_record.get("product") or "").strip() if fuel_enabled else "",
+                "fuel_quantity": str(fuel_record.get("quantity") or "").strip() if fuel_enabled else "",
+                "fuel_unit_price": str(fuel_record.get("unit_price") or "").strip() if fuel_enabled else "",
+                "fuel_summary": " / ".join(part for part in fuel_parts if part) if fuel_enabled else "",
                 "disinfection": str(entry.get("disinfection") or "").strip(),
                 "disinfection_items": [
                     str(item).strip()
@@ -1617,6 +1640,32 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
             }
         )
     return display_entries
+
+
+def task_has_fuel_record(task: dict) -> bool:
+    task = dict(task or {})
+    raw_entries = task.get("vehicle_entries")
+    entries = raw_entries if isinstance(raw_entries, list) and raw_entries else [task]
+    for raw_entry in entries:
+        entry = dict(raw_entry or {}) if isinstance(raw_entry, dict) else {}
+        fuel_record = entry.get("fuel_record") if isinstance(entry.get("fuel_record"), dict) else {}
+        if fuel_record and form_flag_enabled(fuel_record.get("enabled")):
+            return True
+    return False
+
+
+def active_site_keys_for_task(task: dict) -> list[str]:
+    if task_has_fuel_record(task):
+        return list(SITE_RUN_ORDER)
+    return [site_key for site_key in SITE_RUN_ORDER if site_key != "fuel_record"]
+
+
+def task_site_count_label(task: dict) -> str:
+    return "五站" if len(active_site_keys_for_task(task)) == 5 else "四站"
+
+
+def task_site_display_pairs(task: dict) -> list[tuple[str, str]]:
+    return [(site_key, SITE_DISPLAY_NAMES.get(site_key, site_key)) for site_key in active_site_keys_for_task(task)]
 
 
 def last_vehicle_mileages(limit: int = 50) -> dict[str, str]:
@@ -1899,6 +1948,9 @@ def template_helpers() -> dict:
         "task_datetime_display": task_datetime_display,
         "task_payload_is_active": task_payload_is_active,
         "task_progress_summary": task_progress_summary,
+        "task_has_fuel_record": task_has_fuel_record,
+        "task_site_count_label": task_site_count_label,
+        "task_site_display_pairs": task_site_display_pairs,
         "task_title": task_title,
         "task_vehicle_display_entries": task_vehicle_display_entries,
         "visible_events": visible_events,
@@ -2059,7 +2111,11 @@ def validate_task_form(task_request) -> list[str]:
         errors.append("請填寫案發地址")
 
     if task_request.two_vehicle:
-        for index, vehicle_request in enumerate(task_request.vehicle_requests(), start=1):
+        vehicle_requests = task_request.vehicle_requests()
+        selected_vehicles = [item.vehicle.strip() for item in vehicle_requests if item.vehicle.strip()]
+        if len(selected_vehicles) != len(set(selected_vehicles)):
+            errors.append("1車與2車不可選擇同一台救護車")
+        for index, vehicle_request in enumerate(vehicle_requests, start=1):
             label = f"{index}\u8eca"
             if not vehicle_request.return_time.strip():
                 errors.append(f"\u8acb\u586b\u5beb{label}\u8fd4\u968a\u6642\u9593")

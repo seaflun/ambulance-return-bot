@@ -42,7 +42,7 @@
       font-size: var(--text-md);
       line-height: 1.45;
     }
-    main { max-width: 960px; margin: 0 auto; padding: 24px 16px 44px; }
+    main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 44px; }
     header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding-bottom: 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
     h1 { margin: 0; font-size: var(--text-xl); line-height: 1.25; font-weight: 800; }
     h2, h3, p { margin: 0; }
@@ -99,7 +99,7 @@
     .status.complete { background: var(--complete-bg); color: var(--complete); }
     .status.failed { background: var(--failed-bg); color: var(--failed); }
     .status.running { background: var(--running-bg); color: var(--running); }
-    .site-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+    .site-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 12px 0; }
     .site {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -129,7 +129,7 @@
       background: #fff;
     }
     .login-title { font-weight: 760; margin-bottom: 8px; }
-    .login-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .login-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
     .login-account {
       min-width: 0;
       border: 1px solid var(--line);
@@ -175,6 +175,9 @@
       padding: 18px;
       color: var(--muted);
       box-shadow: var(--shadow);
+    }
+    @media (max-width: 980px) {
+      .site-grid, .login-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
       main { padding: 18px 12px 36px; }
@@ -238,7 +241,7 @@
               <section class="login-summary" aria-label="各站登入帳號">
                 <div class="login-title">各站登入帳號</div>
                 <div class="login-grid">
-                  {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('fuel_record', '加油'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
+                  {% for site_key, title in task_site_display_pairs(task) %}
                     <div class="login-account">
                       <span class="login-account-name">{{ title }}</span>
                       <span class="login-account-value">{{ site_login_accounts.get(site_key) or '尚未回報' }}</span>
@@ -249,7 +252,7 @@
             {% endif %}
 
             <div class="site-grid">
-              {% for site_key, title in [('duty_work_log', '工作'), ('vehicle_mileage', '里程'), ('fuel_record', '加油'), ('consumables', '耗材'), ('disinfection', '消毒')] %}
+              {% for site_key, title in task_site_display_pairs(task) %}
                 {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
                 {% set diag = site_diagnostic(site) %}
                 <div class="site">

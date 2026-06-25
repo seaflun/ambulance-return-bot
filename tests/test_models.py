@@ -190,7 +190,7 @@ class ModelParsingTests(unittest.TestCase):
                 "consumables_2": "\u8033\u6eab\u5957=1",
                 "disinfection_items_2": ["\u64d4\u67b6\u5e8a"],
                 "fuel_record_2": "1",
-                "fuel_date_2": "20260603",
+                "fuel_date_2": "2026/06/03",
                 "fuel_time_2": "1735",
                 "fuel_quantity_2": "40.5",
                 "fuel_unit_price_2": "31",
