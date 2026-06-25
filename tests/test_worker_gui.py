@@ -432,6 +432,8 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
                 result = worker_gui.save_credential_sync_payload(payload)
                 selected = load_synced_worker_credential()
+                synced_env_account = os.environ.get("DUTY_ACCOUNT")
+                synced_env_password = os.environ.get("DUTY_PASSWORD")
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
@@ -452,7 +454,9 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual(result[0], "user9")
+        self.assertEqual(result[0], "user8")
+        self.assertEqual(synced_env_account, "user8")
+        self.assertEqual(synced_env_password, "pass8")
         self.assertIsNotNone(selected)
         assert selected is not None
         self.assertEqual(selected.user_id, "user8")

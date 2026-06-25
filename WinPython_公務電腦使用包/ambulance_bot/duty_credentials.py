@@ -358,11 +358,12 @@ def save_credential_sync_payload(payload: dict[str, object], path: Path | None =
     selected = select_credential_sync_account(accounts, payload)
     if selected is None:
         return None
-    user_id = str(selected.get("user_id") or "").strip()
-    password = str(selected.get("password") or "")
+    last_selected = stable_synced_account_selection(accounts, path=path)
+    stable_selected = select_credential_sync_account(accounts, {"user_id": last_selected, "actor_no": last_selected}) or selected
+    user_id = str(stable_selected.get("user_id") or "").strip()
+    password = str(stable_selected.get("password") or "")
     if not user_id or not password:
         return None
-    last_selected = stable_synced_account_selection(accounts, path=path)
     saved_path = save_duty_automation_credentials(accounts, last_selected=last_selected, path=path)
     os.environ["DUTY_ACCOUNT"] = user_id
     os.environ["DUTY_PASSWORD"] = password

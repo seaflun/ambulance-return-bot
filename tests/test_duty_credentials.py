@@ -157,7 +157,7 @@ class DutyCredentialTests(unittest.TestCase):
         assert selected is not None
         self.assertEqual(selected["user_id"], "user9")
 
-    def test_save_credential_sync_payload_saves_selected_account_locally(self):
+    def test_save_credential_sync_payload_keeps_stable_synced_account_in_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "saved_login.json"
             previous_account = os.environ.get("DUTY_ACCOUNT")
@@ -173,6 +173,8 @@ class DutyCredentialTests(unittest.TestCase):
 
                 result = save_credential_sync_payload(payload, path=path)
                 credential = load_synced_worker_credential(path)
+                synced_env_account = os.environ.get("DUTY_ACCOUNT")
+                synced_env_password = os.environ.get("DUTY_PASSWORD")
             finally:
                 if previous_account is None:
                     os.environ.pop("DUTY_ACCOUNT", None)
@@ -186,10 +188,12 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         user_id, password, saved_path, count = result
-        self.assertEqual(user_id, "user9")
-        self.assertEqual(password, "pass9")
+        self.assertEqual(user_id, "user8")
+        self.assertEqual(password, "pass8")
         self.assertEqual(saved_path, path)
         self.assertEqual(count, 2)
+        self.assertEqual(synced_env_account, "user8")
+        self.assertEqual(synced_env_password, "pass8")
         self.assertIsNotNone(credential)
         assert credential is not None
         self.assertEqual(credential.user_id, "user8")
