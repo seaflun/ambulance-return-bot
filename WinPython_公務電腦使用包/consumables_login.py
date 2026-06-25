@@ -20,7 +20,7 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.duty_credentials import load_synced_worker_credential
-from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
+from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm, vehicle_ppe_names
 from ambulance_bot.window_layout import apply_tile
 
 
@@ -320,6 +320,10 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
             matched = _find_consumable_href_by_vehicle_code(driver, [href for _, href, _ in tied], request.vehicle)
             if matched:
                 return matched
+        if len(sid_scored) > 1 and request.vehicle:
+            matched = _find_consumable_href_by_vehicle_code(driver, [href for _, href, _ in sid_scored], request.vehicle)
+            if matched:
+                return matched
         return sid_scored[0][1]
 
     scored.sort(key=lambda item: item[0], reverse=True)
@@ -365,25 +369,42 @@ def _case_id_sid_fragments(case_id: str) -> list[str]:
 
 
 def _text_matches_vehicle(text: str, vehicle: str) -> bool:
-    needle = re.sub(r"\s+", "", str(vehicle or ""))
-    if not needle:
-        return False
+    needles = _vehicle_match_tokens(vehicle)
     haystack = re.sub(r"\s+", "", str(text or ""))
-    return needle in haystack
+    return any(needle in haystack for needle in needles)
+
+
+def _vehicle_match_tokens(vehicle: str) -> list[str]:
+    vehicle_text = str(vehicle or "").strip()
+    tokens = [vehicle_text]
+    ppe_name = vehicle_ppe_names().get(vehicle_text, "")
+    if ppe_name:
+        tokens.append(ppe_name)
+    normalized: list[str] = []
+    for token in tokens:
+        value = re.sub(r"\s+", "", token)
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
 
 
 def _find_consumable_href_by_vehicle_code(driver: webdriver.Chrome, hrefs: list[str], vehicle: str) -> str:
-    vehicle_text = str(vehicle or "").strip()
-    if not vehicle_text:
+    vehicle_tokens = _vehicle_match_tokens(vehicle)
+    if not vehicle_tokens:
         return ""
     for href in hrefs:
         driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
         WebDriverWait(driver, 10).until(lambda d: d.execute_script("return document.readyState") == "complete")
         time.sleep(0.5)
         body_text = driver.find_element(By.TAG_NAME, "body").text
-        if vehicle_text in body_text:
+        if _text_matches_any_vehicle_token(body_text, vehicle_tokens):
             return href
     return ""
+
+
+def _text_matches_any_vehicle_token(text: str, vehicle_tokens: list[str]) -> bool:
+    haystack = re.sub(r"\s+", "", str(text or ""))
+    return any(token in haystack for token in vehicle_tokens)
 
 
 def _hhmm_from_row_text(text: str) -> str:

@@ -138,6 +138,16 @@
     }
     .login-account-name { display: block; font-weight: 760; margin-bottom: 3px; }
     .login-account-value { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .vehicle-summary { display: grid; gap: 7px; margin: 10px 0 12px; }
+    .vehicle-line {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fff;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .vehicle-line strong { margin-right: 6px; color: var(--ink); }
     .task-details { margin-top: 12px; border-top: 1px solid var(--line); }
     .task-details summary {
       cursor: pointer;
@@ -202,6 +212,7 @@
             {% set operator_label = item.operator or item.user or '未知使用者' %}
             {% set synced_account = item.synced_account or operator_label %}
             {% set site_login_accounts = item.site_login_accounts if item.site_login_accounts is mapping else {} %}
+            {% set vehicle_entries = task_vehicle_display_entries(task) %}
             <div class="card-head">
               <div>
                 <h2 class="title">{{ item.title }}</h2>
@@ -211,6 +222,17 @@
               </div>
               <span class="status {{ status_class(item.overall_status) }}">{{ item.last_action or status_label(item.overall_status) }}</span>
             </div>
+
+            {% if vehicle_entries %}
+              <section class="vehicle-summary" aria-label="救護車明細">
+                {% for entry in vehicle_entries %}
+                  <div class="vehicle-line">
+                    <strong>{{ entry.label }}</strong>
+                    {{ entry.vehicle or '未填車輛' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }} / {{ entry.consumables_summary or '未填耗材' }}
+                  </div>
+                {% endfor %}
+              </section>
+            {% endif %}
 
             {% if site_login_accounts %}
               <section class="login-summary" aria-label="各站登入帳號">

@@ -782,6 +782,60 @@ class WebAppTests(unittest.TestCase):
             "8番 曾彥綸 - C123***789（同步帳號）",
         )
 
+    def test_admin_public_pc_shows_two_vehicle_task_entries(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        response = self.client.post(
+            "/worker/public-pc-task-events",
+            headers=worker_headers,
+            json={
+                "event_id": "evt-two-vehicle",
+                "task_id": "local-task-two-vehicle",
+                "task": {
+                    "task_id": "local-task-two-vehicle",
+                    "case_reason": "\u6025\u75c5",
+                    "case_address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def1\u865f",
+                    "vehicle": "\u65b0\u576191",
+                    "driver": "\u66fe\u5f65\u7db8",
+                    "mileage": "12345",
+                    "return_time": "1119",
+                    "consumables": {"\u6843-\u53e3\u7f69(\u7247)": 2},
+                    "two_vehicle": True,
+                    "vehicle_entries": [
+                        {
+                            "vehicle": "\u65b0\u576191",
+                            "driver": "\u66fe\u5f65\u7db8",
+                            "mileage": "12345",
+                            "return_time": "1119",
+                            "patient_summary": "\u7537\u4e00\u540d",
+                            "consumables": {"\u6843-\u53e3\u7f69(\u7247)": 2},
+                        },
+                        {
+                            "vehicle": "\u65b0\u576192",
+                            "driver": "\u738b\u6631\u52db",
+                            "mileage": "23456",
+                            "return_time": "1125",
+                            "patient_summary": "\u7121",
+                            "consumables": {"\u6843-9\u540b\u624b\u5957-L(\u96d9)": 1},
+                        },
+                    ],
+                },
+                "action": "\u5efa\u7acb\u4efb\u52d9",
+                "status": "created",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        page = self.client.get("/admin/public-pc")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("1\u8eca", body)
+        self.assertIn("2\u8eca", body)
+        self.assertIn("\u65b0\u576192", body)
+        self.assertIn("\u738b\u6631\u52db", body)
+        self.assertIn("23456", body)
+        self.assertIn("\u6843-9\u540b\u624b\u5957-L(\u96d9) x1", body)
+
     def test_sinposmart_event_api_requires_token(self):
         response = self.client.post("/api/sinposmart/events", json={"event_id": "evt-1"})
 
@@ -2430,6 +2484,30 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(mileage.index(">\u51fa\u52d5</span>"), mileage.index(">\u8fd4\u968a</span>"))
         self.assertLess(mileage.index(">\u8fd4\u968a</span>"), mileage.index(">\u91cc\u7a0b</span>"))
         self.assertLess(mileage.index(">\u91cc\u7a0b</span>"), mileage.index(">\u53f8\u6a5f</span>"))
+
+    def test_task_detail_shows_second_vehicle_values(self):
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                two_vehicle="1",
+                vehicle_2="\u65b0\u576192",
+                driver_2="\u738b\u6631\u52db",
+                return_date_2="2026-06-07",
+                return_time_2="1125",
+                mileage_2="23456",
+                patient_summary_2="\u7121",
+                consumables_2="\u6843-9\u540b\u624b\u5957-L(\u96d9)=1",
+            ),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn("\u65b0\u576192", body)
+        self.assertIn("\u738b\u6631\u52db", body)
+        self.assertIn("23456", body)
+        self.assertIn("\u6843-9\u540b\u624b\u5957-L(\u96d9) x1", body)
 
     def test_task_detail_lists_four_site_stage_checks(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())

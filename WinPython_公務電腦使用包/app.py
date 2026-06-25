@@ -1562,6 +1562,52 @@ def task_title(task: dict) -> str:
     return str(task.get("task_id") or "未命名任務")
 
 
+def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
+    task = dict(task or {})
+    raw_entries = task.get("vehicle_entries")
+    entries = raw_entries if isinstance(raw_entries, list) and raw_entries else []
+    if not entries:
+        entries = [task]
+    multiple = len(entries) > 1
+    display_entries: list[dict[str, object]] = []
+    for index, raw_entry in enumerate(entries, start=1):
+        entry = dict(raw_entry or {}) if isinstance(raw_entry, dict) else {}
+        consumables = entry.get("consumables") if isinstance(entry.get("consumables"), dict) else {}
+        consumable_parts = [
+            f"{name} x{qty}"
+            for name, qty in consumables.items()
+            if str(name or "").strip() and _positive_quantity(qty)
+        ]
+        display_entries.append(
+            {
+                "label": f"{index}\u8eca" if multiple else "\u8eca\u8f1b",
+                "vehicle": str(entry.get("vehicle") or "").strip(),
+                "driver": str(entry.get("driver") or "").strip(),
+                "mileage": str(entry.get("mileage") or "").strip(),
+                "return_date": str(entry.get("return_date") or "").strip(),
+                "return_time": str(entry.get("return_time") or "").strip(),
+                "patient_summary": str(entry.get("patient_summary") or "").strip(),
+                "consumables_summary": "\u3001".join(consumable_parts),
+                "disinfection": str(entry.get("disinfection") or "").strip(),
+                "disinfection_items": [
+                    str(item).strip()
+                    for item in entry.get("disinfection_items", [])
+                    if str(item).strip()
+                ]
+                if isinstance(entry.get("disinfection_items"), list)
+                else [],
+            }
+        )
+    return display_entries
+
+
+def _positive_quantity(value: object) -> bool:
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def site_short_name(site: dict) -> str:
     key = str(site.get("key") or "")
     return SITE_SHORT_NAMES.get(key, str(site.get("name") or "站台"))
@@ -1816,6 +1862,7 @@ def template_helpers() -> dict:
         "task_payload_is_active": task_payload_is_active,
         "task_progress_summary": task_progress_summary,
         "task_title": task_title,
+        "task_vehicle_display_entries": task_vehicle_display_entries,
         "visible_events": visible_events,
     }
 

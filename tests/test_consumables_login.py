@@ -117,6 +117,110 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026060210100301165202")
 
+    def test_consumable_detail_matches_vehicle_by_ppe_plate_text(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeElement:
+            text = ""
+
+        class FakeDriver:
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026060210100301165201",
+                        "sid": "2026060210100301165201",
+                        "text": "01:16 BGV-2310 \u6025\u75c5",
+                    },
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026060210100301165202",
+                        "sid": "2026060210100301165202",
+                        "text": "01:16 BXB-7593 \u6025\u75c5",
+                    },
+                ]
+
+            def get(self, url):
+                pass
+
+            def find_element(self, by, value):
+                return FakeElement()
+
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="",
+            case_time="0116",
+            vehicle="\u65b0\u576192",
+            case_reason="\u6025\u75c5",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            href = _find_consumable_detail_href(FakeDriver(), request)
+
+        self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026060210100301165202")
+
+    def test_consumable_detail_checks_detail_page_vehicle_when_list_rows_are_ambiguous(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeElement:
+            def __init__(self, text=""):
+                self.text = text
+
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = ""
+
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026062510100312223801",
+                        "sid": "2026062510100312223801",
+                        "text": "2026/06/25 12:25:24 \u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e0a\u798f\u8def116\u5df746\u865f",
+                    },
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026062510100312223802",
+                        "sid": "2026062510100312223802",
+                        "text": "2026/06/25 12:24:31 \u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e0a\u798f\u8def116\u5df746\u865f",
+                    },
+                ]
+
+            def get(self, url):
+                self.current_url = url
+
+            def find_element(self, by, value):
+                if self.current_url.endswith("12223802"):
+                    return FakeElement("\u65b0\u576192 BXB-7593")
+                return FakeElement("\u65b0\u576191 BGV-2310")
+
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="2026062512223801",
+            case_time="1225",
+            vehicle="\u65b0\u576192",
+            case_address="\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e0a\u798f\u8def116\u5df746\u865f",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            href = _find_consumable_detail_href(FakeDriver(), request)
+
+        self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026062510100312223802")
+
     def test_consumable_detail_wait_fails_when_session_returns_to_sso(self):
         class FakeElement:
             text = ""
