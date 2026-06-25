@@ -362,7 +362,9 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn('name="two_vehicle"', body)
-        self.assertIn("2\u8eca\u51fa\u52e4", body)
+        self.assertIn("\u5169\u8eca\u540c\u6642\u767b\u6253", body)
+        self.assertIn("\u6b64\u52fe\u9078\u70ba\u5169\u8eca\u540c\u6642\u767b\u6253\uff0c\u82e5\u9700\u5206\u958b\u767b\u6253\u5247\u4e0d\u7528\u52fe\u9078", body)
+        self.assertNotIn("2\u8eca\u51fa\u52e4", body)
         self.assertIn("1\u8eca", body)
         self.assertIn("2\u8eca", body)
         self.assertLess(body.index('id="primary-vehicle-title"'), body.index('name="case_time"'))
@@ -402,6 +404,49 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-consumable-target="2"', body)
         for package_key in ("glucose", "iv", "io", "ecg", "ohca"):
             self.assertIn(f'data-consumable-package="{package_key}" data-consumable-target="2"', body)
+
+    def test_app_page_includes_last_mileage_by_vehicle(self):
+        self.store.create(
+            app_module.request_from_form(
+                self.valid_task_data(case_id="case-previous-primary", vehicle="\u65b0\u576191", mileage="11111")
+            )
+        )
+        self.store.create(
+            app_module.request_from_form(
+                self.valid_task_data(
+                    case_id="case-previous-two-vehicle",
+                    vehicle="\u65b0\u576193",
+                    mileage="12000",
+                    two_vehicle="1",
+                    vehicle_2="\u65b0\u576192",
+                    driver_2="\u738b\u6631\u52db",
+                    mileage_2="22222",
+                    return_time_2="1130",
+                    patient_summary_2="\u7121",
+                )
+            )
+        )
+        self.import_case_for_form(
+            {
+                "case_id": "case-last-mileage",
+                "category": "\u7dca\u6025\u6551\u8b77-\u6025\u75c5",
+                "address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340",
+                "case_time_hhmm": "0911",
+                "personnel": ["\u7532", "\u4e59", "\u4e19", "\u4e01"],
+            }
+        )
+
+        response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        compact_body = body.replace(" ", "")
+        self.assertIn("\u4e0a\u6b21\u8a72\u8eca\u8f1b\u767b\u6253\u7684\u91cc\u7a0b", body)
+        self.assertIn('data-last-mileage-for="vehicle"', body)
+        self.assertIn('data-last-mileage-for="vehicle_2"', body)
+        self.assertIn('"\\u65b0\\u576191":"11111"', compact_body)
+        self.assertIn('"\\u65b0\\u576193":"12000"', compact_body)
+        self.assertIn('"\\u65b0\\u576192":"22222"', compact_body)
 
     def test_imported_case_requires_more_than_three_ambulance_personnel_for_two_vehicle(self):
         self.import_case_for_form(

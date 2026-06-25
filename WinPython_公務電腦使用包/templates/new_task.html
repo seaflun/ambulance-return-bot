@@ -178,6 +178,7 @@
     .check-item input { width: 20px; height: 20px; min-height: 20px; margin: 0; transform: scale(1.35); accent-color: var(--accent); }
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
     .two-vehicle-toggle { width: fit-content; margin: 0 0 16px; }
+    .mileage-hint { min-height: 22px; margin: 6px 0 0; color: var(--muted); font-size: var(--text-sm); font-weight: 650; }
     .vehicle-section-title { display: none; margin: 4px 0 14px; padding-top: 2px; color: var(--accent); font-size: var(--text-xl); line-height: 1.2; }
     .two-vehicle-enabled .vehicle-section-title { display: block; }
     .two-vehicle-panel { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
@@ -386,7 +387,7 @@
       {% if two_vehicle_available %}
         <label class="check-item two-vehicle-toggle">
           <input type="checkbox" name="two_vehicle" id="two-vehicle-toggle" value="1"{% if selected_case.two_vehicle %} checked{% endif %}>
-          <span>2車出勤</span>
+          <span>兩車同時登打（此勾選為兩車同時登打，若需分開登打則不用勾選）</span>
         </label>
       {% endif %}
       <div class="address-row">
@@ -460,6 +461,7 @@
       <label class="field-visual" data-field-name="mileage">
         <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
         <input name="mileage" inputmode="numeric" pattern="[0-9]*" value="{{ selected_case.mileage or '' }}">
+        <div class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></div>
       </label>
 
       <section class="consumables form-section-divider">
@@ -558,6 +560,7 @@
         <label class="field-visual" data-field-name="mileage_2">
           <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
           <input name="mileage_2" inputmode="numeric" pattern="[0-9]*" value="{{ second_vehicle.mileage or '' }}">
+          <div class="mileage-hint" data-last-mileage-for="vehicle_2" aria-live="polite"></div>
         </label>
         <section class="consumables form-section-divider">
           <input type="hidden" name="consumables_2" id="consumables-value-2">
@@ -639,6 +642,7 @@
     const defaultConsumables2 = {{ second_consumables | tojson }};
     const baselineConsumablesLoaded = {{ baseline_consumables_loaded | default(false) | tojson }};
     const selectedConsumablePackages = {{ selected_consumable_packages | default([]) | tojson }};
+    const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
     const twoVehicleToggle = document.getElementById("two-vehicle-toggle");
     const secondVehicleSection = document.getElementById("second-vehicle-section");
     const consumableList = document.getElementById("consumable-list");
@@ -755,6 +759,19 @@
       if (secondVehicleSection) secondVehicleSection.hidden = !enabled;
     }
 
+    function updateLastMileageHint(vehicleFieldName) {
+      const select = document.querySelector(`select[name="${vehicleFieldName}"]`);
+      const hint = document.querySelector(`[data-last-mileage-for="${vehicleFieldName}"]`);
+      if (!select || !hint) return;
+      const mileage = lastVehicleMileages[select.value] || "";
+      hint.textContent = mileage ? `上次該車輛登打的里程：${mileage}` : "";
+    }
+
+    function updateLastMileageHints() {
+      updateLastMileageHint("vehicle");
+      updateLastMileageHint("vehicle_2");
+    }
+
     if (twoVehicleToggle) {
       twoVehicleToggle.addEventListener("change", () => {
         updateTwoVehicleUi();
@@ -811,6 +828,12 @@
       if (!input) return;
       input.addEventListener("input", updateFieldVisualHints);
       input.addEventListener("change", updateFieldVisualHints);
+    });
+
+    ["vehicle", "vehicle_2"].forEach((vehicleFieldName) => {
+      const select = document.querySelector(`select[name="${vehicleFieldName}"]`);
+      if (!select) return;
+      select.addEventListener("change", updateLastMileageHints);
     });
 
     {% if form_errors %}
@@ -1478,6 +1501,7 @@
       addConsumable2Button.addEventListener("click", () => addConsumableRow2());
     }
     updateTwoVehicleUi();
+    updateLastMileageHints();
     updateConsumablePackageUi();
     updateConsumablePackageUi2();
     updateFieldVisualHints();

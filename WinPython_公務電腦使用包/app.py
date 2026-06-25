@@ -109,6 +109,7 @@ def new_task():
         baseline_consumables_loaded=bool(selected_case),
         selected_consumable_packages=[],
         two_vehicle_available=two_vehicle_option_available(selected_case),
+        last_vehicle_mileages=last_vehicle_mileages(),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
         form_errors=[],
@@ -1601,6 +1602,22 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
     return display_entries
 
 
+def last_vehicle_mileages(limit: int = 50) -> dict[str, str]:
+    mileages: dict[str, str] = {}
+    for payload in store.list_recent(limit=limit):
+        if not isinstance(payload, dict):
+            continue
+        task = payload.get("task")
+        if not isinstance(task, dict):
+            continue
+        for entry in task_vehicle_display_entries(task):
+            vehicle = str(entry.get("vehicle") or "").strip()
+            mileage = str(entry.get("mileage") or "").strip()
+            if vehicle and mileage and vehicle not in mileages:
+                mileages[vehicle] = mileage
+    return mileages
+
+
 def _positive_quantity(value: object) -> bool:
     try:
         return int(value) > 0
@@ -2136,6 +2153,7 @@ def render_task_form_from_request(
         baseline_consumables_loaded=baseline_consumables_loaded,
         selected_consumable_packages=selected_consumable_packages or [],
         two_vehicle_available=two_vehicle_available,
+        last_vehicle_mileages=last_vehicle_mileages(),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task_request.disinfection_items or []),
         form_errors=form_errors,
