@@ -231,7 +231,7 @@
                 {% for entry in vehicle_entries %}
                   <div class="vehicle-line">
                     <strong>{{ entry.label }}</strong>
-                    {{ entry.vehicle or '未填車輛' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }} / {{ entry.consumables_summary or '未填耗材' }}
+                    {{ entry.vehicle or '未填車輛' }} / {{ entry.patient_gender or '未填傷病患' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }} / {{ entry.consumables_summary or '未填耗材' }} / {{ entry.disinfection_count_text or '消毒0項' }}
                   </div>
                 {% endfor %}
               </section>

@@ -426,9 +426,20 @@
             </div>
           </div>
           <ul class="line-list">
-            {% for entry in vehicle_entries %}
-              <li><span class="label">{{ entry.label if vehicle_entries|length > 1 else '項目' }}</span><span class="value">{{ entry.consumables_summary or '未填' }}</span></li>
-            {% endfor %}
+            {% if vehicle_entries|length > 1 %}
+              {% for entry in vehicle_entries %}
+                <li><span class="label">{{ entry.label }}</span><span class="value">{{ entry.consumables_summary or '未填' }}</span></li>
+              {% endfor %}
+            {% else %}
+              {% set entry = vehicle_entries[0] if vehicle_entries else {} %}
+              {% if entry.consumables_items %}
+                {% for item in entry.consumables_items %}
+                  <li><span class="label">項目</span><span class="value">{{ item }}</span></li>
+                {% endfor %}
+              {% else %}
+                <li><span class="label">項目</span><span class="value">未填</span></li>
+              {% endif %}
+            {% endif %}
           </ul>
         </article>
 

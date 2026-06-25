@@ -861,6 +861,7 @@ class WebAppTests(unittest.TestCase):
                             "return_time": "1119",
                             "patient_summary": "\u7537\u4e00\u540d",
                             "consumables": {"\u6843-\u53e3\u7f69(\u7247)": 2},
+                            "disinfection_items": ["\u64e6\u62ed\u6d88\u6bd2", "\u6d88\u6bd2\u5730\u677f"],
                         },
                         {
                             "vehicle": "\u65b0\u576192",
@@ -869,6 +870,7 @@ class WebAppTests(unittest.TestCase):
                             "return_time": "1125",
                             "patient_summary": "\u7121",
                             "consumables": {"\u6843-9\u540b\u624b\u5957-L(\u96d9)": 1},
+                            "disinfection_items": ["\u64e6\u62ed\u6d88\u6bd2"],
                         },
                     ],
                 },
@@ -883,7 +885,9 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("1\u8eca", body)
         self.assertIn("2\u8eca", body)
+        self.assertIn("\u65b0\u576191 / \u7537 / \u66fe\u5f65\u7db8 / 12345 / \u6843-\u53e3\u7f69(\u7247) x2 / \u6d88\u6bd22\u9805", body)
         self.assertIn("\u65b0\u576192", body)
+        self.assertIn("\u65b0\u576192 / \u7121 / \u738b\u6631\u52db / 23456 / \u6843-9\u540b\u624b\u5957-L(\u96d9) x1 / \u6d88\u6bd21\u9805", body)
         self.assertIn("\u738b\u6631\u52db", body)
         self.assertIn("23456", body)
         self.assertIn("\u6843-9\u540b\u624b\u5957-L(\u96d9) x1", body)
@@ -2575,17 +2579,22 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(body.index('name="mileage_2"'), body.index('name="fuel_record_2"'))
         self.assertIn('class="mileage-row"', body)
         self.assertIn(".mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);", body)
-        self.assertIn(".mileage-hint { min-height: 46px; margin: calc(1.45em + 6px) 0 0;", body)
+        self.assertIn(".mileage-hint-panel { min-width: 0; }", body)
+        self.assertIn(".mileage-hint-spacer { min-height: 1.45em; visibility: hidden; }", body)
+        self.assertIn(".mileage-hint { min-height: 46px; margin: 6px 0 0;", body)
         self.assertIn(".mileage-hint { margin-top: 0; }", body)
-        self.assertIn(".fuel-record-fields .field-error-mark { display: inline; }", body)
+        self.assertIn(".fuel-required.is-pending .field-error-mark", body)
         self.assertIn("#task-form input,", body)
         self.assertIn("#task-form select { min-height: 46px;", body)
         self.assertIn('data-numeric="integer"', body)
         self.assertIn('data-numeric="decimal"', body)
+        self.assertIn("data-time-hhmm", body)
         self.assertIn('id="client-form-errors"', body)
         self.assertIn("function updateVehicleOptionAvailability()", body)
         self.assertIn("option.disabled = duplicated;", body)
         self.assertIn("option.hidden = duplicated;", body)
+        self.assertIn("function normalizeTimeInput(input)", body)
+        self.assertIn("function updateFuelRequiredHints()", body)
         self.assertIn("function fuelRecordErrors(prefix, label)", body)
         self.assertIn("function loadedConsumableLabels2()", body)
         self.assertIn('if (baselineConsumablesLoaded) labels.push("基礎三項");', body)
@@ -2662,6 +2671,24 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("\u8d85\u7d1a\u67f4\u6cb9", mileage)
         self.assertIn("42.122", mileage)
         self.assertIn("30.3", mileage)
+
+    def test_task_detail_lists_single_vehicle_consumables_one_per_row(self):
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                consumables="\u6843-\u53e3\u7f69(\u7247)=2,\u6843-9\u540b\u624b\u5957-L(\u96d9)=1",
+            ),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(response.data.decode("utf-8"))
+        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('class="stage-panel"')]
+        consumables = task_section[task_section.index("<h3>\u8017\u6750</h3>") : task_section.index("<h3>\u6d88\u6bd2</h3>")]
+
+        self.assertIn('<span class="value">\u6843-\u53e3\u7f69(\u7247) x2</span>', consumables)
+        self.assertIn('<span class="value">\u6843-9\u540b\u624b\u5957-L(\u96d9) x1</span>', consumables)
+        self.assertNotIn("\u3001", consumables)
 
     def test_task_detail_uses_mileage_title_when_fuel_record_not_enabled(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())

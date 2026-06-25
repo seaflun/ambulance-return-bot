@@ -128,7 +128,8 @@
     .field-error-mark { display: none; color: #c83f37; font-weight: 900; }
     .field-visual.is-pending .field-error-mark,
     .field-visual.has-error .field-error-mark,
-    .fuel-record-fields .field-error-mark { display: inline; }
+    .fuel-required.is-pending .field-error-mark,
+    .fuel-required.has-error .field-error-mark { display: inline; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
     .address-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
     .address-row label { margin-bottom: 13px; }
@@ -189,7 +190,9 @@
     .two-vehicle-toggle { width: fit-content; margin: 0 0 16px; }
     .mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: start; margin: 0 0 12px; }
     .mileage-row .field-visual { margin: 0; }
-    .mileage-hint { min-height: 46px; margin: calc(1.45em + 6px) 0 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
+    .mileage-hint-panel { min-width: 0; }
+    .mileage-hint-spacer { min-height: 1.45em; visibility: hidden; }
+    .mileage-hint { min-height: 46px; margin: 6px 0 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
     .mileage-hint:empty { display: none; }
     .fuel-record-row { border-top: 1px solid var(--line); margin: 4px 0 14px; padding-top: 14px; }
     .fuel-record-toggle { width: fit-content; margin: 0 0 14px; }
@@ -306,6 +309,8 @@
       .clear-button { padding: 0 12px; }
       .grid { grid-template-columns: 1fr; gap: 8px; }
       .mileage-row { grid-template-columns: 1fr; gap: 8px; }
+      .mileage-hint-panel { display: block; }
+      .mileage-hint-spacer { display: none; }
       .mileage-hint { margin-top: 0; }
       .time-grid { grid-template-columns: 1fr; }
       .time-field { grid-template-columns: 1fr; }
@@ -440,14 +445,14 @@
           <span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span>
           <div class="time-field">
             <input type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_case_date_input(selected_case) }}">
-            <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_case.case_time_hhmm or '' }}">
+            <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ selected_case.case_time_hhmm or '' }}">
           </div>
         </label>
         <label class="field-visual" data-field-name="return_time">
           <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
           <div class="time-field return-time-field">
             <input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}">
-            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(selected_case) }}">
+            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ selected_return_time_input(selected_case) }}">
             <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
           </div>
         </label>
@@ -497,7 +502,10 @@
           <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
           <input name="mileage" inputmode="numeric" pattern="[0-9]*" data-numeric="integer" value="{{ selected_case.mileage or '' }}">
         </label>
-        <div class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></div>
+        <div class="mileage-hint-panel" hidden>
+          <span class="field-label-title mileage-hint-spacer" aria-hidden="true">&nbsp;</span>
+          <div class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></div>
+        </div>
       </div>
       <div class="fuel-record-row">
         <label class="check-item fuel-record-toggle">
@@ -507,11 +515,11 @@
       </div>
       <section class="fuel-record-fields" id="fuel-record-fields" data-fuel-fields="1" hidden>
         <div class="grid">
-          <label>加油日期<span class="field-error-mark" aria-hidden="true">*</span>
+          <label class="fuel-required" data-fuel-required="fuel_date">加油日期<span class="field-error-mark" aria-hidden="true">*</span>
             <input type="text" name="fuel_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="{{ primary_fuel_date }}">
           </label>
-          <label>加油時間<span class="field-error-mark" aria-hidden="true">*</span>
-            <input name="fuel_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ primary_fuel.time or '' }}">
+          <label class="fuel-required" data-fuel-required="fuel_time">加油時間<span class="field-error-mark" aria-hidden="true">*</span>
+            <input name="fuel_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ primary_fuel.time or '' }}">
           </label>
         </div>
         <div class="grid">
@@ -523,10 +531,10 @@
           </label>
         </div>
         <div class="grid">
-          <label>油量<span class="field-error-mark" aria-hidden="true">*</span>
+          <label class="fuel-required" data-fuel-required="fuel_quantity">油量<span class="field-error-mark" aria-hidden="true">*</span>
             <input name="fuel_quantity" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ primary_fuel.quantity or '' }}">
           </label>
-          <label>單價<span class="field-error-mark" aria-hidden="true">*</span>
+          <label class="fuel-required" data-fuel-required="fuel_unit_price">單價<span class="field-error-mark" aria-hidden="true">*</span>
             <input name="fuel_unit_price" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ primary_fuel.unit_price or '' }}">
           </label>
         </div>
@@ -580,7 +588,7 @@
             <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
             <div class="time-field return-time-field">
               <input type="text" name="return_date_2" id="return-date-2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(second_vehicle) }}">
-              <input name="return_time_2" id="return-time-2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ selected_return_time_input(second_vehicle) }}">
+              <input name="return_time_2" id="return-time-2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ selected_return_time_input(second_vehicle) }}">
               <button type="button" class="clock-button" id="return-now-2" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
             </div>
           </label>
@@ -630,7 +638,10 @@
             <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
             <input name="mileage_2" inputmode="numeric" pattern="[0-9]*" data-numeric="integer" value="{{ second_vehicle.mileage or '' }}">
           </label>
-          <div class="mileage-hint" data-last-mileage-for="vehicle_2" aria-live="polite"></div>
+          <div class="mileage-hint-panel" hidden>
+            <span class="field-label-title mileage-hint-spacer" aria-hidden="true">&nbsp;</span>
+            <div class="mileage-hint" data-last-mileage-for="vehicle_2" aria-live="polite"></div>
+          </div>
         </div>
         <div class="fuel-record-row">
           <label class="check-item fuel-record-toggle">
@@ -640,11 +651,11 @@
         </div>
         <section class="fuel-record-fields" id="fuel-record-fields-2" data-fuel-fields="2" hidden>
           <div class="grid">
-            <label>加油日期<span class="field-error-mark" aria-hidden="true">*</span>
+            <label class="fuel-required" data-fuel-required="fuel_date_2">加油日期<span class="field-error-mark" aria-hidden="true">*</span>
               <input type="text" name="fuel_date_2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="{{ second_fuel_date }}">
             </label>
-            <label>加油時間<span class="field-error-mark" aria-hidden="true">*</span>
-              <input name="fuel_time_2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ second_fuel.time or '' }}">
+            <label class="fuel-required" data-fuel-required="fuel_time_2">加油時間<span class="field-error-mark" aria-hidden="true">*</span>
+              <input name="fuel_time_2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ second_fuel.time or '' }}">
             </label>
           </div>
           <div class="grid">
@@ -656,10 +667,10 @@
             </label>
           </div>
           <div class="grid">
-            <label>油量<span class="field-error-mark" aria-hidden="true">*</span>
+            <label class="fuel-required" data-fuel-required="fuel_quantity_2">油量<span class="field-error-mark" aria-hidden="true">*</span>
               <input name="fuel_quantity_2" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ second_fuel.quantity or '' }}">
             </label>
-            <label>單價<span class="field-error-mark" aria-hidden="true">*</span>
+            <label class="fuel-required" data-fuel-required="fuel_unit_price_2">單價<span class="field-error-mark" aria-hidden="true">*</span>
               <input name="fuel_unit_price_2" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ second_fuel.unit_price or '' }}">
             </label>
           </div>
@@ -838,6 +849,7 @@
     const taskForm = document.getElementById("task-form");
     const clientFormErrors = document.getElementById("client-form-errors");
     const requiredTaskFields = [
+      { name: "case_time", label: "案件時間", selector: 'input[name="case_time"]' },
       { name: "return_time", label: "返隊時間", selector: 'input[name="return_time"]' },
       { name: "vehicle", label: "出動車輛", selector: 'select[name="vehicle"]' },
       { name: "driver", label: "司機", selector: 'select[name="driver"]' },
@@ -887,7 +899,9 @@
       const hint = document.querySelector(`[data-last-mileage-for="${vehicleFieldName}"]`);
       if (!select || !hint) return;
       const mileage = lastVehicleMileages[select.value] || "";
+      const panel = hint.closest(".mileage-hint-panel");
       hint.textContent = mileage ? `上次該車輛登打的里程：${mileage}` : "";
+      if (panel) panel.hidden = !mileage;
     }
 
     function updateLastMileageHints() {
@@ -898,6 +912,7 @@
     function updateFuelRecordUi() {
       if (fuelRecordFields) fuelRecordFields.hidden = !(fuelRecordToggle && fuelRecordToggle.checked);
       if (fuelRecordFields2) fuelRecordFields2.hidden = !(fuelRecordToggle2 && fuelRecordToggle2.checked);
+      updateFuelRequiredHints();
     }
 
     function syncFuelDrivers() {
@@ -913,6 +928,31 @@
       return /^\d+(\.\d+)?$/.test(String(value || "").trim());
     }
 
+    function hhmmValid(value) {
+      return /^([01]\d|2[0-3])[0-5]\d$/.test(String(value || "").trim());
+    }
+
+    function fuelFieldValid(name) {
+      const value = document.querySelector(`input[name="${name}"]`)?.value.trim() || "";
+      if (name.startsWith("fuel_date")) return /^\d{4}\/\d{2}\/\d{2}$/.test(value);
+      if (name.startsWith("fuel_time")) return hhmmValid(value);
+      return fuelDecimalValid(value);
+    }
+
+    function updateFuelRequiredHints() {
+      ["", "_2"].forEach((prefix) => {
+        const checked = Boolean(document.querySelector(`input[name="fuel_record${prefix}"]`)?.checked);
+        ["fuel_date", "fuel_time", "fuel_quantity", "fuel_unit_price"].forEach((baseName) => {
+          const name = `${baseName}${prefix}`;
+          const wrapper = document.querySelector(`[data-fuel-required="${name}"]`);
+          if (!wrapper) return;
+          const pending = checked && !fuelFieldValid(name);
+          wrapper.classList.toggle("is-pending", pending);
+          wrapper.classList.toggle("has-error", false);
+        });
+      });
+    }
+
     function fuelRecordErrors(prefix, label) {
       const errors = [];
       const checked = document.querySelector(`input[name="fuel_record${prefix}"]`)?.checked;
@@ -924,7 +964,7 @@
       if (!/^\d{4}\/\d{2}\/\d{2}$/.test(date)) {
         errors.push(`${label}加油日期格式需為 2026/06/25`);
       }
-      if (!/^([01]\d|2[0-3])[0-5]\d$/.test(time)) {
+      if (!hhmmValid(time)) {
         errors.push(`${label}加油時間格式需為 1720`);
       }
       if (!fuelDecimalValid(quantity)) {
@@ -968,6 +1008,18 @@
       if (next !== original) input.value = next;
     }
 
+    function normalizeTimeInput(input) {
+      const original = input.value;
+      let next = original.replace(/\D/g, "").slice(0, 4);
+      if (next.length >= 2 && Number(next.slice(0, 2)) > 23) {
+        next = `23${next.slice(2)}`;
+      }
+      if (next.length === 4 && Number(next.slice(2, 4)) > 59) {
+        next = `${next.slice(0, 2)}59`;
+      }
+      if (next !== original) input.value = next;
+    }
+
     if (twoVehicleToggle) {
       twoVehicleToggle.addEventListener("change", () => {
         updateTwoVehicleUi();
@@ -1002,8 +1054,17 @@
       const value = taskFieldValue(fieldName);
       if (!value) return true;
       if (fieldName === "mileage") return !/^\d+$/.test(value);
+      if (fieldName.endsWith("time")) return !hhmmValid(value);
       if (message === "返隊時間不能早於案件時間") return true;
       return false;
+    }
+
+    function taskFieldValid(fieldName) {
+      const value = taskFieldValue(fieldName);
+      if (!value) return false;
+      if (fieldName === "mileage") return /^\d+$/.test(value);
+      if (fieldName.endsWith("time")) return hhmmValid(value);
+      return true;
     }
 
     function updateFieldVisualHints() {
@@ -1013,7 +1074,7 @@
           setFieldState(field.name, "error");
           return;
         }
-        if (baselineConsumablesLoaded && !taskFieldValue(field.name)) {
+        if (baselineConsumablesLoaded && !taskFieldValid(field.name)) {
           setFieldState(field.name, "pending");
           return;
         }
@@ -1044,7 +1105,24 @@
     });
 
     document.querySelectorAll("[data-numeric]").forEach((input) => {
-      input.addEventListener("input", () => normalizeNumericInput(input));
+      input.addEventListener("input", () => {
+        normalizeNumericInput(input);
+        updateFieldVisualHints();
+        updateFuelRequiredHints();
+      });
+    });
+
+    document.querySelectorAll("[data-time-hhmm]").forEach((input) => {
+      input.addEventListener("input", () => {
+        normalizeTimeInput(input);
+        updateFieldVisualHints();
+        updateFuelRequiredHints();
+      });
+    });
+
+    document.querySelectorAll(".fuel-required input").forEach((input) => {
+      input.addEventListener("input", updateFuelRequiredHints);
+      input.addEventListener("change", updateFuelRequiredHints);
     });
 
     if (taskForm) {

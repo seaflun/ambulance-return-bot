@@ -1613,6 +1613,13 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
             str(fuel_record.get("quantity") or "").strip(),
             str(fuel_record.get("unit_price") or "").strip(),
         ]
+        patient_summary = str(entry.get("patient_summary") or "").strip()
+        patient_gender = patient_summary.removesuffix("\u4e00\u540d")
+        disinfection_items = [
+            str(item).strip()
+            for item in entry.get("disinfection_items", [])
+            if str(item).strip()
+        ] if isinstance(entry.get("disinfection_items"), list) else []
         display_entries.append(
             {
                 "label": f"{index}\u8eca" if multiple else "\u8eca\u8f1b",
@@ -1621,7 +1628,9 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
                 "mileage": str(entry.get("mileage") or "").strip(),
                 "return_date": str(entry.get("return_date") or "").strip(),
                 "return_time": str(entry.get("return_time") or "").strip(),
-                "patient_summary": str(entry.get("patient_summary") or "").strip(),
+                "patient_summary": patient_summary,
+                "patient_gender": patient_gender,
+                "consumables_items": list(consumable_parts),
                 "consumables_summary": "\u3001".join(consumable_parts),
                 "fuel_enabled": fuel_enabled,
                 "fuel_time": str(fuel_record.get("time") or "").strip() if fuel_enabled else "",
@@ -1630,13 +1639,9 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
                 "fuel_unit_price": str(fuel_record.get("unit_price") or "").strip() if fuel_enabled else "",
                 "fuel_summary": " / ".join(part for part in fuel_parts if part) if fuel_enabled else "",
                 "disinfection": str(entry.get("disinfection") or "").strip(),
-                "disinfection_items": [
-                    str(item).strip()
-                    for item in entry.get("disinfection_items", [])
-                    if str(item).strip()
-                ]
-                if isinstance(entry.get("disinfection_items"), list)
-                else [],
+                "disinfection_items": disinfection_items,
+                "disinfection_count": len(disinfection_items),
+                "disinfection_count_text": f"\u6d88\u6bd2{len(disinfection_items)}\u9805",
             }
         )
     return display_entries
