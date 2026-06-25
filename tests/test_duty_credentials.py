@@ -192,8 +192,8 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertIsNotNone(credential)
         assert credential is not None
-        self.assertEqual(credential.user_id, "user9")
-        self.assertEqual(credential.password, "pass9")
+        self.assertEqual(credential.user_id, "user8")
+        self.assertEqual(credential.password, "pass8")
 
     def test_saves_synced_credential_derives_name_without_repeating_account(self):
         with tempfile.TemporaryDirectory() as tmp:

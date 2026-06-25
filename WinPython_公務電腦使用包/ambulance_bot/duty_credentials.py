@@ -362,11 +362,29 @@ def save_credential_sync_payload(payload: dict[str, object], path: Path | None =
     password = str(selected.get("password") or "")
     if not user_id or not password:
         return None
-    last_selected = str(payload.get("user_id") or payload.get("actor_no") or user_id).strip()
+    last_selected = stable_synced_account_selection(accounts, path=path)
     saved_path = save_duty_automation_credentials(accounts, last_selected=last_selected, path=path)
     os.environ["DUTY_ACCOUNT"] = user_id
     os.environ["DUTY_PASSWORD"] = password
     return user_id, password, saved_path, len(accounts)
+
+
+def stable_synced_account_selection(accounts: list[dict[str, object]], path: Path | None = None) -> str:
+    for account in accounts:
+        user_id = str(account.get("user_id") or "").strip()
+        actor_no = str(account.get("actor_no") or "").strip()
+        if actor_no == "8" or user_id.lower() == "tyfd01510":
+            return user_id or actor_no
+
+    source = path or saved_login_path()
+    existing_selected = str(_read_saved_login(source).get("last_selected") or "").strip()
+    if existing_selected and _select_account(list(accounts), existing_selected) is not None:
+        return existing_selected
+
+    if accounts:
+        first = accounts[0]
+        return str(first.get("user_id") or first.get("actor_no") or "").strip()
+    return ""
 
 
 def _normalized_account_for_save(account: dict[str, object]) -> dict[str, str] | None:

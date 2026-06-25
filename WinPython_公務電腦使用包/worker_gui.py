@@ -31,6 +31,7 @@ from ambulance_bot.duty_credentials import (
     save_duty_automation_credentials,
     saved_login_path,
     set_last_selected_duty_automation_credential,
+    stable_synced_account_selection,
 )
 
 try:
@@ -1487,7 +1488,7 @@ def save_credential_sync_payload(payload: dict[str, object]) -> tuple[str, str, 
     password = str(selected.get("password") or "")
     if not user_id or not password:
         return None
-    last_selected = str(payload.get("user_id") or payload.get("actor_no") or user_id).strip()
+    last_selected = stable_synced_account_selection(accounts)
     path = save_duty_automation_credentials(accounts, last_selected=last_selected)
     os.environ["DUTY_ACCOUNT"] = user_id
     os.environ["DUTY_PASSWORD"] = password

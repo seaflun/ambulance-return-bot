@@ -127,7 +127,8 @@
     .field-label-title { display: inline-flex; align-items: baseline; gap: 4px; }
     .field-error-mark { display: none; color: #c83f37; font-weight: 900; }
     .field-visual.is-pending .field-error-mark,
-    .field-visual.has-error .field-error-mark { display: inline; }
+    .field-visual.has-error .field-error-mark,
+    .fuel-record-fields .field-error-mark { display: inline; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
     .address-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
     .address-row label { margin-bottom: 13px; }
@@ -186,9 +187,9 @@
     .disinfection-grid .check-item input { width: 18px; height: 18px; min-height: 18px; transform: scale(1.2); }
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
     .two-vehicle-toggle { width: fit-content; margin: 0 0 16px; }
-    .mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: end; margin: 0 0 12px; }
+    .mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: start; margin: 0 0 12px; }
     .mileage-row .field-visual { margin: 0; }
-    .mileage-hint { min-height: 46px; margin: 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
+    .mileage-hint { min-height: 46px; margin: calc(1.45em + 6px) 0 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
     .mileage-hint:empty { display: none; }
     .fuel-record-row { border-top: 1px solid var(--line); margin: 4px 0 14px; padding-top: 14px; }
     .fuel-record-toggle { width: fit-content; margin: 0 0 14px; }
@@ -304,6 +305,8 @@
       .address-row { grid-template-columns: minmax(0, 1fr) 84px; }
       .clear-button { padding: 0 12px; }
       .grid { grid-template-columns: 1fr; gap: 8px; }
+      .mileage-row { grid-template-columns: 1fr; gap: 8px; }
+      .mileage-hint { margin-top: 0; }
       .time-grid { grid-template-columns: 1fr; }
       .time-field { grid-template-columns: 1fr; }
       .return-time-field { grid-template-columns: minmax(0, 1fr) 44px; }
