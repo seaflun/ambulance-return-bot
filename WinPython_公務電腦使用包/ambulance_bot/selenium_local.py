@@ -161,8 +161,6 @@ def run_vehicle_mileage_task(
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
-    if not any(item.fuel_record.enabled for item in request.vehicle_requests()):
-        return SeleniumRunResult(True, "fuel_record_saved", "未勾選加油紀錄，已略過。", summary_path)
 
     driver = existing_driver
     lock_acquired = False

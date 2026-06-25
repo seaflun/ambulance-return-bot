@@ -98,6 +98,53 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIn("\\u6309\\u4e0b\\u78ba\\u8a8d", source)
         self.assertIn("\\u672a\\u5075\\u6e2c\\u5230\\u78ba\\u8a8d\\u8996\\u7a97", source)
 
+    def test_vehicle_mileage_runs_even_without_fuel_record(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-mileage-no-fuel",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="\u65b0\u576191",
+            driver="\u694a\u4ef2\u8c6a",
+            mileage="143635",
+        )
+        opened: dict[str, object] = {}
+
+        def fake_open(driver, opened_request, output_dir, update_context=None):
+            opened["request"] = opened_request
+            return "mileage ok"
+
+        class FakeDriver:
+            page_source = ""
+
+            def implicitly_wait(self, seconds):
+                self.wait_seconds = seconds
+
+        original_open = selenium_local_module._open_vehicle_mileage_page
+        original_save_enabled = selenium_local_module._save_vehicle_mileage_enabled
+        original_apply_tile = selenium_local_module.apply_tile
+        original_set_window = selenium_local_module._set_window_size_if_enabled
+        try:
+            selenium_local_module._open_vehicle_mileage_page = fake_open
+            selenium_local_module._save_vehicle_mileage_enabled = lambda: True
+            selenium_local_module.apply_tile = lambda _driver, _tile_name: None
+            selenium_local_module._set_window_size_if_enabled = lambda _driver, _site_key: None
+            with tempfile.TemporaryDirectory() as tmp:
+                result = selenium_local_module.run_vehicle_mileage_task(
+                    request,
+                    Path(tmp),
+                    existing_driver=FakeDriver(),
+                    use_session_lock=False,
+                )
+        finally:
+            selenium_local_module._open_vehicle_mileage_page = original_open
+            selenium_local_module._save_vehicle_mileage_enabled = original_save_enabled
+            selenium_local_module.apply_tile = original_apply_tile
+            selenium_local_module._set_window_size_if_enabled = original_set_window
+
+        self.assertEqual(result.status, "vehicle_mileage_saved")
+        self.assertEqual(result.detail, "mileage ok")
+        self.assertIs(opened["request"], request)
+
     def test_resolve_end_mileage_accepts_delta(self):
         self.assertEqual(_resolve_end_mileage("123400", "+50"), "123450")
         self.assertEqual(_resolve_end_mileage("123400", "123456"), "123456")
