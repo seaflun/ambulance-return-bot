@@ -91,6 +91,7 @@ def sinposmart_trigger_label(value: str) -> str:
         "comparison": "比對快照",
         "tool_start": "工具開始",
         "system": "系統",
+        "update": "更新",
     }
     return labels.get(str(value or ""), "未標示")
 
@@ -628,7 +629,7 @@ class SinpoSmartBackendStore:
         events = compact_sinposmart_events(list(payload.get("events") or []))
         known_ids = {str(item.get("event_id") or "") for item in events if isinstance(item, dict)}
         if event["event_id"] in known_ids:
-            events = [merge_sinposmart_event(item, event) if str(item.get("event_id") or "") == event["event_id"] else item for item in events]
+            events = [item if str(item.get("event_id") or "") == event["event_id"] else item for item in events]
         elif sinposmart_event_keeps_individual_record(event):
             events.append(event)
         else:
@@ -790,9 +791,10 @@ def compact_sinposmart_events(events: list[dict[str, Any]]) -> list[dict[str, An
         event.setdefault("repeat_count", 1)
         event.setdefault("first_occurred_at", event.get("occurred_at") or "")
         event.setdefault("last_occurred_at", event.get("occurred_at") or "")
+        if sinposmart_event_keeps_individual_record(event):
+            event["repeat_count"] = 1
         event_id = str(event.get("event_id") or "")
         if event_id and event_id in known_ids:
-            compacted[known_ids[event_id]] = merge_sinposmart_event(compacted[known_ids[event_id]], event)
             continue
         if sinposmart_event_keeps_individual_record(event):
             if event_id:

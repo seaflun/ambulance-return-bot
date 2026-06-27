@@ -73,6 +73,61 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             self.assertEqual(day["events"][0]["first_occurred_at"], "2026-06-15T09:00:00")
             self.assertEqual(day["events"][0]["last_occurred_at"], "2026-06-15T09:01:00")
 
+    def test_same_event_id_retry_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            payload = {
+                "event_id": "evt-update-logout-retry",
+                "occurred_at": "2026-06-15T07:19:54",
+                "record_type": "logout",
+                "status": "ok",
+                "actor_no": "8",
+                "display_name": "8番 隊員 曾彥綸",
+                "trigger_type": "update",
+                "content": "更新前登出",
+            }
+            retry_payload = dict(payload, occurred_at="2026-06-15T07:20:10")
+
+            store.upsert_event(payload, now=datetime(2026, 6, 15, 7, 19))
+            store.upsert_event(retry_payload, now=datetime(2026, 6, 15, 7, 20))
+            day = store.read_day("2026-06-14")
+
+            self.assertEqual(len(day["events"]), 1)
+            self.assertEqual(day["events"][0]["repeat_count"], 1)
+            self.assertEqual(day["events"][0]["occurred_at"], "2026-06-15T07:19:54")
+            self.assertEqual(day["events"][0]["last_occurred_at"], "2026-06-15T07:19:54")
+
+    def test_existing_login_record_repeat_count_is_normalized_on_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            path = store.path_for_day("2026-06-14")
+            path.write_text(
+                """{
+  "fire_day": "2026-06-14",
+  "updated_at": "2026-06-15T07:20:10",
+  "events": [
+    {
+      "event_id": "evt-update-logout-retry",
+      "occurred_at": "2026-06-15T07:20:10",
+      "last_occurred_at": "2026-06-15T07:20:10",
+      "record_type": "logout",
+      "status": "ok",
+      "actor_no": "8",
+      "display_name": "8番 隊員 曾彥綸",
+      "trigger_type": "update",
+      "content": "更新前登出",
+      "repeat_count": 2
+    }
+  ]
+}""",
+                encoding="utf-8",
+            )
+
+            day = store.read_day("2026-06-14")
+
+            self.assertEqual(day["events"][0]["repeat_count"], 1)
+            self.assertEqual(day["admin_view"]["login_events"][0]["repeat_count"], 1)
+
     def test_login_events_with_different_ids_do_not_merge_when_content_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = SinpoSmartBackendStore(Path(tmp))

@@ -1234,6 +1234,52 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("18:05:12", body)
         self.assertNotIn("tyfd01027", body)
 
+    def test_sinposmart_admin_login_section_shows_update_logout_context(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        fire_day = datetime.now().date().isoformat()
+        for event in [
+            {
+                "event_id": "evt-update-logout-first",
+                "occurred_at": f"{fire_day}T07:04:00",
+                "record_type": "logout",
+                "trigger_type": "manual",
+                "status": "ok",
+                "actor_no": "8",
+                "display_name": "\u0038\u756a \u968a\u54e1 \u66fe\u5f65\u7db8",
+            },
+            {
+                "event_id": "evt-update-logout-second",
+                "occurred_at": f"{fire_day}T07:19:54",
+                "record_type": "logout",
+                "trigger_type": "update",
+                "status": "ok",
+                "actor_no": "8",
+                "display_name": "\u0038\u756a \u968a\u54e1 \u66fe\u5f65\u7db8",
+                "content": "\u66f4\u65b0\u524d\u767b\u51fa",
+            },
+            {
+                "event_id": "evt-update-logout-second",
+                "occurred_at": f"{fire_day}T07:20:10",
+                "record_type": "logout",
+                "trigger_type": "update",
+                "status": "ok",
+                "actor_no": "8",
+                "display_name": "\u0038\u756a \u968a\u54e1 \u66fe\u5f65\u7db8",
+                "content": "\u66f4\u65b0\u524d\u767b\u51fa",
+            },
+        ]:
+            response = self.client.post("/api/sinposmart/events", headers=headers, json=event)
+            self.assertEqual(response.status_code, 200)
+
+        page = self.client.get("/admin/sinposmart")
+        body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertIn("\u0038\u756a \u968a\u54e1 \u66fe\u5f65\u7db8", body)
+        self.assertIn("\u66f4\u65b0\u524d\u767b\u51fa", body)
+        self.assertIn("\u767b\u51fa \u00b7 \u66f4\u65b0", body)
+        self.assertNotIn("\u91cd\u8907 2 \u6b21", body)
+
     def test_sinposmart_admin_shows_login_logout_times_and_sinposmart_version(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()

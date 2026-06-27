@@ -270,7 +270,12 @@
               <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
               <div>
                 <h3 class="event-title">{{ event.person_label }}</h3>
-                <div class="event-meta">{{ event.record_label }}</div>
+                <div class="event-meta">
+                  {{ event.record_label }}{% if event.trigger_label and event.trigger_label != '未標示' %} · {{ event.trigger_label }}{% endif %}
+                </div>
+                {% if event.content %}
+                  <div class="event-detail">{{ event.content }}</div>
+                {% endif %}
               </div>
               <div class="event-badges">
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
