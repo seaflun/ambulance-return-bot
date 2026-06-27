@@ -1333,8 +1333,7 @@ def _prepare_fuel_record_form(
     current_period = _fuel_query_period(driver)
     if current_period and current_period != target_period:
         raise WebDriverException(f"fuel period mismatch: page={current_period} task={target_period}")
-    vehicle_label = vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
-    _click_fuel_card_register(driver, vehicle_label)
+    _click_fuel_card_register(driver, _fuel_card_labels(request.vehicle, artifacts_dir))
     if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
         raise WebDriverException("fuel detail page did not open")
     _click_fuel_add_row(driver)
@@ -1357,34 +1356,59 @@ def _fuel_query_period(driver: webdriver.Chrome) -> str:
         return ""
 
 
-def _click_fuel_card_register(driver: webdriver.Chrome, vehicle_label: str) -> None:
-    clicked = bool(
-        driver.execute_script(
-            """
-            const vehicle = arguments[0];
-            const rows = Array.from(document.querySelectorAll('tr,[role="row"]'));
-            for (const row of rows) {
-              const rowText = String(row.innerText || '').replace(/\\s+/g, ' ');
-              if (!rowText.includes(vehicle)) continue;
-              const controls = Array.from(row.querySelectorAll('button,a,input[type=button],input[type=submit]'));
-              const target = controls.find(el => {
-                const text = [el.innerText, el.value, el.textContent, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
-                return text.includes('登錄') && !text.includes('送出審核');
-              });
-              if (target) {
-                target.scrollIntoView({block: 'center', inline: 'center'});
-                target.click();
-                return true;
-              }
-            }
-            return false;
-            """,
-            vehicle_label,
+def _fuel_card_labels(vehicle: str, artifacts_dir: Path | None = None) -> list[str]:
+    labels: list[str] = []
+    for label in (vehicle_ppe_names(artifacts_dir).get(vehicle, ""), vehicle):
+        label = str(label or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _click_fuel_card_register(driver: webdriver.Chrome, vehicle_labels: str | list[str] | tuple[str, ...]) -> None:
+    labels = [vehicle_labels] if isinstance(vehicle_labels, str) else list(vehicle_labels)
+    labels = [str(label or "").strip() for label in labels if str(label or "").strip()]
+    result: dict[str, object] = {}
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        result = dict(
+            driver.execute_script(
+                """
+                const vehicles = arguments[0];
+                const rows = Array.from(document.querySelectorAll('tr,[role="row"]'));
+                for (const row of rows) {
+                  const rowText = String(row.innerText || '').replace(/\\s+/g, ' ');
+                  if (!vehicles.some(vehicle => rowText.includes(vehicle))) continue;
+                  const controls = Array.from(row.querySelectorAll('button,a,input[type=button],input[type=submit]'));
+                  const availableControls = controls.filter(el => {
+                    const text = [el.innerText, el.value, el.textContent, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
+                    return !text.includes('送出審核') && !text.includes('儲存');
+                  });
+                  const target = availableControls.find(el => {
+                    const text = [el.innerText, el.value, el.textContent, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
+                    return text.includes('登錄');
+                  }) || (availableControls.length === 1 ? availableControls[0] : null);
+                  if (target) {
+                    target.scrollIntoView({block: 'center', inline: 'center'});
+                    target.click();
+                    return {clicked: true, rowMatched: true, rowCount: rows.length};
+                  }
+                  return {clicked: false, rowMatched: true, rowCount: rows.length};
+                }
+                return {clicked: false, rowMatched: false, rowCount: rows.length};
+                """,
+                labels,
+            )
+            or {}
         )
-    )
-    if not clicked:
-        raise WebDriverException(f"fuel card not found: {vehicle_label}")
-    time.sleep(1.5)
+        if result.get("clicked"):
+            time.sleep(1.5)
+            return
+        time.sleep(0.5)
+    label_text = " / ".join(labels)
+    if result.get("rowMatched"):
+        raise WebDriverException(f"fuel register button not found: {label_text}")
+    raise WebDriverException(f"fuel card not found: {label_text}; rows={result.get('rowCount', 0)}")
 
 
 def _click_fuel_add_row(driver: webdriver.Chrome) -> None:

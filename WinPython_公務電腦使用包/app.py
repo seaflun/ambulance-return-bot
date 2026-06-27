@@ -1449,6 +1449,38 @@ def site_action_button_label(status: str, site_key: str) -> str:
     return "單獨登打"
 
 
+def combined_mileage_site_status(site_statuses: dict, task: dict) -> dict:
+    mileage_site = dict((site_statuses or {}).get("vehicle_mileage") or {})
+    if not task_has_fuel_record(task):
+        mileage_site["run_site_key"] = "vehicle_mileage"
+        return mileage_site
+
+    fuel_site = dict((site_statuses or {}).get("fuel_record") or {})
+    mileage_status = str(mileage_site.get("status") or "")
+    fuel_status = str(fuel_site.get("status") or "")
+    for preferred_site, status in ((fuel_site, fuel_status), (mileage_site, mileage_status)):
+        if status_class(status) == "failed":
+            combined = dict(preferred_site)
+            combined["run_site_key"] = "fuel_record" if preferred_site is fuel_site else "vehicle_mileage"
+            return combined
+    for preferred_site, status in ((mileage_site, mileage_status), (fuel_site, fuel_status)):
+        if status_class(status) == "running":
+            combined = dict(preferred_site)
+            combined["run_site_key"] = "fuel_record" if preferred_site is fuel_site else "vehicle_mileage"
+            return combined
+    for preferred_site, status in ((fuel_site, fuel_status), (mileage_site, mileage_status)):
+        if status.endswith("_needs_update") or status_class(status) == "waiting":
+            combined = dict(preferred_site)
+            combined["run_site_key"] = "fuel_record" if preferred_site is fuel_site else "vehicle_mileage"
+            return combined
+    if status_class(mileage_status) == "complete" and status_class(fuel_status) == "complete":
+        combined = dict(fuel_site or mileage_site)
+        combined["run_site_key"] = "vehicle_mileage"
+        return combined
+    mileage_site["run_site_key"] = "vehicle_mileage"
+    return mileage_site
+
+
 def site_diagnostic(site: dict) -> dict[str, str]:
     return merge_diagnostic_fields(dict(site or {}))
 
@@ -1926,6 +1958,7 @@ def event_site_name(event: dict) -> str:
 def template_helpers() -> dict:
     return {
         "case_time_range": case_time_range,
+        "combined_mileage_site_status": combined_mileage_site_status,
         "display_case_title": display_case_title,
         "effective_task_status": effective_task_status,
         "event_detail_text": event_detail_text,

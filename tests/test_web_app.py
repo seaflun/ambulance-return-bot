@@ -2672,6 +2672,39 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("42.122", mileage)
         self.assertIn("30.3", mileage)
 
+    def test_task_detail_combined_mileage_card_shows_fuel_failure(self):
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                fuel_record="1",
+                fuel_time="1154",
+                fuel_quantity="35.304",
+                fuel_unit_price="30.3",
+            ),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "\u8eca\u8f1b\u91cc\u7a0b", "vehicle_mileage_saved", "saved"),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "fuel_record",
+                "\u767b\u6253\u52a0\u6cb9\u7d00\u9304",
+                "fuel_record_failed",
+                "\u52a0\u6cb9\u7d00\u9304\u64cd\u4f5c\u5931\u6557\uff1aMessage: fuel card not found: BGV-2310",
+            ),
+        )
+
+        response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(response.data.decode("utf-8"))
+        task_section = body[body.index('aria-label="\u4efb\u52d9\u5167\u5bb9"') : body.index('class="stage-panel"')]
+        mileage = task_section[task_section.index("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>") : task_section.index("<h3>\u8017\u6750</h3>")]
+
+        self.assertIn('<article class="task-card failed">', task_section)
+        self.assertIn(f'action="/tasks/{task_id}/sites/fuel_record/run"', mileage)
+
     def test_task_detail_lists_single_vehicle_consumables_one_per_row(self):
         create_response = self.client.post(
             "/tasks",

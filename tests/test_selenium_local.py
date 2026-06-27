@@ -12,9 +12,11 @@ from ambulance_bot.selenium_local import (
     _assert_disinfection_not_login,
     _click_disinfection_query,
     _click_disinfection_save,
+    _click_fuel_card_register,
     _click_save_control,
     _click_vehicle_mileage_save,
     _disinfection_query_date,
+    _fuel_card_labels,
     _open_disinfection_detail_for_case,
     _set_disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
@@ -649,6 +651,25 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertIn("SaveData('save')", source)
         self.assertNotIn("SaveData('submit')", source)
+
+    def test_fuel_card_register_uses_plate_first_and_clicks_register_button(self):
+        class FakeDriver:
+            def __init__(self):
+                self.labels = None
+
+            def execute_script(self, script: str, labels: list[str]):
+                self.labels = labels
+                self.script = script
+                return {"clicked": True, "rowMatched": True}
+
+        driver = FakeDriver()
+
+        self.assertEqual(_fuel_card_labels("新坡91"), ["BGV-2310", "新坡91"])
+        _click_fuel_card_register(driver, _fuel_card_labels("新坡91"))
+
+        self.assertEqual(driver.labels, ["BGV-2310", "新坡91"])
+        self.assertIn("登錄", driver.script)
+        self.assertIn("送出審核", driver.script)
 
     def test_duty_work_log_login_uses_personnel_accounts(self):
         class FakeDriver:

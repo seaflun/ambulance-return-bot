@@ -376,14 +376,15 @@
           </ul>
         </article>
 
-        {% set mileage_site = payload.site_statuses.get('vehicle_mileage', {}) %}
+        {% set mileage_site = combined_mileage_site_status(payload.site_statuses, payload.task) %}
+        {% set mileage_run_site_key = mileage_site.run_site_key or 'vehicle_mileage' %}
         <article class="task-card {{ status_class(mileage_site.status) }}">
           <div class="card-head">
             <h3>{{ '里程+加油' if task_has_fuel_record(payload.task) else '里程' }}</h3>
             <div class="card-state">
-              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'vehicle_mileage') %}
-                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/vehicle_mileage/run">
-                  <button class="secondary" type="submit">{{ site_action_button_label(mileage_site.status, 'vehicle_mileage') }}</button>
+              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, mileage_run_site_key) %}
+                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/{{ mileage_run_site_key }}/run">
+                  <button class="secondary" type="submit">{{ site_action_button_label(mileage_site.status, mileage_run_site_key) }}</button>
                 </form>
               {% endif %}
               <span class="status {{ status_class(mileage_site.status) }}">{{ status_label(mileage_site.status) }}</span>

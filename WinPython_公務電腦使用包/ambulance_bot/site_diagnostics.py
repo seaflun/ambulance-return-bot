@@ -119,6 +119,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return "chrome_session"
     if "讀取任務狀態失敗" in raw_detail or "worker api" in text or "http 403" in text or "nas" in text:
         return "worker_api"
+    if "fuel card not found" in text or "fuel register button not found" in text:
+        return "vehicle_not_found"
     if "captcha" in text or "驗證碼" in raw_detail or "sso" in text or "login" in text or "登入" in raw_detail or "帳密" in raw_detail:
         return "login"
     if "case not found" in text or "找不到符合案件" in raw_detail or "未在前 24 小時案件清單找到" in raw_detail:
@@ -157,6 +159,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
     if category == "case_detail":
         return "開啟消毒紀錄"
     if category == "vehicle_not_found":
+        if site_key == "fuel_record":
+            return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "開啟登打油耗")
         return "填寫返隊時間與里程"
     if category == "query":
         return "查詢案件"
