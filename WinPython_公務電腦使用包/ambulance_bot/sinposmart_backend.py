@@ -12,6 +12,7 @@ from uuid import uuid4
 SINPOSMART_RECORD_TYPES = {
     "login",
     "login_failed",
+    "login_expired",
     "logout",
     "action_queued",
     "action_result",
@@ -21,6 +22,7 @@ SINPOSMART_RECORD_TYPES = {
     "comparison_snapshot",
     "error",
 }
+SINPOSMART_LOGIN_RECORD_TYPES = {"login", "login_failed", "login_expired", "logout"}
 SINPOSMART_EVENT_FIELDS = (
     "event_id",
     "occurred_at",
@@ -67,6 +69,7 @@ def sinposmart_record_type_label(value: str) -> str:
     labels = {
         "login": "登入",
         "login_failed": "登入失敗",
+        "login_expired": "登入失效",
         "logout": "登出",
         "action_queued": "加入佇列",
         "action_result": "登打結果",
@@ -211,7 +214,7 @@ def sinposmart_action_status_class(label: str) -> str:
 
 
 def sinposmart_display_status_class(label: str, value: str) -> str:
-    if label in {"失敗", "登入失敗"}:
+    if label in {"失敗", "登入失敗", "登入失效"}:
         return "failed"
     if label in {"成功", "登入成功", "登出", "已登打", "已存在", "已儲存", "完成"}:
         return "complete"
@@ -483,51 +486,63 @@ def sinposmart_login_status_label(event: dict[str, Any]) -> str:
     record_type = str(event.get("record_type") or "")
     if record_type == "login_failed":
         return "登入失敗"
+    if record_type == "login_expired":
+        return "登入失效"
     if record_type == "logout":
         return "登出"
+    if record_type == "error" and str(event.get("trigger_type") or "") == "login":
+        details = f"{event.get('error') or ''} {event.get('content') or ''}"
+        if "失效" in details or "expired" in details.lower():
+            return "登入失效"
+        return "登入失敗"
     if sinposmart_status_class(str(event.get("status") or "")) == "failed":
         return "登入失敗"
     return "登入成功"
 
 
-def sinposmart_admin_login_event(login_state: dict[str, dict[str, Any]], preferred_people: dict[str, str]) -> dict[str, Any]:
-    latest_event = login_state.get("latest") or login_state.get("logout") or login_state.get("login") or login_state.get("failed") or {}
-    label = sinposmart_login_status_label(latest_event)
-    actor_no = str(latest_event.get("actor_no") or "").strip()
-    current_person = sinposmart_person_label(latest_event)
+def sinposmart_is_login_event(event: dict[str, Any]) -> bool:
+    record_type = str(event.get("record_type") or "")
+    if record_type in SINPOSMART_LOGIN_RECORD_TYPES:
+        return True
+    return record_type == "error" and str(event.get("trigger_type") or "") == "login"
+
+
+def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[str, str]) -> dict[str, Any]:
+    record_type = str(event.get("record_type") or "")
+    label = sinposmart_login_status_label(event)
+    actor_no = str(event.get("actor_no") or "").strip()
+    current_person = sinposmart_person_label(event)
     preferred_person = preferred_people.get(actor_no, "")
     if sinposmart_person_label_score(preferred_person) > sinposmart_person_label_score(current_person):
         current_person = preferred_person
-    card = sinposmart_admin_event(latest_event, label, current_person)
-    login_event = login_state.get("login") or login_state.get("failed")
-    logout_event = login_state.get("logout")
-    login_at = sinposmart_event_time(login_event) if login_event else ""
-    logout_at = sinposmart_event_time(logout_event) if logout_event else ""
+    card = sinposmart_admin_event(event, label, current_person)
+    if record_type == "error":
+        card["record_label"] = label
+    occurred_at = sinposmart_event_time(event)
+    login_at = occurred_at if record_type in {"login", "login_failed", "login_expired"} else ""
+    logout_at = occurred_at if record_type == "logout" else ""
+    step_label = {
+        "login": "登入時間",
+        "login_failed": "登入失敗時間",
+        "login_expired": "登入失效時間",
+        "logout": "登出時間",
+    }.get(record_type)
+    if not step_label:
+        step_label = "登入失效時間" if label == "登入失效" else "登入失敗時間" if label == "登入失敗" else "事件時間"
     steps: list[dict[str, str]] = []
-    if login_event:
-        login_label = sinposmart_login_status_label(login_event)
+    if occurred_at:
         steps.append(
             {
-                "label": "登入時間",
-                "occurred_at": login_at,
-                "status_label": login_label,
-                "status_class": sinposmart_display_status_class(login_label, str(login_event.get("status") or "")),
-            }
-        )
-    if logout_event:
-        logout_label = sinposmart_login_status_label(logout_event)
-        steps.append(
-            {
-                "label": "登出時間",
-                "occurred_at": logout_at,
-                "status_label": logout_label,
-                "status_class": sinposmart_display_status_class(logout_label, str(logout_event.get("status") or "")),
+                "label": step_label,
+                "occurred_at": occurred_at,
+                "status_label": label,
+                "status_class": sinposmart_display_status_class(label, str(event.get("status") or "")),
             }
         )
     card["login_at"] = login_at
     card["logout_at"] = logout_at
     card["steps"] = steps
-    card["last_occurred_at"] = sinposmart_event_time(latest_event)
+    card["last_occurred_at"] = occurred_at
     return card
 
 
@@ -535,7 +550,7 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
     action_groups: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     tool_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     background_updates: dict[tuple[str, ...], dict[str, Any]] = {}
-    login_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
+    login_events: list[dict[str, Any]] = []
     compacted_events = compact_sinposmart_events(events)
     preferred_people = build_sinposmart_preferred_person_labels(compacted_events)
 
@@ -564,16 +579,8 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
                 key = sinposmart_summary_key(summary_event)
                 background_updates[key] = newer_sinposmart_event(background_updates.get(key), summary_event)
             continue
-        if record_type in {"login", "login_failed", "logout"}:
-            key = sinposmart_login_key(event)
-            login_state = login_events.setdefault(key, {})
-            login_state["latest"] = newer_sinposmart_event(login_state.get("latest"), event)
-            if record_type == "logout":
-                login_state["logout"] = newer_sinposmart_event(login_state.get("logout"), event)
-            elif record_type == "login_failed":
-                login_state["failed"] = newer_sinposmart_event(login_state.get("failed"), event)
-            else:
-                login_state["login"] = newer_sinposmart_event(login_state.get("login"), event)
+        if sinposmart_is_login_event(event):
+            login_events.append(event)
 
     action_events = [sinposmart_admin_action_event(action_state) for action_state in action_groups.values()]
     action_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
@@ -584,7 +591,7 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
     background_update_events = [sinposmart_admin_event(event) for event in background_updates.values()]
     background_update_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
 
-    login_update_events = [sinposmart_admin_login_event(login_state, preferred_people) for login_state in login_events.values()]
+    login_update_events = [sinposmart_admin_login_event(event, preferred_people) for event in login_events]
     login_update_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
 
     summary = {
@@ -622,6 +629,8 @@ class SinpoSmartBackendStore:
         known_ids = {str(item.get("event_id") or "") for item in events if isinstance(item, dict)}
         if event["event_id"] in known_ids:
             events = [merge_sinposmart_event(item, event) if str(item.get("event_id") or "") == event["event_id"] else item for item in events]
+        elif sinposmart_event_keeps_individual_record(event):
+            events.append(event)
         else:
             duplicate_index = next((index for index, item in enumerate(events) if sinposmart_event_merge_key(item) == sinposmart_event_merge_key(event)), None)
             if duplicate_index is None:
@@ -747,6 +756,10 @@ def sinposmart_event_merge_key(event: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def sinposmart_event_keeps_individual_record(event: dict[str, Any]) -> bool:
+    return sinposmart_is_login_event(event)
+
+
 def event_repeat_count(event: dict[str, Any]) -> int:
     try:
         return max(1, int(event.get("repeat_count") or 1))
@@ -780,6 +793,11 @@ def compact_sinposmart_events(events: list[dict[str, Any]]) -> list[dict[str, An
         event_id = str(event.get("event_id") or "")
         if event_id and event_id in known_ids:
             compacted[known_ids[event_id]] = merge_sinposmart_event(compacted[known_ids[event_id]], event)
+            continue
+        if sinposmart_event_keeps_individual_record(event):
+            if event_id:
+                known_ids[event_id] = len(compacted)
+            compacted.append(event)
             continue
         merge_key = sinposmart_event_merge_key(event)
         if merge_key in index_by_key:

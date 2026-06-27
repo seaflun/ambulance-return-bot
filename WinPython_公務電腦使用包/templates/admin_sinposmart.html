@@ -261,7 +261,7 @@
       <section class="section" aria-label="登入狀態">
         <div class="section-head">
           <h2 class="section-title">登入狀態</h2>
-          <div class="section-note">每個番號只顯示最後一次登入狀態</div>
+          <div class="section-note">每次登入、登入失效與登出都會保留紀錄</div>
         </div>
         <div class="event-list">
         {% for event in admin_view.login_events or [] %}

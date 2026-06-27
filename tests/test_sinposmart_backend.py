@@ -73,6 +73,27 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             self.assertEqual(day["events"][0]["first_occurred_at"], "2026-06-15T09:00:00")
             self.assertEqual(day["events"][0]["last_occurred_at"], "2026-06-15T09:01:00")
 
+    def test_login_events_with_different_ids_do_not_merge_when_content_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            first_payload = {
+                "event_id": "evt-login-1",
+                "occurred_at": "2026-06-15T09:00:00",
+                "record_type": "login",
+                "status": "ok",
+                "actor_no": "4",
+                "display_name": "4番 隊員 測試",
+            }
+            second_payload = dict(first_payload, event_id="evt-login-2", occurred_at="2026-06-15T09:05:00")
+
+            store.upsert_event(first_payload, now=datetime(2026, 6, 15, 9, 0))
+            store.upsert_event(second_payload, now=datetime(2026, 6, 15, 9, 5))
+            day = store.read_day("2026-06-15")
+
+            self.assertEqual(len(day["events"]), 2)
+            self.assertEqual(len(day["admin_view"]["login_events"]), 2)
+            self.assertEqual([event["last_occurred_at"] for event in day["admin_view"]["login_events"]], ["2026-06-15T09:05:00", "2026-06-15T09:00:00"])
+
     def test_cleanup_keeps_only_recent_seven_fire_days(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = SinpoSmartBackendStore(Path(tmp))
@@ -407,7 +428,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(titles, {"當日整日勤務", "隔日整日勤務"})
         self.assertTrue(all("snapshot" not in event for event in view["background_updates"]))
 
-    def test_admin_view_login_section_shows_latest_logout_status(self):
+    def test_admin_view_login_section_keeps_logout_event_status(self):
         events = [
             normalize_sinposmart_event(
                 {
@@ -435,12 +456,97 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
 
         view = build_sinposmart_admin_view(events)
 
-        self.assertEqual(len(view["login_events"]), 1)
-        self.assertEqual(view["login_events"][0]["record_label"], "登出")
+        self.assertEqual(len(view["login_events"]), 2)
+        self.assertEqual([event["record_label"] for event in view["login_events"]], ["登出", "登入"])
         self.assertEqual(view["login_events"][0]["status_label"], "登出")
         self.assertEqual(view["login_events"][0]["person_label"], "27番 隊員 林宏為")
 
-    def test_admin_view_login_card_keeps_login_and_logout_times(self):
+    def test_admin_view_login_section_keeps_each_login_logout_event(self):
+        events = [
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-login-first",
+                    "occurred_at": "2026-06-18T16:30:40",
+                    "record_type": "login",
+                    "status": "ok",
+                    "actor_no": "27",
+                    "display_name": "27番 隊員 林宏為",
+                },
+                now=datetime(2026, 6, 18, 16, 30),
+            ),
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-logout",
+                    "occurred_at": "2026-06-18T18:05:12",
+                    "record_type": "logout",
+                    "status": "ok",
+                    "actor_no": "27",
+                    "display_name": "27番 隊員 林宏為",
+                },
+                now=datetime(2026, 6, 18, 18, 5),
+            ),
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-login-second",
+                    "occurred_at": "2026-06-18T18:08:30",
+                    "record_type": "login",
+                    "status": "ok",
+                    "actor_no": "27",
+                    "display_name": "27番 隊員 林宏為",
+                },
+                now=datetime(2026, 6, 18, 18, 8),
+            ),
+        ]
+
+        view = build_sinposmart_admin_view(events)
+
+        self.assertEqual(len(view["login_events"]), 3)
+        self.assertEqual([event["record_label"] for event in view["login_events"]], ["登入", "登出", "登入"])
+        self.assertEqual([event["last_occurred_at"] for event in view["login_events"]], ["2026-06-18T18:08:30", "2026-06-18T18:05:12", "2026-06-18T16:30:40"])
+
+    def test_admin_view_login_expired_event_is_visible(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-login-expired",
+                "occurred_at": "2026-06-18T18:20:00",
+                "record_type": "login_expired",
+                "status": "failed",
+                "actor_no": "4",
+                "display_name": "4番 隊員 測試",
+                "error": "登入失效",
+            },
+            now=datetime(2026, 6, 18, 18, 20),
+        )
+
+        view = build_sinposmart_admin_view([event])
+
+        self.assertEqual(event["record_type"], "login_expired")
+        self.assertEqual(len(view["login_events"]), 1)
+        self.assertEqual(view["login_events"][0]["record_label"], "登入失效")
+        self.assertEqual(view["login_events"][0]["status_label"], "登入失效")
+        self.assertEqual(view["login_events"][0]["status_class"], "failed")
+
+    def test_admin_view_legacy_login_error_event_is_visible(self):
+        event = {
+            "event_id": "evt-legacy-login-expired",
+            "occurred_at": "2026-06-18T18:20:00",
+            "last_occurred_at": "2026-06-18T18:20:00",
+            "record_type": "error",
+            "trigger_type": "login",
+            "status": "failed",
+            "actor_no": "4",
+            "display_name": "4番 隊員 測試",
+            "error": "勤務系統登入失效，請重新登入。",
+        }
+
+        view = build_sinposmart_admin_view([event])
+
+        self.assertEqual(len(view["login_events"]), 1)
+        self.assertEqual(view["login_events"][0]["record_label"], "登入失效")
+        self.assertEqual(view["login_events"][0]["status_label"], "登入失效")
+        self.assertEqual(view["login_events"][0]["status_class"], "failed")
+
+    def test_admin_view_login_cards_keep_their_own_event_time(self):
         events = [
             normalize_sinposmart_event(
                 {
@@ -467,12 +573,15 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         ]
 
         view = build_sinposmart_admin_view(events)
-        card = view["login_events"][0]
+        logout_card = view["login_events"][0]
+        login_card = view["login_events"][1]
 
-        self.assertEqual(card["login_at"], "2026-06-18T16:30:40")
-        self.assertEqual(card["logout_at"], "2026-06-18T18:05:12")
-        self.assertEqual([step["label"] for step in card["steps"]], ["登入時間", "登出時間"])
-        self.assertEqual([step["occurred_at"] for step in card["steps"]], ["2026-06-18T16:30:40", "2026-06-18T18:05:12"])
+        self.assertEqual(login_card["login_at"], "2026-06-18T16:30:40")
+        self.assertEqual(login_card["logout_at"], "")
+        self.assertEqual(logout_card["login_at"], "")
+        self.assertEqual(logout_card["logout_at"], "2026-06-18T18:05:12")
+        self.assertEqual([step["label"] for step in login_card["steps"]], ["登入時間"])
+        self.assertEqual([step["label"] for step in logout_card["steps"]], ["登出時間"])
 
     def test_admin_view_login_section_prefers_known_person_name(self):
         events = [
