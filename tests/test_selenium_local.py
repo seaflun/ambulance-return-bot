@@ -16,6 +16,8 @@ from ambulance_bot.selenium_local import (
     _click_save_control,
     _click_vehicle_mileage_save,
     _disinfection_query_date,
+    _duty_login_credential_attempts,
+    _ensure_duty_login,
     _fuel_card_labels,
     _open_disinfection_detail_for_case,
     _set_disinfection_query_date,
@@ -36,6 +38,7 @@ from ambulance_bot.selenium_local import (
     selenium_enabled,
 )
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
+from ambulance_bot.duty_credentials import DutyCredential
 
 
 class SeleniumLocalTests(unittest.TestCase):
@@ -700,34 +703,75 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(result.status, "needs_duty_login")
         self.assertEqual(captured["preferred"], ["tyfd00008", "B123017532", "tyfd00009"])
 
-    def test_duty_login_does_not_force_hardcoded_fallback(self):
+    def test_duty_login_credential_attempts_use_driver_personnel_then_synced_account(self):
+        previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+        previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_duty_automation_credentials(
+                    [
+                        {"actor_no": "1", "name": "Alice", "user_id": "tyfd00001", "password": "pass1"},
+                        {"actor_no": "2", "name": "Bob", "user_id": "tyfd00002", "password": "pass2"},
+                        {"actor_no": "3", "name": "Carol", "user_id": "tyfd00003", "password": "pass3"},
+                        {"actor_no": "8", "name": "Sync", "user_id": "tyfd01510", "password": "pass8"},
+                    ],
+                    last_selected="tyfd01510",
+                )
+                request = AmbulanceReturnRequest(
+                    task_id="task-1",
+                    created_at=datetime(2026, 6, 7, 1, 0),
+                    raw_text="",
+                    driver="Bob",
+                    personnel=["Alice", "Bob", "Carol"],
+                    personnel_accounts=["tyfd00001", "tyfd00002", "tyfd00003"],
+                )
+
+                attempts = _duty_login_credential_attempts(request.duty_login_account_candidates)
+        finally:
+            if previous_path is None:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+            else:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+            if previous_override is None:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+            else:
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertEqual([credential.user_id for credential in attempts], ["tyfd00002", "tyfd00001", "tyfd00003", "tyfd01510"])
+
+    def test_duty_login_tries_next_candidate_after_failure(self):
         class FakeDriver:
             def get(self, url):
                 self.url = url
 
-        captured: dict[str, object] = {}
-        original_load_duty_credential = selenium_local_module.load_duty_credential
+        attempted: list[str] = []
+        original_attempts = selenium_local_module._duty_login_credential_attempts
+        original_attempt_login = selenium_local_module._attempt_duty_login
         original_looks_logged_in = selenium_local_module._looks_logged_in
         original_sleep = selenium_local_module.time.sleep
         try:
             selenium_local_module._looks_logged_in = lambda driver: False
             selenium_local_module.time.sleep = lambda seconds: None
-            selenium_local_module.load_duty_credential = (
-                lambda preferred_user_ids=None, fallback_user_id="": captured.update(
-                    {"preferred": preferred_user_ids, "fallback": fallback_user_id}
-                )
-                or None
+            selenium_local_module._duty_login_credential_attempts = lambda preferred_user_ids=None: [
+                DutyCredential("driver", "driver-pass"),
+                DutyCredential("other", "other-pass"),
+                DutyCredential("sync", "sync-pass"),
+            ]
+            selenium_local_module._attempt_duty_login = (
+                lambda driver, credential: attempted.append(credential.user_id) or credential.user_id == "sync"
             )
 
-            result = selenium_local_module._ensure_duty_login(FakeDriver(), ["B123017532"])
+            result = _ensure_duty_login(FakeDriver(), ["driver", "other"])
         finally:
-            selenium_local_module.load_duty_credential = original_load_duty_credential
+            selenium_local_module._duty_login_credential_attempts = original_attempts
+            selenium_local_module._attempt_duty_login = original_attempt_login
             selenium_local_module._looks_logged_in = original_looks_logged_in
             selenium_local_module.time.sleep = original_sleep
 
-        self.assertFalse(result)
-        self.assertEqual(captured["preferred"], ["B123017532"])
-        self.assertEqual(captured["fallback"], "")
+        self.assertTrue(result)
+        self.assertEqual(attempted, ["driver", "other", "sync"])
 
     def test_extract_emergency_cases_includes_fire_cases(self):
         class FakeDriver:

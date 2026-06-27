@@ -447,6 +447,9 @@ class AmbulanceReturnRequest:
             )
         return requests
 
+    def has_fuel_record(self) -> bool:
+        return any(item.fuel_record.enabled for item in self.vehicle_requests())
+
     @property
     def return_time_hhmm(self) -> str:
         return normalize_hhmm(self.return_time)

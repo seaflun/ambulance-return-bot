@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from ambulance_bot.desktop_fast_runner import DEFAULT_RECORD_ROOT, DesktopFastRunner
 from ambulance_bot.manual_task_lock import manual_task_lock_path
-from ambulance_bot.models import AmbulanceReturnRequest, request_from_form
+from ambulance_bot.models import AmbulanceReturnRequest, FuelRecord, request_from_form
 from ambulance_bot.task_store import JsonTaskStore
 
 
@@ -53,12 +53,12 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertFalse(manual_task_lock_path(Path(tmp)).exists())
             self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
             self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
-            self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
+            self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "not_started")
             self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_saved")
             self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_saved")
             duty_mock.assert_called_once()
             mileage_mock.assert_called_once()
-            fuel_mock.assert_called_once()
+            fuel_mock.assert_not_called()
             self.assertEqual(mileage_mock.call_args.kwargs["profile_name"], "vehicle_mileage_profile_task_1")
             self.assertTrue(mileage_mock.call_args.kwargs["force_new_driver"])
             disinfection_login_mock.assert_called_once()
@@ -66,6 +66,48 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertIs(disinfection_mock.call_args.kwargs["existing_driver"], disinfection_login_mock.return_value)
             acs_login_mock.assert_called_once()
             consumables_mock.assert_called_once()
+
+    def test_runs_fuel_site_when_fuel_record_is_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-fuel",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡91",
+                fuel_record=FuelRecord(enabled=True, date="20260627", time="1250", quantity="20.5", unit_price="30.1"),
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch(
+                "ambulance_bot.desktop_fast_runner.run_local_selenium_task",
+                return_value=SimpleNamespace(status="duty_work_log_saved", detail="duty ok"),
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
+                return_value=SimpleNamespace(status="vehicle_mileage_saved", detail="mileage ok"),
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.run_fuel_record_task",
+                return_value=SimpleNamespace(status="fuel_record_saved", detail="fuel ok"),
+            ) as fuel_mock, patch(
+                "ambulance_bot.desktop_fast_runner.login_disinfection_and_get_driver",
+                return_value=Mock(name="disinfection_driver"),
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.run_disinfection_task",
+                return_value=SimpleNamespace(status="disinfection_saved", detail="disinfection ok"),
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.login_acs_and_get_driver",
+                return_value=Mock(name="driver"),
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.open_consumable_record_for_task",
+                return_value="consumables ok",
+            ):
+                runner.start_existing("task-fuel")
+                self.assertTrue(runner.wait_for_idle())
+
+            payload = store.get("task-fuel")
+            self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
+            fuel_mock.assert_called_once()
 
     def test_continues_to_disinfection_when_consumables_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -212,12 +254,12 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertEqual(payload["overall_status"], "desktop_fast_completed")
             self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
             self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
-            self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
+            self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "not_started")
             self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_saved")
             self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_saved")
             duty_mock.assert_not_called()
             mileage_mock.assert_not_called()
-            fuel_mock.assert_called_once()
+            fuel_mock.assert_not_called()
             disinfection_login_mock.assert_called_once()
             disinfection_mock.assert_called_once()
             acs_login_mock.assert_called_once()

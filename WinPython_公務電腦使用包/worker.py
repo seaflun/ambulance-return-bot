@@ -37,6 +37,10 @@ MANUAL_TASK_ACTIVE = threading.Event()
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
 
 
+def task_site_count_label(request: AmbulanceReturnRequest) -> str:
+    return "五站" if request.has_fuel_record() else "四站"
+
+
 def main() -> None:
     server_url = os.getenv("WORKER_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
     worker_id = os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc")
@@ -242,7 +246,8 @@ def run_all_sites_task(
 ) -> object | None:
     request = AmbulanceReturnRequest.from_dict(task)
     profile_suffix = request.task_id.replace("-", "_")
-    post_status(server_url, request.task_id, "desktop_fast_running", "公務電腦 worker 五站登打已啟動。")
+    site_count_label = task_site_count_label(request)
+    post_status(server_url, request.task_id, "desktop_fast_running", f"公務電腦 worker {site_count_label}登打已啟動。")
     runners = [
         (
             "duty_work_log",
@@ -274,20 +279,6 @@ def run_all_sites_task(
             ),
         ),
         (
-            "fuel_record",
-            lambda payload: run_fuel_worker_task(
-                server_url,
-                worker_id,
-                dict(payload.get("task") or task),
-                artifacts_dir,
-                profile_name=f"fuel_record_profile_{profile_suffix}",
-                use_session_lock=False,
-                tile_name="fuel_record",
-                force_new_driver=True,
-                update_overall=False,
-            ),
-        ),
-        (
             "consumables",
             lambda payload: run_consumables_worker_task(
                 server_url,
@@ -314,6 +305,24 @@ def run_all_sites_task(
             ),
         ),
     ]
+    if request.has_fuel_record():
+        runners.insert(
+            2,
+            (
+                "fuel_record",
+                lambda payload: run_fuel_worker_task(
+                    server_url,
+                    worker_id,
+                    dict(payload.get("task") or task),
+                    artifacts_dir,
+                    profile_name=f"fuel_record_profile_{profile_suffix}",
+                    use_session_lock=False,
+                    tile_name="fuel_record",
+                    force_new_driver=True,
+                    update_overall=False,
+                ),
+            ),
+        )
     last_result = None
     failed_results = []
     for site_key, runner in runners:
@@ -345,11 +354,11 @@ def run_all_sites_task(
             server_url,
             request.task_id,
             "desktop_fast_completed_with_errors",
-            f"公務電腦 worker 五站登打完成，{len(failed_results)} 站失敗；已略過失敗站並接續後續站別。",
+            f"公務電腦 worker {site_count_label}登打完成，{len(failed_results)} 站失敗；已略過失敗站並接續後續站別。",
         )
         maximize_worker_site_windows()
         return failed_results[-1]
-    post_status(server_url, request.task_id, "desktop_fast_completed", "公務電腦 worker 五站登打完成。")
+    post_status(server_url, request.task_id, "desktop_fast_completed", f"公務電腦 worker {site_count_label}登打完成。")
     maximize_worker_site_windows()
     return last_result
 
@@ -434,6 +443,8 @@ def run_fuel_worker_task(
     update_overall: bool = True,
 ) -> object:
     request = AmbulanceReturnRequest.from_dict(task)
+    if not request.has_fuel_record():
+        return make_site_result("fuel_record", "登打加油紀錄", "fuel_record_skipped", "未勾選加油紀錄，已略過。")
     login_audit = login_audit_for_site("fuel_record", request)
     print(f"[worker] fuel record task {request.task_id}", flush=True)
     post_status(

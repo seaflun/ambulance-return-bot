@@ -502,7 +502,7 @@
         <h2>執行紀錄</h2>
       </div>
       <ul class="events">
-        {% for event in visible_events(payload.events) %}
+        {% for event in visible_events(payload.events, payload.task) %}
           <li>
             <span class="event-mark {{ status_class(event.status) }}">{{ '✓' if status_class(event.status) == 'complete' else '!' if status_class(event.status) == 'failed' else '•' }}</span>
             <div class="event-main">

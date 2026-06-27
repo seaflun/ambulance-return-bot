@@ -348,10 +348,55 @@ class WorkerTests(unittest.TestCase):
             worker_module.run_consumables_worker_task = original_run_consumables
             worker_module.post_status = original_post_status
 
-        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"])
+        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"])
         self.assertEqual(result.status, "disinfection_saved")
         self.assertEqual(statuses[-1][0], "desktop_fast_completed")
         self.assertEqual(statuses[-1][2], "")
+
+    def test_auto_claim_run_all_sites_runs_fuel_when_enabled(self):
+        original_fetch_payload = worker_module.fetch_task_payload
+        original_run_task = worker_module.run_task
+        original_run_vehicle = worker_module.run_vehicle_task
+        original_run_fuel = worker_module.run_fuel_worker_task
+        original_run_disinfection = worker_module.run_disinfection_worker_task
+        original_run_consumables = worker_module.run_consumables_worker_task
+        original_post_status = worker_module.post_status
+        calls: list[str] = []
+        try:
+            task = {
+                "task_id": "task-fuel",
+                "created_at": "2026-06-09T00:00:00",
+                "fuel_record": {"enabled": True, "date": "20260627", "time": "1250", "quantity": "20.5", "unit_price": "30.1"},
+            }
+            worker_module.fetch_task_payload = lambda server_url, task_id: {"task": task, "site_statuses": {}}
+            worker_module.run_task = lambda *args, **kwargs: calls.append("duty_work_log") or SimpleNamespace(
+                ok=True, status="duty_work_log_saved", detail="duty ok"
+            )
+            worker_module.run_vehicle_task = lambda *args, **kwargs: calls.append("vehicle_mileage") or SimpleNamespace(
+                ok=True, status="vehicle_mileage_saved", detail="mileage ok"
+            )
+            worker_module.run_fuel_worker_task = lambda *args, **kwargs: calls.append("fuel_record") or SimpleNamespace(
+                ok=True, status="fuel_record_saved", detail="fuel ok"
+            )
+            worker_module.run_consumables_worker_task = lambda *args, **kwargs: calls.append("consumables") or SimpleNamespace(
+                ok=True, status="consumables_saved", detail="consumables ok"
+            )
+            worker_module.run_disinfection_worker_task = lambda *args, **kwargs: calls.append("disinfection") or SimpleNamespace(
+                ok=True, status="disinfection_saved", detail="disinfection ok"
+            )
+            worker_module.post_status = lambda *args, **kwargs: None
+
+            worker_module.run_all_sites_task("http://nas", "worker-a", task, Path("artifacts"))
+        finally:
+            worker_module.fetch_task_payload = original_fetch_payload
+            worker_module.run_task = original_run_task
+            worker_module.run_vehicle_task = original_run_vehicle
+            worker_module.run_fuel_worker_task = original_run_fuel
+            worker_module.run_disinfection_worker_task = original_run_disinfection
+            worker_module.run_consumables_worker_task = original_run_consumables
+            worker_module.post_status = original_post_status
+
+        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"])
 
     def test_auto_claim_run_all_sites_continues_after_site_failure(self):
         original_fetch_payload = worker_module.fetch_task_payload
@@ -399,12 +444,33 @@ class WorkerTests(unittest.TestCase):
             worker_module.run_consumables_worker_task = original_run_consumables
             worker_module.post_status = original_post_status
 
-        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"])
+        self.assertEqual(calls, ["duty_work_log", "vehicle_mileage", "consumables", "disinfection"])
         self.assertEqual(result.status, "consumables_failed")
         self.assertEqual(statuses[-1][0], "desktop_fast_completed_with_errors")
         self.assertIn("1 站失敗", statuses[-1][1])
         self.assertIn("接續後續站別", statuses[-1][1])
         self.assertEqual(statuses[-1][2], "")
+
+    def test_run_fuel_worker_task_skips_without_posting_status_when_not_enabled(self):
+        original_run_fuel = worker_module.run_fuel_record_task
+        original_post_status = worker_module.post_status
+        posts: list[str] = []
+        try:
+            worker_module.run_fuel_record_task = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fuel should not run"))
+            worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: posts.append(status)
+
+            result = worker_module.run_fuel_worker_task(
+                "http://nas",
+                "worker-a",
+                {"task_id": "task-no-fuel", "created_at": "2026-06-09T00:00:00"},
+                Path("artifacts"),
+            )
+        finally:
+            worker_module.run_fuel_record_task = original_run_fuel
+            worker_module.post_status = original_post_status
+
+        self.assertEqual(result.status, "fuel_record_skipped")
+        self.assertEqual(posts, [])
 
     def test_auto_claim_run_all_sites_marks_error_when_status_fetch_fails(self):
         original_fetch_payload = worker_module.fetch_task_payload

@@ -27,6 +27,7 @@ from ambulance_bot.duty_credentials import (
 from ambulance_bot.login_audit import site_login_account_summaries
 from ambulance_bot.line_api import reply_text, verify_signature
 from ambulance_bot.models import (
+    AmbulanceReturnRequest,
     CASE_REASON_OPTIONS,
     COMMAND_PREFIX,
     DEFAULT_DISINFECTION_ITEMS,
@@ -278,12 +279,15 @@ def run_task_site(task_id: str, site_key: str):
     if site_key not in VALID_SITE_KEYS:
         abort(404)
     try:
-        store.get(task_id)
+        payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    if site_key == "fuel_record" and not task_has_fuel_record(payload.get("task") or {}):
+        store.set_overall_status(task_id, "desktop_fast_unavailable", "此任務未勾選加油紀錄，已略過加油登打。")
+        return redirect(url_for("task_detail", task_id=task_id))
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
-        report_public_pc_task_event(store.get(task_id), f"按下單站登打：{site_display_name(site_key)}")
+        report_public_pc_task_event(payload, f"按下單站登打：{site_display_name(site_key)}")
         desktop_runner.start_site(task_id, site_key)
     else:
         store.set_overall_status(
@@ -650,11 +654,16 @@ def sinposmart_admin_version_info(selected_day: dict | None = None) -> dict[str,
 
 
 def worker_admin_version_info(reports: list[dict] | None = None) -> dict[str, str]:
+    backend_version = package_version() or "未標示"
     for report in reports or []:
         version = str(report.get("package_version") or "").strip()
         if version:
-            return {"label": "SinpoSmart - 救護Worker", "version": version, "detail": "公務電腦已安裝"}
-    return {"label": "SinpoSmart - 救護Worker", "version": package_version() or "未標示", "detail": "目前後台"}
+            return {
+                "label": "SinpoSmart - 救護Worker",
+                "version": backend_version,
+                "detail": f"NAS 後台；公務電腦最後回報：{version}",
+            }
+    return {"label": "SinpoSmart - 救護Worker", "version": backend_version, "detail": "NAS 後台"}
 
 
 def credential_sync_relay_file() -> Path:
@@ -1680,15 +1689,7 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
 
 
 def task_has_fuel_record(task: dict) -> bool:
-    task = dict(task or {})
-    raw_entries = task.get("vehicle_entries")
-    entries = raw_entries if isinstance(raw_entries, list) and raw_entries else [task]
-    for raw_entry in entries:
-        entry = dict(raw_entry or {}) if isinstance(raw_entry, dict) else {}
-        fuel_record = entry.get("fuel_record") if isinstance(entry.get("fuel_record"), dict) else {}
-        if fuel_record and form_flag_enabled(fuel_record.get("enabled")):
-            return True
-    return False
+    return AmbulanceReturnRequest.from_dict(dict(task or {})).has_fuel_record()
 
 
 def active_site_keys_for_task(task: dict) -> list[str]:
@@ -1824,9 +1825,11 @@ def placeholder_return_datetime(value: object) -> bool:
     return bool(parsed and parsed.year <= 1900 and parsed.month == 1 and parsed.day == 1)
 
 
-def visible_events(events: list[dict]) -> list[dict]:
+def visible_events(events: list[dict], task: dict | None = None) -> list[dict]:
     important: list[dict] = []
     seen_sites: set[str] = set()
+    active_site_keys = active_site_keys_for_task(task or {}) if task is not None else list(SITE_RUN_ORDER)
+    active_site_key_set = set(active_site_keys)
     for event in reversed(events):
         status = str(event.get("status") or "")
         if status in {
@@ -1842,11 +1845,13 @@ def visible_events(events: list[dict]) -> list[dict]:
         if status in {"local_pc_ready", "manual_captcha_required"}:
             continue
         site_key = event_site_key(event)
+        if site_key not in active_site_key_set:
+            continue
         if site_key in seen_sites:
             continue
         seen_sites.add(site_key)
         important.append(event)
-        if len(important) >= len(SITE_RUN_ORDER):
+        if len(important) >= len(active_site_keys):
             break
     return list(reversed(important))
 

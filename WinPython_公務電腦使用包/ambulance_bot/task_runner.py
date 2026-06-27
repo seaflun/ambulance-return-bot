@@ -65,6 +65,8 @@ class TaskRunner:
         results: list[SiteAutomationResult] = []
         try:
             for adapter in default_adapters():
+                if adapter.key == "fuel_record" and not request.has_fuel_record():
+                    continue
                 result = adapter.run(request)
                 results.append(result)
                 self.store.update_site_result(task_id, result)

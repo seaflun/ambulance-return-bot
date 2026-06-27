@@ -461,6 +461,60 @@ class WorkerGuiEnvTests(unittest.TestCase):
         assert selected is not None
         self.assertEqual(selected.user_id, "user8")
 
+    def test_save_credential_sync_payload_keeps_existing_synced_account_for_single_incoming_user(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            previous_account = os.environ.get("DUTY_ACCOUNT")
+            previous_password = os.environ.get("DUTY_PASSWORD")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                worker_gui.save_credential_sync_payload(
+                    {"actor_no": "8", "user_id": "user8", "password": "pass8"}
+                )
+
+                result = worker_gui.save_credential_sync_payload(
+                    {"actor_no": "9", "user_id": "user9", "password": "pass9"}
+                )
+                selected = load_synced_worker_credential()
+                synced_env_account = os.environ.get("DUTY_ACCOUNT")
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+                if previous_account is None:
+                    os.environ.pop("DUTY_ACCOUNT", None)
+                else:
+                    os.environ["DUTY_ACCOUNT"] = previous_account
+                if previous_password is None:
+                    os.environ.pop("DUTY_PASSWORD", None)
+                else:
+                    os.environ["DUTY_PASSWORD"] = previous_password
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result[0], "user8")
+        self.assertEqual(synced_env_account, "user8")
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected.user_id, "user8")
+
+    def test_selected_saved_credential_label_ignores_current_duty_account(self):
+        label8 = worker_gui.credential_choice_label(DutyCredential(user_id="user8", password="pass8", actor_no="8"))
+        label9 = worker_gui.credential_choice_label(DutyCredential(user_id="user9", password="pass9", actor_no="9"))
+        saved = {
+            label8: DutyCredential(user_id="user8", password="pass8", actor_no="8"),
+            label9: DutyCredential(user_id="user9", password="pass9", actor_no="9"),
+        }
+
+        self.assertEqual(worker_gui.selected_saved_credential_label(saved), label8)
+
     def test_persist_selected_saved_credential_updates_last_selected(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")

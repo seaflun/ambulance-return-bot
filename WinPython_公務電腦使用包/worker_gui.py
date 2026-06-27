@@ -823,8 +823,7 @@ class WorkerGui(ctk.CTk):
             self.credential_sync_status.set("目前沒有同步帳號，請按「匯入同步」。")
             return
 
-        current_account = self.duty_account.get().strip()
-        selected = next((label for label, credential in self.saved_credentials.items() if credential.user_id == current_account), labels[0])
+        selected = selected_saved_credential_label(self.saved_credentials)
         self.credential_choice.set(selected)
         if apply_first_if_empty and (not self.duty_account.get().strip() or not self.duty_password.get()):
             self._apply_selected_saved_credential(log=False)
@@ -1199,15 +1198,19 @@ class WorkerGui(ctk.CTk):
             worker.MANUAL_TASK_ACTIVE.set()
         started_at = time.monotonic()
         try:
-            if use_session_lock and not _worker_chrome_is_running():
-                self.log_queue.put("加油紀錄：預先喚起 Chrome...")
-                open_url_in_worker_chrome("about:blank")
             self.log_queue.put("加油紀錄：向 NAS 取任務...")
             task = worker.fetch_task(server_url, task_id)
             self.log_queue.put(f"加油紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
             if not task:
                 self.log_queue.put(f"找不到任務：{task_id}")
                 return
+            request = worker.AmbulanceReturnRequest.from_dict(task)
+            if not request.has_fuel_record():
+                self.log_queue.put(f"加油紀錄：未勾選，略過 {task_id}")
+                return worker.make_site_result("fuel_record", "登打加油紀錄", "fuel_record_skipped", "未勾選加油紀錄，已略過。")
+            if use_session_lock and not _worker_chrome_is_running():
+                self.log_queue.put("加油紀錄：預先喚起 Chrome...")
+                open_url_in_worker_chrome("about:blank")
             self.log_queue.put(f"開始執行加油紀錄：{task_id}")
             selenium_started_at = time.monotonic()
             result = worker.run_fuel_worker_task(
@@ -1297,7 +1300,7 @@ class WorkerGui(ctk.CTk):
 
     def _run_selected_all_sites_background(self, task_id: str) -> None:
         profile_suffix = task_id.replace("-", "_")
-        runners = [
+        all_runners = [
             ("工作紀錄", "duty_work_log", self._run_selected_task_background, f"duty_work_log_profile_{profile_suffix}", None, "duty_work_log"),
             ("車輛里程", "vehicle_mileage", self._run_selected_vehicle_mileage_background, f"vehicle_mileage_profile_{profile_suffix}", None, "vehicle_mileage"),
             ("加油紀錄", "fuel_record", self._run_selected_fuel_record_background, f"fuel_record_profile_{profile_suffix}", None, "fuel_record"),
@@ -1307,7 +1310,11 @@ class WorkerGui(ctk.CTk):
         server_url = self.server_url.get().strip().rstrip("/")
         worker.MANUAL_TASK_ACTIVE.set()
         try:
-            worker.post_status(server_url, task_id, "desktop_fast_running", "本機快速執行已啟動。")
+            initial_payload = worker.fetch_task_payload(server_url, task_id)
+            request = worker.AmbulanceReturnRequest.from_dict(dict(initial_payload.get("task") or {})) if initial_payload else None
+            runners = [runner for runner in all_runners if runner[1] != "fuel_record" or (request and request.has_fuel_record())]
+            site_count_label = "五站" if request and request.has_fuel_record() else "四站"
+            worker.post_status(server_url, task_id, "desktop_fast_running", f"本機快速執行已啟動：{site_count_label}登打。")
             blocked_site = ""
             for name, site_key, target, profile_name, debugger_port, tile_name in runners:
                 payload = worker.fetch_task_payload(server_url, task_id)
@@ -1317,9 +1324,9 @@ class WorkerGui(ctk.CTk):
                 site_statuses = payload.get("site_statuses") if isinstance(payload.get("site_statuses"), dict) else {}
                 current_status = str((site_statuses.get(site_key) or {}).get("status") or "")
                 if _gui_site_is_complete(current_status):
-                    self.log_queue.put(f"五站登打略過：{name} 已完成")
+                    self.log_queue.put(f"{site_count_label}登打略過：{name} 已完成")
                     continue
-                self.log_queue.put(f"五站登打已啟動：{name}")
+                self.log_queue.put(f"{site_count_label}登打已啟動：{name}")
                 target(task_id, profile_name, debugger_port, False, tile_name, True, False)
                 payload = worker.fetch_task_payload(server_url, task_id)
                 if not payload:
@@ -1333,8 +1340,8 @@ class WorkerGui(ctk.CTk):
             if blocked_site:
                 worker.post_status(server_url, task_id, "desktop_fast_completed_with_errors", f"{blocked_site} 未完成，已停止後續站別。")
             else:
-                worker.post_status(server_url, task_id, "desktop_fast_completed", "五站登打完成。")
-            self.log_queue.put(f"五站登打流程結束：{task_id}")
+                worker.post_status(server_url, task_id, "desktop_fast_completed", f"{site_count_label}登打完成。")
+            self.log_queue.put(f"{site_count_label}登打流程結束：{task_id}")
             self._refresh_tasks()
         finally:
             worker.MANUAL_TASK_ACTIVE.clear()
@@ -1446,6 +1453,10 @@ def _name_from_display_name(display_name: str, account: str = "", actor_no: str 
     return text
 
 
+def selected_saved_credential_label(saved_credentials: dict[str, DutyCredential]) -> str:
+    return next(iter(saved_credentials), "")
+
+
 def persist_selected_saved_credential(credential: DutyCredential) -> Path:
     selected = credential.user_id or credential.actor_no or credential.id_number
     return set_last_selected_duty_automation_credential(selected)
@@ -1485,12 +1496,17 @@ def save_credential_sync_payload(payload: dict[str, object]) -> tuple[str, str, 
     if selected is None:
         return None
     last_selected = stable_synced_account_selection(accounts)
-    stable_selected = select_credential_sync_account(accounts, {"user_id": last_selected, "actor_no": last_selected}) or selected
-    user_id = str(stable_selected.get("user_id") or "").strip()
-    password = str(stable_selected.get("password") or "")
+    path = save_duty_automation_credentials(accounts, last_selected=last_selected)
+    synced = load_saved_duty_automation_credential(path)
+    if synced is not None:
+        user_id = synced.user_id
+        password = synced.password
+    else:
+        stable_selected = select_credential_sync_account(accounts, {"user_id": last_selected, "actor_no": last_selected}) or selected
+        user_id = str(stable_selected.get("user_id") or "").strip()
+        password = str(stable_selected.get("password") or "")
     if not user_id or not password:
         return None
-    path = save_duty_automation_credentials(accounts, last_selected=last_selected)
     os.environ["DUTY_ACCOUNT"] = user_id
     os.environ["DUTY_PASSWORD"] = password
     return user_id, password, path, len(accounts)

@@ -359,12 +359,17 @@ def save_credential_sync_payload(payload: dict[str, object], path: Path | None =
     if selected is None:
         return None
     last_selected = stable_synced_account_selection(accounts, path=path)
-    stable_selected = select_credential_sync_account(accounts, {"user_id": last_selected, "actor_no": last_selected}) or selected
-    user_id = str(stable_selected.get("user_id") or "").strip()
-    password = str(stable_selected.get("password") or "")
+    saved_path = save_duty_automation_credentials(accounts, last_selected=last_selected, path=path)
+    synced = load_synced_worker_credential(saved_path)
+    if synced is not None:
+        user_id = synced.user_id
+        password = synced.password
+    else:
+        stable_selected = select_credential_sync_account(accounts, {"user_id": last_selected, "actor_no": last_selected}) or selected
+        user_id = str(stable_selected.get("user_id") or "").strip()
+        password = str(stable_selected.get("password") or "")
     if not user_id or not password:
         return None
-    saved_path = save_duty_automation_credentials(accounts, last_selected=last_selected, path=path)
     os.environ["DUTY_ACCOUNT"] = user_id
     os.environ["DUTY_PASSWORD"] = password
     return user_id, password, saved_path, len(accounts)
@@ -378,8 +383,11 @@ def stable_synced_account_selection(accounts: list[dict[str, object]], path: Pat
             return user_id or actor_no
 
     source = path or saved_login_path()
-    existing_selected = str(_read_saved_login(source).get("last_selected") or "").strip()
-    if existing_selected and _select_account(list(accounts), existing_selected) is not None:
+    existing_payload = _read_saved_login(source)
+    existing_selected = str(existing_payload.get("last_selected") or "").strip()
+    existing_accounts = existing_payload.get("accounts")
+    existing_account_list = list(existing_accounts) if isinstance(existing_accounts, list) else []
+    if existing_selected and _select_account(existing_account_list, existing_selected) is not None:
         return existing_selected
 
     if accounts:

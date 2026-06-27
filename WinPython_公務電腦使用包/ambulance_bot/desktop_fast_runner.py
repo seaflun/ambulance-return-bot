@@ -23,6 +23,50 @@ SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
 DEFAULT_RECORD_ROOT = Path(r"W:\救護硬碟\救護密錄器及行車紀錄器")
 
 
+def active_site_runners(request, profile_suffix: str, runner: "DesktopFastRunner") -> list[tuple[str, Callable[[], object]]]:
+    site_runners: list[tuple[str, Callable[[], object]]] = [
+        (
+            "duty_work_log",
+            lambda: run_local_selenium_task(
+                request,
+                runner.artifacts_dir,
+                profile_name=f"duty_work_log_profile_{profile_suffix}",
+                use_session_lock=False,
+                tile_name="duty_work_log",
+                force_new_driver=True,
+            ),
+        ),
+        (
+            "vehicle_mileage",
+            lambda: runner._run_vehicle_mileage(request, profile_suffix),
+        ),
+    ]
+    if request.has_fuel_record():
+        site_runners.append(
+            (
+                "fuel_record",
+                lambda: runner._run_fuel_record(request, profile_suffix),
+            )
+        )
+    site_runners.extend(
+        [
+            (
+                "consumables",
+                lambda: runner._run_consumables(request, profile_suffix),
+            ),
+            (
+                "disinfection",
+                lambda: runner._run_disinfection(request, profile_suffix),
+            ),
+        ]
+    )
+    return site_runners
+
+
+def task_site_count_label(request) -> str:
+    return "五站" if request.has_fuel_record() else "四站"
+
+
 class DesktopFastRunner:
     def __init__(
         self,
@@ -74,38 +118,11 @@ class DesktopFastRunner:
         lock_owner = f"desktop_fast:{task_id}"
         set_manual_task_lock(self.artifacts_dir, lock_owner)
         self.store.set_overall_status(task_id, "desktop_fast_running", "本機快速執行已啟動。")
-        self._notify(task_id, "五站登打開始")
         request = self.store.request_for(task_id)
+        site_count_label = task_site_count_label(request)
+        self._notify(task_id, f"{site_count_label}登打開始")
         profile_suffix = task_id.replace("-", "_")
-        site_runners = [
-            (
-                "duty_work_log",
-                lambda: run_local_selenium_task(
-                    request,
-                    self.artifacts_dir,
-                    profile_name=f"duty_work_log_profile_{profile_suffix}",
-                    use_session_lock=False,
-                    tile_name="duty_work_log",
-                    force_new_driver=True,
-                ),
-            ),
-            (
-                "vehicle_mileage",
-                lambda: self._run_vehicle_mileage(request, profile_suffix),
-            ),
-            (
-                "fuel_record",
-                lambda: self._run_fuel_record(request, profile_suffix),
-            ),
-            (
-                "consumables",
-                lambda: self._run_consumables(request, profile_suffix),
-            ),
-            (
-                "disinfection",
-                lambda: self._run_disinfection(request, profile_suffix),
-            ),
-        ]
+        site_runners = active_site_runners(request, profile_suffix, self)
         try:
             folder_detail = self._ensure_record_folders(request)
             if folder_detail:
@@ -120,10 +137,10 @@ class DesktopFastRunner:
                     "desktop_fast_completed_with_errors",
                     f"本機快速執行完成，{failures} 站失敗；已略過失敗站並接續後續站別。",
                 )
-                self._notify(task_id, "五站登打部分失敗")
+                self._notify(task_id, f"{site_count_label}登打部分失敗")
             else:
                 self.store.set_overall_status(task_id, "desktop_fast_completed", "本機快速執行完成。")
-                self._notify(task_id, "五站登打成功")
+                self._notify(task_id, f"{site_count_label}登打成功")
         finally:
             maximize_worker_site_windows()
             clear_manual_task_lock(self.artifacts_dir, lock_owner)
@@ -133,11 +150,14 @@ class DesktopFastRunner:
     def _run_single_site(self, task_id: str, site_key: str, run_key: str) -> None:
         lock_owner = f"desktop_fast:{run_key}"
         set_manual_task_lock(self.artifacts_dir, lock_owner)
-        self.store.set_overall_status(task_id, "desktop_fast_running", f"本機快速執行中：{SITE_NAMES[site_key]}。")
-        self._notify(task_id, f"單站登打開始：{SITE_NAMES[site_key]}")
         request = self.store.request_for(task_id)
         profile_suffix = task_id.replace("-", "_")
         try:
+            if site_key == "fuel_record" and not request.has_fuel_record():
+                self.store.set_overall_status(task_id, "desktop_fast_completed", "此任務未勾選加油紀錄，已略過加油登打。")
+                return
+            self.store.set_overall_status(task_id, "desktop_fast_running", f"本機快速執行中：{SITE_NAMES[site_key]}。")
+            self._notify(task_id, f"單站登打開始：{SITE_NAMES[site_key]}")
             failed = self._run_site(task_id, site_key, self._site_action(request, profile_suffix, site_key))
             if failed:
                 self.store.set_overall_status(

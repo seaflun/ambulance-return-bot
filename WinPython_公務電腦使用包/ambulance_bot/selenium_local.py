@@ -2500,14 +2500,41 @@ def _open_case_query(driver: webdriver.Chrome, lookup_range: str = "24h") -> Non
     time.sleep(1)
 
 
+def _duty_login_credential_attempts(preferred_user_ids: list[str] | None = None) -> list:
+    attempts = []
+    seen: set[str] = set()
+    for user_id in preferred_user_ids or []:
+        credential = load_duty_credential([user_id], fallback_user_id="", allow_default=False)
+        if credential is None:
+            continue
+        key = credential.user_id.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        attempts.append(credential)
+    fallback = load_duty_credential(None, fallback_user_id="", allow_default=True)
+    if fallback is not None and fallback.user_id.lower() not in seen:
+        attempts.append(fallback)
+    return attempts
+
+
 def _ensure_duty_login(driver: webdriver.Chrome, preferred_user_ids: list[str] | None = None) -> bool:
     driver.get(f"{BASE_URL}/login119")
     time.sleep(1)
     if _looks_logged_in(driver):
         return True
-    credential = load_duty_credential(preferred_user_ids)
-    if credential is None:
+    credentials = _duty_login_credential_attempts(preferred_user_ids)
+    if not credentials:
         return False
+    for credential in credentials:
+        if _attempt_duty_login(driver, credential):
+            return True
+        driver.get(f"{BASE_URL}/login119")
+        time.sleep(1)
+    return False
+
+
+def _attempt_duty_login(driver: webdriver.Chrome, credential) -> bool:
     try:
         wait = WebDriverWait(driver, 10)
         username = wait.until(EC.presence_of_element_located((By.ID, "_txtUsername")))

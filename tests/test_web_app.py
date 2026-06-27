@@ -1509,7 +1509,8 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertIn("2026.06.19.0801-installed", body)
-        self.assertIn("公務電腦已安裝", body)
+        self.assertIn("NAS 後台", body)
+        self.assertIn("公務電腦最後回報：2026.06.19.0801-installed", body)
 
     def test_public_pc_report_is_queued_on_failure_and_flushed_on_next_success(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
@@ -2735,6 +2736,25 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>", task_section)
         self.assertNotIn("<h3>\u52a0\u6cb9</h3>", task_section)
         self.assertNotIn("\u672a\u52fe\u9078", task_section)
+
+    def test_task_detail_hides_fuel_timeline_when_fuel_record_not_enabled(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "fuel_record",
+                "\u767b\u6253\u52a0\u6cb9\u7d00\u9304",
+                "fuel_record_failed",
+                "\u52a0\u6cb9\u7d00\u9304\u64cd\u4f5c\u5931\u6557",
+            ),
+        )
+
+        response = self.client.get(f"/tasks/{task_id}")
+        body = html.unescape(response.data.decode("utf-8"))
+        timeline = body[body.index('aria-label="\u57f7\u884c\u7d00\u9304"') :]
+
+        self.assertNotIn("\u52a0\u6cb9\uff1a", timeline)
 
     def test_task_detail_shows_second_vehicle_values(self):
         create_response = self.client.post(
