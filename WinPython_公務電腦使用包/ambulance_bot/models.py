@@ -818,11 +818,50 @@ def _form_values(form: dict[str, Any], name: str) -> list[str]:
     return []
 
 
+_CASE_ADDRESS_DASH_NOISE_PREFIXES = (
+    "急病拒送",
+    "車禍拒送",
+    "急病放棄急救",
+    "放棄急救",
+    "案件重複",
+    "來電取消",
+    "重複報案",
+    "拒送",
+    "未送醫",
+    "自行就醫",
+    "取消",
+    "誤報",
+    "長庚",
+)
+
+_CASE_ADDRESS_INLINE_NOISE_MARKERS = (
+    "案件重複",
+    "來電取消",
+    "重複報案",
+    "取消",
+)
+
+
 def clean_case_address(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    text = text.replace("\uff0d", "-").replace("\u2010", "-").replace("\u2011", "-").replace("\u2013", "-").replace("\u2014", "-")
+    text = _normalize_case_address_dashes(text)
+    text = _strip_case_address_dash_noise(text)
+    for marker in _CASE_ADDRESS_INLINE_NOISE_MARKERS:
+        marker_index = _find_outside_parentheses(text, marker)
+        if marker_index >= 0:
+            text = text[:marker_index]
+            break
+    text = re.sub(r"\s+", "", text)
+    return text.strip("- \t\r\n")
+
+
+def _normalize_case_address_dashes(text: str) -> str:
+    return text.replace("\uff0d", "-").replace("\u2010", "-").replace("\u2011", "-").replace("\u2013", "-").replace("\u2014", "-")
+
+
+def _strip_case_address_dash_noise(text: str) -> str:
     paren_depth = 0
     for index, char in enumerate(text):
         if char in "(（":
@@ -830,25 +869,30 @@ def clean_case_address(value: str) -> str:
         elif char in ")）":
             paren_depth = max(0, paren_depth - 1)
         elif char == "-" and paren_depth == 0:
-            text = text[:index]
-            break
-    for marker in (
-        "-\u6025\u75c5\u653e\u68c4\u6025\u6551",
-        "-\u6848\u4ef6\u91cd\u8907",
-        "-\u4f86\u96fb\u53d6\u6d88",
-        "-\u8eca\u798d\u62d2\u9001",
-        "-\u62d2\u9001",
-        "-\u672a\u9001\u91ab",
-        "-\u81ea\u884c\u5c31\u91ab",
-        "\u6848\u4ef6\u91cd\u8907",
-        "\u4f86\u96fb\u53d6\u6d88",
-        "\u91cd\u8907\u5831\u6848",
-        "\u53d6\u6d88",
-    ):
-        if marker in text:
-            text = text.split(marker, 1)[0]
-    text = re.sub(r"\s+", "", text)
-    return text.strip("- \t\r\n")
+            if _dash_is_address_number_connector(text, index):
+                continue
+            suffix = re.sub(r"\s+", "", text[index + 1 :]).strip("- \t\r\n")
+            if any(suffix.startswith(marker) for marker in _CASE_ADDRESS_DASH_NOISE_PREFIXES):
+                return text[:index]
+    return text
+
+
+def _dash_is_address_number_connector(text: str, index: int) -> bool:
+    before = text[index - 1 : index]
+    after = text[index + 1 : index + 2]
+    return before.isdigit() and after.isdigit()
+
+
+def _find_outside_parentheses(text: str, marker: str) -> int:
+    paren_depth = 0
+    for index, char in enumerate(text):
+        if char in "(（":
+            paren_depth += 1
+        elif char in ")）":
+            paren_depth = max(0, paren_depth - 1)
+        if paren_depth == 0 and text.startswith(marker, index):
+            return index
+    return -1
 
 
 def _meaningful_lines(text: str) -> Iterable[str]:

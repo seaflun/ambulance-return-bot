@@ -31,17 +31,25 @@ def site_login_account_summaries(request: AmbulanceReturnRequest) -> dict[str, s
     }
 
 
+def compact_login_account_summary(summary: str) -> str:
+    return (
+        str(summary or "")
+        .replace("（任務司機優先）", "（任務司機）")
+        .replace("（司機帳號優先，失敗一次改同步帳號）", "（出勤人員）")
+    )
+
+
 def duty_work_log_login_summary(request: AmbulanceReturnRequest) -> str:
     credential = load_duty_credential(request.duty_login_account_candidates)
     if credential is None:
-        return "未取得（任務司機優先）"
-    return f"{credential_public_label(credential)}（任務司機優先）"
+        return "未取得（任務司機）"
+    return f"{credential_public_label(credential)}（任務司機）"
 
 
 def vehicle_mileage_login_summary(request: AmbulanceReturnRequest) -> str:
     credential = load_duty_credential(request.duty_login_account_candidates, fallback_user_id="", allow_default=False)
     if credential is not None:
-        return f"{credential_public_label(credential)}（司機帳號優先，失敗一次改同步帳號）"
+        return f"{credential_public_label(credential)}（出勤人員）"
     credential = load_synced_worker_credential()
     if credential is not None:
         return f"{credential_public_label(credential)}（同步帳號）"

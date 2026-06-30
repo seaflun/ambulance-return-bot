@@ -24,7 +24,7 @@ from ambulance_bot.duty_credentials import (
     load_synced_worker_credential,
     select_credential_sync_account,
 )
-from ambulance_bot.login_audit import site_login_account_summaries
+from ambulance_bot.login_audit import compact_login_account_summary, site_login_account_summaries
 from ambulance_bot.line_api import reply_text, verify_signature
 from ambulance_bot.models import (
     AmbulanceReturnRequest,
@@ -97,6 +97,8 @@ CONSUMABLE_PACKAGE_KEYS = {"glucose", "iv", "io", "ecg", "ohca"}
 
 @app.get("/")
 def index():
+    if not request_is_local_host():
+        return render_template("nas_home.html")
     return redirect(url_for("new_task"))
 
 
@@ -1972,6 +1974,7 @@ def template_helpers() -> dict:
         "selected_case_address": selected_case_address,
         "selected_return_date_input": selected_return_date_input,
         "selected_return_time_input": selected_return_time_input,
+        "compact_login_account_summary": compact_login_account_summary,
         "recent_tasks_need_refresh": recent_tasks_need_refresh,
         "site_action_button_label": site_action_button_label,
         "site_diagnostic": site_diagnostic,
@@ -1979,6 +1982,7 @@ def template_helpers() -> dict:
         "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
         "show_public_pc_admin_button": show_public_pc_admin_button,
+        "show_vehicle_settings_button": show_vehicle_settings_button,
         "sinposmart_fire_day_label": sinposmart_fire_day_label,
         "sinposmart_person_label": sinposmart_person_label,
         "sinposmart_record_type_label": sinposmart_record_type_label,
@@ -2002,6 +2006,10 @@ def template_helpers() -> dict:
 
 def show_public_pc_admin_button() -> bool:
     return not request_is_local_host()
+
+
+def show_vehicle_settings_button() -> bool:
+    return request_is_local_host()
 
 
 def show_task_entry_controls() -> bool:

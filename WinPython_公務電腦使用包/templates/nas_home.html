@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#b86b5b">
+  <title>SinpoSmart</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
+      --bg: #fafaf8;
+      --bg-top: #fff8f2;
+      --bg-line: rgba(184, 107, 91, .045);
+      --surface: #ffffff;
+      --ink: #202522;
+      --muted: #6f7772;
+      --line: #e8e4dc;
+      --line-strong: #d8d2c7;
+      --accent: #b86b5b;
+      --accent-strong: #9a5346;
+      --focus: rgba(184, 107, 91, .28);
+      --shadow: 0 14px 30px rgba(39, 49, 43, .075);
+      --text-sm: 15px;
+      --text-md: 17px;
+      --text-xl: 31px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, var(--bg-top) 0, var(--bg) 310px),
+        repeating-linear-gradient(135deg, var(--bg-line) 0 1px, transparent 1px 18px);
+      background-attachment: fixed;
+      color: var(--ink);
+      font-size: var(--text-md);
+      line-height: 1.45;
+    }
+    main { max-width: 900px; margin: 0 auto; padding: 28px 18px 52px; }
+    header {
+      padding: 0 0 18px;
+      margin-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0;
+      font-size: var(--text-xl);
+      line-height: 1.25;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .entry-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    .entry-link {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 72px;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--ink);
+      text-decoration: none;
+      box-shadow: var(--shadow);
+      font-size: 21px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+      transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+    }
+    .entry-link::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      border-radius: 8px 0 0 8px;
+      background: var(--accent-soft, #f6e9e5);
+    }
+    .entry-link:hover {
+      border-color: var(--line-strong);
+      box-shadow: 0 18px 36px rgba(39, 49, 43, .1);
+      transform: translateY(-1px);
+    }
+    .entry-link:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 3px;
+    }
+    .entry-link.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .entry-link.primary::before { background: rgba(255, 255, 255, .34); }
+    .entry-link.primary:hover {
+      border-color: var(--accent-strong);
+      box-shadow: 0 18px 36px rgba(154, 83, 70, .18);
+    }
+    .entry-arrow { color: var(--muted); font-size: var(--text-sm); font-weight: 800; }
+    .entry-link.primary .entry-arrow { color: rgba(255, 255, 255, .82); }
+    @media (min-width: 720px) {
+      .entry-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .entry-link {
+        min-height: 132px;
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .entry-arrow { align-self: flex-end; }
+    }
+    @media (max-width: 560px) {
+      main { padding: 22px 14px 44px; }
+      h1 { font-size: 26px; }
+      .entry-link { min-height: 66px; font-size: 19px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .entry-link { transition: none; }
+      .entry-link:hover { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>SinpoSmart</h1>
+    </header>
+
+    <nav class="entry-grid" aria-label="NAS首頁">
+      <a class="entry-link" href="/admin/sinposmart">
+        <span>值班後台</span>
+        <span class="entry-arrow">進入</span>
+      </a>
+      <a class="entry-link" href="/admin/public-pc">
+        <span>救護後台</span>
+        <span class="entry-arrow">進入</span>
+      </a>
+      <a class="entry-link primary" href="/app">
+        <span>救護登打</span>
+        <span class="entry-arrow">進入</span>
+      </a>
+    </nav>
+  </main>
+</body>
+</html>

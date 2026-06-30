@@ -281,6 +281,41 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("待填：", body)
         self.assertIn('setFieldState(field.name, "pending");', body)
 
+    def test_local_index_redirects_to_app(self):
+        response = self.client.get("/", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/app")
+
+    def test_nas_index_shows_entry_buttons_only(self):
+        response = self.client.get("/", headers={"Host": "100.114.126.58:8080"})
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn("<title>SinpoSmart</title>", body)
+        self.assertIn("<h1>SinpoSmart</h1>", body)
+        self.assertNotIn("救護返隊小幫手", body)
+        self.assertIn("值班後台", body)
+        self.assertIn('href="/admin/sinposmart"', body)
+        self.assertIn("救護後台", body)
+        self.assertIn('href="/admin/public-pc"', body)
+        self.assertIn("救護登打", body)
+        self.assertIn('href="/app"', body)
+        self.assertNotIn("救護車設定", body)
+        self.assertNotIn("查詢案件", body)
+        self.assertIn(".entry-link:focus-visible", body)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr));", body)
+        self.assertIn("transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;", body)
+
+    def test_nas_app_keeps_old_link_without_vehicle_settings(self):
+        response = self.client.get("/app", headers={"Host": "100.114.126.58:8080"})
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn("SinpoSmart - 救護Worker", body)
+        self.assertNotIn("救護車設定", body)
+        self.assertNotIn('href="/admin/vehicles"', body)
+
     def test_app_page_includes_consumable_package_shortcuts(self):
         self.import_case_for_form(
             {
@@ -506,18 +541,18 @@ class WebAppTests(unittest.TestCase):
             ],
         )
 
-    def test_nas_app_page_shows_public_pc_admin_button(self):
+    def test_nas_app_page_hides_admin_buttons(self):
         response = self.client.get("/app", headers={"Host": "100.114.126.58:8080"})
 
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("救護車設定", body)
-        self.assertIn('href="/admin/public-pc"', body)
-        self.assertIn('href="/admin/sinposmart"', body)
-        self.assertIn("救護後台", body)
-        self.assertNotIn("SinpoSmart - 救護Worker 後台", body)
-        self.assertIn("值班後台", body)
-        self.assertIn('class="header-actions"', body)
+        self.assertNotIn("救護車設定", body)
+        self.assertNotIn('href="/admin/vehicles"', body)
+        self.assertNotIn('href="/admin/public-pc"', body)
+        self.assertNotIn('href="/admin/sinposmart"', body)
+        self.assertNotIn("救護後台", body)
+        self.assertNotIn("值班後台", body)
+        self.assertNotIn('class="header-actions"', body)
 
     def test_app_page_recent_task_does_not_show_delete_button(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
@@ -726,15 +761,33 @@ class WebAppTests(unittest.TestCase):
     def test_admin_pages_share_layout_tokens(self):
         vehicle_body = html.unescape(self.client.get("/admin/vehicles").data.decode("utf-8"))
         public_pc_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+        sinposmart_body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
 
         self.assertIn("main { max-width: 960px;", vehicle_body)
         self.assertIn("main { max-width: 1180px;", public_pc_body)
         self.assertIn("repeat(auto-fit, minmax(150px, 1fr))", public_pc_body)
-        for body in (vehicle_body, public_pc_body):
+        for body in (vehicle_body, public_pc_body, sinposmart_body):
             self.assertIn("--text-md: 15px;", body)
             self.assertIn("--text-xl: 28px;", body)
             self.assertIn("repeating-linear-gradient", body)
+        for body in (public_pc_body, sinposmart_body):
+            self.assertIn(":focus-visible", body)
+            self.assertIn("transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;", body)
+            self.assertIn("border-radius: 8px;", body)
+            self.assertIn("body {", body)
+            self.assertIn("min-height: 100vh;", body)
+        for body in (vehicle_body, public_pc_body):
             self.assertIn(".secondary { background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }", body)
+
+    def test_nas_admin_pages_return_to_nas_home(self):
+        for path in ("/admin/public-pc", "/admin/sinposmart"):
+            with self.subTest(path=path):
+                body = html.unescape(
+                    self.client.get(path, headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
+                )
+                self.assertIn("返回首頁", body)
+                self.assertIn('href="/"', body)
+                self.assertNotIn('href="/app">返回首頁', body)
 
     def test_admin_vehicle_delete_removes_custom_vehicle_only(self):
         response = self.client.post("/admin/vehicles/delete", data={"label": "新坡95"}, follow_redirects=False)
@@ -772,7 +825,7 @@ class WebAppTests(unittest.TestCase):
                 "synced_account": "8番 曾彥綸 - tyfd01510",
                 "site_login_accounts": {
                     "duty_work_log": "8番 曾彥綸 - tyfd01510（任務司機優先）",
-                    "vehicle_mileage": "8番 曾彥綸 - tyfd01510（同步帳號）",
+                    "vehicle_mileage": "8番 曾彥綸 - tyfd01510（司機帳號優先，失敗一次改同步帳號）",
                     "disinfection": "8番 曾彥綸 - tyfd01510（同步帳號）",
                     "consumables": "8番 曾彥綸 - C123***789（同步帳號）",
                 },
@@ -808,9 +861,12 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("任務司機：曾彥綸", body)
         self.assertIn("同步帳號：8番 曾彥綸 - tyfd01510", body)
         self.assertIn("各站登入帳號", body)
-        self.assertIn("8番 曾彥綸 - tyfd01510（任務司機優先）", body)
+        self.assertIn("8番 曾彥綸 - tyfd01510（任務司機）", body)
+        self.assertIn("8番 曾彥綸 - tyfd01510（出勤人員）", body)
         self.assertIn("8番 曾彥綸 - tyfd01510（同步帳號）", body)
         self.assertIn("8番 曾彥綸 - C123***789（同步帳號）", body)
+        self.assertNotIn("任務司機優先", body)
+        self.assertNotIn("司機帳號優先，失敗一次改同步帳號", body)
         self.assertIn("回報來源帳號：8番 曾彥綸 - tyfd01510", body)
         self.assertNotIn("公務電腦選取帳號：", body)
         self.assertNotIn("操作人員：", body)

@@ -18,6 +18,7 @@
       --line-strong: #d8d2c7;
       --accent: #b86b5b;
       --accent-soft: #f6e9e5;
+      --focus: rgba(184, 107, 91, .28);
       --complete: #5f8a70;
       --complete-bg: #edf6ef;
       --failed: #b75c55;
@@ -34,6 +35,7 @@
     * { box-sizing: border-box; }
     body {
       margin: 0;
+      min-height: 100vh;
       background:
         linear-gradient(180deg, var(--bg-top) 0, var(--bg) 310px),
         repeating-linear-gradient(135deg, var(--bg-line) 0 1px, transparent 1px 18px);
@@ -60,16 +62,29 @@
       font-weight: 760;
       text-decoration: none;
       box-shadow: 0 8px 18px rgba(184, 107, 91, .18);
+      cursor: pointer;
+      transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
     }
     .secondary { background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
+    button:hover, .button:hover {
+      border-color: var(--line-strong);
+      box-shadow: 0 10px 22px rgba(184, 107, 91, .16);
+      transform: translateY(-1px);
+    }
+    button:focus-visible, .button:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 3px;
+    }
     .task-list { display: grid; gap: 12px; }
     .task-card {
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 14px;
+      border-radius: 8px;
       padding: 16px;
       box-shadow: var(--shadow);
+      transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
     }
+    .task-card:hover { border-color: var(--line-strong); box-shadow: 0 18px 36px rgba(39, 49, 43, .09); }
     .version-card {
       background: var(--surface);
       border: 1px solid var(--line);
@@ -124,7 +139,7 @@
     .login-summary {
       margin-top: 10px;
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: 8px;
       padding: 10px;
       background: #fff;
     }
@@ -171,7 +186,7 @@
     .empty {
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 14px;
+      border-radius: 8px;
       padding: 18px;
       color: var(--muted);
       box-shadow: var(--shadow);
@@ -188,13 +203,17 @@
       .login-grid { grid-template-columns: 1fr; }
       .events li { grid-template-columns: 1fr; gap: 2px; }
     }
+    @media (prefers-reduced-motion: reduce) {
+      button, .button, .task-card { transition: none; }
+      button:hover, .button:hover { transform: none; }
+    }
   </style>
 </head>
 <body>
   <main>
     <header>
       <h1>SinpoSmart - 救護Worker 後台</h1>
-      <a class="button secondary" href="/app">返回首頁</a>
+      <a class="button secondary" href="/">返回首頁</a>
     </header>
 
     {% if version_info %}
@@ -244,7 +263,7 @@
                   {% for site_key, title in task_site_display_pairs(task) %}
                     <div class="login-account">
                       <span class="login-account-name">{{ title }}</span>
-                      <span class="login-account-value">{{ site_login_accounts.get(site_key) or '尚未回報' }}</span>
+                      <span class="login-account-value">{{ compact_login_account_summary(site_login_accounts.get(site_key) or '尚未回報') }}</span>
                     </div>
                   {% endfor %}
                 </div>

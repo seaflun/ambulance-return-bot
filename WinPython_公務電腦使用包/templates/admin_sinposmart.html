@@ -17,6 +17,7 @@
       --line: #e8e4dc;
       --line-strong: #d8d2c7;
       --accent: #b86b5b;
+      --focus: rgba(184, 107, 91, .28);
       --complete: #5f8a70;
       --complete-bg: #edf6ef;
       --failed: #b75c55;
@@ -32,6 +33,7 @@
     * { box-sizing: border-box; }
     body {
       margin: 0;
+      min-height: 100vh;
       background:
         linear-gradient(180deg, var(--bg-top) 0, var(--bg) 310px),
         repeating-linear-gradient(135deg, var(--bg-line) 0 1px, transparent 1px 18px);
@@ -57,6 +59,16 @@
       font: inherit;
       font-weight: 760;
       text-decoration: none;
+      transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+    }
+    .button:hover {
+      border-color: var(--accent);
+      box-shadow: 0 10px 22px rgba(184, 107, 91, .13);
+      transform: translateY(-1px);
+    }
+    .button:focus-visible, .day-link:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 3px;
     }
     .day-nav { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
     .day-link { min-height: 38px; padding: 0 12px; font-size: var(--text-sm); }
@@ -72,13 +84,14 @@
       border-radius: 8px;
       box-shadow: var(--shadow);
     }
-    .summary-card { padding: 12px; }
+    .summary-card { padding: 14px; }
     .summary-label { color: var(--muted); font-size: var(--text-sm); }
     .summary-value { margin-top: 3px; font-size: 24px; font-weight: 820; }
     .version-strip { margin-bottom: 14px; }
     .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
     .event-list { display: grid; gap: 10px; }
-    .event-card { padding: 14px; }
+    .event-card { padding: 14px; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+    .event-card:hover { border-color: var(--line-strong); box-shadow: 0 18px 36px rgba(39, 49, 43, .09); }
     .event-head { display: grid; grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; align-items: start; }
     .event-time { color: var(--muted); font-size: var(--text-sm); }
     .event-title { font-weight: 800; overflow-wrap: anywhere; }
@@ -114,13 +127,17 @@
       .event-head { grid-template-columns: 1fr; gap: 4px; }
       .event-step { grid-template-columns: 1fr; gap: 4px; align-items: start; }
     }
+    @media (prefers-reduced-motion: reduce) {
+      .button, .event-card { transition: none; }
+      .button:hover { transform: none; }
+    }
   </style>
 </head>
 <body>
   <main>
     <header>
       <h1>SinpoSmart 值班後台</h1>
-      <a class="button" href="/app">返回首頁</a>
+      <a class="button" href="/">返回首頁</a>
     </header>
 
     {% if version_info %}
