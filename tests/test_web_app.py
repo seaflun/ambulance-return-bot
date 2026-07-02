@@ -862,7 +862,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("同步帳號：8番 曾彥綸 - tyfd01510", body)
         self.assertIn("各站登入帳號", body)
         self.assertIn("8番 曾彥綸 - tyfd01510（任務司機）", body)
-        self.assertIn("8番 曾彥綸 - tyfd01510（出勤人員）", body)
+        self.assertNotIn("8番 曾彥綸 - tyfd01510（出勤人員）", body)
         self.assertIn("8番 曾彥綸 - tyfd01510（同步帳號）", body)
         self.assertIn("8番 曾彥綸 - C123***789（同步帳號）", body)
         self.assertNotIn("任務司機優先", body)

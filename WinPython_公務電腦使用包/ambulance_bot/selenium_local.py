@@ -908,13 +908,8 @@ def _ppe_credentials() -> tuple[str, str]:
 def _ppe_credential_attempts(request: AmbulanceReturnRequest | None = None) -> list[tuple[str, str]]:
     attempts: list[tuple[str, str]] = []
     if request is not None:
-        driver_credential = load_duty_credential(
-            request.duty_login_account_candidates,
-            fallback_user_id="",
-            allow_default=False,
-        )
-        if driver_credential is not None:
-            attempts.append((driver_credential.user_id, driver_credential.password))
+        _append_ppe_duty_attempts(attempts, request.driver_duty_login_account_candidates)
+        _append_ppe_duty_attempts(attempts, request.personnel_duty_login_account_candidates)
     synced = load_synced_worker_credential()
     if synced is not None:
         attempts.append((synced.user_id, synced.password))
@@ -934,6 +929,13 @@ def _ppe_credential_attempts(request: AmbulanceReturnRequest | None = None) -> l
         seen.add(key)
         deduped.append((username, password))
     return deduped
+
+
+def _append_ppe_duty_attempts(attempts: list[tuple[str, str]], candidates: list[str]) -> None:
+    for candidate in candidates:
+        credential = load_duty_credential([candidate], fallback_user_id="", allow_default=False)
+        if credential is not None:
+            attempts.append((credential.user_id, credential.password))
 
 
 def _click_ppe_login(driver: webdriver.Chrome) -> None:

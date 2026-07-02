@@ -329,6 +329,34 @@ class AmbulanceReturnRequest:
         return [account for account in self.personnel_accounts if account.lower().startswith("tyfd")]
 
     @property
+    def driver_duty_login_account_candidates(self) -> list[str]:
+        driver = self.driver.strip()
+        if not driver:
+            return []
+        accounts = [account.strip() for account in self.personnel_accounts]
+        ordered: list[str] = []
+        for index, name in enumerate(self.personnel):
+            if index < len(accounts) and name.strip() == driver:
+                ordered.append(accounts[index])
+        ordered.append(driver)
+        return _dedupe_login_candidates(ordered)
+
+    @property
+    def personnel_duty_login_account_candidates(self) -> list[str]:
+        driver = self.driver.strip()
+        accounts = [account.strip() for account in self.personnel_accounts]
+        ordered: list[str] = []
+        for index, account in enumerate(accounts):
+            if index < len(self.personnel) and driver and self.personnel[index].strip() == driver:
+                continue
+            ordered.append(account)
+        for name in self.personnel:
+            clean_name = name.strip()
+            if clean_name and clean_name != driver:
+                ordered.append(clean_name)
+        return _dedupe_login_candidates(ordered)
+
+    @property
     def duty_login_account_candidates(self) -> list[str]:
         accounts = [account.strip() for account in self.personnel_accounts if account.strip()]
         driver = self.driver.strip()
@@ -803,6 +831,21 @@ def parse_account_list(value: object) -> list[str]:
         if key not in seen:
             result.append(normalized)
             seen.add(key)
+    return result
+
+
+def _dedupe_login_candidates(candidates: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
     return result
 
 

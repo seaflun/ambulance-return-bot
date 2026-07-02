@@ -1,6 +1,6 @@
 import unittest
 
-from ambulance_bot.site_diagnostics import diagnostic_payload
+from ambulance_bot.site_diagnostics import diagnostic_payload, merge_diagnostic_fields
 
 
 class SiteDiagnosticsTests(unittest.TestCase):
@@ -28,6 +28,57 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["exception_type"], "vehicle_not_found")
         self.assertEqual(payload["failure_stage"], "開啟登打油耗")
         self.assertNotIn("登入", payload["failure_reason"])
+
+    def test_consumable_missing_case_row_points_to_tablet_closure(self):
+        payload = diagnostic_payload(
+            "consumables",
+            "consumables_failed",
+            "一站通耗材: 耗材列表找不到符合案件的內容列：時間=2000 地址=桃園市觀音區金華路631巷76號1樓",
+        )
+
+        self.assertEqual(payload["exception_type"], "case_not_closed")
+        self.assertEqual(payload["failure_stage"], "開啟耗材紀錄")
+        self.assertIn("尚未在救護平板結案", payload["failure_reason"])
+        self.assertIn("請先去救護平板結案", payload["next_action"])
+
+    def test_disinfection_missing_detail_points_to_tablet_closure(self):
+        payload = diagnostic_payload(
+            "disinfection",
+            "disinfection_failed",
+            "消毒紀錄操作失敗：Message: missing disinfection detail for case time 2000",
+        )
+
+        self.assertEqual(payload["exception_type"], "case_not_closed")
+        self.assertEqual(payload["failure_stage"], "開啟消毒紀錄")
+        self.assertIn("尚未在救護平板結案", payload["failure_reason"])
+        self.assertIn("請先去救護平板結案", payload["next_action"])
+
+    def test_consumable_empty_readback_points_to_tablet_closure(self):
+        payload = diagnostic_payload(
+            "consumables",
+            "consumables_failed",
+            "一站通耗材: 耗材儲存後讀回不一致：expected=[('813', '1')] actual=[]",
+        )
+
+        self.assertEqual(payload["exception_type"], "case_not_closed")
+        self.assertEqual(payload["failure_stage"], "開啟耗材紀錄")
+        self.assertIn("請先去救護平板結案", payload["next_action"])
+
+    def test_case_not_closed_recomputes_old_generic_diagnostics_for_display(self):
+        diagnostic = merge_diagnostic_fields(
+            {
+                "key": "consumables",
+                "status": "consumables_failed",
+                "detail": "一站通耗材: 耗材儲存後讀回不一致：expected=[('813', '1')] actual=[]",
+                "failure_stage": "填寫耗材品項",
+                "failure_reason": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
+                "next_action": "先不要儲存；檢查畫面是否仍有舊資料或欄位對應錯誤，修正後再重試。",
+                "exception_type": "validation",
+            }
+        )
+
+        self.assertEqual(diagnostic["exception_type"], "case_not_closed")
+        self.assertIn("請先去救護平板結案", diagnostic["next_action"])
 
     def test_success_has_no_failure_diagnostic(self):
         payload = diagnostic_payload("duty_work_log", "duty_work_log_saved", "saved")

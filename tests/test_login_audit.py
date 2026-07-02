@@ -83,7 +83,7 @@ class LoginAuditTests(unittest.TestCase):
         self.assertNotIn("ACS 環境設定", audit)
         self.assertNotIn("A123456789", audit)
 
-    def test_vehicle_mileage_audit_uses_driver_then_synced_fallback_rule(self):
+    def test_vehicle_mileage_audit_labels_driver_before_personnel_and_synced(self):
         save_duty_automation_credentials(
             [
                 {"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "password": "pw"},
@@ -102,10 +102,34 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = vehicle_mileage_login_audit(request)
 
-        self.assertIn("里程=司機帳號優先，失敗一次改同步帳號", audit)
+        self.assertIn("里程=任務司機 > 出勤人員 > 同步帳號，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
 
-    def test_fuel_record_audit_uses_driver_then_synced_fallback_rule(self):
+    def test_vehicle_mileage_audit_labels_non_driver_personnel_when_driver_missing(self):
+        save_duty_automation_credentials(
+            [
+                {"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "password": "pw"},
+                {"actor_no": "12", "name": "王昱勛", "user_id": "tyfd01987", "password": "pw"},
+            ],
+            last_selected="tyfd01317",
+        )
+        request = AmbulanceReturnRequest(
+            task_id="task-mileage-audit-personnel",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            driver="未同步司機",
+            personnel=["張家和", "王昱勛"],
+            personnel_accounts=["tyfd01317", "tyfd01987"],
+        )
+
+        audit = vehicle_mileage_login_audit(request)
+        summaries = site_login_account_summaries(request)
+
+        self.assertIn("里程=任務司機 > 出勤人員 > 同步帳號，出勤人員", audit)
+        self.assertIn("21番 張家和 - tyfd01317", audit)
+        self.assertEqual(summaries["vehicle_mileage"], "21番 張家和 - tyfd01317（出勤人員）")
+
+    def test_fuel_record_audit_labels_driver_before_personnel_and_synced(self):
         save_duty_automation_credentials(
             [{"actor_no": "12", "name": "王昱勛", "user_id": "tyfd01987", "password": "pw"}],
             last_selected="tyfd01987",
@@ -121,7 +145,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = fuel_record_login_audit(request)
 
-        self.assertIn("加油=司機帳號優先，失敗一次改同步帳號", audit)
+        self.assertIn("加油=任務司機 > 出勤人員 > 同步帳號，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
 
     def test_mask_login_account_only_masks_id_number_style(self):
@@ -148,8 +172,8 @@ class LoginAuditTests(unittest.TestCase):
         summaries = site_login_account_summaries(request)
 
         self.assertEqual(summaries["duty_work_log"], "12番 王昱勛 - tyfd01987（任務司機）")
-        self.assertEqual(summaries["vehicle_mileage"], "12番 王昱勛 - tyfd01987（出勤人員）")
-        self.assertEqual(summaries["fuel_record"], "12番 王昱勛 - tyfd01987（出勤人員）")
+        self.assertEqual(summaries["vehicle_mileage"], "12番 王昱勛 - tyfd01987（任務司機）")
+        self.assertEqual(summaries["fuel_record"], "12番 王昱勛 - tyfd01987（任務司機）")
         self.assertEqual(summaries["disinfection"], "21番 張家和 - tyfd01317（同步帳號）")
         self.assertEqual(summaries["consumables"], "21番 張家和 - S124***209（同步帳號）")
 
@@ -173,8 +197,8 @@ class LoginAuditTests(unittest.TestCase):
         summaries = site_login_account_summaries(request)
 
         self.assertEqual(summaries["duty_work_log"], "12番 王昱勛 - tyfd01987（任務司機）")
-        self.assertEqual(summaries["vehicle_mileage"], "12番 王昱勛 - tyfd01987（出勤人員）")
-        self.assertEqual(summaries["fuel_record"], "12番 王昱勛 - tyfd01987（出勤人員）")
+        self.assertEqual(summaries["vehicle_mileage"], "12番 王昱勛 - tyfd01987（任務司機）")
+        self.assertEqual(summaries["fuel_record"], "12番 王昱勛 - tyfd01987（任務司機）")
 
 
 if __name__ == "__main__":

@@ -71,11 +71,15 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     status = str(site.get("status") or "")
     detail = str(site.get("detail") or "")
     computed = diagnostic_payload(site_key, status, detail)
+    prefer_computed = computed["exception_type"] == "case_not_closed"
+    def value_for(field: str) -> str:
+        if prefer_computed:
+            return str(computed[field])
+        return str(site.get(field) or computed[field])
+
     merged = {
-        "failure_stage": str(site.get("failure_stage") or computed["failure_stage"]),
-        "failure_reason": str(site.get("failure_reason") or computed["failure_reason"]),
-        "next_action": str(site.get("next_action") or computed["next_action"]),
-        "exception_type": str(site.get("exception_type") or computed["exception_type"]),
+        field: value_for(field)
+        for field in DIAGNOSTIC_FIELDS
     }
     return merged if merged["failure_reason"] else {field: "" for field in DIAGNOSTIC_FIELDS}
 
@@ -123,6 +127,12 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return "vehicle_not_found"
     if "captcha" in text or "驗證碼" in raw_detail or "sso" in text or "login" in text or "登入" in raw_detail or "帳密" in raw_detail:
         return "login"
+    if (
+        "耗材列表找不到符合案件的內容列" in raw_detail
+        or "missing disinfection detail" in text
+        or ("耗材儲存後讀回不一致" in raw_detail and "actual=[]" in raw_detail)
+    ):
+        return "case_not_closed"
     if "case not found" in text or "找不到符合案件" in raw_detail or "未在前 24 小時案件清單找到" in raw_detail:
         return "case_not_found"
     if "missing disinfection detail" in text or "無法開啟消毒紀錄" in raw_detail:
@@ -156,6 +166,12 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return _login_stage(site_key)
     if category == "case_not_found":
         return "由案件帶入" if site_key == "duty_work_log" else "查詢案件"
+    if category == "case_not_closed":
+        if site_key == "consumables":
+            return "開啟耗材紀錄"
+        if site_key == "disinfection":
+            return "開啟消毒紀錄"
+        return "查詢案件"
     if category == "case_detail":
         return "開啟消毒紀錄"
     if category == "vehicle_not_found":
@@ -216,6 +232,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "worker_api": "公務電腦與 NAS 任務狀態同步失敗。",
         "login": "登入、帳密、SSO 或驗證碼尚未完成。",
         "case_not_found": "系統清單內找不到符合本案件時間或地址的資料。",
+        "case_not_closed": "案件可能尚未在救護平板結案，耗材或消毒明細尚未產生。",
         "case_detail": "找到清單後無法開啟該案件的明細頁。",
         "vehicle_not_found": "頁面內找不到任務指定的救護車。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
@@ -238,6 +255,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return f"到公務電腦完成{site_name}登入或驗證碼，再回任務頁按「單獨登打」重試。"
     if category == "case_not_found":
         return "確認案件時間、日期、地址是否正確；必要時重新查詢案件或人工選取。"
+    if category == "case_not_closed":
+        return "請先去救護平板結案，完成後再回本頁按「單獨登打」重試。"
     if category == "case_detail":
         return "保留目前清單畫面，先人工開啟明細；若仍無法開啟，回報該站頁面變更。"
     if category == "vehicle_not_found":

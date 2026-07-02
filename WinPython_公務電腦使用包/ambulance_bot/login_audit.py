@@ -7,6 +7,9 @@ from .duty_credentials import DutyCredential, load_duty_credential, load_synced_
 from .models import AmbulanceReturnRequest
 
 
+PPE_LOGIN_PRIORITY_LABEL = "任務司機 > 出勤人員 > 同步帳號"
+
+
 def login_audit_for_site(site_key: str, request: AmbulanceReturnRequest) -> str:
     if site_key == "duty_work_log":
         return duty_work_log_login_audit(request)
@@ -35,7 +38,7 @@ def compact_login_account_summary(summary: str) -> str:
     return (
         str(summary or "")
         .replace("（任務司機優先）", "（任務司機）")
-        .replace("（司機帳號優先，失敗一次改同步帳號）", "（出勤人員）")
+        .replace("（司機帳號優先，失敗一次改同步帳號）", "（任務司機）")
     )
 
 
@@ -47,12 +50,9 @@ def duty_work_log_login_summary(request: AmbulanceReturnRequest) -> str:
 
 
 def vehicle_mileage_login_summary(request: AmbulanceReturnRequest) -> str:
-    credential = load_duty_credential(request.duty_login_account_candidates, fallback_user_id="", allow_default=False)
+    credential, source = _ppe_login_credential_choice(request)
     if credential is not None:
-        return f"{credential_public_label(credential)}（出勤人員）"
-    credential = load_synced_worker_credential()
-    if credential is not None:
-        return f"{credential_public_label(credential)}（同步帳號）"
+        return f"{credential_public_label(credential)}（{source}）"
     account = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
     password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
     if account and password:
@@ -91,17 +91,14 @@ def duty_work_log_login_audit(request: AmbulanceReturnRequest) -> str:
 
 
 def vehicle_mileage_login_audit(request: AmbulanceReturnRequest) -> str:
-    credential = load_duty_credential(request.duty_login_account_candidates, fallback_user_id="", allow_default=False)
+    credential, source = _ppe_login_credential_choice(request)
     if credential is not None:
-        return f"登入帳號：里程=司機帳號優先，失敗一次改同步帳號，{credential_public_label(credential)}"
-    credential = load_synced_worker_credential()
-    if credential is not None:
-        return f"登入帳號：里程=公務電腦同步帳號，{credential_public_label(credential)}"
+        return f"登入帳號：里程={PPE_LOGIN_PRIORITY_LABEL}，{source}，{credential_public_label(credential)}"
     account = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
     password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
     if account and password:
-        return f"登入帳號：里程=環境設定，{mask_login_account(account)}"
-    return "登入帳號：里程=未取得可用帳號"
+        return f"登入帳號：里程={PPE_LOGIN_PRIORITY_LABEL}，環境設定，{mask_login_account(account)}"
+    return f"登入帳號：里程={PPE_LOGIN_PRIORITY_LABEL}，未取得可用帳號"
 
 
 def fuel_record_login_audit(request: AmbulanceReturnRequest) -> str:
@@ -133,6 +130,27 @@ def with_login_audit(detail: str, audit: str) -> str:
     if not clean_audit or clean_audit in clean_detail:
         return clean_detail
     return f"{clean_audit}。{clean_detail}" if clean_detail else clean_audit
+
+
+def _ppe_login_credential_choice(request: AmbulanceReturnRequest) -> tuple[DutyCredential | None, str]:
+    credential = load_duty_credential(
+        request.driver_duty_login_account_candidates,
+        fallback_user_id="",
+        allow_default=False,
+    )
+    if credential is not None:
+        return credential, "任務司機"
+    credential = load_duty_credential(
+        request.personnel_duty_login_account_candidates,
+        fallback_user_id="",
+        allow_default=False,
+    )
+    if credential is not None:
+        return credential, "出勤人員"
+    credential = load_synced_worker_credential()
+    if credential is not None:
+        return credential, "同步帳號"
+    return None, ""
 
 
 def credential_public_label(credential: DutyCredential, login_account: str = "") -> str:
