@@ -21,7 +21,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITION_BY_KEY, SITE_DEFINITIONS
 from .chrome_startup import cleanup_worker_chrome_residue
-from .duty_credentials import load_duty_credential, load_synced_worker_credential
+from .duty_credentials import load_duty_credential, load_recent_synced_duty_credential, load_synced_worker_credential
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .window_layout import apply_tile
 
@@ -348,7 +348,7 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
         _set_window_size_if_enabled(driver, "case_lookup")
         driver.implicitly_wait(2)
         _case_lookup_log_step("duty_login", range=lookup_range)
-        if not _ensure_duty_login(driver):
+        if not _ensure_duty_login(driver, _case_lookup_duty_login_candidates()):
             _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_login")
             login_error = _login_error_text(driver)
             status = "duty_login_failed" if login_error else "needs_duty_login"
@@ -2585,6 +2585,26 @@ def _duty_login_credential_attempts(preferred_user_ids: list[str] | None = None)
     if fallback is not None and fallback.user_id.lower() not in seen:
         attempts.append(fallback)
     return attempts
+
+
+def _case_lookup_duty_login_candidates() -> list[str]:
+    candidates: list[str] = []
+    recent = load_recent_synced_duty_credential()
+    if recent is not None:
+        candidates.append(recent.user_id)
+    synced = load_synced_worker_credential()
+    if synced is not None:
+        candidates.append(synced.user_id)
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for user_id in candidates:
+        value = str(user_id or "").strip()
+        key = value.lower()
+        if value and key not in seen:
+            result.append(value)
+            seen.add(key)
+    return result
 
 
 def _ensure_duty_login(driver: webdriver.Chrome, preferred_user_ids: list[str] | None = None) -> bool:

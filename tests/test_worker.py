@@ -16,6 +16,34 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(worker_module.hash_cases(left), worker_module.hash_cases(right))
 
+    def test_main_defaults_scheduled_case_lookup_to_thirty_minutes(self):
+        env_keys = ["CASE_LOOKUP_INTERVAL_SECONDS", "WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
+        previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
+        original_sync = worker_module.maybe_run_credential_sync
+        original_lookup = worker_module.maybe_run_case_lookup
+        intervals: list[int] = []
+        try:
+            worker_module.os.environ.pop("CASE_LOOKUP_INTERVAL_SECONDS", None)
+            worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
+            worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "false"
+            worker_module.maybe_run_credential_sync = lambda server_url: None
+            worker_module.maybe_run_case_lookup = (
+                lambda server_url, artifacts_dir, last_lookup_at, last_case_hash, interval_seconds:
+                intervals.append(interval_seconds) or (last_lookup_at, last_case_hash)
+            )
+
+            worker_module.main()
+        finally:
+            worker_module.maybe_run_credential_sync = original_sync
+            worker_module.maybe_run_case_lookup = original_lookup
+            for key, value in previous_env.items():
+                if value is None:
+                    worker_module.os.environ.pop(key, None)
+                else:
+                    worker_module.os.environ[key] = value
+
+        self.assertEqual(intervals, [1800])
+
     def test_post_status_adds_site_failure_diagnostics(self):
         original_urlopen = worker_module.urllib.request.urlopen
         captured: dict[str, object] = {}

@@ -65,6 +65,22 @@ def load_saved_duty_work_credential(path: Path | None = None) -> DutyCredential 
     return load_saved_duty_automation_credential(path, duty_password=True)
 
 
+def load_recent_synced_duty_credential(path: Path | None = None) -> DutyCredential | None:
+    source = path or saved_login_path()
+    payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+    accounts = payload.get("accounts") if isinstance(payload, dict) else None
+    if not isinstance(accounts, list):
+        return None
+
+    recent = str(payload.get("last_synced_user_id") or payload.get("last_synced_actor_no") or "").strip()
+    selected = _select_account(accounts, recent) if recent else None
+    if selected is None:
+        selected = next((account for account in accounts if isinstance(account, dict) and not _is_locked_sync_account(account)), None)
+    if selected is None:
+        return None
+    return _credential_from_account(selected, duty_password=True)
+
+
 def _env_credential() -> DutyCredential | None:
     user_id = os.getenv("DUTY_ACCOUNT", "").strip()
     password = os.getenv("DUTY_PASSWORD", "")
@@ -287,6 +303,7 @@ def save_duty_automation_credential(
 def save_duty_automation_credentials(
     accounts: Iterable[dict[str, object]],
     last_selected: str = "",
+    last_synced: str = "",
     path: Path | None = None,
 ) -> Path:
     normalized_accounts: list[dict[str, str]] = []
@@ -327,6 +344,9 @@ def save_duty_automation_credentials(
         "last_selected": selected,
         "accounts": account_list,
     }
+    recent = str(last_synced or existing.get("last_synced_user_id") or existing.get("last_synced_actor_no") or "").strip()
+    if recent:
+        payload["last_synced_user_id"] = recent
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return source
@@ -368,7 +388,8 @@ def save_credential_sync_payload(payload: dict[str, object], path: Path | None =
     last_selected = stable_synced_account_selection(accounts, path=path)
     if not last_selected:
         return None
-    saved_path = save_duty_automation_credentials(accounts, last_selected=last_selected, path=path)
+    last_synced = str(selected.get("user_id") or selected.get("actor_no") or "").strip()
+    saved_path = save_duty_automation_credentials(accounts, last_selected=last_selected, last_synced=last_synced, path=path)
     synced = load_synced_worker_credential(saved_path)
     if synced is not None:
         user_id = synced.user_id

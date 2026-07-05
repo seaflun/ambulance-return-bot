@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -401,7 +402,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
             "sync_code": "ABC",
             "accounts": [
                 {
-                    "actor_no": "8",
+                    "actor_no": "9",
                     "user_id": "user8",
                     "password": "pass8",
                     "display_name": "8番 曾彥綸",
@@ -456,11 +457,12 @@ class WorkerGuiEnvTests(unittest.TestCase):
                         },
                         {"actor_no": "9", "user_id": "user9", "password": "pass9"},
                     ],
-                    "actor_no": "8",
+                    "actor_no": "9",
                 }
 
                 result = worker_gui.save_credential_sync_payload(payload)
                 path_exists = result[2].exists() if result is not None else False
+                saved_payload = json.loads(result[2].read_text(encoding="utf-8")) if result is not None else {}
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
@@ -486,6 +488,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(password, "pass8")
         self.assertEqual(count, 2)
         self.assertTrue(path_exists)
+        self.assertEqual(saved_payload["last_synced_user_id"], "user9")
 
     def test_save_credential_sync_payload_keeps_synced_account_on_actor_8(self):
         with tempfile.TemporaryDirectory() as tmp:

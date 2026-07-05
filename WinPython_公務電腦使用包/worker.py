@@ -45,7 +45,7 @@ def main() -> None:
     server_url = os.getenv("WORKER_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
     worker_id = os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc")
     poll_seconds = int(os.getenv("WORKER_POLL_SECONDS", "10"))
-    lookup_interval_seconds = int(os.getenv("CASE_LOOKUP_INTERVAL_SECONDS", "300"))
+    lookup_interval_seconds = int(os.getenv("CASE_LOOKUP_INTERVAL_SECONDS", "1800"))
     run_once = os.getenv("WORKER_RUN_ONCE", "false").strip().lower() in {"1", "true", "yes", "on"}
     auto_claim_tasks = os.getenv("WORKER_AUTO_CLAIM_TASKS", "false").strip().lower() in {"1", "true", "yes", "on"}
     artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))

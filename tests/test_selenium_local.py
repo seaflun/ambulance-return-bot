@@ -39,7 +39,7 @@ from ambulance_bot.selenium_local import (
     _write_json_atomic,
     selenium_enabled,
 )
-from ambulance_bot.duty_credentials import save_duty_automation_credentials
+from ambulance_bot.duty_credentials import save_credential_sync_payload, save_duty_automation_credentials
 from ambulance_bot.duty_credentials import DutyCredential
 
 
@@ -504,7 +504,7 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._acquire_selenium_session = lambda reason: True
             selenium_local_module._release_selenium_session = lambda reason: calls.__setitem__("released", True)
             selenium_local_module._quit_driver = lambda driver: calls.__setitem__("quit_driver", driver)
-            selenium_local_module._ensure_duty_login = lambda driver: False
+            selenium_local_module._ensure_duty_login = lambda driver, preferred_user_ids=None: False
             selenium_local_module._save_artifacts = lambda *args, **kwargs: None
             selenium_local_module._login_error_text = lambda driver: "login failed"
 
@@ -590,7 +590,7 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._acquire_selenium_session = lambda reason: True
             selenium_local_module._release_selenium_session = lambda reason: calls.__setitem__("released", True)
             selenium_local_module._quit_driver = lambda driver: calls.__setitem__("quit_driver", driver)
-            selenium_local_module._ensure_duty_login = lambda driver: True
+            selenium_local_module._ensure_duty_login = lambda driver, preferred_user_ids=None: True
             selenium_local_module._set_window_size_if_enabled = lambda *args, **kwargs: None
             selenium_local_module._open_case_query = lambda *args, **kwargs: None
             selenium_local_module._extract_all_emergency_cases = lambda driver: [{"case_id": "case-1"}]
@@ -781,6 +781,86 @@ class SeleniumLocalTests(unittest.TestCase):
                 os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
 
         self.assertEqual([credential.user_id for credential in attempts], ["tyfd00002", "tyfd00001", "tyfd00003", "tyfd01510"])
+
+    def test_case_lookup_login_uses_latest_synced_duty_account_before_fixed_sync_account(self):
+        class FakeDriver:
+            def implicitly_wait(self, seconds):
+                self.wait_seconds = seconds
+
+        previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+        previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+        previous_account = os.environ.get("DUTY_ACCOUNT")
+        previous_password = os.environ.get("DUTY_PASSWORD")
+        captured: dict[str, object] = {}
+        original_acquire = selenium_local_module._acquire_selenium_session
+        original_release = selenium_local_module._release_selenium_session
+        original_create_driver = selenium_local_module._create_driver
+        original_timeouts = selenium_local_module._set_case_lookup_driver_timeouts
+        original_window = selenium_local_module._set_window_size_if_enabled
+        original_ensure_login = selenium_local_module._ensure_duty_login
+        original_login_error = selenium_local_module._login_error_text
+        original_save_artifacts = selenium_local_module._save_artifacts
+        original_quit_driver = selenium_local_module._quit_driver
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_credential_sync_payload(
+                    {
+                        "actor_no": "12",
+                        "user_id": "tyfd01212",
+                        "accounts": [
+                            {"actor_no": "19", "name": "司機甲", "user_id": "tyfd01919", "password": "pass19"},
+                            {"actor_no": "12", "name": "出勤乙", "user_id": "tyfd01212", "password": "pass12"},
+                            {"actor_no": "8", "name": "固定同步", "user_id": "tyfd01510", "password": "pass8"},
+                        ],
+                    }
+                )
+                selenium_local_module._acquire_selenium_session = lambda owner: True
+                selenium_local_module._release_selenium_session = lambda owner: None
+                selenium_local_module._create_driver = lambda *args, **kwargs: FakeDriver()
+                selenium_local_module._set_case_lookup_driver_timeouts = lambda driver: None
+                selenium_local_module._set_window_size_if_enabled = lambda driver, site_key: None
+                selenium_local_module._login_error_text = lambda driver: ""
+                selenium_local_module._save_artifacts = lambda *args, **kwargs: None
+                selenium_local_module._quit_driver = lambda driver: None
+
+                def fake_ensure_login(driver, preferred_user_ids=None):
+                    captured["preferred"] = preferred_user_ids
+                    return False
+
+                selenium_local_module._ensure_duty_login = fake_ensure_login
+
+                result = selenium_local_module.query_duty_emergency_cases(Path(tmp), lookup_range="24h")
+        finally:
+            selenium_local_module._acquire_selenium_session = original_acquire
+            selenium_local_module._release_selenium_session = original_release
+            selenium_local_module._create_driver = original_create_driver
+            selenium_local_module._set_case_lookup_driver_timeouts = original_timeouts
+            selenium_local_module._set_window_size_if_enabled = original_window
+            selenium_local_module._ensure_duty_login = original_ensure_login
+            selenium_local_module._login_error_text = original_login_error
+            selenium_local_module._save_artifacts = original_save_artifacts
+            selenium_local_module._quit_driver = original_quit_driver
+            if previous_path is None:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+            else:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+            if previous_override is None:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+            else:
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+            if previous_account is None:
+                os.environ.pop("DUTY_ACCOUNT", None)
+            else:
+                os.environ["DUTY_ACCOUNT"] = previous_account
+            if previous_password is None:
+                os.environ.pop("DUTY_PASSWORD", None)
+            else:
+                os.environ["DUTY_PASSWORD"] = previous_password
+
+        self.assertEqual(captured["preferred"], ["tyfd01212", "tyfd01510"])
+        self.assertEqual(result.status, "needs_duty_login")
 
     def test_duty_login_tries_next_candidate_after_failure(self):
         class FakeDriver:

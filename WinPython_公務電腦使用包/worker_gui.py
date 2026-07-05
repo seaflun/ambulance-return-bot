@@ -1582,7 +1582,8 @@ def save_credential_sync_payload(payload: dict[str, object]) -> tuple[str, str, 
     last_selected = stable_synced_account_selection(accounts)
     if not last_selected:
         return None
-    path = save_duty_automation_credentials(accounts, last_selected=last_selected)
+    last_synced = str(selected.get("user_id") or selected.get("actor_no") or "").strip()
+    path = save_duty_automation_credentials(accounts, last_selected=last_selected, last_synced=last_synced)
     synced = load_saved_duty_automation_credential(path)
     if synced is not None:
         user_id = synced.user_id
