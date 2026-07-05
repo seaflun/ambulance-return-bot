@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 import worker
 from ambulance_bot.chrome_launcher import open_url_in_worker_chrome
+from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.duty_credentials import (
     DutyCredential,
     legacy_configured_saved_login_path,
@@ -49,6 +50,16 @@ NAS_LAN_URL = "http://10.30.65.30:8080"
 NAS_TAILSCALE_URL = "http://100.114.126.58:8080"
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\AmbulanceReturnBotWorkerGui"
 _SINGLE_INSTANCE_MUTEX_HANDLE: int | None = None
+FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+WORKER_CHROME_PROFILE_PREFIXES = (
+    "chrome_profile",
+    "case_lookup_profile",
+    "duty_work_log_profile_",
+    "vehicle_mileage_profile_",
+    "fuel_record_profile_",
+    "consumables_profile_",
+    "disinfection_profile_",
+)
 
 GUI_THEME = {
     "bg": "#fff7ef",
@@ -404,6 +415,7 @@ class WorkerGui(ctk.CTk):
         self._hint(local, "", textvariable=self.local_web_status, wraplength=260).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
         self._entry(local, self.local_web_url).grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
         self._button(local, "開啟本機網頁", self._start_local_web_app, "primary").grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
+        self._button(local, "修復 Chrome", self._repair_worker_chrome, "soft").grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 16))
 
         nas = self._card(top_area, "NAS伺服器")
         nas.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -438,6 +450,7 @@ class WorkerGui(ctk.CTk):
             corner_radius=10,
         )
         self.credential_combo.grid(row=1, column=1, sticky="ew", padx=(0, 16), pady=(0, 10))
+        self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=300).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
         self._button(credentials, "匯入同步", self._import_credential_sync_file, "primary").grid(row=3, column=0, columnspan=2, sticky="sew", padx=16, pady=(0, 16))
 
         version_card = self._card(top_area, "版本")
@@ -693,6 +706,64 @@ class WorkerGui(ctk.CTk):
             return
         self._log(f"已開啟檢查更新：{launcher}")
 
+    def _repair_worker_chrome(self) -> None:
+        if not messagebox.askyesno(
+            "修復 Chrome",
+            "將關閉 Worker 專用 Chrome/ChromeDriver，備份 Chrome profile，並重啟 Worker GUI。\n\n不會刪除任何檔案。確定執行？",
+        ):
+            return
+        self.worker_status.set("修復 Chrome 中")
+        threading.Thread(target=self._repair_worker_chrome_background, daemon=True).start()
+
+    def _repair_worker_chrome_background(self) -> None:
+        try:
+            self.log_queue.put("Chrome 修復｜開始")
+            if self._terminate_local_web_process_for_repair():
+                self.log_queue.put("Chrome 修復｜已停止本機網頁程序")
+            killed = cleanup_worker_chrome_residue(worker_chrome_repair_options(), "worker repair")
+            self.log_queue.put(f"Chrome 修復｜已關閉殘留 Chrome/ChromeDriver：{killed} 個")
+            backups = backup_worker_chrome_profiles()
+            if backups:
+                for _source, backup in backups:
+                    self.log_queue.put(f"Chrome 修復｜profile 已備份：{backup}")
+            else:
+                self.log_queue.put("Chrome 修復｜沒有需要備份的 Worker profile")
+            self._log_local_status_for_repair()
+            if relaunch_worker_gui():
+                self.log_queue.put("Chrome 修復｜即將重啟 Worker GUI")
+                self.after(1200, self.quit_from_tray)
+            else:
+                self.log_queue.put("Chrome 修復｜無法自動重啟 GUI，改為重開本機網頁與 Worker")
+                self.after(0, self._start_local_web_app)
+                self.after(0, self._restart_worker)
+        except Exception as exc:
+            self.log_queue.put(f"Chrome 修復失敗：{exc}")
+            self.after(0, lambda: self.worker_status.set("Chrome 修復失敗"))
+
+    def _terminate_local_web_process_for_repair(self) -> bool:
+        process = self.local_web_process
+        if process is None or process.poll() is not None:
+            return False
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        self.local_web_process = None
+        return True
+
+    def _log_local_status_for_repair(self) -> None:
+        status = self._local_web_status()
+        if self._local_web_status_matches(status):
+            self.log_queue.put("Chrome 修復｜本機狀態確認：app_dir 正確")
+            return
+        if isinstance(status, dict):
+            app_dir = str(status.get("app_dir") or "").strip()
+            self.log_queue.put(f"Chrome 修復｜本機狀態確認：8090 不是目前使用包 app_dir={app_dir or '(missing)'}")
+            return
+        self.log_queue.put("Chrome 修復｜本機狀態確認：127.0.0.1:8090 尚未啟動")
+
     def _restart_worker(self) -> None:
         if self.worker_thread is not None and self.worker_thread.is_alive():
             self._log("目前 worker 已在執行；請關閉本程式再完全重啟。")
@@ -741,6 +812,9 @@ class WorkerGui(ctk.CTk):
         threading.Thread(target=self._refresh_startup_launcher_background, daemon=True).start()
 
     def _refresh_startup_launcher_background(self) -> None:
+        if not startup_launcher_enabled():
+            self.log_queue.put("開機啟動已停用。")
+            return
         installer = Path(__file__).with_name("install_startup_shortcut.ps1")
         if not installer.exists():
             return
@@ -813,14 +887,14 @@ class WorkerGui(ctk.CTk):
         self.destroy()
 
     def _refresh_credential_choices(self, apply_first_if_empty: bool = False) -> None:
-        credentials = list_saved_duty_automation_credentials()
+        credentials = locked_sync_credentials(list_saved_duty_automation_credentials())
         self.saved_credentials = {credential_choice_label(credential): credential for credential in credentials}
         labels = list(self.saved_credentials)
         if self.credential_combo is not None:
             self.credential_combo.configure(values=labels)
         if not labels:
             self.credential_choice.set("")
-            self.credential_sync_status.set("目前沒有同步帳號，請按「匯入同步」。")
+            self.credential_sync_status.set("目前沒有 8 號同步帳號，請按「匯入同步」。")
             return
 
         selected = selected_saved_credential_label(self.saved_credentials)
@@ -887,8 +961,8 @@ class WorkerGui(ctk.CTk):
             messagebox.showerror("匯入同步失敗", f"同步資料儲存失敗：{exc}")
             return
         if result is None:
-            self.credential_sync_status.set("匯入同步失敗：同步資料缺少帳號或密碼。")
-            messagebox.showerror("匯入同步失敗", "同步資料缺少帳號或密碼。")
+            self.credential_sync_status.set("匯入同步失敗：同步資料缺少 8 號帳號或密碼。")
+            messagebox.showerror("匯入同步失敗", "同步資料缺少 8 號帳號或密碼。")
             return
         user_id, password, path, count = result
         self._apply_credential_sync_result(user_id, password, path, count)
@@ -1347,7 +1421,7 @@ class WorkerGui(ctk.CTk):
             worker.MANUAL_TASK_ACTIVE.clear()
 
     def _warm_worker_chrome(self) -> None:
-        if os.getenv("WORKER_WARM_CHROME_ON_START", "true").strip().lower() in {"0", "false", "no", "off"}:
+        if os.getenv("WORKER_WARM_CHROME_ON_START", "true").strip().lower() in FALSE_ENV_VALUES:
             return
         threading.Thread(target=self._warm_worker_chrome_background, daemon=True).start()
 
@@ -1439,6 +1513,14 @@ def credential_choice_label(credential: DutyCredential) -> str:
     return f"{actor} {name} - {account}"
 
 
+def is_locked_sync_credential(credential: DutyCredential) -> bool:
+    return credential.actor_no == "8" or credential.user_id.lower() == "tyfd01510"
+
+
+def locked_sync_credentials(credentials: list[DutyCredential]) -> list[DutyCredential]:
+    return [credential for credential in credentials if is_locked_sync_credential(credential)]
+
+
 def _name_from_display_name(display_name: str, account: str = "", actor_no: str = "") -> str:
     text = str(display_name or "").strip()
     if not text:
@@ -1458,6 +1540,8 @@ def selected_saved_credential_label(saved_credentials: dict[str, DutyCredential]
 
 
 def persist_selected_saved_credential(credential: DutyCredential) -> Path:
+    if not is_locked_sync_credential(credential):
+        raise ValueError("同步帳號已鎖定 8 號")
     selected = credential.user_id or credential.actor_no or credential.id_number
     return set_last_selected_duty_automation_credential(selected)
 
@@ -1496,6 +1580,8 @@ def save_credential_sync_payload(payload: dict[str, object]) -> tuple[str, str, 
     if selected is None:
         return None
     last_selected = stable_synced_account_selection(accounts)
+    if not last_selected:
+        return None
     path = save_duty_automation_credentials(accounts, last_selected=last_selected)
     synced = load_saved_duty_automation_credential(path)
     if synced is not None:
@@ -1523,6 +1609,77 @@ def _worker_chrome_is_running() -> bool:
             return response.status == 200
     except Exception:
         return False
+
+
+class _ChromeRepairOptions:
+    def __init__(self, arguments: list[str]) -> None:
+        self.arguments = arguments
+
+
+def worker_chrome_repair_options() -> _ChromeRepairOptions:
+    arguments = [f"--user-data-dir={worker_chrome_profile_root()}"]
+    debugger_port = os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223").strip()
+    if debugger_port:
+        arguments.append(f"--remote-debugging-port={debugger_port}")
+    return _ChromeRepairOptions(arguments)
+
+
+def worker_chrome_profile_root() -> Path:
+    configured = os.getenv("CHROME_PROFILE_DIR", "").strip()
+    if configured:
+        return Path(os.path.expandvars(configured)).expanduser().parent
+    root = Path(os.getenv("SELENIUM_PROFILE_ROOT") or os.getenv("LOCALAPPDATA") or Path.home())
+    return root / "ambulance_return_bot"
+
+
+def worker_chrome_profile_dirs(root: Path | None = None) -> list[Path]:
+    profile_root = root or worker_chrome_profile_root()
+    if not profile_root.exists():
+        return []
+    paths = []
+    for path in profile_root.iterdir():
+        if path.is_dir() and ".chrome_repair_" not in path.name and path.name.startswith(WORKER_CHROME_PROFILE_PREFIXES):
+            paths.append(path)
+    return sorted(paths)
+
+
+def backup_worker_chrome_profiles(root: Path | None = None, timestamp: str | None = None) -> list[tuple[Path, Path]]:
+    stamp = timestamp or time.strftime("%Y%m%d_%H%M%S")
+    backups: list[tuple[Path, Path]] = []
+    for path in worker_chrome_profile_dirs(root):
+        backup = unique_backup_path(path.with_name(f"{path.name}.chrome_repair_{stamp}"))
+        path.rename(backup)
+        backups.append((path, backup))
+    return backups
+
+
+def unique_backup_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 1000):
+        candidate = path.with_name(f"{path.name}_{index}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Cannot find available backup path for {path}")
+
+
+def relaunch_worker_gui(delay_seconds: int = 2) -> bool:
+    package_dir = Path(__file__).resolve().parent
+    launcher = package_dir / "RUN_WORKER_GUI_WINPYTHON.vbs"
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        if os.name == "nt" and launcher.exists():
+            command = f'timeout /t {max(delay_seconds, 1)} /nobreak >nul & start "" wscript.exe "{launcher}"'
+            subprocess.Popen(["cmd", "/c", command], cwd=package_dir, creationflags=creationflags)
+            return True
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve())], cwd=package_dir, creationflags=creationflags)
+        return True
+    except OSError:
+        return False
+
+
+def startup_launcher_enabled() -> bool:
+    return os.getenv("WORKER_STARTUP_LAUNCHER_ENABLED", "true").strip().lower() not in FALSE_ENV_VALUES
 
 
 def local_web_host() -> str:

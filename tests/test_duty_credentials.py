@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+import ambulance_bot.duty_credentials as duty_credentials_module
 from ambulance_bot.duty_credentials import (
     credential_sync_accounts_from_payload,
     decrypt_dpapi,
@@ -236,6 +237,32 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(credential.user_id, "user8")
         self.assertEqual({item.user_id for item in saved_accounts}, {"user8", "user9"})
 
+    def test_single_incoming_non_actor_8_without_existing_account_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            previous_account = os.environ.get("DUTY_ACCOUNT")
+            previous_password = os.environ.get("DUTY_PASSWORD")
+            try:
+                result = save_credential_sync_payload(
+                    {"actor_no": "9", "user_id": "user9", "password": "pass9"},
+                    path=path,
+                )
+                credential = load_synced_worker_credential(path)
+                synced_env_account = os.environ.get("DUTY_ACCOUNT")
+            finally:
+                if previous_account is None:
+                    os.environ.pop("DUTY_ACCOUNT", None)
+                else:
+                    os.environ["DUTY_ACCOUNT"] = previous_account
+                if previous_password is None:
+                    os.environ.pop("DUTY_PASSWORD", None)
+                else:
+                    os.environ["DUTY_PASSWORD"] = previous_password
+
+        self.assertIsNone(result)
+        self.assertIsNone(credential)
+        self.assertNotEqual(synced_env_account, "user9")
+
     def test_saves_synced_credential_derives_name_without_repeating_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "saved_login.json"
@@ -292,7 +319,13 @@ class DutyCredentialTests(unittest.TestCase):
                 os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
                 os.environ["LOCALAPPDATA"] = str(Path(tmp) / "local")
 
-                self.assertEqual(saved_login_path(), Path(tmp) / "local" / "DutyAutomation" / "saved_login.json")
+                expected = (
+                    Path(duty_credentials_module.__file__).resolve().parents[1]
+                    / "local_data"
+                    / "DutyAutomation"
+                    / "saved_login.json"
+                )
+                self.assertEqual(saved_login_path(), expected)
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
@@ -306,6 +339,74 @@ class DutyCredentialTests(unittest.TestCase):
                     os.environ.pop("LOCALAPPDATA", None)
                 else:
                     os.environ["LOCALAPPDATA"] = previous_local
+
+    def test_default_saved_login_migrates_legacy_localappdata_account_on_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package_path = Path(tmp) / "package" / "local_data" / "DutyAutomation" / "saved_login.json"
+            legacy_path = Path(tmp) / "local" / "DutyAutomation" / "saved_login.json"
+            legacy_path.parent.mkdir(parents=True)
+            legacy_path.write_text(
+                json.dumps(
+                    {
+                        "last_selected": "user8",
+                        "accounts": [
+                            {"actor_no": "8", "user_id": "user8", "password": "pass8"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            previous_local = os.environ.get("LOCALAPPDATA")
+            previous_account = os.environ.get("DUTY_ACCOUNT")
+            previous_password = os.environ.get("DUTY_PASSWORD")
+            try:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                os.environ["LOCALAPPDATA"] = str(Path(tmp) / "local")
+                with patch.object(duty_credentials_module, "default_saved_login_path", return_value=package_path):
+                    loaded = duty_credentials_module.load_synced_worker_credential()
+                    result = duty_credentials_module.save_credential_sync_payload(
+                        {"actor_no": "9", "user_id": "user9", "password": "pass9"}
+                    )
+                    migrated = duty_credentials_module.load_synced_worker_credential()
+                    saved_accounts = duty_credentials_module.list_saved_duty_automation_credentials()
+                    package_path_exists = package_path.exists()
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+                if previous_local is None:
+                    os.environ.pop("LOCALAPPDATA", None)
+                else:
+                    os.environ["LOCALAPPDATA"] = previous_local
+                if previous_account is None:
+                    os.environ.pop("DUTY_ACCOUNT", None)
+                else:
+                    os.environ["DUTY_ACCOUNT"] = previous_account
+                if previous_password is None:
+                    os.environ.pop("DUTY_PASSWORD", None)
+                else:
+                    os.environ["DUTY_PASSWORD"] = previous_password
+
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.user_id, "user8")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result[0], "user8")
+        self.assertEqual(result[2], package_path)
+        self.assertTrue(package_path_exists)
+        self.assertIsNotNone(migrated)
+        assert migrated is not None
+        self.assertEqual(migrated.user_id, "user8")
+        self.assertEqual({item.user_id for item in saved_accounts}, {"user8", "user9"})
 
     def test_saved_login_path_override_expands_environment_variables(self):
         with tempfile.TemporaryDirectory() as tmp:

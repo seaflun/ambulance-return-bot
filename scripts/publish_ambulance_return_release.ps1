@@ -10,6 +10,7 @@ $updateDir = Join-Path $project "UPDATE"
 $versionPath = Join-Path $updateDir "ambulance-return-version.txt"
 $zipPath = Join-Path $updateDir "ambulance-return-public-package.zip"
 $shaPath = Join-Path $updateDir "ambulance-return-public-package.zip.sha256.txt"
+$updaterPath = Join-Path $updateDir "update_package.ps1"
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = (Get-Content -LiteralPath $versionPath -Raw -Encoding UTF8).Trim().TrimStart([char]0xFEFF)
@@ -17,7 +18,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 if ($Version -notmatch "^\d{4}\.\d{2}\.\d{2}\.\d{4}$") {
     throw "Version must use yyyy.MM.dd.HHmm format. Got: $Version"
 }
-foreach ($path in @($versionPath, $zipPath, $shaPath)) {
+foreach ($path in @($versionPath, $zipPath, $shaPath, $updaterPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Missing release asset: $path"
     }
@@ -29,4 +30,4 @@ if (-not $gh) {
 }
 
 $tag = "ambulance-return-$Version"
-gh release create $tag $versionPath $zipPath $shaPath --repo $Repository --title $tag --notes "SinpoSmart - 救護Worker 公務電腦使用包 $Version"
+gh release create $tag $versionPath $zipPath $shaPath $updaterPath --repo $Repository --title $tag --notes "SinpoSmart - 救護Worker 公務電腦使用包 $Version"

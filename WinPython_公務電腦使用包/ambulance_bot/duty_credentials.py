@@ -109,11 +109,8 @@ def _normalized_user_ids(values: Iterable[str] | None) -> list[str]:
 
 def load_saved_duty_automation_credential(path: Path | None = None, duty_password: bool = False) -> DutyCredential | None:
     source = path or saved_login_path()
-    if not source.exists():
-        return None
-    try:
-        payload = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+    if not isinstance(payload, dict):
         return None
 
     accounts = payload.get("accounts")
@@ -140,12 +137,7 @@ def load_saved_duty_automation_credential(path: Path | None = None, duty_passwor
 
 def list_saved_duty_automation_credentials(path: Path | None = None, duty_password: bool = False) -> list[DutyCredential]:
     source = path or saved_login_path()
-    if not source.exists():
-        return []
-    try:
-        payload = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+    payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
     if not isinstance(payload, dict):
         return []
 
@@ -170,13 +162,28 @@ def list_saved_duty_automation_credentials(path: Path | None = None, duty_passwo
 
 def saved_login_path() -> Path:
     configured = os.getenv("DUTY_SAVED_LOGIN_PATH", "").strip()
-    override = os.getenv("DUTY_SAVED_LOGIN_PATH_OVERRIDE", "").strip().lower() in {"1", "true", "yes", "on"}
-    if configured and override:
+    if configured and saved_login_path_override_enabled():
         return Path(os.path.expandvars(configured)).expanduser()
     return default_saved_login_path()
 
 
+def saved_login_path_override_enabled() -> bool:
+    return os.getenv("DUTY_SAVED_LOGIN_PATH_OVERRIDE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _allow_default_saved_login_fallback(path: Path | None) -> bool:
+    return path is None and not saved_login_path_override_enabled()
+
+
 def default_saved_login_path() -> Path:
+    return public_duty_package_dir() / "local_data" / "DutyAutomation" / "saved_login.json"
+
+
+def public_duty_package_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def legacy_localappdata_saved_login_path() -> Path:
     return Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "DutyAutomation" / "saved_login.json"
 
 
@@ -193,7 +200,7 @@ def set_last_selected_duty_automation_credential(identifier: str, path: Path | N
         raise ValueError("selected credential id is required")
 
     source = path or saved_login_path()
-    payload = _read_saved_login(source)
+    payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
     accounts = payload.get("accounts")
     if not isinstance(accounts, list):
         raise ValueError("saved credential file does not contain synced accounts")
@@ -291,7 +298,7 @@ def save_duty_automation_credentials(
         raise ValueError("at least one account with user_id and password is required")
 
     source = path or saved_login_path()
-    existing = _read_saved_login(source)
+    existing = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
     accounts = existing.get("accounts")
     account_list = [account for account in accounts if isinstance(account, dict)] if isinstance(accounts, list) else []
 
@@ -359,6 +366,8 @@ def save_credential_sync_payload(payload: dict[str, object], path: Path | None =
     if selected is None:
         return None
     last_selected = stable_synced_account_selection(accounts, path=path)
+    if not last_selected:
+        return None
     saved_path = save_duty_automation_credentials(accounts, last_selected=last_selected, path=path)
     synced = load_synced_worker_credential(saved_path)
     if synced is not None:
@@ -379,21 +388,25 @@ def stable_synced_account_selection(accounts: list[dict[str, object]], path: Pat
     for account in accounts:
         user_id = str(account.get("user_id") or "").strip()
         actor_no = str(account.get("actor_no") or "").strip()
-        if actor_no == "8" or user_id.lower() == "tyfd01510":
+        if _is_locked_sync_account(account):
             return user_id or actor_no
 
     source = path or saved_login_path()
-    existing_payload = _read_saved_login(source)
+    existing_payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
     existing_selected = str(existing_payload.get("last_selected") or "").strip()
     existing_accounts = existing_payload.get("accounts")
     existing_account_list = list(existing_accounts) if isinstance(existing_accounts, list) else []
-    if existing_selected and _select_account(existing_account_list, existing_selected) is not None:
+    existing_account = _select_account(existing_account_list, existing_selected)
+    if existing_selected and existing_account is not None and _is_locked_sync_account(existing_account):
         return existing_selected
 
-    if accounts:
-        first = accounts[0]
-        return str(first.get("user_id") or first.get("actor_no") or "").strip()
     return ""
+
+
+def _is_locked_sync_account(account: dict[str, object]) -> bool:
+    actor_no = str(account.get("actor_no") or "").strip()
+    user_id = str(account.get("user_id") or "").strip()
+    return actor_no == "8" or user_id.lower() == "tyfd01510"
 
 
 def _normalized_account_for_save(account: dict[str, object]) -> dict[str, str] | None:
@@ -449,6 +462,17 @@ def _read_saved_login(path: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_saved_login_with_default_fallback(path: Path, allow_fallback: bool) -> dict:
+    payload = _read_saved_login(path)
+    if payload or not allow_fallback:
+        return payload
+
+    legacy_path = legacy_localappdata_saved_login_path()
+    if legacy_path.resolve() == path.resolve():
+        return payload
+    return _read_saved_login(legacy_path)
 
 
 def _account_password(account: dict) -> str:

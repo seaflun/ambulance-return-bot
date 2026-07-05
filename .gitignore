@@ -57,6 +57,7 @@ WinPython_公務電腦使用包/tmp/
 WinPython_公務電腦使用包/temp/
 WinPython_公務電腦使用包/cache/
 WinPython_公務電腦使用包/.cache/
+WinPython_公務電腦使用包/local_data/
 WinPython_公務電腦使用包/snapshots/
 WinPython_公務電腦使用包/__pycache__/
 WinPython_公務電腦使用包/**/*.pyc

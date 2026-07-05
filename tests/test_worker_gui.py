@@ -37,8 +37,10 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn("self.local_web_status", source)
         self.assertIn('fg_color=GUI_THEME["accent"]', source)
         self.assertIn('button_color=theme["accent"]', source)
+        self.assertIn('self._button(local, "修復 Chrome", self._repair_worker_chrome, "soft").grid(row=4', source)
         self.assertIn("self.credential_combo.grid(row=1, column=1", source)
         self.assertIn("credentials.rowconfigure(2, weight=1)", source)
+        self.assertIn('self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=300).grid(row=2', source)
         self.assertIn("version_card.rowconfigure(2, weight=1)", source)
         self.assertIn('self._button(credentials, "匯入同步", self._import_credential_sync_file, "primary").grid(row=3', source)
         self.assertIn('self._button(version_card, "檢查更新", self._check_for_updates, "soft").grid(row=3', source)
@@ -65,6 +67,78 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
         self.assertIn('self.geometry("680x760")', source)
         self.assertIn('self.minsize(600, 680)', source)
+
+    def test_startup_launcher_can_be_disabled_by_env(self):
+        previous = os.environ.get("WORKER_STARTUP_LAUNCHER_ENABLED")
+        try:
+            os.environ["WORKER_STARTUP_LAUNCHER_ENABLED"] = "false"
+
+            self.assertFalse(worker_gui.startup_launcher_enabled())
+        finally:
+            if previous is None:
+                os.environ.pop("WORKER_STARTUP_LAUNCHER_ENABLED", None)
+            else:
+                os.environ["WORKER_STARTUP_LAUNCHER_ENABLED"] = previous
+
+    def test_worker_chrome_profile_dirs_only_targets_worker_profiles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            expected = [
+                root / "chrome_profile",
+                root / "case_lookup_profile_123",
+                root / "vehicle_mileage_profile_task1",
+            ]
+            ignored = [
+                root / "Chrome User Data",
+                root / "chrome_profile.chrome_repair_20260705_120000",
+                root / "unrelated_profile",
+            ]
+            for path in expected + ignored:
+                path.mkdir()
+
+            paths = worker_gui.worker_chrome_profile_dirs(root)
+
+        self.assertEqual(paths, sorted(expected))
+
+    def test_backup_worker_chrome_profiles_renames_without_deleting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "chrome_profile"
+            existing_backup = root / "chrome_profile.chrome_repair_20260705_120000"
+            profile.mkdir()
+            (profile / "Preferences").write_text("{}", encoding="utf-8")
+            existing_backup.mkdir()
+
+            backups = worker_gui.backup_worker_chrome_profiles(root, "20260705_120000")
+
+            self.assertFalse(profile.exists())
+            self.assertEqual(len(backups), 1)
+            source, backup = backups[0]
+            self.assertEqual(source, profile)
+            self.assertEqual(backup, root / "chrome_profile.chrome_repair_20260705_120000_1")
+            self.assertTrue((backup / "Preferences").exists())
+            self.assertTrue(existing_backup.exists())
+
+    def test_worker_chrome_repair_options_targets_profile_root_and_debugger_port(self):
+        previous_profile = os.environ.get("CHROME_PROFILE_DIR")
+        previous_port = os.environ.get("WORKER_CHROME_DEBUGGER_PORT")
+        try:
+            os.environ["CHROME_PROFILE_DIR"] = r"C:\Worker\profiles\chrome_profile"
+            os.environ["WORKER_CHROME_DEBUGGER_PORT"] = "9223"
+
+            options = worker_gui.worker_chrome_repair_options()
+        finally:
+            if previous_profile is None:
+                os.environ.pop("CHROME_PROFILE_DIR", None)
+            else:
+                os.environ["CHROME_PROFILE_DIR"] = previous_profile
+            if previous_port is None:
+                os.environ.pop("WORKER_CHROME_DEBUGGER_PORT", None)
+            else:
+                os.environ["WORKER_CHROME_DEBUGGER_PORT"] = previous_port
+
+        self.assertIn(r"--user-data-dir=C:\Worker\profiles", options.arguments)
+        self.assertIn("--remote-debugging-port=9223", options.arguments)
 
     def test_worker_case_lookup_output_is_gui_readable(self):
         self.assertEqual(
@@ -505,6 +579,43 @@ class WorkerGuiEnvTests(unittest.TestCase):
         assert selected is not None
         self.assertEqual(selected.user_id, "user8")
 
+    def test_save_credential_sync_payload_ignores_non_actor_8_without_existing_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            previous_account = os.environ.get("DUTY_ACCOUNT")
+            previous_password = os.environ.get("DUTY_PASSWORD")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+
+                result = worker_gui.save_credential_sync_payload(
+                    {"actor_no": "9", "user_id": "user9", "password": "pass9"}
+                )
+                selected = load_synced_worker_credential()
+                synced_env_account = os.environ.get("DUTY_ACCOUNT")
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+                if previous_account is None:
+                    os.environ.pop("DUTY_ACCOUNT", None)
+                else:
+                    os.environ["DUTY_ACCOUNT"] = previous_account
+                if previous_password is None:
+                    os.environ.pop("DUTY_PASSWORD", None)
+                else:
+                    os.environ["DUTY_PASSWORD"] = previous_password
+
+        self.assertIsNone(result)
+        self.assertIsNone(selected)
+        self.assertNotEqual(synced_env_account, "user9")
+
     def test_selected_saved_credential_label_ignores_current_duty_account(self):
         label8 = worker_gui.credential_choice_label(DutyCredential(user_id="user8", password="pass8", actor_no="8"))
         label9 = worker_gui.credential_choice_label(DutyCredential(user_id="user9", password="pass9", actor_no="9"))
@@ -515,7 +626,17 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
         self.assertEqual(worker_gui.selected_saved_credential_label(saved), label8)
 
-    def test_persist_selected_saved_credential_updates_last_selected(self):
+    def test_locked_sync_credentials_only_lists_actor_8(self):
+        credentials = [
+            DutyCredential(user_id="user8", password="pass8", actor_no="8"),
+            DutyCredential(user_id="user9", password="pass9", actor_no="9"),
+        ]
+
+        locked = worker_gui.locked_sync_credentials(credentials)
+
+        self.assertEqual([credential.user_id for credential in locked], ["user8"])
+
+    def test_persist_selected_saved_credential_rejects_non_actor_8(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
             previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
@@ -532,7 +653,8 @@ class WorkerGuiEnvTests(unittest.TestCase):
                     }
                 )
 
-                worker_gui.persist_selected_saved_credential(DutyCredential(user_id="user9", password="pass9", actor_no="9"))
+                with self.assertRaises(ValueError):
+                    worker_gui.persist_selected_saved_credential(DutyCredential(user_id="user9", password="pass9", actor_no="9"))
                 selected = load_synced_worker_credential()
             finally:
                 if previous_path is None:
@@ -546,7 +668,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
         self.assertIsNotNone(selected)
         assert selected is not None
-        self.assertEqual(selected.user_id, "user9")
+        self.assertEqual(selected.user_id, "user8")
 
 
 if __name__ == "__main__":

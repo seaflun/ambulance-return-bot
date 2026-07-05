@@ -90,7 +90,7 @@ function Copy-UpdateTree {
         [string]$DestDir
     )
 
-    $skipDirs = @("logs", "runtime_outputs", "tmp", "temp", "cache", ".cache", "snapshots", "__pycache__", "artifacts")
+    $skipDirs = @("logs", "runtime_outputs", "tmp", "temp", "cache", ".cache", "local_data", "snapshots", "__pycache__", "artifacts")
     $alwaysSkipFiles = @(".env", "update_urls.json", "UPDATE_PACKAGE.bat")
     $slash = [string][char]92
     $sourceRoot = $SourceDir.TrimEnd([char]92) + $slash

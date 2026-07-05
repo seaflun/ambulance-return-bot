@@ -12,7 +12,7 @@
 
 1. 管理端更新專案後執行 `scripts\build_public_duty_package.ps1`。
 2. 預設更新來源是 `https://github.com/seaflun/ambulance-return-bot/releases/latest/download`。
-3. 建立 SinpoSmart - 救護Worker 專用 GitHub Release，並上傳 `ambulance-return-version.txt`、`ambulance-return-public-package.zip`、`ambulance-return-public-package.zip.sha256.txt`。
+3. 建立 SinpoSmart - 救護Worker 專用 GitHub Release，並上傳 `ambulance-return-version.txt`、`ambulance-return-public-package.zip`、`ambulance-return-public-package.zip.sha256.txt`、`update_package.ps1`。
 4. 之後按 `UPDATE_PACKAGE.bat` 即可從 GitHub latest release 比對版本、下載 zip、驗證 sha256、備份後更新。
 5. 若 GitHub repo 名稱不同，可在 `.env` 設定 `AMBULANCE_RETURN_RELEASE_BASE_URL` 覆蓋下載來源。
 

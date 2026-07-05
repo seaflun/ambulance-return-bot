@@ -77,7 +77,7 @@ function Copy-ZipStage {
         [string]$SourceDir,
         [string]$DestDir
     )
-    $skipDirs = @("artifacts", "logs", "tmp", "temp", "cache", ".cache", "__pycache__", ".pytest_cache")
+    $skipDirs = @("artifacts", "logs", "tmp", "temp", "cache", ".cache", "local_data", "__pycache__", ".pytest_cache")
     $skipFiles = @(".env", "update_urls.json")
     $sourceRoot = (Resolve-FullPath -Path $SourceDir).TrimEnd([char]92) + [string][char]92
     Get-ChildItem -LiteralPath $SourceDir -Recurse -File -Force | ForEach-Object {
@@ -160,7 +160,7 @@ Write-PackageText -RelativePath "README_公務電腦.txt" -Text @'
 
 1. 管理端更新專案後執行 `scripts\build_public_duty_package.ps1`。
 2. 預設更新來源是 `https://github.com/seaflun/ambulance-return-bot/releases/latest/download`。
-3. 建立 SinpoSmart - 救護Worker 專用 GitHub Release，並上傳 `ambulance-return-version.txt`、`ambulance-return-public-package.zip`、`ambulance-return-public-package.zip.sha256.txt`。
+3. 建立 SinpoSmart - 救護Worker 專用 GitHub Release，並上傳 `ambulance-return-version.txt`、`ambulance-return-public-package.zip`、`ambulance-return-public-package.zip.sha256.txt`、`update_package.ps1`。
 4. 之後按 `UPDATE_PACKAGE.bat` 即可從 GitHub latest release 比對版本、下載 zip、驗證 sha256、備份後更新。
 5. 若 GitHub repo 名稱不同，可在 `.env` 設定 `AMBULANCE_RETURN_RELEASE_BASE_URL` 覆蓋下載來源。
 
@@ -286,16 +286,79 @@ $taskName = "AmbulanceReturnWorker"
 $shortcutName = "AmbulanceReturnWorker.lnk"
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $wscript = Join-Path $env:WINDIR "System32\wscript.exe"
+$startupDisabledValues = @("0", "false", "no", "off")
 
-if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
-    throw "Cannot find startup target: $target"
+function Get-PackageEnvValue {
+    param([string]$Name)
+
+    $envPath = Join-Path $packageDir ".env"
+    if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
+        return ""
+    }
+    foreach ($line in Get-Content -LiteralPath $envPath -Encoding UTF8) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#")) {
+            continue
+        }
+        $parts = $trimmed.Split("=", 2)
+        if ($parts.Count -eq 2 -and $parts[0].Trim() -eq $Name) {
+            return $parts[1].Trim().Trim('"').Trim("'")
+        }
+    }
+    return ""
 }
 
-function Install-StartupFolderShortcut {
+function StartupLauncherEnabled {
+    $value = $env:WORKER_STARTUP_LAUNCHER_ENABLED
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = Get-PackageEnvValue -Name "WORKER_STARTUP_LAUNCHER_ENABLED"
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $true
+    }
+    return -not ($startupDisabledValues -contains $value.Trim().ToLowerInvariant())
+}
+
+function Get-StartupDir {
     $startupDir = [Environment]::GetFolderPath("Startup")
     if ([string]::IsNullOrWhiteSpace($startupDir)) {
         $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
     }
+    return $startupDir
+}
+
+function Remove-StartupFolderShortcut {
+    $shortcutPath = Join-Path (Get-StartupDir) $shortcutName
+    if ($WhatIf) {
+        Write-Host "Would remove startup folder shortcut: $shortcutPath"
+        return
+    }
+    if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+        Remove-Item -LiteralPath $shortcutPath -Force
+        Write-Host "Removed startup folder shortcut: $shortcutPath"
+    } else {
+        Write-Host "Startup folder shortcut already absent: $shortcutPath"
+    }
+}
+
+function Disable-StartupLaunchers {
+    Remove-StartupFolderShortcut
+    if ($WhatIf) {
+        Write-Host "Would unregister scheduled task: $taskName"
+    } else {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "Scheduled task disabled or absent: $taskName"
+    }
+    Write-Host "Startup launcher disabled by WORKER_STARTUP_LAUNCHER_ENABLED=false"
+}
+
+if (-not (StartupLauncherEnabled)) {
+    Disable-StartupLaunchers
+    exit 0
+}
+
+function Install-StartupFolderShortcut {
+    $startupDir = Get-StartupDir
     $shortcutPath = Join-Path $startupDir $shortcutName
 
     if ($WhatIf) {
@@ -317,6 +380,10 @@ function Install-StartupFolderShortcut {
     $shortcut.Save()
     Write-Host "Installed startup folder shortcut: $shortcutPath"
     Write-Host "Target: $target"
+}
+
+if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+    throw "Cannot find startup target: $target"
 }
 
 if (-not $SkipScheduledTask) {
@@ -609,7 +676,7 @@ function Copy-UpdateTree {
         [string]$DestDir
     )
 
-    $skipDirs = @("logs", "runtime_outputs", "tmp", "temp", "cache", ".cache", "snapshots", "__pycache__", "artifacts")
+    $skipDirs = @("logs", "runtime_outputs", "tmp", "temp", "cache", ".cache", "local_data", "snapshots", "__pycache__", "artifacts")
     $alwaysSkipFiles = @(".env", "update_urls.json", "UPDATE_PACKAGE.bat")
     $slash = [string][char]92
     $sourceRoot = $SourceDir.TrimEnd([char]92) + $slash
