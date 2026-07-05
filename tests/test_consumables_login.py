@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import consumables_login as consumables_login_module
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
+from ambulance_bot.duty_credentials import update_saved_credential_id_number
 from ambulance_bot.models import AmbulanceReturnRequest
 from consumables_login import (
     _assert_consumable_rows_match,
@@ -299,6 +301,45 @@ class ConsumablesLoginTests(unittest.TestCase):
                     os.environ.pop("ACS_PASSWORD", None)
                 else:
                     os.environ["ACS_PASSWORD"] = previous_password
+
+    def test_load_acs_credentials_auto_looks_up_and_remembers_synced_id_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+            os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+            try:
+                save_duty_automation_credentials(
+                    [
+                        {
+                            "actor_no": "8",
+                            "user_id": "tyfd01510",
+                            "password": "secret",
+                            "name": "曾彥綸",
+                        }
+                    ],
+                    last_selected="8",
+                )
+                calls = []
+
+                def fake_lookup():
+                    calls.append(True)
+                    update_saved_credential_id_number("tyfd01510", "B123017532")
+
+                with patch.object(consumables_login_module, "_lookup_synced_credential_id_number_for_acs", side_effect=fake_lookup):
+                    self.assertEqual(_load_acs_credentials(), ("B123017532", "secret"))
+                    self.assertEqual(_load_acs_credentials(), ("B123017532", "secret"))
+
+                self.assertEqual(len(calls), 1)
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
 
     def test_load_acs_credentials_ignores_legacy_env_override(self):
         previous_account = os.environ.get("ACS_ACCOUNT")

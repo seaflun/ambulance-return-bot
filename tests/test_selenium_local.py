@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import ambulance_bot.selenium_local as selenium_local_module
 from ambulance_bot.models import AmbulanceReturnRequest
@@ -21,6 +22,8 @@ from ambulance_bot.selenium_local import (
     _ensure_fuel_query_period,
     _fuel_card_labels,
     _fuel_query_period,
+    _id_number_from_cases_for_credential,
+    lookup_synced_credential_id_number,
     _open_disinfection_detail_for_case,
     _set_disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
@@ -39,7 +42,7 @@ from ambulance_bot.selenium_local import (
     _write_json_atomic,
     selenium_enabled,
 )
-from ambulance_bot.duty_credentials import save_credential_sync_payload, save_duty_automation_credentials
+from ambulance_bot.duty_credentials import load_synced_worker_credential, save_credential_sync_payload, save_duty_automation_credentials
 from ambulance_bot.duty_credentials import DutyCredential
 
 
@@ -861,6 +864,73 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertEqual(captured["preferred"], ["tyfd01212", "tyfd01510"])
         self.assertEqual(result.status, "needs_duty_login")
+
+    def test_id_number_from_cases_matches_synced_actor_and_name(self):
+        credential = DutyCredential(
+            user_id="tyfd01510",
+            password="pass8",
+            actor_no="8",
+            name="曾彥綸",
+        )
+        cases = [
+            {
+                "personnel_hidden_raw": "21番 張家和 S124774209\n8番 曾彥綸 B123017532",
+                "personnel_raw": "張家和、曾彥綸",
+            }
+        ]
+
+        self.assertEqual(_id_number_from_cases_for_credential(cases, credential), "B123017532")
+
+    def test_lookup_synced_credential_id_number_updates_saved_account_from_case_lookup(self):
+        previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+        previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+        original_query = selenium_local_module.query_duty_emergency_cases
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_duty_automation_credentials(
+                    [
+                        {
+                            "actor_no": "8",
+                            "name": "曾彥綸",
+                            "user_id": "tyfd01510",
+                            "password": "pass8",
+                        }
+                    ],
+                    last_selected="8",
+                )
+                selenium_local_module.query_duty_emergency_cases = lambda artifacts_dir, lookup_range="24h": SimpleNamespace(
+                    ok=True,
+                    status="cases_loaded",
+                    detail="loaded",
+                    cases=[
+                        {
+                            "personnel_hidden_raw": "8番 曾彥綸 B123017532",
+                            "personnel_raw": "曾彥綸",
+                        }
+                    ],
+                    path=Path(tmp) / "cases" / "latest.json",
+                )
+
+                result = lookup_synced_credential_id_number(Path(tmp))
+                selected = load_synced_worker_credential()
+        finally:
+            selenium_local_module.query_duty_emergency_cases = original_query
+            if previous_path is None:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+            else:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+            if previous_override is None:
+                os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+            else:
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.id_number, "B123017532")
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected.id_number, "B123017532")
 
     def test_duty_login_tries_next_candidate_after_failure(self):
         class FakeDriver:

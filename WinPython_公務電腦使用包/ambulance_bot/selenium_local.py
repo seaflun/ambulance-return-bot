@@ -21,7 +21,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITION_BY_KEY, SITE_DEFINITIONS
 from .chrome_startup import cleanup_worker_chrome_residue
-from .duty_credentials import load_duty_credential, load_recent_synced_duty_credential, load_synced_worker_credential
+from .duty_credentials import (
+    DutyCredential,
+    load_duty_credential,
+    load_recent_synced_duty_credential,
+    load_synced_worker_credential,
+    update_saved_credential_id_number,
+)
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .window_layout import apply_tile
 
@@ -49,6 +55,15 @@ class DutyCaseLookupResult:
     detail: str
     cases: list[dict[str, str]]
     path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class SyncedCredentialIdLookupResult:
+    ok: bool
+    status: str
+    detail: str
+    id_number: str = ""
+    output_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,6 +420,75 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
         _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"case_lookup {lookup_range}")
+
+
+def lookup_synced_credential_id_number(artifacts_dir: Path, lookup_range: str = "24h") -> SyncedCredentialIdLookupResult:
+    credential = load_synced_worker_credential()
+    if credential is None:
+        return SyncedCredentialIdLookupResult(False, "missing_synced_credential", "missing synced credential")
+    existing = str(credential.id_number or "").strip().upper()
+    if existing:
+        return SyncedCredentialIdLookupResult(True, "already_has_id_number", "synced credential already has id number", existing)
+
+    lookup = query_duty_emergency_cases(artifacts_dir, lookup_range=lookup_range)
+    output_path = getattr(lookup, "path", None)
+    if not lookup.ok:
+        return SyncedCredentialIdLookupResult(False, lookup.status, lookup.detail, output_path=output_path)
+
+    id_number = _id_number_from_cases_for_credential(getattr(lookup, "cases", []) or [], credential)
+    if not id_number:
+        return SyncedCredentialIdLookupResult(False, "id_number_not_found", "synced credential id number was not found in duty cases", output_path=output_path)
+
+    update_saved_credential_id_number(credential.user_id or credential.actor_no, id_number, name=credential.name)
+    return SyncedCredentialIdLookupResult(True, "id_number_saved", "synced credential id number saved", id_number, output_path)
+
+
+_ID_NUMBER_IN_TEXT_RE = re.compile(r"(?<![A-Z0-9])([A-Z][1289]\d{8})(?![A-Z0-9])", re.IGNORECASE)
+
+
+def _id_number_from_cases_for_credential(cases: list[dict[str, object]], credential: DutyCredential) -> str:
+    for case in cases:
+        for segment in _case_personnel_segments(case):
+            if not _segment_matches_credential(segment, credential):
+                continue
+            match = _ID_NUMBER_IN_TEXT_RE.search(segment)
+            if match:
+                return match.group(1).upper()
+    return ""
+
+
+def _case_personnel_segments(case: dict[str, object]) -> list[str]:
+    segments: list[str] = []
+    for key in ("personnel_hidden_raw", "personnel_raw", "personnel", "description"):
+        value = case.get(key)
+        if isinstance(value, list):
+            raw_values = value
+        else:
+            raw_values = [value]
+        for raw in raw_values:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            parts = [part.strip() for part in re.split(r"[\r\n,，、;；]+", text) if part.strip()]
+            segments.extend(parts or [text])
+    return segments
+
+
+def _segment_matches_credential(segment: str, credential: DutyCredential) -> bool:
+    text = str(segment or "").strip()
+    if not text:
+        return False
+    actor_no = str(credential.actor_no or "").strip()
+    if actor_no and re.search(rf"(?<!\d){re.escape(actor_no)}\s*(?:番|號)", text):
+        return True
+    name = str(credential.name or "").strip()
+    if name and name in text:
+        return True
+    display_name = str(credential.display_name or "").strip()
+    if display_name and display_name in text:
+        return True
+    user_id = str(credential.user_id or "").strip()
+    return bool(user_id and user_id.lower() in text.lower())
 
 
 def import_duty_case(artifacts_dir: Path, case_id: str) -> DutyCaseImportResult:

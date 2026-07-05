@@ -115,8 +115,32 @@ def _load_acs_credentials(task: dict[str, object] | AmbulanceReturnRequest | Non
         acs_account = credential.id_number.strip() or (credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else "")
         if acs_account and credential.password:
             return acs_account, credential.password
+        if credential.password:
+            _lookup_synced_credential_id_number_for_acs()
+            credential = load_synced_worker_credential()
+            if credential is not None:
+                acs_account = credential.id_number.strip() or (credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else "")
+                if acs_account and credential.password:
+                    return acs_account, credential.password
 
     raise RuntimeError("找不到一站通耗材帳密；請先在 worker GUI 同步含身分證字號的帳號。")
+
+
+def _lookup_synced_credential_id_number_for_acs() -> None:
+    try:
+        from ambulance_bot.selenium_local import lookup_synced_credential_id_number
+
+        artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
+        lookup_range = os.getenv("ACS_ID_LOOKUP_RANGE", "24h").strip() or "24h"
+        result = lookup_synced_credential_id_number(artifacts_dir, lookup_range=lookup_range)
+    except Exception as exc:
+        print(f"[consumables] synced id lookup failed: {exc}", flush=True)
+        return
+
+    if result.ok and result.id_number:
+        print(f"[consumables] synced id lookup saved id_number={result.id_number}", flush=True)
+    elif result.status != "already_has_id_number":
+        print(f"[consumables] synced id lookup skipped status={result.status}", flush=True)
 
 
 def _chrome_profile_dir(profile_name: str) -> Path:

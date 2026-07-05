@@ -451,7 +451,6 @@ class WorkerGui(ctk.CTk):
         )
         self.credential_combo.grid(row=1, column=1, sticky="ew", padx=(0, 16), pady=(0, 10))
         self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=300).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
-        self._button(credentials, "匯入同步", self._import_credential_sync_file, "primary").grid(row=3, column=0, columnspan=2, sticky="sew", padx=16, pady=(0, 16))
 
         version_card = self._card(top_area, "版本")
         version_card.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(14, 0))
@@ -894,7 +893,7 @@ class WorkerGui(ctk.CTk):
             self.credential_combo.configure(values=labels)
         if not labels:
             self.credential_choice.set("")
-            self.credential_sync_status.set("目前沒有 8 號同步帳號，請按「匯入同步」。")
+            self.credential_sync_status.set("目前沒有 8 號同步帳號，請先由值班台登入同步帳號。")
             return
 
         selected = selected_saved_credential_label(self.saved_credentials)

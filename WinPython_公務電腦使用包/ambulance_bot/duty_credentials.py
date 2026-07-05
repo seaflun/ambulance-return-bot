@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Iterable
 
 
+ID_NUMBER_RE = re.compile(r"^[A-Z][1289]\d{8}$", re.IGNORECASE)
+
+
 @dataclass(frozen=True, slots=True)
 class DutyCredential:
     user_id: str
@@ -227,6 +230,63 @@ def set_last_selected_duty_automation_credential(identifier: str, path: Path | N
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return source
+
+
+def update_saved_credential_id_number(
+    identifier: str,
+    id_number: str,
+    name: str = "",
+    path: Path | None = None,
+) -> Path:
+    selected = str(identifier or "").strip()
+    normalized_id_number = _normalize_id_number(id_number)
+    if not selected:
+        raise ValueError("credential identifier is required")
+    if not normalized_id_number:
+        raise ValueError("valid id_number is required")
+
+    source = path or saved_login_path()
+    payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+    accounts = payload.get("accounts")
+    if isinstance(accounts, list):
+        account = next(
+            (item for item in accounts if isinstance(item, dict) and _account_matches_identifier(item, selected)),
+            None,
+        )
+        if account is None:
+            raise ValueError(f"saved credential not found: {selected}")
+        account["id_number"] = normalized_id_number
+        if name and not str(account.get("name", "") or "").strip():
+            account["name"] = str(name or "").strip()
+    elif _account_matches_identifier(payload, selected):
+        payload["id_number"] = normalized_id_number
+        if name and not str(payload.get("name", "") or "").strip():
+            payload["name"] = str(name or "").strip()
+    else:
+        raise ValueError("saved credential file does not contain synced accounts")
+
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return source
+
+
+def _normalize_id_number(id_number: str) -> str:
+    value = str(id_number or "").strip().upper()
+    return value if ID_NUMBER_RE.fullmatch(value) else ""
+
+
+def _account_matches_identifier(account: dict, identifier: str) -> bool:
+    selected = str(identifier or "").strip()
+    if not selected:
+        return False
+    identities = {
+        str(account.get("user_id", "") or "").strip(),
+        str(account.get("actor_no", "") or "").strip(),
+        str(account.get("id_number", "") or "").strip(),
+        str(account.get("name", "") or "").strip(),
+        str(account.get("display_name", "") or "").strip(),
+    }
+    return selected in identities
 
 
 def _select_account(accounts: list[object], last_selected: str) -> dict | None:
