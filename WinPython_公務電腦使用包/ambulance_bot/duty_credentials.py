@@ -472,9 +472,19 @@ def _upsert_account(account_list: list[dict], updated: dict[str, str]) -> None:
     for index, account in enumerate(account_list):
         identity = str(account.get("user_id", "") or account.get("actor_no", "") or "").strip()
         if identity == user_id or (actor_no and identity == actor_no):
-            account_list[index] = updated
+            account_list[index] = _merge_existing_account_fields(account, updated)
             return
     account_list.append(updated)
+
+
+def _merge_existing_account_fields(existing: dict, updated: dict[str, str]) -> dict[str, str]:
+    merged = dict(updated)
+    for key in ("actor_no", "display_name", "name", "id_number", "duty_password_dpapi"):
+        current = str(merged.get(key, "") or "").strip()
+        previous = str(existing.get(key, "") or "").strip()
+        if not current and previous:
+            merged[key] = previous
+    return merged
 
 
 def _read_saved_login(path: Path) -> dict:

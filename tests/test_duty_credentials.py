@@ -140,6 +140,48 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(credentials[0].name, "曾彥綸")
         self.assertEqual(credentials[0].id_number, "B123017532")
 
+    def test_sync_update_preserves_existing_identity_fields_when_incoming_values_are_blank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+
+            save_duty_automation_credentials(
+                [
+                    {
+                        "actor_no": "8",
+                        "user_id": "tyfd01510",
+                        "password": "old-pass",
+                        "display_name": "8番 曾彥綸",
+                        "name": "曾彥綸",
+                        "id_number": "B123017532",
+                    }
+                ],
+                last_selected="tyfd01510",
+                path=path,
+            )
+            save_duty_automation_credentials(
+                [
+                    {
+                        "actor_no": "8",
+                        "user_id": "tyfd01510",
+                        "password": "new-pass",
+                        "display_name": "",
+                        "name": "",
+                        "id_number": "",
+                    }
+                ],
+                last_selected="tyfd01510",
+                path=path,
+            )
+
+            credential = load_synced_worker_credential(path)
+
+        self.assertIsNotNone(credential)
+        assert credential is not None
+        self.assertEqual(credential.password, "new-pass")
+        self.assertEqual(credential.display_name, "8番 曾彥綸")
+        self.assertEqual(credential.name, "曾彥綸")
+        self.assertEqual(credential.id_number, "B123017532")
+
     def test_credential_sync_accounts_from_payload_selects_requested_account(self):
         payload = {
             "user_id": "user9",
