@@ -125,6 +125,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return "worker_api"
     if "fuel card not found" in text or "fuel register button not found" in text:
         return "vehicle_not_found"
+    if "fuel period mismatch" in text:
+        return "fuel_period"
     if "captcha" in text or "驗證碼" in raw_detail or "sso" in text or "login" in text or "登入" in raw_detail or "帳密" in raw_detail:
         return "login"
     if (
@@ -178,6 +180,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         if site_key == "fuel_record":
             return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "開啟登打油耗")
         return "填寫返隊時間與里程"
+    if category == "fuel_period":
+        return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "開啟登打油耗")
     if category == "query":
         return "查詢案件"
     if category == "validation":
@@ -235,6 +239,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "case_not_closed": "案件可能尚未在救護平板結案，耗材或消毒明細尚未產生。",
         "case_detail": "找到清單後無法開啟該案件的明細頁。",
         "vehicle_not_found": "頁面內找不到任務指定的救護車。",
+        "fuel_period": "加油頁月份與任務加油月份不一致，油卡清單尚未切到任務月份。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
         "save": "填寫後的儲存動作未完成或未確認成功。",
         "query": "查詢案件時沒有取得可用結果。",
@@ -261,6 +266,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "保留目前清單畫面，先人工開啟明細；若仍無法開啟，回報該站頁面變更。"
     if category == "vehicle_not_found":
         return "確認任務車號與系統車輛名稱一致，必要時到救護車設定修正後重試。"
+    if category == "fuel_period":
+        return "將加油頁月份切到任務月份後重新查詢油卡；新版 Worker 會自動切換月份後再登打。"
     if category == "validation":
         return "先不要儲存；檢查畫面是否仍有舊資料或欄位對應錯誤，修正後再重試。"
     if category == "save":

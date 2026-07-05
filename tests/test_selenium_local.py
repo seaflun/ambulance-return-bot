@@ -18,7 +18,9 @@ from ambulance_bot.selenium_local import (
     _disinfection_query_date,
     _duty_login_credential_attempts,
     _ensure_duty_login,
+    _ensure_fuel_query_period,
     _fuel_card_labels,
+    _fuel_query_period,
     _open_disinfection_detail_for_case,
     _set_disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
@@ -675,6 +677,43 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(driver.labels, ["BGV-2310", "新坡91"])
         self.assertIn("登錄", driver.script)
         self.assertIn("送出審核", driver.script)
+
+    def test_fuel_query_period_switches_to_task_month(self):
+        class FakeDriver:
+            def __init__(self):
+                self.period = "2026/06"
+                self.scripts: list[str] = []
+                self.clicked_query = False
+
+            def execute_script(self, script: str, *args):
+                self.scripts.append(script)
+                if "FuelUseYM" in script and "clickQuery" in script:
+                    self.period = args[0]
+                    self.clicked_query = True
+                    return {"changed": True, "clicked": True, "value": self.period}
+                if "FuelUseYM" in script:
+                    return self.period
+                return None
+
+        driver = FakeDriver()
+
+        self.assertEqual(_ensure_fuel_query_period(driver, "2026/07"), "2026/07")
+        self.assertTrue(driver.clicked_query)
+
+    def test_fuel_query_period_keeps_matching_month(self):
+        class FakeDriver:
+            def __init__(self):
+                self.period = "2026/07"
+                self.scripts: list[str] = []
+
+            def execute_script(self, script: str, *args):
+                self.scripts.append(script)
+                return self.period
+
+        driver = FakeDriver()
+
+        self.assertEqual(_ensure_fuel_query_period(driver, "2026/07"), "2026/07")
+        self.assertEqual(_fuel_query_period(driver), "2026/07")
 
     def test_duty_work_log_login_uses_personnel_accounts(self):
         class FakeDriver:

@@ -1332,7 +1332,7 @@ def _prepare_fuel_record_form(
     if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page before fuel record query")
     target_period = f"{fuel.date[:4]}/{fuel.date[4:6]}"
-    current_period = _fuel_query_period(driver)
+    current_period = _ensure_fuel_query_period(driver, target_period)
     if current_period and current_period != target_period:
         raise WebDriverException(f"fuel period mismatch: page={current_period} task={target_period}")
     _click_fuel_card_register(driver, _fuel_card_labels(request.vehicle, artifacts_dir))
@@ -1356,6 +1356,73 @@ def _fuel_query_period(driver: webdriver.Chrome) -> str:
         ).strip()
     except WebDriverException:
         return ""
+
+
+def _ensure_fuel_query_period(driver: webdriver.Chrome, target_period: str) -> str:
+    current_period = _fuel_query_period(driver)
+    if not current_period or current_period == target_period:
+        return current_period
+
+    driver.execute_script(
+        """
+        const targetPeriod = arguments[0];
+        const compactTarget = targetPeriod.replace('/', '');
+        const el = document.getElementById('FuelUseYM');
+        const textOf = node => [node?.innerText, node?.value, node?.textContent, node?.title, node?.id, node?.name]
+          .map(value => String(value || '')).join(' ');
+        const dispatch = node => {
+          for (const type of ['input', 'change', 'blur']) {
+            node.dispatchEvent(new Event(type, {bubbles: true}));
+          }
+        };
+        const clickQuery = () => {
+          const controls = Array.from(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));
+          const target = controls.find(node => {
+            if (!node || node.disabled) return false;
+            const text = textOf(node);
+            return text.includes('查詢') || text.includes('Query') || text.includes('_btnQuery') || text.includes('btnQuery');
+          });
+          if (!target) return false;
+          target.scrollIntoView({block: 'center', inline: 'center'});
+          target.click();
+          return true;
+        };
+        if (!el) return {changed: false, clicked: false, value: ''};
+        if (el.tagName === 'SELECT') {
+          const option = Array.from(el.options || []).find(item => {
+            const text = [item.value, item.textContent].map(value => String(value || '')).join(' ');
+            return text.includes(targetPeriod) || text.includes(compactTarget);
+          });
+          if (option) el.value = option.value;
+        } else {
+          el.value = targetPeriod;
+        }
+        dispatch(el);
+        if (window.jQuery) {
+          try {
+            const field = window.jQuery(el);
+            field.val(targetPeriod).trigger('input').trigger('change').trigger('blur');
+            for (const widgetName of ['kendoDatePicker', 'kendoDateInput', 'kendoMaskedTextBox']) {
+              const widget = field.data(widgetName);
+              if (!widget || typeof widget.value !== 'function') continue;
+              try { widget.value(targetPeriod); } catch (_) {}
+              try { widget.value(new Date(Number(targetPeriod.slice(0, 4)), Number(targetPeriod.slice(5, 7)) - 1, 1)); } catch (_) {}
+              try { widget.trigger && widget.trigger('change'); } catch (_) {}
+            }
+          } catch (_) {}
+        }
+        return {changed: true, clicked: clickQuery(), value: String(el.value || '').trim()};
+        """,
+        target_period,
+    )
+    time.sleep(1)
+
+    deadline = time.monotonic() + 8
+    latest_period = _fuel_query_period(driver)
+    while latest_period != target_period and time.monotonic() < deadline:
+        time.sleep(0.5)
+        latest_period = _fuel_query_period(driver)
+    return latest_period
 
 
 def _fuel_card_labels(vehicle: str, artifacts_dir: Path | None = None) -> list[str]:

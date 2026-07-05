@@ -29,6 +29,19 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["failure_stage"], "開啟登打油耗")
         self.assertNotIn("登入", payload["failure_reason"])
 
+    def test_fuel_period_mismatch_points_to_fuel_query_stage(self):
+        payload = diagnostic_payload(
+            "fuel_record",
+            "fuel_record_failed",
+            "登入帳號：加油=司機帳號優先。加油紀錄操作失敗：Message: fuel period mismatch: page=2026/06 task=2026/07",
+        )
+
+        self.assertEqual(payload["exception_type"], "fuel_period")
+        self.assertEqual(payload["failure_stage"], "開啟登打油耗")
+        self.assertIn("月份", payload["failure_reason"])
+        self.assertIn("自動切換月份", payload["next_action"])
+        self.assertNotIn("登入", payload["failure_reason"])
+
     def test_consumable_missing_case_row_points_to_tablet_closure(self):
         payload = diagnostic_payload(
             "consumables",
