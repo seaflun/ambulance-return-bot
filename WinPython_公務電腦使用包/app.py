@@ -70,6 +70,7 @@ runner = TaskRunner(artifacts_dir, store=store)
 desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 _local_case_lookup_thread_lock = threading.Lock()
 _local_case_lookup_thread: threading.Thread | None = None
+_case_lookup_start_error = ""
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
 SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"]
 SITE_SHORT_NAMES = {
@@ -131,13 +132,21 @@ def new_task():
 
 @app.post("/cases/query")
 def query_cases():
+    global _case_lookup_start_error
+
     lookup_range = "24h"
     source = case_lookup_source_label(request.host)
     mode = effective_task_execution_mode()
-    write_case_lookup_request(lookup_range, source=source, mode=mode)
-    print(f"[case_lookup] query requested host={request.host} source={source} range={lookup_range} mode={mode}", flush=True)
-    if mode == "desktop_fast":
-        start_local_case_lookup(lookup_range)
+    try:
+        write_case_lookup_request(lookup_range, source=source, mode=mode)
+        print(f"[case_lookup] query requested host={request.host} source={source} range={lookup_range} mode={mode}", flush=True)
+        if mode == "desktop_fast":
+            start_local_case_lookup(lookup_range)
+    except (OSError, RuntimeError) as exc:
+        _case_lookup_start_error = f"案件查詢啟動失敗：{exc}。請按「修復 Chrome」或重新啟動 Worker 後再試。"
+        print(f"[case_lookup] startup failed host={request.host} source={source} range={lookup_range} mode={mode} error={exc}", flush=True)
+    else:
+        _case_lookup_start_error = ""
     return redirect(url_for("new_task"))
 
 
@@ -2113,6 +2122,14 @@ def prepared_case_lookup() -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
     cases = case_lookup.get("cases") or []
+    if _case_lookup_start_error:
+        case_lookup["detail"] = _case_lookup_start_error
+        case_lookup["is_running"] = False
+        case_lookup["cases"] = cases
+        case_lookup["case_count"] = len(cases)
+        case_lookup["debug_artifacts"] = case_lookup_debug_artifacts()
+        return case_lookup
+
     detail = str(case_lookup.get("detail") or "").strip()
     if detail:
         detail = detail.replace("緊急救護案件", "救護、火災案件")

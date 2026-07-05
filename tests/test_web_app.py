@@ -53,6 +53,7 @@ class WebAppTests(unittest.TestCase):
         self.original_task_execution_mode = os.environ.get("TASK_EXECUTION_MODE")
         self.original_public_pc_report_enabled = os.environ.get("PUBLIC_PC_REPORT_ENABLED")
         self.original_start_local_case_lookup = app_module.start_local_case_lookup
+        self.original_write_case_lookup_request = app_module.write_case_lookup_request
         self.original_local_host_candidates = app_module.local_host_candidates
         self.original_query_duty_emergency_cases = selenium_local_module.query_duty_emergency_cases
         os.environ["WORKER_TOKEN"] = ""
@@ -71,6 +72,7 @@ class WebAppTests(unittest.TestCase):
         app_module.store = self.store
         app_module.runner = TaskRunner(Path(self.tmp.name), store=self.store)
         app_module.desktop_runner = FakeDesktopRunner(self.store)
+        app_module._case_lookup_start_error = ""
         app_module.app.config.update(TESTING=True)
         self.client = app_module.app.test_client()
 
@@ -95,7 +97,9 @@ class WebAppTests(unittest.TestCase):
         else:
             os.environ["PUBLIC_PC_REPORT_ENABLED"] = self.original_public_pc_report_enabled
         app_module.start_local_case_lookup = self.original_start_local_case_lookup
+        app_module.write_case_lookup_request = self.original_write_case_lookup_request
         app_module.local_host_candidates = self.original_local_host_candidates
+        app_module._case_lookup_start_error = ""
         selenium_local_module.query_duty_emergency_cases = self.original_query_duty_emergency_cases
         self._restore_env("CREDENTIAL_SYNC_TOKEN", self.original_credential_sync_token)
         self._restore_env("CREDENTIAL_SYNC_TTL_SECONDS", self.original_credential_sync_ttl)
@@ -1805,6 +1809,20 @@ class WebAppTests(unittest.TestCase):
         request_payload = app_module.read_case_lookup_request()
         self.assertEqual(request_payload["lookup_range"], "24h")
 
+    def test_query_cases_handles_request_write_failure(self):
+        def fail_write(lookup_range: str, source: str = "", mode: str = "worker_queue") -> dict:
+            raise OSError("request path denied")
+
+        app_module.write_case_lookup_request = fail_write
+
+        response = self.client.post("/cases/query", follow_redirects=False)
+        body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/app")
+        self.assertIn("案件查詢啟動失敗", body)
+        self.assertIn("request path denied", body)
+
     def test_app_page_auto_refreshes_while_case_lookup_is_running(self):
         cases_dir = app_module.artifacts_dir / "cases"
         cases_dir.mkdir(parents=True)
@@ -1943,6 +1961,21 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(calls, ["24h"])
+
+    def test_localhost_query_cases_handles_thread_start_failure(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+
+        def fail_start(lookup_range: str) -> None:
+            raise RuntimeError("cannot start local lookup")
+
+        app_module.start_local_case_lookup = fail_start
+
+        response = self.client.post("/cases/query", follow_redirects=False)
+        body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("案件查詢啟動失敗", body)
+        self.assertIn("cannot start local lookup", body)
 
     def test_local_ip_query_cases_starts_local_lookup_when_fast_mode_auto(self):
         calls = []
