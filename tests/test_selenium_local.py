@@ -566,6 +566,45 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(calls["sleep"], [2])
         self.assertEqual(cleanups, [(options, "local selenium")])
 
+    def test_local_driver_retries_oserror_invalid_argument(self):
+        class FakeDriver:
+            pass
+
+        calls: dict[str, object] = {"count": 0, "sleep": []}
+        original_webdriver_chrome = selenium_local_module.webdriver.Chrome
+        original_sleep = selenium_local_module.time.sleep
+        original_cleanup = selenium_local_module.cleanup_worker_chrome_residue
+        original_attempts = os.environ.get("SELENIUM_LOCAL_SESSION_ATTEMPTS")
+        cleanups = []
+        options = object()
+        try:
+            os.environ["SELENIUM_LOCAL_SESSION_ATTEMPTS"] = "2"
+
+            def fake_chrome(options=None):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise OSError(22, "Invalid argument")
+                return FakeDriver()
+
+            selenium_local_module.webdriver.Chrome = fake_chrome
+            selenium_local_module.time.sleep = lambda seconds: calls["sleep"].append(seconds)
+            selenium_local_module.cleanup_worker_chrome_residue = lambda opts, label="Chrome": cleanups.append((opts, label)) or 1
+
+            result = _create_local_driver_with_retry(options)
+        finally:
+            selenium_local_module.webdriver.Chrome = original_webdriver_chrome
+            selenium_local_module.time.sleep = original_sleep
+            selenium_local_module.cleanup_worker_chrome_residue = original_cleanup
+            if original_attempts is None:
+                os.environ.pop("SELENIUM_LOCAL_SESSION_ATTEMPTS", None)
+            else:
+                os.environ["SELENIUM_LOCAL_SESSION_ATTEMPTS"] = original_attempts
+
+        self.assertIsInstance(result, FakeDriver)
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(calls["sleep"], [2])
+        self.assertEqual(cleanups, [(options, "local selenium")])
+
     def test_case_lookup_closes_driver_after_success(self):
         class FakeDriver:
             def implicitly_wait(self, seconds: int) -> None:

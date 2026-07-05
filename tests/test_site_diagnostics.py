@@ -12,6 +12,18 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("驗證碼", payload["next_action"])
         self.assertEqual(payload["exception_type"], "login")
 
+    def test_errno_22_oserror_points_to_chrome_start_stage(self):
+        payload = diagnostic_payload(
+            "consumables",
+            "consumables_failed",
+            "[Errno 22] Invalid argument",
+            OSError(22, "Invalid argument"),
+        )
+
+        self.assertEqual(payload["failure_stage"], "啟動 Chrome")
+        self.assertIn("Chrome", payload["failure_reason"])
+        self.assertEqual(payload["exception_type"], "OSError")
+
     def test_vehicle_not_found_points_to_mileage_fill_stage(self):
         payload = diagnostic_payload("vehicle_mileage", "vehicle_mileage_failed", "vehicle not found: 新坡91")
 

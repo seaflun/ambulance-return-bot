@@ -701,10 +701,12 @@ def _create_local_driver_with_retry(options: Options) -> webdriver.Chrome:
             if attempts > 1:
                 print(f"[selenium] creating local chrome session attempt {attempt}/{attempts}", flush=True)
             return webdriver.Chrome(options=options)
-        except WebDriverException as exc:
+        except (WebDriverException, OSError) as exc:
             last_error = exc
-            if not _is_local_chrome_startup_error(exc) or attempt >= attempts:
+            if not _is_local_chrome_startup_error(exc):
                 raise
+            if attempt >= attempts:
+                break
             print(f"[selenium] local chrome session attempt {attempt} failed: {_short_webdriver_error(exc)}", flush=True)
             cleanup_worker_chrome_residue(options, "local selenium")
             time.sleep(2)
@@ -712,6 +714,8 @@ def _create_local_driver_with_retry(options: Options) -> webdriver.Chrome:
 
 
 def _is_local_chrome_startup_error(exc: Exception) -> bool:
+    if _is_invalid_argument_oserror(exc):
+        return True
     message = str(exc).lower()
     startup_markers = (
         "from chrome not reachable",
@@ -720,6 +724,12 @@ def _is_local_chrome_startup_error(exc: Exception) -> bool:
         "devtoolsactiveport file doesn't exist",
     )
     return any(marker in message for marker in startup_markers)
+
+
+def _is_invalid_argument_oserror(exc: Exception) -> bool:
+    if not isinstance(exc, OSError):
+        return False
+    return getattr(exc, "errno", None) == 22 or "invalid argument" in str(exc).lower()
 
 
 def _short_webdriver_error(exc: Exception | None) -> str:

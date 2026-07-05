@@ -38,7 +38,7 @@ def create_chrome_driver_with_retry(options: Options, label: str = "Chrome") -> 
             if attempts > 1:
                 print(f"[chrome] starting {label} attempt {attempt}/{attempts}", flush=True)
             return webdriver.Chrome(options=options)
-        except WebDriverException as exc:
+        except (WebDriverException, OSError) as exc:
             last_error = exc
             if not _is_chrome_startup_error(exc) or attempt >= attempts:
                 break
@@ -67,8 +67,16 @@ def cleanup_worker_chrome_residue(options: Options, label: str = "Chrome") -> in
 
 
 def _is_chrome_startup_error(exc: Exception) -> bool:
+    if _is_invalid_argument_oserror(exc):
+        return True
     message = str(exc).lower()
     return any(marker in message for marker in STARTUP_ERROR_MARKERS)
+
+
+def _is_invalid_argument_oserror(exc: Exception) -> bool:
+    if not isinstance(exc, OSError):
+        return False
+    return getattr(exc, "errno", None) == 22 or "invalid argument" in str(exc).lower()
 
 
 def _short_error(exc: Exception | None) -> str:

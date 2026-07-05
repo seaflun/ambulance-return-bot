@@ -119,6 +119,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return ""
     if "prefilled" in status or "ready" in status or "captcha" in status or "未按儲存" in raw_detail:
         return "waiting_confirmation"
+    if _is_invalid_argument_oserror(exception, text):
+        return "chrome_session"
     if "chrome" in text or "devtoolsactiveport" in text or "session not created" in text or "not reachable" in text:
         return "chrome_session"
     if "讀取任務狀態失敗" in raw_detail or "worker api" in text or "http 403" in text or "nas" in text:
@@ -152,6 +154,15 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
     if "failed" in status or "error" in status or exception is not None:
         return "unknown"
     return ""
+
+
+def _is_invalid_argument_oserror(exception: BaseException | None, text: str) -> bool:
+    if isinstance(exception, OSError):
+        if getattr(exception, "errno", None) == 22:
+            return True
+        if "invalid argument" in str(exception).lower():
+            return True
+    return "[errno 22]" in text and "invalid argument" in text
 
 
 def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
