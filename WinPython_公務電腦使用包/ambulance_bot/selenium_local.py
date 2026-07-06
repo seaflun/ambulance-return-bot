@@ -20,7 +20,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITION_BY_KEY, SITE_DEFINITIONS
-from .chrome_startup import cleanup_worker_chrome_residue
+from .chrome_startup import cleanup_worker_chrome_residue, schedule_driver_auto_close
 from .duty_credentials import (
     DutyCredential,
     load_duty_credential,
@@ -29,6 +29,7 @@ from .duty_credentials import (
     update_saved_credential_id_number,
 )
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
+from .profile_paths import cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
 from .window_layout import apply_tile
 
 
@@ -38,6 +39,27 @@ EMS_DISINFECTION_AP = "wap119.RPS64101014"
 DUTY_WORK_LOG_AP = "wap119.RPS04060"
 CASE_LOOKUP_DEBUGGER_PORT = 9223
 _SELENIUM_SESSION_LOCK = threading.Lock()
+_GENERATED_SELENIUM_PROFILE_NAMES = {
+    "chrome_profile",
+    "case_lookup_profile",
+    "duty_work_log_profile",
+    "vehicle_mileage_profile",
+    "fuel_record_profile",
+    "consumables_profile",
+    "disinfection_profile",
+    "fuel_record_probe",
+    "probe_vehicle_delete_location",
+}
+_GENERATED_SELENIUM_PROFILE_PREFIXES = (
+    "case_lookup_profile_",
+    "duty_work_log_profile_",
+    "vehicle_mileage_profile_",
+    "fuel_record_profile_",
+    "consumables_profile_",
+    "disinfection_profile_",
+    "acs_login_test_",
+)
+_CHROME_PROFILE_LOCK_NAMES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +129,7 @@ def _save_disinfection_probe_enabled() -> bool:
 def run_local_selenium_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
-    profile_name: str = "chrome_profile",
+    profile_name: str = "duty_work_log_profile",
     debugger_port: int | None = None,
     use_session_lock: bool = True,
     tile_name: str = "",
@@ -165,7 +187,7 @@ def run_vehicle_mileage_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
     existing_driver: webdriver.Chrome | None = None,
-    profile_name: str = "chrome_profile",
+    profile_name: str = "vehicle_mileage_profile",
     debugger_port: int | None = None,
     use_session_lock: bool = True,
     tile_name: str = "",
@@ -220,7 +242,7 @@ def run_fuel_record_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
     existing_driver: webdriver.Chrome | None = None,
-    profile_name: str = "chrome_profile",
+    profile_name: str = "fuel_record_profile",
     debugger_port: int | None = None,
     use_session_lock: bool = True,
     tile_name: str = "",
@@ -274,7 +296,7 @@ def run_disinfection_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
     existing_driver: webdriver.Chrome | None = None,
-    profile_name: str = "chrome_profile",
+    profile_name: str = "disinfection_profile",
     debugger_port: int | None = None,
     use_session_lock: bool = True,
     tile_name: str = "",
@@ -648,7 +670,7 @@ def _quit_driver(driver: webdriver.Chrome | None) -> None:
 
 def _create_driver(
     artifacts_dir: Path,
-    profile_name: str = "chrome_profile",
+    profile_name: str = "duty_work_log_profile",
     debugger_port: int | None = None,
     attach_existing: bool = False,
     headless: bool = False,
@@ -678,6 +700,7 @@ def _create_driver(
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    _cleanup_stale_profiles_for_driver(profile_name)
     user_data_dir = _profile_dir(profile_name)
     options.add_argument(f"--user-data-dir={user_data_dir}")
     options.add_argument("--no-first-run")
@@ -687,6 +710,8 @@ def _create_driver(
     if not headless and os.getenv("SELENIUM_DETACH", "true").strip().lower() not in {"0", "false", "no", "off"}:
         options.add_experimental_option("detach", True)
     driver = _create_local_driver_with_retry(options)
+    if not headless:
+        schedule_driver_auto_close(driver, profile_name)
     page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
     driver.set_page_load_timeout(page_timeout)
     driver.set_script_timeout(page_timeout)
@@ -810,19 +835,39 @@ def _connect_existing_chrome(debugger_port: int) -> webdriver.Chrome | None:
         return None
 
 
+def cleanup_stale_selenium_profiles(
+    profile_root: Path | None = None,
+    max_age_hours: float | None = None,
+    skip_profile_names: set[str] | None = None,
+) -> list[Path]:
+    return cleanup_stale_runtime_profiles(profile_root, max_age_hours, skip_profile_names=skip_profile_names)
+
+
+def _cleanup_stale_profiles_for_driver(profile_name: str) -> None:
+    cleanup_stale_selenium_profiles(runtime_profile_root(), skip_profile_names={profile_name})
+
+
+def _selenium_profile_cleanup_max_age_hours() -> float:
+    try:
+        return max(float(os.getenv("SELENIUM_PROFILE_CLEANUP_MAX_AGE_HOURS", "4")), 0.0)
+    except ValueError:
+        return 4.0
+
+
+def _is_generated_selenium_profile(profile_name: str) -> bool:
+    return profile_name in _GENERATED_SELENIUM_PROFILE_NAMES or profile_name.startswith(_GENERATED_SELENIUM_PROFILE_PREFIXES)
+
+
+def _profile_has_active_lock(profile_dir: Path) -> bool:
+    return any((profile_dir / name).exists() for name in _CHROME_PROFILE_LOCK_NAMES)
+
+
+def _profile_root() -> Path:
+    return runtime_profile_root()
+
+
 def _profile_dir(profile_name: str) -> Path:
-    configured = os.getenv("CHROME_PROFILE_DIR", "").strip()
-    if configured:
-        configured_path = Path(os.path.expandvars(configured)).expanduser().resolve()
-        path = configured_path if profile_name == "chrome_profile" else configured_path.parent / profile_name
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-    root = Path(os.getenv("SELENIUM_PROFILE_ROOT") or os.getenv("LOCALAPPDATA") or Path.home())
-    profile_root = root / "ambulance_return_bot"
-    profile_root.mkdir(parents=True, exist_ok=True)
-    path = profile_root / profile_name
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return runtime_profile_dir(profile_name)
 
 
 def _open_duty_work_log_case_picker(

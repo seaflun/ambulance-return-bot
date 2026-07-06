@@ -31,6 +31,9 @@ The old `I:\我的雲端硬碟\專案\IOS` path is historical only. Do not intro
 - NAS runs the Flask task center only.
 - The public-duty Windows PC runs Chrome/Selenium, the local web app, worker GUI, background case lookup, and four-site entry.
 - Do not move portal credentials, Chrome profiles, task JSON, screenshots, logs, `.env`, or generated artifacts into tracked files or release assets.
+- Four-site automation must log in from saved worker credentials or local `.env` credentials. Do not make a fixed `chrome_profile` folder a required part of the flow.
+- Use `SELENIUM_PROFILE_ROOT` as the runtime cache root for generated Selenium profiles; `CHROME_PROFILE_DIR` is legacy compatibility only.
+- Keep stale generated runtime profiles auto-cleanable and keep opened entry pages auto-closable after `WORKER_BROWSER_AUTO_CLOSE_SECONDS`.
 - Keep `.env` local and untracked. Commit only `.env.example` when defaults change.
 - Protected-site CAPTCHA and final-submit boundaries remain human-in-the-loop unless the user explicitly approves otherwise.
 

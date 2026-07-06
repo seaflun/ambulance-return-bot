@@ -39,7 +39,7 @@ CASE_LOOKUP_SCHEDULER_ENABLED=false
 WORKER_TOKEN=同公務電腦worker
 ```
 
-不要把四站帳密、OpenAI API key、Chrome profile 放 NAS `.env`。
+不要把四站帳密、OpenAI API key、runtime profiles 放 NAS `.env`。
 
 ## DSM Container Manager
 
@@ -62,7 +62,7 @@ WORKER_POLL_SECONDS=10
 CASE_LOOKUP_INTERVAL_SECONDS=300
 WORKER_USE_LOCAL_CHROME=true
 CHROME_PROFILE_EMAIL=sinpo666@gmail.com
-CHROME_PROFILE_DIR=C:\Users\User\AppData\Local\ambulance_return_bot\chrome_profile
+SELENIUM_PROFILE_ROOT=C:\Users\User\AppData\Local\ambulance_return_bot
 WORKER_CHROME_DEBUGGER_PORT=9223
 ```
 
@@ -80,7 +80,7 @@ run_worker_forever.vbs
 run_worker_forever.bat
 ```
 
-啟動後會開 Windows worker 程式視窗。視窗會同時啟動背景 worker，並提供四個入口按鈕讓你測試各站登入與 Google Password Manager。
+啟動後會開 Windows worker 程式視窗。視窗會同時啟動背景 worker，並提供入口按鈕測試各站登入與 saved worker credentials。
 
 在個人電腦測試時，如果不在公務內網，可以在視窗中切換成 Tailscale：
 

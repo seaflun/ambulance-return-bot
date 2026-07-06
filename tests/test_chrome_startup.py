@@ -182,6 +182,74 @@ class ChromeStartupTests(unittest.TestCase):
         self.assertNotIn(10, killed)
         self.assertNotIn(14, killed)
 
+    def test_create_chrome_driver_with_retry_schedules_auto_close_after_default_delay(self):
+        previous_delay = os.environ.get("WORKER_BROWSER_AUTO_CLOSE_SECONDS")
+        original_chrome = chrome_startup.webdriver.Chrome
+        original_timer = chrome_startup.threading.Timer
+        timers = []
+
+        class FakeDriver:
+            quit_called = False
+
+            def quit(self):
+                self.quit_called = True
+
+        class FakeTimer:
+            daemon = False
+
+            def __init__(self, seconds, callback):
+                self.seconds = seconds
+                self.callback = callback
+                self.started = False
+                timers.append(self)
+
+            def start(self):
+                self.started = True
+
+        try:
+            os.environ.pop("WORKER_BROWSER_AUTO_CLOSE_SECONDS", None)
+            chrome_startup.webdriver.Chrome = lambda options=None: FakeDriver()
+            chrome_startup.threading.Timer = FakeTimer
+
+            driver = chrome_startup.create_chrome_driver_with_retry(object(), "auto close")
+        finally:
+            chrome_startup.webdriver.Chrome = original_chrome
+            chrome_startup.threading.Timer = original_timer
+            if previous_delay is None:
+                os.environ.pop("WORKER_BROWSER_AUTO_CLOSE_SECONDS", None)
+            else:
+                os.environ["WORKER_BROWSER_AUTO_CLOSE_SECONDS"] = previous_delay
+
+        self.assertEqual(len(timers), 1)
+        self.assertEqual(timers[0].seconds, 600)
+        self.assertTrue(timers[0].daemon)
+        self.assertTrue(timers[0].started)
+        timers[0].callback()
+        self.assertTrue(driver.quit_called)
+
+    def test_auto_close_can_be_disabled(self):
+        previous_delay = os.environ.get("WORKER_BROWSER_AUTO_CLOSE_SECONDS")
+        original_chrome = chrome_startup.webdriver.Chrome
+        original_timer = chrome_startup.threading.Timer
+        timers = []
+
+        try:
+            os.environ["WORKER_BROWSER_AUTO_CLOSE_SECONDS"] = "0"
+            chrome_startup.webdriver.Chrome = lambda options=None: object()
+            chrome_startup.threading.Timer = lambda seconds, callback: timers.append((seconds, callback))
+
+            driver = chrome_startup.create_chrome_driver_with_retry(object(), "disabled auto close")
+        finally:
+            chrome_startup.webdriver.Chrome = original_chrome
+            chrome_startup.threading.Timer = original_timer
+            if previous_delay is None:
+                os.environ.pop("WORKER_BROWSER_AUTO_CLOSE_SECONDS", None)
+            else:
+                os.environ["WORKER_BROWSER_AUTO_CLOSE_SECONDS"] = previous_delay
+
+        self.assertIsNotNone(driver)
+        self.assertEqual(timers, [])
+
 
 if __name__ == "__main__":
     unittest.main()

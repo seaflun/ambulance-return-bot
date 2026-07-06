@@ -13,6 +13,7 @@ from flask import Flask, abort, redirect, render_template, url_for
 import worker
 from ambulance_bot.adapters import SITE_DEFINITIONS
 from ambulance_bot.chrome_launcher import open_url_in_worker_chrome
+from ambulance_bot.profile_paths import runtime_profile_root
 
 
 load_dotenv()
@@ -37,7 +38,7 @@ def panel():
         server_url=server_url,
         poll_seconds=os.getenv("WORKER_POLL_SECONDS", "10"),
         lookup_interval=os.getenv("CASE_LOOKUP_INTERVAL_SECONDS", "300"),
-        chrome_profile_dir=os.getenv("CHROME_PROFILE_DIR", ""),
+        profile_root_dir=str(runtime_profile_root()),
         chrome_profile_email=os.getenv("CHROME_PROFILE_EMAIL", ""),
         last_opened=last_opened,
     )

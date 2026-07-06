@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 
 from selenium import webdriver
@@ -37,7 +38,9 @@ def create_chrome_driver_with_retry(options: Options, label: str = "Chrome") -> 
         try:
             if attempts > 1:
                 print(f"[chrome] starting {label} attempt {attempt}/{attempts}", flush=True)
-            return webdriver.Chrome(options=options)
+            driver = webdriver.Chrome(options=options)
+            schedule_driver_auto_close(driver, label)
+            return driver
         except (WebDriverException, OSError) as exc:
             last_error = exc
             if not _is_chrome_startup_error(exc) or attempt >= attempts:
@@ -47,6 +50,34 @@ def create_chrome_driver_with_retry(options: Options, label: str = "Chrome") -> 
             time.sleep(delay_seconds)
 
     raise WebDriverException(f"{label} Chrome 啟動失敗，已重試 {attempts} 次：{_short_error(last_error)}") from last_error
+
+
+def schedule_driver_auto_close(driver: webdriver.Chrome, label: str = "Chrome") -> threading.Timer | None:
+    quit_driver = getattr(driver, "quit", None)
+    if not callable(quit_driver):
+        return None
+    seconds = _browser_auto_close_seconds()
+    if seconds <= 0:
+        return None
+
+    def _close() -> None:
+        try:
+            quit_driver()
+            print(f"[chrome] auto closed {label} after {seconds:g} seconds", flush=True)
+        except Exception as exc:
+            print(f"[chrome] auto close skipped {label}: {_short_error(exc)}", flush=True)
+
+    timer = threading.Timer(seconds, _close)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def _browser_auto_close_seconds() -> float:
+    try:
+        return max(float(os.getenv("WORKER_BROWSER_AUTO_CLOSE_SECONDS", "600")), 0.0)
+    except ValueError:
+        return 600.0
 
 
 def cleanup_worker_chrome_residue(options: Options, label: str = "Chrome") -> int:

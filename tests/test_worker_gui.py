@@ -38,10 +38,11 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn("self.local_web_status", source)
         self.assertIn('fg_color=GUI_THEME["accent"]', source)
         self.assertIn('button_color=theme["accent"]', source)
-        self.assertIn('self._button(local, "修復 Chrome", self._repair_worker_chrome, "soft").grid(row=4', source)
-        self.assertIn("self.credential_combo.grid(row=1, column=1", source)
-        self.assertIn("credentials.rowconfigure(2, weight=1)", source)
-        self.assertIn('self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=300).grid(row=2', source)
+        self.assertIn("local_actions = self._action_row(local)", source)
+        self.assertIn('self._button(local_actions, "修復 Chrome", self._repair_worker_chrome, "soft").grid(row=0, column=1', source)
+        self.assertIn("self.credential_combo.grid(row=2, column=0", source)
+        self.assertIn("credentials.rowconfigure(3, weight=1)", source)
+        self.assertIn('self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=330).grid(row=3', source)
         self.assertIn("version_card.rowconfigure(2, weight=1)", source)
         self.assertNotIn('self._import_credential_sync_file, "primary").grid(row=3', source)
         self.assertNotIn("請按「匯入同步」", source)
@@ -64,11 +65,11 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn("消毒紀錄完成：", source)
         self.assertIn("消毒紀錄沒有回傳結果：", source)
 
-    def test_worker_gui_default_geometry_is_compact(self):
+    def test_worker_gui_default_geometry_matches_current_layout(self):
         source = Path(worker_gui.__file__).read_text(encoding="utf-8")
 
-        self.assertIn('self.geometry("680x760")', source)
-        self.assertIn('self.minsize(600, 680)', source)
+        self.assertIn('self.geometry("820x820")', source)
+        self.assertIn('self.minsize(720, 720)', source)
 
     def test_startup_launcher_can_be_disabled_by_env(self):
         previous = os.environ.get("WORKER_STARTUP_LAUNCHER_ENABLED")
@@ -86,6 +87,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             expected = [
+                root / "worker_browser_profile",
                 root / "chrome_profile",
                 root / "case_lookup_profile_123",
                 root / "vehicle_mileage_profile_task1",
@@ -105,8 +107,8 @@ class WorkerGuiEnvTests(unittest.TestCase):
     def test_backup_worker_chrome_profiles_renames_without_deleting(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            profile = root / "chrome_profile"
-            existing_backup = root / "chrome_profile.chrome_repair_20260705_120000"
+            profile = root / "worker_browser_profile"
+            existing_backup = root / "worker_browser_profile.chrome_repair_20260705_120000"
             profile.mkdir()
             (profile / "Preferences").write_text("{}", encoding="utf-8")
             existing_backup.mkdir()
@@ -117,15 +119,17 @@ class WorkerGuiEnvTests(unittest.TestCase):
             self.assertEqual(len(backups), 1)
             source, backup = backups[0]
             self.assertEqual(source, profile)
-            self.assertEqual(backup, root / "chrome_profile.chrome_repair_20260705_120000_1")
+            self.assertEqual(backup, root / "worker_browser_profile.chrome_repair_20260705_120000_1")
             self.assertTrue((backup / "Preferences").exists())
             self.assertTrue(existing_backup.exists())
 
-    def test_worker_chrome_repair_options_targets_profile_root_and_debugger_port(self):
+    def test_worker_chrome_repair_options_targets_worker_browser_profile_and_debugger_port(self):
         previous_profile = os.environ.get("CHROME_PROFILE_DIR")
+        previous_root = os.environ.get("SELENIUM_PROFILE_ROOT")
         previous_port = os.environ.get("WORKER_CHROME_DEBUGGER_PORT")
         try:
-            os.environ["CHROME_PROFILE_DIR"] = r"C:\Worker\profiles\chrome_profile"
+            os.environ.pop("CHROME_PROFILE_DIR", None)
+            os.environ["SELENIUM_PROFILE_ROOT"] = r"C:\Worker\profiles"
             os.environ["WORKER_CHROME_DEBUGGER_PORT"] = "9223"
 
             options = worker_gui.worker_chrome_repair_options()
@@ -134,12 +138,16 @@ class WorkerGuiEnvTests(unittest.TestCase):
                 os.environ.pop("CHROME_PROFILE_DIR", None)
             else:
                 os.environ["CHROME_PROFILE_DIR"] = previous_profile
+            if previous_root is None:
+                os.environ.pop("SELENIUM_PROFILE_ROOT", None)
+            else:
+                os.environ["SELENIUM_PROFILE_ROOT"] = previous_root
             if previous_port is None:
                 os.environ.pop("WORKER_CHROME_DEBUGGER_PORT", None)
             else:
                 os.environ["WORKER_CHROME_DEBUGGER_PORT"] = previous_port
 
-        self.assertIn(r"--user-data-dir=C:\Worker\profiles", options.arguments)
+        self.assertIn(r"--user-data-dir=C:\Worker\profiles\worker_browser_profile", options.arguments)
         self.assertIn("--remote-debugging-port=9223", options.arguments)
 
     def test_worker_case_lookup_output_is_gui_readable(self):

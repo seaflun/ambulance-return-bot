@@ -14,6 +14,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry
 from ambulance_bot.duty_credentials import load_synced_worker_credential
+from ambulance_bot.profile_paths import runtime_profile_dir
 from ambulance_bot.window_layout import apply_tile
 
 
@@ -87,15 +88,7 @@ def login_and_get_driver(
 
 
 def _chrome_profile_dir(profile_name: str) -> Path:
-    configured = os.getenv("CHROME_PROFILE_DIR", "").strip()
-    if configured:
-        configured_path = Path(os.path.expandvars(configured)).expanduser().resolve()
-        path = configured_path if profile_name == "chrome_profile" else configured_path.parent / profile_name
-    else:
-        root = Path(os.getenv("SELENIUM_PROFILE_ROOT") or os.getenv("LOCALAPPDATA") or Path.home())
-        path = root / "ambulance_return_bot" / profile_name
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return runtime_profile_dir(profile_name)
 
 
 def _login_once(driver: webdriver.Chrome, account: str, password: str, attempt: int) -> None:

@@ -13,7 +13,7 @@ This file records project decisions that another computer or another coding agen
 - The worker GUI can test NAS through Tailscale at `http://100.114.126.58:8080`.
 - `run_worker_web_panel.bat` starts the older local web panel at `http://127.0.0.1:8090/`.
 - Use `run_worker_headless.bat` only if a visible panel is not needed.
-- The development PC and public-duty PC are separate. Do not copy `.env`, `artifacts/`, or Chrome profile data between them unless the user explicitly asks.
+- The development PC and public-duty PC are separate. Do not copy `.env`, `artifacts/`, or runtime profile data between them unless the user explicitly asks.
 
 ## Fixed URLs And Network Values
 
@@ -30,19 +30,21 @@ This file records project decisions that another computer or another coding agen
 - If phone/tablet user presses "查詢", NAS writes `case_lookup_requested`; worker should query immediately on the next poll and post the latest cases back to NAS.
 - After a web task is submitted, NAS marks it `queued_for_worker`; worker claims it and updates status through worker APIs.
 - Worker artifacts such as Selenium screenshots and HTML remain on the public-duty PC under `artifacts/selenium/`.
-- The worker GUI has four entrance buttons for vehicle mileage, one-stop consumables, EMS disinfection, and duty work log. These buttons only open pages in the worker Chrome profile.
+- The worker GUI has entrance buttons for vehicle mileage, one-stop consumables, EMS disinfection, and duty work log. These buttons open pages in the worker browser runtime profile.
 
-## Credentials And Chrome Profile
+## Credentials And Runtime Profiles
 
 - Worker APIs use a shared `WORKER_TOKEN`; the same value must be set on NAS and public-duty PC.
 - Four-site portal passwords must not be committed and should not be stored on NAS.
 - For operational configuration, edit the real `.env` directly. Do not keep changing `.env.example` unless the user explicitly asks.
 - Background duty case lookup cannot rely on Chrome Password Manager selection. Set `DUTY_ACCOUNT` and `DUTY_PASSWORD` in the public-duty PC `.env` so Selenium can log in automatically.
 - Do not rely on Google/Chrome profile login for background automation. The worker uses saved duty automation credentials or `.env` credentials to fill the website login form directly.
-- Use a local, non-cloud Chrome profile directory such as `C:\Users\User\AppData\Local\ambulance_return_bot\chrome_profile`.
-- Do not put Chrome profile data under Google Drive or another synced project folder.
-- The worker GUI opens Chrome with `WORKER_CHROME_DEBUGGER_PORT=9223` so Selenium can attach to the same profile window.
-- Portal passwords are expected to come from Google Password Manager inside that Chrome profile.
+- Use a local, non-cloud runtime profile root such as `C:\Users\User\AppData\Local\ambulance_return_bot`.
+- Do not put runtime profile data under Google Drive or another synced project folder.
+- The worker GUI opens Chrome with `WORKER_CHROME_DEBUGGER_PORT=9223` and `worker_browser_profile` for manual pages only.
+- `chrome_profile` is legacy cache data only. Four-site automation must work from saved worker credentials or `.env` credentials.
+- Stale generated runtime profiles are program-cleaned after `SELENIUM_PROFILE_CLEANUP_MAX_AGE_HOURS` when no Chrome lock file is present.
+- `WORKER_BROWSER_AUTO_CLOSE_SECONDS=600` closes opened entry pages after 10 minutes by default.
 
 ## Data Entry Rules
 

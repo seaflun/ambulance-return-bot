@@ -34,6 +34,7 @@ from ambulance_bot.duty_credentials import (
     set_last_selected_duty_automation_credential,
     stable_synced_account_selection,
 )
+from ambulance_bot.profile_paths import WORKER_BROWSER_PROFILE_NAME, runtime_profile_root, worker_browser_profile_dir
 
 try:
     import pystray
@@ -52,8 +53,14 @@ SINGLE_INSTANCE_MUTEX_NAME = "Local\\AmbulanceReturnBotWorkerGui"
 _SINGLE_INSTANCE_MUTEX_HANDLE: int | None = None
 FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 WORKER_CHROME_PROFILE_PREFIXES = (
+    WORKER_BROWSER_PROFILE_NAME,
     "chrome_profile",
     "case_lookup_profile",
+    "duty_work_log_profile",
+    "vehicle_mileage_profile",
+    "fuel_record_profile",
+    "consumables_profile",
+    "disinfection_profile",
     "duty_work_log_profile_",
     "vehicle_mileage_profile_",
     "fuel_record_profile_",
@@ -65,6 +72,7 @@ GUI_THEME = {
     "bg": "#fff7ef",
     "surface": "#ffffff",
     "surface_soft": "#fff1e6",
+    "surface_hover": "#ffe2cd",
     "ink": "#10233f",
     "muted": "#667085",
     "line": "#efd8c4",
@@ -77,6 +85,7 @@ GUI_THEME = {
     "log_bg": "#10233f",
     "log_fg": "#f8efe7",
 }
+GUI_FONT_FAMILY = "Microsoft JhengHei UI"
 
 
 class QueueTextWriter:
@@ -325,8 +334,8 @@ class WorkerGui(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("SinpoSmart - 救護Worker")
-        self.geometry("680x760")
-        self.minsize(600, 680)
+        self.geometry("820x820")
+        self.minsize(720, 720)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.log_path = Path(os.getenv("ARTIFACTS_DIR", "artifacts")) / "worker_gui.log"
@@ -375,21 +384,24 @@ class WorkerGui(ctk.CTk):
         root.grid_columnconfigure(0, weight=1)
 
         header = ctk.CTkFrame(root, fg_color=theme["bg"], corner_radius=0)
-        header.grid(row=0, column=0, sticky="ew", padx=22, pady=(22, 16))
+        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(22, 14))
         header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=0)
         title_block = ctk.CTkFrame(header, fg_color=theme["bg"], corner_radius=0)
         title_block.grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(
             title_block,
             text="SinpoSmart - 救護Worker",
             text_color=theme["ink"],
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=28, weight="bold"),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=26, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_block,
             text="公務電腦本機網頁與 NAS 佇列 worker 控制面板",
             text_color=theme["muted"],
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=13),
+            wraplength=480,
+            justify="left",
         ).pack(anchor="w", pady=(4, 0))
         ctk.CTkLabel(
             header,
@@ -399,23 +411,28 @@ class WorkerGui(ctk.CTk):
             corner_radius=14,
             padx=16,
             pady=8,
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13, weight="bold"),
-        ).grid(row=0, column=1, sticky="ne", padx=(12, 0))
+            width=176,
+            wraplength=150,
+            justify="center",
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=13, weight="bold"),
+        ).grid(row=0, column=1, sticky="ne", padx=(16, 0))
 
         top_area = ctk.CTkFrame(root, fg_color=theme["bg"], corner_radius=0)
-        top_area.grid(row=1, column=0, sticky="ew", padx=22)
+        top_area.grid(row=1, column=0, sticky="ew", padx=24)
         top_area.columnconfigure(0, weight=1, uniform="main_cards")
         top_area.columnconfigure(1, weight=1, uniform="main_cards")
-        top_area.rowconfigure(0, weight=1, uniform="main_card_rows")
-        top_area.rowconfigure(1, weight=1, uniform="main_card_rows")
+        top_area.rowconfigure(0, weight=0, minsize=172, uniform="main_card_rows")
+        top_area.rowconfigure(1, weight=0, minsize=154, uniform="main_card_rows")
 
         local = self._card(top_area, "本地伺服器")
         local.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         local.columnconfigure(0, weight=1)
         self._hint(local, "", textvariable=self.local_web_status, wraplength=260).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
         self._entry(local, self.local_web_url).grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
-        self._button(local, "開啟本機網頁", self._start_local_web_app, "primary").grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
-        self._button(local, "修復 Chrome", self._repair_worker_chrome, "soft").grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 16))
+        local_actions = self._action_row(local)
+        local_actions.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
+        self._button(local_actions, "開啟本機網頁", self._start_local_web_app, "primary").grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._button(local_actions, "修復 Chrome", self._repair_worker_chrome, "soft").grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         nas = self._card(top_area, "NAS伺服器")
         nas.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -426,10 +443,9 @@ class WorkerGui(ctk.CTk):
 
         credentials = self._card(top_area, "帳號")
         credentials.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(14, 0))
-        credentials.columnconfigure(0, weight=0)
-        credentials.columnconfigure(1, weight=1)
-        credentials.rowconfigure(2, weight=1)
-        self._body_label(credentials, "同步帳號").grid(row=1, column=0, sticky="w", padx=(16, 10), pady=(0, 10))
+        credentials.columnconfigure(0, weight=1)
+        credentials.rowconfigure(3, weight=1)
+        self._body_label(credentials, "同步帳號").grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
         self.credential_combo = ctk.CTkComboBox(
             credentials,
             variable=self.credential_choice,
@@ -445,12 +461,12 @@ class WorkerGui(ctk.CTk):
             dropdown_hover_color=theme["surface_soft"],
             text_color=theme["ink"],
             dropdown_text_color=theme["ink"],
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=13),
             height=36,
             corner_radius=10,
         )
-        self.credential_combo.grid(row=1, column=1, sticky="ew", padx=(0, 16), pady=(0, 10))
-        self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=300).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
+        self.credential_combo.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
+        self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=330).grid(row=3, column=0, sticky="w", padx=16, pady=(0, 12))
 
         version_card = self._card(top_area, "版本")
         version_card.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(14, 0))
@@ -462,11 +478,11 @@ class WorkerGui(ctk.CTk):
         self._button(version_card, "檢查更新", self._check_for_updates, "soft").grid(row=3, column=0, columnspan=2, sticky="sew", padx=16, pady=(0, 16))
 
         log_frame = self._card(root, "執行紀錄")
-        log_frame.grid(row=2, column=0, sticky="nsew", padx=22, pady=(14, 22))
+        log_frame.grid(row=2, column=0, sticky="nsew", padx=24, pady=(14, 24))
         root.grid_rowconfigure(2, weight=1)
         self.log_text = ctk.CTkTextbox(
             log_frame,
-            height=13,
+            height=220,
             wrap="word",
             fg_color=theme["log_bg"],
             text_color=theme["log_fg"],
@@ -492,8 +508,15 @@ class WorkerGui(ctk.CTk):
             frame,
             text=title,
             text_color=GUI_THEME["ink"],
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=15, weight="bold"),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=15, weight="bold"),
         ).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 12))
+        frame.grid_columnconfigure(0, weight=1)
+        return frame
+
+    def _action_row(self, parent: Any) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=0)
+        frame.columnconfigure(0, weight=1, uniform="actions")
+        frame.columnconfigure(1, weight=1, uniform="actions")
         return frame
 
     def _section_title(self, parent: Any, text: str) -> ctk.CTkLabel:
@@ -501,7 +524,7 @@ class WorkerGui(ctk.CTk):
             parent,
             text=text,
             text_color=GUI_THEME["ink"],
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=15, weight="bold"),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=15, weight="bold"),
         )
 
     def _body_label(self, parent: Any, text: str) -> ctk.CTkLabel:
@@ -509,7 +532,7 @@ class WorkerGui(ctk.CTk):
             parent,
             text=text,
             text_color=GUI_THEME["ink"],
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13, weight="bold"),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=13, weight="bold"),
         )
 
     def _hint(
@@ -524,9 +547,10 @@ class WorkerGui(ctk.CTk):
             text=text,
             textvariable=textvariable,
             text_color=GUI_THEME["muted"],
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=12),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=12),
             wraplength=wraplength,
             justify="left",
+            anchor="w",
         )
 
     def _entry(self, parent: Any, variable: tk.StringVar) -> ctk.CTkEntry:
@@ -538,11 +562,27 @@ class WorkerGui(ctk.CTk):
             border_color=GUI_THEME["line"],
             text_color=GUI_THEME["ink"],
             height=36,
+            width=1,
             corner_radius=10,
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=13),
         )
 
     def _button(self, parent: Any, text: str, command: Any, variant: str) -> ctk.CTkButton:
+        if variant == "soft":
+            return ctk.CTkButton(
+                parent,
+                text=text,
+                command=command,
+                fg_color=GUI_THEME["surface_soft"],
+                hover_color=GUI_THEME["surface_hover"],
+                border_color=GUI_THEME["line"],
+                border_width=1,
+                text_color=GUI_THEME["ink"],
+                height=40,
+                width=1,
+                corner_radius=10,
+                font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=13, weight="bold"),
+            )
         return ctk.CTkButton(
             parent,
             text=text,
@@ -550,9 +590,10 @@ class WorkerGui(ctk.CTk):
             fg_color=GUI_THEME["accent"],
             hover_color=GUI_THEME["accent_active"],
             text_color="#ffffff",
-            height=42,
+            height=40,
+            width=1,
             corner_radius=10,
-            font=ctk.CTkFont(family="Microsoft JhengHei UI", size=13, weight="bold"),
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=13, weight="bold"),
         )
 
     def _set_server(self, url: str) -> None:
@@ -708,7 +749,7 @@ class WorkerGui(ctk.CTk):
     def _repair_worker_chrome(self) -> None:
         if not messagebox.askyesno(
             "修復 Chrome",
-            "將關閉 Worker 專用 Chrome/ChromeDriver，備份 Chrome profile，並重啟 Worker GUI。\n\n不會刪除任何檔案。確定執行？",
+            "將關閉 Worker 專用 Chrome/ChromeDriver，備份 runtime profiles，並重啟 Worker GUI。\n\n不會刪除任何檔案。確定執行？",
         ):
             return
         self.worker_status.set("修復 Chrome 中")
@@ -1069,7 +1110,7 @@ class WorkerGui(ctk.CTk):
     def _run_selected_task_background(
         self,
         task_id: str,
-        profile_name: str = "chrome_profile",
+        profile_name: str = "duty_work_log_profile",
         debugger_port: int | None = None,
         use_session_lock: bool = True,
         tile_name: str = "",
@@ -1120,7 +1161,7 @@ class WorkerGui(ctk.CTk):
     def _run_selected_vehicle_mileage_background(
         self,
         task_id: str,
-        profile_name: str = "chrome_profile",
+        profile_name: str = "vehicle_mileage_profile",
         debugger_port: int | None = None,
         use_session_lock: bool = True,
         tile_name: str = "",
@@ -1617,7 +1658,7 @@ class _ChromeRepairOptions:
 
 
 def worker_chrome_repair_options() -> _ChromeRepairOptions:
-    arguments = [f"--user-data-dir={worker_chrome_profile_root()}"]
+    arguments = [f"--user-data-dir={worker_browser_profile_dir()}"]
     debugger_port = os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223").strip()
     if debugger_port:
         arguments.append(f"--remote-debugging-port={debugger_port}")
@@ -1625,11 +1666,7 @@ def worker_chrome_repair_options() -> _ChromeRepairOptions:
 
 
 def worker_chrome_profile_root() -> Path:
-    configured = os.getenv("CHROME_PROFILE_DIR", "").strip()
-    if configured:
-        return Path(os.path.expandvars(configured)).expanduser().parent
-    root = Path(os.getenv("SELENIUM_PROFILE_ROOT") or os.getenv("LOCALAPPDATA") or Path.home())
-    return root / "ambulance_return_bot"
+    return runtime_profile_root()
 
 
 def worker_chrome_profile_dirs(root: Path | None = None) -> list[Path]:

@@ -1,6 +1,8 @@
 import json
+import inspect
 import os
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +18,7 @@ from ambulance_bot.selenium_local import (
     _click_fuel_card_register,
     _click_save_control,
     _click_vehicle_mileage_save,
+    _create_driver,
     _disinfection_query_date,
     _duty_login_credential_attempts,
     _ensure_duty_login,
@@ -32,6 +35,7 @@ from ambulance_bot.selenium_local import (
     _prepare_duty_work_log_form,
     _previous_case_details,
     _profile_dir,
+    cleanup_stale_selenium_profiles,
     _resolve_end_mileage,
     _save_duty_work_log_enabled,
     _save_disinfection_probe_enabled,
@@ -40,6 +44,10 @@ from ambulance_bot.selenium_local import (
     _vehicle_mileage_previous_request,
     _vehicle_mileage_values,
     _write_json_atomic,
+    run_disinfection_task,
+    run_fuel_record_task,
+    run_local_selenium_task,
+    run_vehicle_mileage_task,
     selenium_enabled,
 )
 from ambulance_bot.duty_credentials import load_synced_worker_credential, save_credential_sync_payload, save_duty_automation_credentials
@@ -269,27 +277,41 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertIn("entry", str(context.exception))
 
-    def test_named_profile_uses_sibling_of_configured_profile_dir(self):
+    def test_site_task_defaults_do_not_use_legacy_chrome_profile(self):
+        self.assertEqual(inspect.signature(run_local_selenium_task).parameters["profile_name"].default, "duty_work_log_profile")
+        self.assertEqual(inspect.signature(run_vehicle_mileage_task).parameters["profile_name"].default, "vehicle_mileage_profile")
+        self.assertEqual(inspect.signature(run_fuel_record_task).parameters["profile_name"].default, "fuel_record_profile")
+        self.assertEqual(inspect.signature(run_disinfection_task).parameters["profile_name"].default, "disinfection_profile")
+
+    def test_named_profile_uses_configured_runtime_profile_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous = os.environ.get("CHROME_PROFILE_DIR")
+            previous_root = os.environ.get("SELENIUM_PROFILE_ROOT")
             try:
-                os.environ["CHROME_PROFILE_DIR"] = str(Path(tmp) / "chrome_profile")
+                os.environ.pop("CHROME_PROFILE_DIR", None)
+                os.environ["SELENIUM_PROFILE_ROOT"] = str(Path(tmp) / "runtime_profiles")
 
-                self.assertEqual(_profile_dir("chrome_profile"), Path(tmp) / "chrome_profile")
-                self.assertEqual(_profile_dir("vehicle_mileage_profile_task1"), Path(tmp) / "vehicle_mileage_profile_task1")
+                self.assertEqual(_profile_dir("duty_work_log_profile"), Path(tmp) / "runtime_profiles" / "duty_work_log_profile")
+                self.assertEqual(_profile_dir("vehicle_mileage_profile_task1"), Path(tmp) / "runtime_profiles" / "vehicle_mileage_profile_task1")
             finally:
                 if previous is None:
                     os.environ.pop("CHROME_PROFILE_DIR", None)
                 else:
                     os.environ["CHROME_PROFILE_DIR"] = previous
+                if previous_root is None:
+                    os.environ.pop("SELENIUM_PROFILE_ROOT", None)
+                else:
+                    os.environ["SELENIUM_PROFILE_ROOT"] = previous_root
 
-    def test_configured_profile_dir_expands_environment_variables(self):
+    def test_legacy_chrome_profile_dir_is_only_used_as_profile_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_profile = os.environ.get("CHROME_PROFILE_DIR")
             previous_root = os.environ.get("AMBULANCE_TEST_PROFILE_ROOT")
+            previous_runtime_root = os.environ.get("SELENIUM_PROFILE_ROOT")
             try:
                 os.environ["AMBULANCE_TEST_PROFILE_ROOT"] = tmp
-                os.environ["CHROME_PROFILE_DIR"] = r"%AMBULANCE_TEST_PROFILE_ROOT%\chrome_profile"
+                os.environ.pop("SELENIUM_PROFILE_ROOT", None)
+                os.environ["CHROME_PROFILE_DIR"] = r"%AMBULANCE_TEST_PROFILE_ROOT%\legacy_chrome_data"
 
                 self.assertEqual(_profile_dir("chrome_profile"), Path(tmp) / "chrome_profile")
                 self.assertEqual(_profile_dir("disinfection_profile_task1"), Path(tmp) / "disinfection_profile_task1")
@@ -302,6 +324,148 @@ class SeleniumLocalTests(unittest.TestCase):
                     os.environ.pop("AMBULANCE_TEST_PROFILE_ROOT", None)
                 else:
                     os.environ["AMBULANCE_TEST_PROFILE_ROOT"] = previous_root
+                if previous_runtime_root is None:
+                    os.environ.pop("SELENIUM_PROFILE_ROOT", None)
+                else:
+                    os.environ["SELENIUM_PROFILE_ROOT"] = previous_runtime_root
+
+    def test_cleanup_stale_selenium_profiles_removes_only_generated_old_profiles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_generated = [
+                root / "chrome_profile",
+                root / "case_lookup_profile_123",
+                root / "disinfection_profile_task1",
+            ]
+            keep_unknown = root / "notes"
+            keep_recent = root / "vehicle_mileage_profile_recent"
+            keep_locked = root / "consumables_profile_old"
+            keep_locked_main = root / "chrome_profile_locked"
+            for path in [*old_generated, keep_unknown, keep_recent, keep_locked, keep_locked_main]:
+                path.mkdir()
+                (path / "cache.dat").write_text("x", encoding="utf-8")
+            (keep_locked / "SingletonLock").write_text("", encoding="utf-8")
+            (keep_locked_main / "SingletonLock").write_text("", encoding="utf-8")
+            old_time = time.time() - 7200
+            for path in [*old_generated, keep_unknown, keep_locked, keep_locked_main]:
+                os.utime(path / "cache.dat", (old_time, old_time))
+                os.utime(path, (old_time, old_time))
+
+            removed = cleanup_stale_selenium_profiles(root, max_age_hours=1)
+
+            self.assertEqual({path.name for path in removed}, {"chrome_profile", "case_lookup_profile_123", "disinfection_profile_task1"})
+            for path in old_generated:
+                self.assertFalse(path.exists())
+            self.assertTrue(keep_unknown.exists())
+            self.assertTrue(keep_recent.exists())
+            self.assertTrue(keep_locked.exists())
+            self.assertTrue(keep_locked_main.exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locked_main = root / "chrome_profile"
+            locked_main.mkdir()
+            (locked_main / "cache.dat").write_text("x", encoding="utf-8")
+            (locked_main / "SingletonLock").write_text("", encoding="utf-8")
+            old_time = time.time() - 7200
+            os.utime(locked_main / "cache.dat", (old_time, old_time))
+            os.utime(locked_main, (old_time, old_time))
+
+            removed = cleanup_stale_selenium_profiles(root, max_age_hours=1)
+
+            self.assertEqual(removed, [])
+            self.assertTrue(locked_main.exists())
+
+    def test_create_driver_cleans_stale_profiles_before_starting_chrome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            root.mkdir()
+            old_profile = root / "case_lookup_profile_123"
+            old_profile.mkdir()
+            (old_profile / "cache.dat").write_text("x", encoding="utf-8")
+            old_time = time.time() - 7200
+            os.utime(old_profile / "cache.dat", (old_time, old_time))
+            os.utime(old_profile, (old_time, old_time))
+            previous_profile = os.environ.get("CHROME_PROFILE_DIR")
+            previous_root = os.environ.get("SELENIUM_PROFILE_ROOT")
+            previous_max_age = os.environ.get("SELENIUM_PROFILE_CLEANUP_MAX_AGE_HOURS")
+            original_create = selenium_local_module._create_local_driver_with_retry
+
+            class FakeDriver:
+                def set_page_load_timeout(self, timeout):
+                    self.page_timeout = timeout
+
+                def set_script_timeout(self, timeout):
+                    self.script_timeout = timeout
+
+            try:
+                os.environ.pop("CHROME_PROFILE_DIR", None)
+                os.environ["SELENIUM_PROFILE_ROOT"] = str(root)
+                os.environ["SELENIUM_PROFILE_CLEANUP_MAX_AGE_HOURS"] = "1"
+                selenium_local_module._create_local_driver_with_retry = lambda options: FakeDriver()
+
+                driver = _create_driver(Path(tmp), profile_name="disinfection_profile_task-new", headless=True)
+            finally:
+                selenium_local_module._create_local_driver_with_retry = original_create
+                if previous_profile is None:
+                    os.environ.pop("CHROME_PROFILE_DIR", None)
+                else:
+                    os.environ["CHROME_PROFILE_DIR"] = previous_profile
+                if previous_root is None:
+                    os.environ.pop("SELENIUM_PROFILE_ROOT", None)
+                else:
+                    os.environ["SELENIUM_PROFILE_ROOT"] = previous_root
+                if previous_max_age is None:
+                    os.environ.pop("SELENIUM_PROFILE_CLEANUP_MAX_AGE_HOURS", None)
+                else:
+                    os.environ["SELENIUM_PROFILE_CLEANUP_MAX_AGE_HOURS"] = previous_max_age
+
+            self.assertIsNotNone(driver)
+            self.assertFalse(old_profile.exists())
+            self.assertTrue((root / "disinfection_profile_task-new").exists())
+
+    def test_create_driver_schedules_auto_close_for_local_browser(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            previous_profile = os.environ.get("CHROME_PROFILE_DIR")
+            previous_root = os.environ.get("SELENIUM_PROFILE_ROOT")
+            previous_delay = os.environ.get("WORKER_BROWSER_AUTO_CLOSE_SECONDS")
+            original_create = selenium_local_module._create_local_driver_with_retry
+            original_schedule = selenium_local_module.schedule_driver_auto_close
+            scheduled = []
+
+            class FakeDriver:
+                def set_page_load_timeout(self, timeout):
+                    self.page_timeout = timeout
+
+                def set_script_timeout(self, timeout):
+                    self.script_timeout = timeout
+
+            try:
+                os.environ.pop("CHROME_PROFILE_DIR", None)
+                os.environ["SELENIUM_PROFILE_ROOT"] = str(root)
+                os.environ["WORKER_BROWSER_AUTO_CLOSE_SECONDS"] = "600"
+                selenium_local_module._create_local_driver_with_retry = lambda options: FakeDriver()
+                selenium_local_module.schedule_driver_auto_close = lambda driver, label="Chrome": scheduled.append((driver, label))
+
+                driver = _create_driver(Path(tmp), profile_name="vehicle_mileage_profile_task1", headless=False)
+            finally:
+                selenium_local_module._create_local_driver_with_retry = original_create
+                selenium_local_module.schedule_driver_auto_close = original_schedule
+                if previous_profile is None:
+                    os.environ.pop("CHROME_PROFILE_DIR", None)
+                else:
+                    os.environ["CHROME_PROFILE_DIR"] = previous_profile
+                if previous_root is None:
+                    os.environ.pop("SELENIUM_PROFILE_ROOT", None)
+                else:
+                    os.environ["SELENIUM_PROFILE_ROOT"] = previous_root
+                if previous_delay is None:
+                    os.environ.pop("WORKER_BROWSER_AUTO_CLOSE_SECONDS", None)
+                else:
+                    os.environ["WORKER_BROWSER_AUTO_CLOSE_SECONDS"] = previous_delay
+
+            self.assertEqual(scheduled, [(driver, "vehicle_mileage_profile_task1")])
 
     def test_ppe_credentials_prefers_synced_worker_account(self):
         with tempfile.TemporaryDirectory() as tmp:

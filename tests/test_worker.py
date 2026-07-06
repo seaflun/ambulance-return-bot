@@ -283,6 +283,56 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("WORKER_TOKEN", message)
         self.assertIn("同步 NAS 與公務電腦 .env", message)
 
+    def test_single_site_workers_use_site_profile_defaults(self):
+        original_run_duty = worker_module.run_local_selenium_task
+        original_run_vehicle = worker_module.run_vehicle_mileage_task
+        original_run_fuel = worker_module.run_fuel_record_task
+        original_run_disinfection = worker_module.run_disinfection_task
+        original_post_status = worker_module.post_status
+        profile_names: dict[str, str] = {}
+
+        def record_site(site_key: str, status: str, detail: str):
+            def _run(*args, **kwargs):
+                profile_names[site_key] = kwargs["profile_name"]
+                return SimpleNamespace(ok=True, status=status, detail=detail)
+
+            return _run
+
+        try:
+            worker_module.run_local_selenium_task = record_site("duty_work_log", "duty_work_log_saved", "duty ok")
+            worker_module.run_vehicle_mileage_task = record_site("vehicle_mileage", "vehicle_mileage_saved", "mileage ok")
+            worker_module.run_fuel_record_task = record_site("fuel_record", "fuel_record_saved", "fuel ok")
+            worker_module.run_disinfection_task = record_site("disinfection", "disinfection_saved", "disinfection ok")
+            worker_module.post_status = lambda *args, **kwargs: None
+
+            base_task = {"task_id": "task-default-profile", "created_at": "2026-06-09T00:00:00"}
+            fuel_task = {
+                **base_task,
+                "task_id": "task-default-profile-fuel",
+                "fuel_record": {"enabled": True, "date": "20260627", "time": "1250", "quantity": "20.5", "unit_price": "30.1"},
+            }
+
+            worker_module.run_task("http://nas", "worker-a", base_task, Path("artifacts"))
+            worker_module.run_vehicle_task("http://nas", "worker-a", base_task, Path("artifacts"))
+            worker_module.run_fuel_worker_task("http://nas", "worker-a", fuel_task, Path("artifacts"))
+            worker_module.run_disinfection_worker_task("http://nas", "worker-a", base_task, Path("artifacts"))
+        finally:
+            worker_module.run_local_selenium_task = original_run_duty
+            worker_module.run_vehicle_mileage_task = original_run_vehicle
+            worker_module.run_fuel_record_task = original_run_fuel
+            worker_module.run_disinfection_task = original_run_disinfection
+            worker_module.post_status = original_post_status
+
+        self.assertEqual(
+            profile_names,
+            {
+                "duty_work_log": "duty_work_log_profile",
+                "vehicle_mileage": "vehicle_mileage_profile",
+                "fuel_record": "fuel_record_profile",
+                "disinfection": "disinfection_profile",
+            },
+        )
+
     def test_run_task_posts_site_failure_when_selenium_raises(self):
         original_run = worker_module.run_local_selenium_task
         original_post_status = worker_module.post_status

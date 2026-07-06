@@ -5,6 +5,8 @@ import subprocess
 import webbrowser
 from pathlib import Path
 
+from .profile_paths import worker_browser_profile_dir
+
 
 def open_url_in_worker_chrome(url: str) -> str:
     chrome = _chrome_binary()
@@ -13,11 +15,7 @@ def open_url_in_worker_chrome(url: str) -> str:
         return "opened_default_browser"
 
     args = [str(chrome)]
-    profile_dir = os.getenv("CHROME_PROFILE_DIR", "").strip()
-    if profile_dir:
-        path = Path(os.path.expandvars(profile_dir)).expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        args.append(f"--user-data-dir={path}")
+    args.append(f"--user-data-dir={worker_browser_profile_dir()}")
     debugger_port = os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223").strip()
     if debugger_port:
         args.append(f"--remote-debugging-port={debugger_port}")
