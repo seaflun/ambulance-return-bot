@@ -21,7 +21,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITION_BY_KEY, SITE_DEFINITIONS
-from .chrome_startup import _worker_user_data_paths, cleanup_worker_chrome_residue, schedule_driver_auto_close
+from .chrome_startup import (
+    ChromeStartTimeoutError,
+    _worker_user_data_paths,
+    cleanup_worker_chrome_residue,
+    create_webdriver_chrome_with_timeout,
+    schedule_driver_auto_close,
+)
 from .duty_credentials import (
     DutyCredential,
     load_duty_credential,
@@ -726,21 +732,23 @@ def _create_local_driver_with_retry(options: Options) -> webdriver.Chrome:
         try:
             if attempts > 1:
                 print(f"[selenium] creating local chrome session attempt {attempt}/{attempts}", flush=True)
-            return webdriver.Chrome(options=options)
-        except (WebDriverException, OSError) as exc:
+            return create_webdriver_chrome_with_timeout(options, factory=webdriver.Chrome)
+        except (ChromeStartTimeoutError, WebDriverException, OSError) as exc:
             last_error = exc
             if not _is_local_chrome_startup_error(exc):
                 raise
-            if attempt >= attempts:
-                break
             print(f"[selenium] local chrome session attempt {attempt} failed: {_short_webdriver_error(exc)}", flush=True)
             cleanup_worker_chrome_residue(options, "local selenium")
             cleanup_runtime_profiles_for_startup_failure(_worker_user_data_paths(options))
+            if attempt >= attempts:
+                break
             time.sleep(2)
     raise WebDriverException(f"local chrome session failed after {attempts} attempts: {_short_webdriver_error(last_error)}")
 
 
 def _is_local_chrome_startup_error(exc: Exception) -> bool:
+    if isinstance(exc, ChromeStartTimeoutError):
+        return True
     if _is_invalid_argument_oserror(exc):
         return True
     message = str(exc).lower()

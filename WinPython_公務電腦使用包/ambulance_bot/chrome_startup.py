@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import queue
 import signal
 import subprocess
 import threading
@@ -25,6 +26,10 @@ STARTUP_ERROR_MARKERS = (
 )
 
 
+class ChromeStartTimeoutError(TimeoutError):
+    pass
+
+
 def add_worker_chrome_options(options: Options) -> Options:
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
@@ -41,19 +46,75 @@ def create_chrome_driver_with_retry(options: Options, label: str = "Chrome") -> 
         try:
             if attempts > 1:
                 print(f"[chrome] starting {label} attempt {attempt}/{attempts}", flush=True)
-            driver = webdriver.Chrome(options=options)
+            driver = create_webdriver_chrome_with_timeout(options)
             schedule_driver_auto_close(driver, label)
             return driver
-        except (WebDriverException, OSError) as exc:
+        except (ChromeStartTimeoutError, WebDriverException, OSError) as exc:
             last_error = exc
-            if not _is_chrome_startup_error(exc) or attempt >= attempts:
+            if not _is_chrome_startup_error(exc):
                 break
             print(f"[chrome] {label} start attempt {attempt} failed: {_short_error(exc)}", flush=True)
             cleanup_worker_chrome_residue(options, label)
             cleanup_runtime_profiles_for_startup_failure(_worker_user_data_paths(options))
+            if attempt >= attempts:
+                break
             time.sleep(delay_seconds)
 
     raise WebDriverException(f"{label} Chrome 啟動失敗，已重試 {attempts} 次：{_short_error(last_error)}") from last_error
+
+
+def create_webdriver_chrome_with_timeout(
+    options: Options,
+    timeout_seconds: float | None = None,
+    factory=None,
+) -> webdriver.Chrome:
+    timeout = _chrome_start_timeout_seconds() if timeout_seconds is None else max(float(timeout_seconds), 0.0)
+    chrome_factory = factory or webdriver.Chrome
+    if timeout <= 0:
+        return chrome_factory(options=options)
+
+    result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+    timed_out = threading.Event()
+
+    def _start() -> None:
+        try:
+            driver = chrome_factory(options=options)
+        except BaseException as exc:
+            if not timed_out.is_set():
+                result_queue.put(("error", exc))
+            return
+        if timed_out.is_set():
+            _quit_late_driver(driver)
+            return
+        result_queue.put(("driver", driver))
+
+    thread = threading.Thread(target=_start, name="chrome-startup", daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        timed_out.set()
+        raise ChromeStartTimeoutError(f"Chrome start timed out after {timeout:g} seconds")
+    kind, value = result_queue.get_nowait()
+    if kind == "error":
+        raise value
+    return value
+
+
+def _chrome_start_timeout_seconds() -> float:
+    try:
+        return max(float(os.getenv("SELENIUM_CHROME_START_TIMEOUT_SECONDS", "20")), 0.0)
+    except ValueError:
+        return 20.0
+
+
+def _quit_late_driver(driver) -> None:
+    quit_driver = getattr(driver, "quit", None)
+    if not callable(quit_driver):
+        return
+    try:
+        quit_driver()
+    except Exception:
+        pass
 
 
 def schedule_driver_auto_close(driver: webdriver.Chrome, label: str = "Chrome") -> threading.Timer | None:
@@ -102,6 +163,8 @@ def cleanup_worker_chrome_residue(options: Options, label: str = "Chrome") -> in
 
 
 def _is_chrome_startup_error(exc: Exception) -> bool:
+    if isinstance(exc, ChromeStartTimeoutError):
+        return True
     if _is_invalid_argument_oserror(exc):
         return True
     message = str(exc).lower()

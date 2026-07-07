@@ -100,6 +100,53 @@ class ChromeStartupTests(unittest.TestCase):
         self.assertEqual(calls["count"], 2)
         self.assertEqual(profile_cleanups, [(user_data_dir,)])
 
+    def test_retry_recovers_when_chrome_start_times_out(self):
+        previous_attempts = os.environ.get("SELENIUM_CHROME_START_ATTEMPTS")
+        previous_delay = os.environ.get("SELENIUM_CHROME_RETRY_DELAY_SECONDS")
+        previous_timeout = os.environ.get("SELENIUM_CHROME_START_TIMEOUT_SECONDS")
+        original_chrome = chrome_startup.webdriver.Chrome
+        original_sleep = chrome_startup.time.sleep
+        original_cleanup = chrome_startup.cleanup_worker_chrome_residue
+        calls = {"count": 0}
+        cleanups = []
+        options = object()
+        try:
+            os.environ["SELENIUM_CHROME_START_ATTEMPTS"] = "2"
+            os.environ["SELENIUM_CHROME_RETRY_DELAY_SECONDS"] = "0"
+            os.environ["SELENIUM_CHROME_START_TIMEOUT_SECONDS"] = "0.01"
+
+            def fake_chrome(options=None):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    chrome_startup.time.sleep(0.05)
+                return object()
+
+            chrome_startup.webdriver.Chrome = fake_chrome
+            chrome_startup.time.sleep = lambda seconds: None if seconds == 0 else original_sleep(seconds)
+            chrome_startup.cleanup_worker_chrome_residue = lambda options, label="Chrome": cleanups.append((options, label)) or 0
+
+            driver = chrome_startup.create_chrome_driver_with_retry(options, "case lookup")
+        finally:
+            chrome_startup.webdriver.Chrome = original_chrome
+            chrome_startup.time.sleep = original_sleep
+            chrome_startup.cleanup_worker_chrome_residue = original_cleanup
+            if previous_attempts is None:
+                os.environ.pop("SELENIUM_CHROME_START_ATTEMPTS", None)
+            else:
+                os.environ["SELENIUM_CHROME_START_ATTEMPTS"] = previous_attempts
+            if previous_delay is None:
+                os.environ.pop("SELENIUM_CHROME_RETRY_DELAY_SECONDS", None)
+            else:
+                os.environ["SELENIUM_CHROME_RETRY_DELAY_SECONDS"] = previous_delay
+            if previous_timeout is None:
+                os.environ.pop("SELENIUM_CHROME_START_TIMEOUT_SECONDS", None)
+            else:
+                os.environ["SELENIUM_CHROME_START_TIMEOUT_SECONDS"] = previous_timeout
+
+        self.assertIsNotNone(driver)
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(cleanups, [(options, "case lookup")])
+
     def test_retries_oserror_invalid_argument_startup_error(self):
         previous_attempts = os.environ.get("SELENIUM_CHROME_START_ATTEMPTS")
         previous_delay = os.environ.get("SELENIUM_CHROME_RETRY_DELAY_SECONDS")
