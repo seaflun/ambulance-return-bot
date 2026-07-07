@@ -22,7 +22,6 @@ from disinfect import login_and_get_driver
 from dotenv import load_dotenv
 
 import worker
-from ambulance_bot.chrome_launcher import open_url_in_worker_chrome
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.duty_credentials import (
     DutyCredential,
@@ -135,6 +134,13 @@ def format_worker_output_line(line: str) -> str:
         return ""
     if text == "[worker] no queued task":
         return ""
+    if text.startswith((
+        "[profiles] cleaned stale runtime profiles:",
+        "[profiles] cleaned startup-failed runtime profiles:",
+    )):
+        names_text = text.split(":", 1)[1] if ":" in text else ""
+        names = [name.strip() for name in names_text.split(",") if name.strip()]
+        return f"Chrome 清理｜已清理舊 profile {len(names)} 個"
 
     if text.startswith("[worker] manual case lookup requested "):
         range_match = re.search(r"range=([^ ]+)", text)
@@ -1186,9 +1192,6 @@ class WorkerGui(ctk.CTk):
             worker.MANUAL_TASK_ACTIVE.set()
         started_at = time.monotonic()
         try:
-            if use_session_lock and not _worker_chrome_is_running():
-                self.log_queue.put("車輛里程：預先喚起 Chrome...")
-                open_url_in_worker_chrome("about:blank")
             self.log_queue.put("車輛里程：向 NAS 取任務...")
             task = worker.fetch_task(server_url, task_id)
             self.log_queue.put(f"車輛里程：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
@@ -1240,11 +1243,6 @@ class WorkerGui(ctk.CTk):
             worker.MANUAL_TASK_ACTIVE.set()
         started_at = time.monotonic()
         try:
-            # 💡 註解掉舊的預喚起 Chrome 邏輯，因為我們會用 login_and_get_driver() 精準喚起
-            # if not _worker_chrome_is_running():
-            #     self.log_queue.put("消毒紀錄：預先喚起 Chrome...")
-            #     open_url_in_worker_chrome("about:blank")
-            
             self.log_queue.put("消毒紀錄：向 NAS 取任務...")
             task = worker.fetch_task(server_url, task_id)
             self.log_queue.put(f"消毒紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
@@ -1331,9 +1329,6 @@ class WorkerGui(ctk.CTk):
             if not request.has_fuel_record():
                 self.log_queue.put(f"加油紀錄：未勾選，略過 {task_id}")
                 return worker.make_site_result("fuel_record", "登打加油紀錄", "fuel_record_skipped", "未勾選加油紀錄，已略過。")
-            if use_session_lock and not _worker_chrome_is_running():
-                self.log_queue.put("加油紀錄：預先喚起 Chrome...")
-                open_url_in_worker_chrome("about:blank")
             self.log_queue.put(f"開始執行加油紀錄：{task_id}")
             selenium_started_at = time.monotonic()
             result = worker.run_fuel_worker_task(
@@ -1479,8 +1474,7 @@ class WorkerGui(ctk.CTk):
             if _worker_chrome_is_running():
                 self.log_queue.put("Chrome 已在背景待命。")
                 return
-            status = open_url_in_worker_chrome("about:blank")
-            self.log_queue.put(f"Chrome 已預先啟動：{status}")
+            self.log_queue.put("Chrome 預先啟動已略過。")
         except Exception as exc:
             self.log_queue.put(f"Chrome 預先啟動失敗：{exc}")
 

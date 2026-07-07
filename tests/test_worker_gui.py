@@ -239,6 +239,19 @@ class WorkerGuiEnvTests(unittest.TestCase):
             "",
         )
 
+    def test_profile_cleanup_output_is_gui_readable(self):
+        self.assertEqual(
+            worker_gui.format_worker_output_line(
+                "[profiles] cleaned stale runtime profiles: case_lookup_profile_1, chrome_profile, worker_browser_profile"
+            ),
+            "Chrome 清理｜已清理舊 profile 3 個",
+        )
+
+    def test_worker_gui_does_not_open_blank_chrome_window(self):
+        source = Path(worker_gui.__file__).read_text(encoding="utf-8")
+
+        self.assertNotIn('open_url_in_worker_chrome("about:blank")', source)
+
     def test_gui_log_message_uses_single_compact_format(self):
         self.assertEqual(
             worker_gui.format_gui_log_message("面板已啟動。", now="12:34:56"),
