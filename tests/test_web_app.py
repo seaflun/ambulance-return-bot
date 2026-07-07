@@ -2457,6 +2457,54 @@ class WebAppTests(unittest.TestCase):
         self.assertFalse(lock_path.exists())
         cleanup.assert_called_once_with()
 
+    def test_task_detail_hides_entry_buttons_while_task_is_active(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("consumables", "一站通耗材", "consumables_running", "running"),
+        )
+
+        response = self.client.get(f"/tasks/{task_id}", base_url="http://127.0.0.1:8080")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn(f'action="/tasks/{task_id}/abort"', body)
+        self.assertNotIn("四站登打啟動", body)
+        self.assertNotIn("五站登打啟動", body)
+        self.assertNotIn("單獨登打", body)
+
+    def test_localhost_run_does_not_start_new_runner_when_task_is_active(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("consumables", "一站通耗材", "consumables_running", "running"),
+        )
+
+        response = self.client.post(f"/tasks/{task_id}/run", base_url="http://127.0.0.1:8080", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(app_module.desktop_runner.started, [])
+
+    def test_localhost_single_site_run_does_not_start_new_runner_when_task_is_active(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("consumables", "一站通耗材", "consumables_running", "running"),
+        )
+
+        response = self.client.post(
+            f"/tasks/{task_id}/sites/disinfection/run",
+            base_url="http://127.0.0.1:8080",
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(app_module.desktop_runner.started_sites, [])
+
     def test_localhost_single_site_run_uses_desktop_fast_runner(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         create_response = self.client.post("/tasks", data=self.valid_task_data())

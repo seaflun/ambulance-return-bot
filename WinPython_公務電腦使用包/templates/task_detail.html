@@ -334,13 +334,14 @@
     </header>
 
     <section class="task-section" aria-label="任務內容">
+      {% set task_active = task_payload_is_active(payload) %}
       <div class="task-submit">
-        {% if show_task_entry_controls() and task_payload_is_active(payload) %}
+        {% if show_task_entry_controls() and task_active %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/abort">
             <button class="secondary" type="submit">中止登打</button>
           </form>
         {% endif %}
-        {% if show_task_entry_controls() %}
+        {% if show_task_entry_controls() and not task_active %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
             <button type="submit">{{ task_site_count_label(payload.task) }}登打啟動</button>
           </form>
@@ -357,7 +358,7 @@
           <div class="card-head">
             <h3>工作</h3>
             <div class="card-state">
-              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'duty_work_log') %}
+              {% if show_task_entry_controls() and not task_active and site_can_run_individually(payload.site_statuses, 'duty_work_log') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/duty_work_log/run">
                   <button class="secondary" type="submit">{{ site_action_button_label(duty_site.status, 'duty_work_log') }}</button>
                 </form>
@@ -387,7 +388,7 @@
           <div class="card-head">
             <h3>{{ '里程+加油' if task_has_fuel_record(payload.task) else '里程' }}</h3>
             <div class="card-state">
-              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, mileage_run_site_key) %}
+              {% if show_task_entry_controls() and not task_active and site_can_run_individually(payload.site_statuses, mileage_run_site_key) %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/{{ mileage_run_site_key }}/run">
                   <button class="secondary" type="submit">{{ site_action_button_label(mileage_site.status, mileage_run_site_key) }}</button>
                 </form>
@@ -423,7 +424,7 @@
           <div class="card-head">
             <h3>耗材</h3>
             <div class="card-state">
-              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'consumables') %}
+              {% if show_task_entry_controls() and not task_active and site_can_run_individually(payload.site_statuses, 'consumables') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/consumables/run">
                   <button class="secondary" type="submit">{{ site_action_button_label(consumables_site.status, 'consumables') }}</button>
                 </form>
@@ -454,7 +455,7 @@
           <div class="card-head">
             <h3>消毒</h3>
             <div class="card-state">
-              {% if show_task_entry_controls() and site_can_run_individually(payload.site_statuses, 'disinfection') %}
+              {% if show_task_entry_controls() and not task_active and site_can_run_individually(payload.site_statuses, 'disinfection') %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/disinfection/run">
                   <button class="secondary" type="submit">{{ site_action_button_label(disinfection_site.status, 'disinfection') }}</button>
                 </form>

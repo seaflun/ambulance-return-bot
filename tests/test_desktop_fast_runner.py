@@ -361,6 +361,25 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertIn("\u6551\u8b77\u5bc6\u9304\u5668\u53ca\u884c\u8eca\u7d00\u9304\u5668", detail)
             self.assertNotIn("\u6551\u8b77\u767b\u9304\u5668", detail)
 
+    def test_runner_blocks_second_start_for_same_task_while_first_run_is_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-active",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="\u65b0\u576191",
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch("ambulance_bot.desktop_fast_runner.threading.Thread") as thread_mock:
+                runner.start_site("task-active", "consumables")
+                runner.start_site("task-active", "vehicle_mileage")
+                runner.start_existing("task-active")
+
+            self.assertEqual(thread_mock.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

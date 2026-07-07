@@ -289,6 +289,13 @@ def run_task(task_id: str):
         payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    if task_payload_is_active(payload):
+        store.set_overall_status(
+            task_id,
+            effective_task_status(payload),
+            "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
+        )
+        return redirect(url_for("task_detail", task_id=task_id))
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
         report_public_pc_task_event(payload, f"按下{task_site_count_label(payload.get('task') or {})}登打")
@@ -311,6 +318,13 @@ def run_task_site(task_id: str, site_key: str):
         abort(404)
     if site_key == "fuel_record" and not task_has_fuel_record(payload.get("task") or {}):
         store.set_overall_status(task_id, "desktop_fast_unavailable", "此任務未勾選加油紀錄，已略過加油登打。")
+        return redirect(url_for("task_detail", task_id=task_id))
+    if task_payload_is_active(payload):
+        store.set_overall_status(
+            task_id,
+            effective_task_status(payload),
+            "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
+        )
         return redirect(url_for("task_detail", task_id=task_id))
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":

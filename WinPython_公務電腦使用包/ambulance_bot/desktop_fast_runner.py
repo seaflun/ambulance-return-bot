@@ -83,7 +83,7 @@ class DesktopFastRunner:
 
     def start_existing(self, task_id: str) -> str:
         with self._lock:
-            if task_id in self._running:
+            if self._task_running_locked(task_id):
                 return task_id
             self._running.add(task_id)
         thread = threading.Thread(target=self._run, args=(task_id,), daemon=True)
@@ -95,12 +95,16 @@ class DesktopFastRunner:
             raise KeyError(site_key)
         run_key = f"{task_id}:{site_key}"
         with self._lock:
-            if run_key in self._running:
+            if self._task_running_locked(task_id):
                 return task_id
             self._running.add(run_key)
         thread = threading.Thread(target=self._run_single_site, args=(task_id, site_key, run_key), daemon=True)
         thread.start()
         return task_id
+
+    def _task_running_locked(self, task_id: str) -> bool:
+        prefix = f"{task_id}:"
+        return task_id in self._running or any(key.startswith(prefix) for key in self._running)
 
     def wait_for_idle(self, timeout_seconds: float = 5.0) -> bool:
         import time
