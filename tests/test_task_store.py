@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -101,6 +102,35 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(aborted["site_statuses"]["vehicle_mileage"]["detail"], "使用者中止登打。")
             self.assertEqual(aborted["site_attempts"]["vehicle_mileage"][-1]["status"], "vehicle_mileage_failed")
             self.assertEqual(aborted["events"][-1]["status"], "desktop_fast_completed_with_errors")
+
+    def test_expire_stale_running_sites_marks_old_running_site_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="task-stale", created_at=datetime.now(), raw_text="")
+            store.create(request)
+            store.set_overall_status("task-stale", "desktop_fast_running", "running")
+            store.update_site_result(
+                "task-stale",
+                SiteAutomationResult("consumables", "一站通耗材", "consumables_running", "running"),
+            )
+            path = store.path_for("task-stale")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["site_statuses"]["consumables"]["updated_at"] = (
+                datetime.now() - timedelta(minutes=11)
+            ).isoformat(timespec="seconds")
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            expired = store.expire_stale_running_sites(
+                "task-stale",
+                600,
+                "登打流程超過 10 分鐘未回報，已自動中止。",
+            )
+
+            self.assertEqual(expired["overall_status"], "desktop_fast_completed_with_errors")
+            self.assertEqual(expired["site_statuses"]["consumables"]["status"], "consumables_failed")
+            self.assertEqual(expired["site_statuses"]["consumables"]["detail"], "登打流程超過 10 分鐘未回報，已自動中止。")
+            self.assertEqual(expired["site_attempts"]["consumables"][-1]["status"], "consumables_failed")
+            self.assertEqual(expired["events"][-1]["status"], "desktop_fast_completed_with_errors")
 
     def test_site_result_records_failure_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:

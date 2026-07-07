@@ -1,11 +1,13 @@
-import tempfile
-import unittest
 import json
+import os
+import tempfile
+import time
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 import worker as worker_module
-from ambulance_bot.manual_task_lock import set_manual_task_lock
+from ambulance_bot.manual_task_lock import manual_task_lock_active, manual_task_lock_path, set_manual_task_lock
 from ambulance_bot.selenium_local import DutyCaseLookupResult
 
 
@@ -15,6 +17,25 @@ class WorkerTests(unittest.TestCase):
         right = [{"address": "A", "case_id": "1"}, {"address": "B", "case_id": "2"}]
 
         self.assertEqual(worker_module.hash_cases(left), worker_module.hash_cases(right))
+
+    def test_manual_task_lock_defaults_to_ten_minute_expiry(self):
+        original_max_age = os.environ.get("MANUAL_TASK_LOCK_MAX_AGE_SECONDS")
+        try:
+            os.environ.pop("MANUAL_TASK_LOCK_MAX_AGE_SECONDS", None)
+            with tempfile.TemporaryDirectory() as tmp:
+                artifacts_dir = Path(tmp)
+                set_manual_task_lock(artifacts_dir, "test")
+                lock_path = manual_task_lock_path(artifacts_dir)
+                old_time = time.time() - 601
+                os.utime(lock_path, (old_time, old_time))
+
+                self.assertFalse(manual_task_lock_active(artifacts_dir))
+                self.assertFalse(lock_path.exists())
+        finally:
+            if original_max_age is None:
+                os.environ.pop("MANUAL_TASK_LOCK_MAX_AGE_SECONDS", None)
+            else:
+                os.environ["MANUAL_TASK_LOCK_MAX_AGE_SECONDS"] = original_max_age
 
     def test_main_defaults_scheduled_case_lookup_to_thirty_minutes(self):
         env_keys = ["CASE_LOOKUP_INTERVAL_SECONDS", "WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]

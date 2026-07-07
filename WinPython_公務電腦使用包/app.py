@@ -27,7 +27,7 @@ from ambulance_bot.duty_credentials import (
 )
 from ambulance_bot.login_audit import compact_login_account_summary, site_login_account_summaries
 from ambulance_bot.line_api import reply_text, verify_signature
-from ambulance_bot.manual_task_lock import clear_manual_task_lock
+from ambulance_bot.manual_task_lock import clear_manual_task_lock, manual_task_lock_max_age_seconds
 from ambulance_bot.models import (
     AmbulanceReturnRequest,
     CASE_REASON_OPTIONS,
@@ -98,6 +98,7 @@ SITE_UPDATE_BUTTON_LABELS = {
     "disinfection": "更新消毒",
 }
 CONSUMABLE_PACKAGE_KEYS = {"glucose", "iv", "io", "ecg", "ohca"}
+STALE_RUNNING_TASK_DETAIL = "登打流程超過 10 分鐘未回報，已自動中止；請先修復 Chrome 或重新啟動 Worker 後再重試。"
 
 class _WorkerBrowserCleanupOptions:
     def __init__(self, arguments: list[str]) -> None:
@@ -128,7 +129,7 @@ def new_task():
         form_action=url_for("create_task"),
         submit_label="建立任務",
         cancel_url="",
-        recent_tasks=store.list_recent(limit=5),
+        recent_tasks=refresh_recent_tasks(store.list_recent(limit=5)),
         case_lookup=prepared_case_lookup(),
         selected_case=selected_case,
         vehicle_options=vehicle_options(artifacts_dir),
@@ -192,7 +193,7 @@ def create_task():
             form_action=url_for("create_task"),
             submit_label="建立任務",
             cancel_url="",
-            recent_tasks=store.list_recent(limit=5),
+            recent_tasks=refresh_recent_tasks(store.list_recent(limit=5)),
             case_lookup=prepared_case_lookup(),
             form_errors=errors,
             baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
@@ -271,6 +272,7 @@ def task_detail(task_id: str):
         payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    payload = refresh_stale_running_task(payload)
     return render_template("task_detail.html", payload=payload, site_can_run_individually=site_can_run_individually)
 
 
@@ -289,6 +291,7 @@ def run_task(task_id: str):
         payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    payload = refresh_stale_running_task(payload)
     if task_payload_is_active(payload):
         store.set_overall_status(
             task_id,
@@ -316,6 +319,7 @@ def run_task_site(task_id: str, site_key: str):
         payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    payload = refresh_stale_running_task(payload)
     if site_key == "fuel_record" and not task_has_fuel_record(payload.get("task") or {}):
         store.set_overall_status(task_id, "desktop_fast_unavailable", "此任務未勾選加油紀錄，已略過加油登打。")
         return redirect(url_for("task_detail", task_id=task_id))
@@ -510,7 +514,7 @@ def worker_tasks():
         limit = max(1, min(int(limit_text), 50))
     except ValueError:
         limit = 20
-    return jsonify({"ok": True, "tasks": store.list_recent(limit)})
+    return jsonify({"ok": True, "tasks": refresh_recent_tasks(store.list_recent(limit))})
 
 
 @app.get("/worker/tasks/<task_id>")
@@ -521,6 +525,7 @@ def worker_task(task_id: str):
         payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    payload = refresh_stale_running_task(payload)
     return jsonify({"ok": True, "payload": payload, "task": payload["task"]})
 
 
@@ -1607,6 +1612,26 @@ def effective_task_status(payload: dict) -> str:
 
 def task_payload_is_active(payload: dict) -> bool:
     return status_class(effective_task_status(payload)) == "running"
+
+
+def refresh_stale_running_task(payload: dict) -> dict:
+    if not task_payload_is_active(payload):
+        return payload
+    task = payload.get("task")
+    if not isinstance(task, dict):
+        return payload
+    task_id = str(task.get("task_id") or "").strip()
+    if not task_id:
+        return payload
+    refreshed = store.expire_stale_running_sites(task_id, manual_task_lock_max_age_seconds(), STALE_RUNNING_TASK_DETAIL)
+    if task_payload_is_active(payload) and not task_payload_is_active(refreshed) and request_is_local_host():
+        clear_manual_task_lock(artifacts_dir)
+        cleanup_active_worker_browsers()
+    return refreshed
+
+
+def refresh_recent_tasks(recent_tasks: list[dict]) -> list[dict]:
+    return [refresh_stale_running_task(dict(item or {})) for item in recent_tasks]
 
 
 def recent_tasks_need_refresh(recent_tasks: list[dict]) -> bool:

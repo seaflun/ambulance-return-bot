@@ -2487,6 +2487,29 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(app_module.desktop_runner.started, [])
 
+    def test_localhost_run_expires_stale_running_task_before_starting_new_runner(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("consumables", "一站通耗材", "consumables_running", "running"),
+        )
+        path = self.store.path_for(task_id)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["site_statuses"]["consumables"]["updated_at"] = (
+            datetime.now() - timedelta(minutes=11)
+        ).isoformat(timespec="seconds")
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        with mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=1, create=True) as cleanup:
+            response = self.client.post(f"/tasks/{task_id}/run", base_url="http://127.0.0.1:8080", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(app_module.desktop_runner.started, [task_id])
+        self.assertEqual(self.store.get(task_id)["overall_status"], "desktop_fast_running")
+        cleanup.assert_called_once_with()
+
     def test_localhost_single_site_run_does_not_start_new_runner_when_task_is_active(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         create_response = self.client.post("/tasks", data=self.valid_task_data())

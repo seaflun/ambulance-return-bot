@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 
 
+DEFAULT_MANUAL_TASK_LOCK_MAX_AGE_SECONDS = 600
+
+
 def manual_task_lock_path(artifacts_dir: Path) -> Path:
     return artifacts_dir / "manual_task_active.lock"
 
@@ -35,16 +38,24 @@ def clear_manual_task_lock(artifacts_dir: Path, owner: str = "") -> None:
         pass
 
 
+def manual_task_lock_max_age_seconds() -> int:
+    raw_value = os.getenv("MANUAL_TASK_LOCK_MAX_AGE_SECONDS", str(DEFAULT_MANUAL_TASK_LOCK_MAX_AGE_SECONDS))
+    try:
+        return max(60, int(raw_value))
+    except ValueError:
+        return DEFAULT_MANUAL_TASK_LOCK_MAX_AGE_SECONDS
+
+
 def manual_task_lock_active(artifacts_dir: Path) -> bool:
     path = manual_task_lock_path(artifacts_dir)
     if not path.exists():
         return False
-    max_age_seconds = int(os.getenv("MANUAL_TASK_LOCK_MAX_AGE_SECONDS", "14400"))
+    max_age_seconds = manual_task_lock_max_age_seconds()
     try:
         age_seconds = time.time() - path.stat().st_mtime
     except OSError:
         return False
-    if age_seconds > max(max_age_seconds, 60):
+    if age_seconds > max_age_seconds:
         clear_manual_task_lock(artifacts_dir)
         return False
     return True
