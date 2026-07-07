@@ -250,6 +250,50 @@ class JsonTaskStore:
             self.save_payload(task_id, payload)
             return payload
 
+    def abort_running_task(self, task_id: str, detail: str = "使用者中止登打。") -> dict[str, Any]:
+        with self._lock:
+            payload = self.get(task_id)
+            site_statuses = payload.get("site_statuses")
+            attempts = site_attempts(payload)
+            aborted_sites = 0
+            if isinstance(site_statuses, dict):
+                for site_key, site in site_statuses.items():
+                    if not isinstance(site, dict):
+                        continue
+                    status = str(site.get("status") or "")
+                    if "running" not in status:
+                        continue
+                    failed_status = f"{site_key}_failed"
+                    site["status"] = failed_status
+                    site["detail"] = detail
+                    site["updated_at"] = now_text()
+                    for field in DIAGNOSTIC_FIELDS:
+                        site[field] = ""
+                    attempts.setdefault(site_key, []).append(
+                        {
+                            "attempt_id": str(uuid4()),
+                            "time": now_text(),
+                            "status": failed_status,
+                            "detail": detail,
+                            "site_name": str(site.get("name") or site_key),
+                            **{field: "" for field in DIAGNOSTIC_FIELDS},
+                        }
+                    )
+                    aborted_sites += 1
+            overall_status = str(payload.get("overall_status") or "")
+            queue_state = worker_queue_state(payload)
+            if aborted_sites or "running" in overall_status or queue_state.get("status") in {"queued", "claimed"}:
+                payload["overall_status"] = "desktop_fast_completed_with_errors"
+                if queue_state.get("status") in {"queued", "claimed"}:
+                    queue_state["status"] = "completed"
+                    queue_state["completed_at"] = now_text()
+                    queue_state["last_error"] = detail
+                payload["worker_queue"] = queue_state
+                payload["site_attempts"] = attempts
+                self.add_event_to_payload(payload, "desktop_fast_completed_with_errors", detail)
+                self.save_payload(task_id, payload)
+            return payload
+
     def delete(self, task_id: str) -> None:
         path = self.path_for(task_id)
         with self._lock:

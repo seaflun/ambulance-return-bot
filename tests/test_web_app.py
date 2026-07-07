@@ -8,6 +8,7 @@ import unittest
 import urllib.error
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 import app as app_module
 import ambulance_bot.selenium_local as selenium_local_module
@@ -2432,6 +2433,29 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertIn("window.location.reload()", body)
+        self.assertIn(f'action="/tasks/{task_id}/abort"', body)
+
+    def test_abort_running_task_stops_active_status_and_worker_browsers(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.set_overall_status(task_id, "desktop_fast_running", "running")
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_running", "running"),
+        )
+        lock_path = app_module.artifacts_dir / "manual_task_active.lock"
+        lock_path.write_text('{"owner":"desktop_fast:test"}', encoding="utf-8")
+
+        with mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=2, create=True) as cleanup:
+            response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+        payload = self.store.get(task_id)
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(app_module.task_payload_is_active(payload))
+        self.assertEqual(payload["overall_status"], "desktop_fast_completed_with_errors")
+        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_failed")
+        self.assertFalse(lock_path.exists())
+        cleanup.assert_called_once_with()
 
     def test_localhost_single_site_run_uses_desktop_fast_runner(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"

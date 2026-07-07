@@ -83,6 +83,25 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(attempts[0]["detail"], "login failed")
             self.assertEqual(attempts[1]["detail"], "retry ok")
 
+    def test_abort_running_task_marks_running_sites_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="task-abort", created_at=datetime.now(), raw_text="")
+            store.create(request)
+            store.set_overall_status("task-abort", "desktop_fast_running", "running")
+            store.update_site_result(
+                "task-abort",
+                SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_running", "running"),
+            )
+
+            aborted = store.abort_running_task("task-abort", "使用者中止登打。")
+
+            self.assertEqual(aborted["overall_status"], "desktop_fast_completed_with_errors")
+            self.assertEqual(aborted["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_failed")
+            self.assertEqual(aborted["site_statuses"]["vehicle_mileage"]["detail"], "使用者中止登打。")
+            self.assertEqual(aborted["site_attempts"]["vehicle_mileage"][-1]["status"], "vehicle_mileage_failed")
+            self.assertEqual(aborted["events"][-1]["status"], "desktop_fast_completed_with_errors")
+
     def test_site_result_records_failure_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))

@@ -335,6 +335,11 @@
 
     <section class="task-section" aria-label="任務內容">
       <div class="task-submit">
+        {% if show_task_entry_controls() and task_payload_is_active(payload) %}
+          <form method="post" action="/tasks/{{ payload.task.task_id }}/abort">
+            <button class="secondary" type="submit">中止登打</button>
+          </form>
+        {% endif %}
         {% if show_task_entry_controls() %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
             <button type="submit">{{ task_site_count_label(payload.task) }}登打啟動</button>

@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, url_for
 
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
+from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
 from ambulance_bot.duty_credentials import (
@@ -26,6 +27,7 @@ from ambulance_bot.duty_credentials import (
 )
 from ambulance_bot.login_audit import compact_login_account_summary, site_login_account_summaries
 from ambulance_bot.line_api import reply_text, verify_signature
+from ambulance_bot.manual_task_lock import clear_manual_task_lock
 from ambulance_bot.models import (
     AmbulanceReturnRequest,
     CASE_REASON_OPTIONS,
@@ -46,6 +48,7 @@ from ambulance_bot.models import (
     vehicle_options,
     vehicle_ppe_names,
 )
+from ambulance_bot.profile_paths import runtime_profile_root
 from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, SITE_STAGE_DEFINITIONS, merge_diagnostic_fields
 from ambulance_bot.sinposmart_backend import (
     SinpoSmartBackendStore,
@@ -95,6 +98,19 @@ SITE_UPDATE_BUTTON_LABELS = {
     "disinfection": "更新消毒",
 }
 CONSUMABLE_PACKAGE_KEYS = {"glucose", "iv", "io", "ecg", "ohca"}
+
+class _WorkerBrowserCleanupOptions:
+    def __init__(self, arguments: list[str]) -> None:
+        self.arguments = arguments
+
+
+def cleanup_active_worker_browsers() -> int:
+    arguments = [f"--user-data-dir={runtime_profile_root()}"]
+    debugger_port = os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223").strip()
+    if debugger_port:
+        arguments.append(f"--remote-debugging-port={debugger_port}")
+    return cleanup_worker_chrome_residue(_WorkerBrowserCleanupOptions(arguments), "manual abort")
+
 
 @app.get("/")
 def index():
@@ -314,6 +330,18 @@ def complete_site(task_id: str, site_key: str):
     try:
         store.mark_site_completed(task_id, site_key)
     except (FileNotFoundError, KeyError):
+        abort(404)
+    return redirect(url_for("task_detail", task_id=task_id))
+
+
+@app.post("/tasks/<task_id>/abort")
+def abort_task(task_id: str):
+    killed = cleanup_active_worker_browsers()
+    clear_manual_task_lock(artifacts_dir)
+    detail = f"使用者中止登打；已關閉 {killed} 個 Chrome/ChromeDriver 程序。"
+    try:
+        store.abort_running_task(task_id, detail)
+    except FileNotFoundError:
         abort(404)
     return redirect(url_for("task_detail", task_id=task_id))
 
