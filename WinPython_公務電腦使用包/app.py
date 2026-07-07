@@ -4,6 +4,8 @@ import json
 import os
 import re
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -103,6 +105,10 @@ STALE_RUNNING_TASK_DETAIL = "登打流程超過 10 分鐘未回報，已自動�
 class _WorkerBrowserCleanupOptions:
     def __init__(self, arguments: list[str]) -> None:
         self.arguments = arguments
+
+
+class CaseLookupProcessTimeout(TimeoutError):
+    pass
 
 
 def cleanup_active_worker_browsers() -> int:
@@ -1306,11 +1312,126 @@ def start_local_case_lookup(lookup_range: str) -> threading.Thread:
     return thread
 
 
-def run_local_case_lookup(lookup_range: str) -> None:
-    from ambulance_bot.selenium_local import query_duty_emergency_cases
-
+def case_lookup_process_timeout_seconds() -> float:
     try:
-        result = query_duty_emergency_cases(artifacts_dir, lookup_range=lookup_range)
+        return max(30.0, float(os.getenv("CASE_LOOKUP_PROCESS_TIMEOUT_SECONDS", "150")))
+    except ValueError:
+        return 150.0
+
+
+def case_lookup_cleanup_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(os.getenv("CASE_LOOKUP_CLEANUP_TIMEOUT_SECONDS", "10")))
+    except ValueError:
+        return 10.0
+
+
+def run_case_lookup_query(lookup_range: str):
+    from ambulance_bot.selenium_local import DutyCaseLookupResult
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "ambulance_bot.case_lookup_runner",
+        "--artifacts-dir",
+        str(artifacts_dir),
+        "--lookup-range",
+        lookup_range,
+    ]
+    timeout = case_lookup_process_timeout_seconds()
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(Path(__file__).resolve().parent),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _relay_case_lookup_child_output(exc.output, exc.stderr)
+        raise CaseLookupProcessTimeout(f"案件查詢啟動 Chrome/查詢程序超過 {timeout:g} 秒未完成，已中止。") from exc
+
+    _relay_case_lookup_child_output(completed.stdout, completed.stderr)
+    payload = read_case_lookup()
+    cases = payload.get("cases") if isinstance(payload.get("cases"), list) else []
+    if not payload:
+        status = "case_lookup_failed"
+        detail = f"案件查詢子程序未產生結果，退出碼 {completed.returncode}"
+    else:
+        status = str(payload.get("status") or "case_lookup_failed")
+        detail = str(payload.get("detail") or "")
+    ok = completed.returncode == 0 and status == "cases_loaded"
+    return DutyCaseLookupResult(ok, status, detail, cases, artifacts_dir / "cases" / "latest.json")
+
+
+def _relay_case_lookup_child_output(stdout: object, stderr: object) -> None:
+    for line in _process_output_lines(stdout):
+        print(line, flush=True)
+    for line in _process_output_lines(stderr):
+        print(line, flush=True)
+
+
+def _process_output_lines(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+    return [line for line in text.splitlines() if line.strip()]
+
+
+def cleanup_case_lookup_timeout_residue() -> int:
+    result: dict[str, int | Exception] = {"killed": 0}
+
+    def _cleanup() -> None:
+        try:
+            result["killed"] = cleanup_worker_chrome_residue(
+                _WorkerBrowserCleanupOptions([f"--user-data-dir={runtime_profile_root()}"]),
+                "case lookup timeout",
+                include_generated_profiles=True,
+                profile_root=runtime_profile_root(),
+            )
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=_cleanup, name="case-lookup-cleanup", daemon=True)
+    thread.start()
+    thread.join(case_lookup_cleanup_timeout_seconds())
+    if thread.is_alive():
+        print("[worker] case lookup cleanup still running in background", flush=True)
+        return 0
+    error = result.get("error")
+    if isinstance(error, Exception):
+        print(f"[worker] case lookup cleanup skipped: {error}", flush=True)
+        return 0
+    return int(result.get("killed") or 0)
+
+
+def run_local_case_lookup(lookup_range: str) -> None:
+    try:
+        result = run_case_lookup_query(lookup_range)
+    except CaseLookupProcessTimeout as exc:
+        killed = cleanup_case_lookup_timeout_residue()
+        detail = str(exc) or "Chrome startup timed out"
+        if killed:
+            detail = f"{detail} 已清理 {killed} 個殘留 Chrome/ChromeDriver。"
+        payload = {
+            "status": "case_lookup_timeout",
+            "detail": detail,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "lookup_range": lookup_range,
+            "source": "local_public_duty_pc",
+            "case_hash": "",
+            "case_count": 0,
+            "cases": [],
+        }
+        write_json_atomic(artifacts_dir / "cases" / "latest.json", payload)
+        mark_case_lookup_request_failed(payload)
+        print(f"[worker] case lookup result status=case_lookup_timeout count=0 detail={detail}", flush=True)
+        return
     except Exception as exc:
         payload = {
             "status": "case_lookup_failed",

@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -56,6 +57,9 @@ class WebAppTests(unittest.TestCase):
         self.original_start_local_case_lookup = app_module.start_local_case_lookup
         self.original_write_case_lookup_request = app_module.write_case_lookup_request
         self.original_local_host_candidates = app_module.local_host_candidates
+        self.original_run_case_lookup_query = getattr(app_module, "run_case_lookup_query", None)
+        self.original_cleanup_worker_chrome_residue = app_module.cleanup_worker_chrome_residue
+        self.original_subprocess_run = getattr(getattr(app_module, "subprocess", subprocess), "run", subprocess.run)
         self.original_query_duty_emergency_cases = selenium_local_module.query_duty_emergency_cases
         os.environ["WORKER_TOKEN"] = ""
         os.environ["CREDENTIAL_SYNC_TOKEN"] = ""
@@ -100,6 +104,14 @@ class WebAppTests(unittest.TestCase):
         app_module.start_local_case_lookup = self.original_start_local_case_lookup
         app_module.write_case_lookup_request = self.original_write_case_lookup_request
         app_module.local_host_candidates = self.original_local_host_candidates
+        if self.original_run_case_lookup_query is None:
+            if hasattr(app_module, "run_case_lookup_query"):
+                delattr(app_module, "run_case_lookup_query")
+        else:
+            app_module.run_case_lookup_query = self.original_run_case_lookup_query
+        app_module.cleanup_worker_chrome_residue = self.original_cleanup_worker_chrome_residue
+        if hasattr(app_module, "subprocess"):
+            app_module.subprocess.run = self.original_subprocess_run
         app_module._case_lookup_start_error = ""
         selenium_local_module.query_duty_emergency_cases = self.original_query_duty_emergency_cases
         self._restore_env("CREDENTIAL_SYNC_TOKEN", self.original_credential_sync_token)
@@ -2005,7 +2017,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_run_local_case_lookup_writes_cases_and_completes_request(self):
-        def fake_query(artifacts_dir: Path, lookup_range: str = "24h") -> DutyCaseLookupResult:
+        def fake_query(lookup_range: str = "24h") -> DutyCaseLookupResult:
             cases = [{"case_id": "case-1", "address": "addr"}]
             payload = {
                 "status": "cases_loaded",
@@ -2013,11 +2025,12 @@ class WebAppTests(unittest.TestCase):
                 "updated_at": "2026-06-07T20:00:00",
                 "cases": cases,
             }
-            path = artifacts_dir / "cases" / "latest.json"
+            path = app_module.artifacts_dir / "cases" / "latest.json"
             app_module.write_json_atomic(path, payload)
             return DutyCaseLookupResult(True, "cases_loaded", "loaded", cases, path)
 
-        selenium_local_module.query_duty_emergency_cases = fake_query
+        app_module.run_case_lookup_query = fake_query
+        selenium_local_module.query_duty_emergency_cases = lambda *args, **kwargs: self.fail("run_local_case_lookup should use run_case_lookup_query")
         app_module.write_case_lookup_request("24h")
 
         output = io.StringIO()
@@ -2033,10 +2046,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("[worker] case lookup result status=cases_loaded count=1", output.getvalue())
 
     def test_run_local_case_lookup_failure_clears_running_request(self):
-        def fake_query(artifacts_dir: Path, lookup_range: str = "24h") -> DutyCaseLookupResult:
+        def fake_query(lookup_range: str = "24h") -> DutyCaseLookupResult:
             raise RuntimeError("login window stuck")
 
-        selenium_local_module.query_duty_emergency_cases = fake_query
+        app_module.run_case_lookup_query = fake_query
+        selenium_local_module.query_duty_emergency_cases = lambda *args, **kwargs: self.fail("run_local_case_lookup should use run_case_lookup_query")
         app_module.write_case_lookup_request("24h")
 
         output = io.StringIO()
@@ -2052,18 +2066,19 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("[worker] case lookup result status=case_lookup_failed count=0", output.getvalue())
 
     def test_run_local_case_lookup_non_loaded_result_clears_running_request(self):
-        def fake_query(artifacts_dir: Path, lookup_range: str = "24h") -> DutyCaseLookupResult:
+        def fake_query(lookup_range: str = "24h") -> DutyCaseLookupResult:
             payload = {
                 "status": "case_lookup_timeout",
                 "detail": "timeout",
                 "updated_at": "2026-06-18T10:40:00",
                 "cases": [],
             }
-            path = artifacts_dir / "cases" / "latest.json"
+            path = app_module.artifacts_dir / "cases" / "latest.json"
             app_module.write_json_atomic(path, payload)
             return DutyCaseLookupResult(False, "case_lookup_timeout", "timeout", [], path)
 
-        selenium_local_module.query_duty_emergency_cases = fake_query
+        app_module.run_case_lookup_query = fake_query
+        selenium_local_module.query_duty_emergency_cases = lambda *args, **kwargs: self.fail("run_local_case_lookup should use run_case_lookup_query")
         app_module.write_case_lookup_request("24h")
 
         output = io.StringIO()
@@ -2077,6 +2092,71 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(completed["status"], "case_lookup_failed")
         self.assertEqual(completed["detail"], "timeout")
         self.assertIn("[worker] case lookup result status=case_lookup_timeout count=0", output.getvalue())
+
+    def test_run_local_case_lookup_timeout_clears_running_request_and_cleans_chrome(self):
+        self.assertTrue(hasattr(app_module, "CaseLookupProcessTimeout"))
+        cleanups = []
+
+        def fake_query(lookup_range: str = "24h") -> DutyCaseLookupResult:
+            raise app_module.CaseLookupProcessTimeout("Chrome startup timed out")
+
+        def fake_cleanup(options, label="Chrome", include_generated_profiles=False, profile_root=None):
+            cleanups.append((options, label, include_generated_profiles, profile_root))
+            return 2
+
+        app_module.run_case_lookup_query = fake_query
+        app_module.cleanup_worker_chrome_residue = fake_cleanup
+        selenium_local_module.query_duty_emergency_cases = lambda *args, **kwargs: self.fail("run_local_case_lookup should use run_case_lookup_query")
+        app_module.write_case_lookup_request("24h")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            app_module.run_local_case_lookup("24h")
+
+        latest = app_module.read_case_lookup()
+        self.assertEqual(latest["status"], "case_lookup_timeout")
+        self.assertEqual(latest["case_count"], 0)
+        self.assertIn("Chrome startup timed out", latest["detail"])
+        completed = app_module.read_case_lookup_request()
+        self.assertEqual(completed["status"], "case_lookup_failed")
+        self.assertEqual(completed["detail"], latest["detail"])
+        self.assertEqual(len(cleanups), 1)
+        self.assertEqual(cleanups[0][1], "case lookup timeout")
+        self.assertTrue(cleanups[0][2])
+        self.assertIn("[worker] case lookup result status=case_lookup_timeout count=0", output.getvalue())
+
+    def test_run_case_lookup_query_uses_child_process_and_reads_latest(self):
+        self.assertTrue(hasattr(app_module, "run_case_lookup_query"))
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            cases = [{"case_id": "case-child", "address": "addr"}]
+            app_module.write_json_atomic(
+                app_module.artifacts_dir / "cases" / "latest.json",
+                {
+                    "status": "cases_loaded",
+                    "detail": "loaded by child",
+                    "updated_at": "2026-07-07T11:45:00",
+                    "cases": cases,
+                },
+            )
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(cmd, 0, stdout="[child] done\n", stderr="")
+
+        app_module.subprocess.run = fake_run
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = app_module.run_case_lookup_query("24h")
+
+        self.assertEqual(result.status, "cases_loaded")
+        self.assertEqual(result.detail, "loaded by child")
+        self.assertEqual(result.cases[0]["case_id"], "case-child")
+        cmd, kwargs = calls[0]
+        self.assertEqual(cmd[1:4], ["-m", "ambulance_bot.case_lookup_runner", "--artifacts-dir"])
+        self.assertEqual(kwargs["cwd"], str(Path(app_module.__file__).resolve().parent))
+        self.assertGreaterEqual(kwargs["timeout"], 30)
+        self.assertIn("[child] done", output.getvalue())
 
     def test_app_page_stale_case_lookup_request_allows_retry(self):
         cases_dir = app_module.artifacts_dir / "cases"
