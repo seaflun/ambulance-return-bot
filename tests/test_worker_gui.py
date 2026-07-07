@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import worker_gui
 from ambulance_bot.duty_credentials import DutyCredential, load_synced_worker_credential
@@ -376,6 +377,84 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(env["DESKTOP_FAST_MODE"], "auto")
         self.assertEqual(env["PUBLIC_PC_REPORT_ENABLED"], "true")
         self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
+
+    def test_local_web_status_match_rejects_stale_version(self):
+        gui = object.__new__(worker_gui.WorkerGui)
+        current_version = worker_gui.current_package_version()
+        current_dir = str(Path(worker_gui.__file__).resolve().parent)
+
+        self.assertTrue(gui._local_web_status_matches({"app_dir": current_dir, "version": current_version}))
+        self.assertFalse(gui._local_web_status_matches({"app_dir": current_dir, "version": "1900.01.01.0000"}))
+
+    def test_start_local_web_restarts_stale_same_package_status(self):
+        class FakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+        class FakeProcess:
+            stdout = None
+
+            def poll(self):
+                return None
+
+        current_dir = str(Path(worker_gui.__file__).resolve().parent)
+        gui = object.__new__(worker_gui.WorkerGui)
+        gui.local_web_status = FakeVar()
+        gui.local_web_url = FakeVar("http://127.0.0.1:8090/app")
+        gui.local_web_process = None
+        gui._local_web_status = lambda: {"app_dir": current_dir, "version": "1900.01.01.0000"}
+        gui._log = lambda message: logs.append(message)
+        gui._start_local_web_log_reader = lambda process: readers.append(process)
+        gui.after = lambda delay, callback: after_calls.append((delay, callback))
+        logs = []
+        readers = []
+        after_calls = []
+        stop_calls = []
+        popen_calls = []
+        old_open_browser = os.environ.get("DESKTOP_WEB_OPEN_BROWSER")
+        original_stop = getattr(worker_gui, "terminate_package_local_web_processes", None)
+        original_popen = worker_gui.subprocess.Popen
+        try:
+            os.environ["DESKTOP_WEB_OPEN_BROWSER"] = "false"
+            worker_gui.terminate_package_local_web_processes = lambda: stop_calls.append(True) or 1
+            worker_gui.subprocess.Popen = lambda *args, **kwargs: popen_calls.append((args, kwargs)) or FakeProcess()
+
+            worker_gui.WorkerGui._start_local_web_app(gui)
+        finally:
+            if original_stop is None:
+                delattr(worker_gui, "terminate_package_local_web_processes")
+            else:
+                worker_gui.terminate_package_local_web_processes = original_stop
+            worker_gui.subprocess.Popen = original_popen
+            if old_open_browser is None:
+                os.environ.pop("DESKTOP_WEB_OPEN_BROWSER", None)
+            else:
+                os.environ["DESKTOP_WEB_OPEN_BROWSER"] = old_open_browser
+
+        self.assertEqual(stop_calls, [True])
+        self.assertTrue(popen_calls)
+        self.assertIs(gui.local_web_process, readers[0])
+
+    def test_relaunch_worker_gui_uses_wscript_without_cmd_start(self):
+        calls = []
+        original_popen = worker_gui.subprocess.Popen
+        try:
+            worker_gui.subprocess.Popen = lambda args, **kwargs: calls.append((args, kwargs)) or SimpleNamespace()
+
+            launched = worker_gui.relaunch_worker_gui(delay_seconds=1)
+        finally:
+            worker_gui.subprocess.Popen = original_popen
+
+        self.assertTrue(launched)
+        self.assertTrue(calls)
+        self.assertNotEqual(str(calls[0][0][0]).lower(), "cmd")
+        self.assertIn("RUN_WORKER_GUI_WINPYTHON.vbs", str(calls[0][0][-1]))
 
     def test_gui_site_helpers_follow_desktop_fast_rules(self):
         self.assertTrue(worker_gui._gui_site_is_complete("consumables_saved"))

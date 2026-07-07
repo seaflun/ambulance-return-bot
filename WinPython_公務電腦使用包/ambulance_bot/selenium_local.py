@@ -700,7 +700,7 @@ def _create_driver(
 
     options = Options()
     if headless:
-        options.add_argument(os.getenv("SELENIUM_HEADLESS_ARG", "--headless=new"))
+        options.add_argument(_chrome_headless_arg())
         options.add_argument("--window-size=1280,900")
     else:
         options.add_argument("--start-maximized")
@@ -788,7 +788,7 @@ def _remote_browser_options() -> Options | FirefoxOptions:
 
     options = Options()
     if headless:
-        options.add_argument(os.getenv("SELENIUM_HEADLESS_ARG", "--headless=new"))
+        options.add_argument(_chrome_headless_arg())
     options.add_argument("--window-size=1280,900")
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--no-sandbox")
@@ -796,6 +796,10 @@ def _remote_browser_options() -> Options | FirefoxOptions:
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
     return options
+
+
+def _chrome_headless_arg() -> str:
+    return os.getenv("SELENIUM_HEADLESS_ARG", "").strip() or "--headless=new"
 
 
 def _create_remote_driver_with_retry(remote_url: str, options: Options | FirefoxOptions, command_timeout: int) -> webdriver.Chrome:

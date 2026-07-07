@@ -661,6 +661,10 @@ class WorkerGui(ctk.CTk):
             self._log(f"本機網頁已可使用：{self.local_web_url.get()}")
             self._open_local_web_app()
             return
+        if self._local_web_status_same_package(status):
+            stopped = terminate_package_local_web_processes()
+            self._log(f"本機網頁｜已停止舊版本本機網頁程序：{stopped} 個")
+            status = None
         if status is not None:
             app_dir = str(status.get("app_dir") or "").strip() if isinstance(status, dict) else ""
             self.local_web_status.set("服務狀態：8090 已被其他套件占用")
@@ -724,6 +728,16 @@ class WorkerGui(ctk.CTk):
         return payload
 
     def _local_web_status_matches(self, status: dict[str, Any] | None) -> bool:
+        app_dir = str(status.get("app_dir") or "").strip() if isinstance(status, dict) else ""
+        if not app_dir:
+            return False
+        running_version = str(status.get("version") or "").strip() if isinstance(status, dict) else ""
+        expected_version = current_package_version().strip()
+        if expected_version and running_version != expected_version:
+            return False
+        return self._local_web_status_same_package(status)
+
+    def _local_web_status_same_package(self, status: dict[str, Any] | None) -> bool:
         app_dir = str(status.get("app_dir") or "").strip() if isinstance(status, dict) else ""
         if not app_dir:
             return False
@@ -1722,8 +1736,11 @@ def relaunch_worker_gui(delay_seconds: int = 2) -> bool:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         if os.name == "nt" and launcher.exists():
-            command = f'timeout /t {max(delay_seconds, 1)} /nobreak >nul & start "" wscript.exe "{launcher}"'
-            subprocess.Popen(["cmd", "/c", command], cwd=package_dir, creationflags=creationflags)
+            if delay_seconds > 0:
+                time.sleep(max(delay_seconds, 1))
+            wscript = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "wscript.exe"
+            executable = str(wscript) if wscript.exists() else "wscript.exe"
+            subprocess.Popen([executable, str(launcher)], cwd=package_dir, creationflags=creationflags)
             return True
         subprocess.Popen([sys.executable, str(Path(__file__).resolve())], cwd=package_dir, creationflags=creationflags)
         return True
@@ -1753,6 +1770,56 @@ def local_web_base_url() -> str:
 
 def local_web_url() -> str:
     return f"{local_web_base_url()}/app"
+
+
+def terminate_package_local_web_processes() -> int:
+    if os.name != "nt":
+        return 0
+    package_dir = str(Path(__file__).resolve().parent)
+    app_path = str(Path(__file__).with_name("app.py"))
+    package_literal = package_dir.replace("'", "''")
+    app_literal = app_path.replace("'", "''")
+    script = f"""
+$packagePath = '{package_literal}'
+$appPath = '{app_literal}'
+$count = 0
+Get-CimInstance Win32_Process |
+    Where-Object {{
+        $commandLine = [string]$_.CommandLine
+        $processId = [int]$_.ProcessId
+        $commandLine -and
+        $processId -ne {os.getpid()} -and
+        (
+            $commandLine.IndexOf($appPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            (
+                $commandLine -match 'app\\.py' -and
+                $commandLine.IndexOf($packagePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+            )
+        )
+    }} |
+    ForEach-Object {{
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        $count++
+    }}
+Write-Output $count
+"""
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    for line in reversed((completed.stdout or "").splitlines()):
+        text = line.strip()
+        if text.isdigit():
+            return int(text)
+    return 0
 
 
 def chrome_executable_path() -> Path | None:
