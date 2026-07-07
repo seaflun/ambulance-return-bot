@@ -4,6 +4,7 @@ import errno
 import os
 import json
 import re
+import shlex
 import threading
 import time
 import urllib.request
@@ -700,7 +701,8 @@ def _create_driver(
 
     options = Options()
     if headless:
-        options.add_argument(_chrome_headless_arg())
+        for arg in _chrome_headless_args():
+            options.add_argument(arg)
         options.add_argument("--window-size=1280,900")
     else:
         options.add_argument("--start-maximized")
@@ -788,7 +790,8 @@ def _remote_browser_options() -> Options | FirefoxOptions:
 
     options = Options()
     if headless:
-        options.add_argument(_chrome_headless_arg())
+        for arg in _chrome_headless_args():
+            options.add_argument(arg)
     options.add_argument("--window-size=1280,900")
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--no-sandbox")
@@ -799,7 +802,15 @@ def _remote_browser_options() -> Options | FirefoxOptions:
 
 
 def _chrome_headless_arg() -> str:
-    return os.getenv("SELENIUM_HEADLESS_ARG", "").strip() or "--headless=new"
+    return next((arg for arg in _chrome_headless_args() if "headless" in arg.lower()), "--headless=new")
+
+
+def _chrome_headless_args() -> list[str]:
+    raw = os.getenv("SELENIUM_HEADLESS_ARG", "").strip()
+    args = shlex.split(raw) if raw else []
+    if not any("headless" in arg.lower() for arg in args):
+        args.insert(0, "--headless=new")
+    return args
 
 
 def _create_remote_driver_with_retry(remote_url: str, options: Options | FirefoxOptions, command_timeout: int) -> webdriver.Chrome:

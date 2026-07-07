@@ -20,6 +20,7 @@ from .window_layout import maximize_worker_site_windows
 
 
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
+MILEAGE_FUEL_PAIR = ("vehicle_mileage", "fuel_record")
 DEFAULT_RECORD_ROOT = Path(r"W:\救護硬碟\救護密錄器及行車紀錄器")
 
 
@@ -162,8 +163,11 @@ class DesktopFastRunner:
                 return
             self.store.set_overall_status(task_id, "desktop_fast_running", f"本機快速執行中：{SITE_NAMES[site_key]}。")
             self._notify(task_id, f"單站登打開始：{SITE_NAMES[site_key]}")
-            failed = self._run_site(task_id, site_key, self._site_action(request, profile_suffix, site_key))
-            if failed:
+            failures = 0
+            for current_site_key in _single_site_sequence(request, site_key):
+                if self._run_site(task_id, current_site_key, self._site_action(request, profile_suffix, current_site_key)):
+                    failures += 1
+            if failures:
                 self.store.set_overall_status(
                     task_id,
                     "desktop_fast_completed_with_errors",
@@ -417,6 +421,12 @@ def _result_with_login_audit(result, audit: str):
 def _site_is_complete(status: str) -> bool:
     value = str(status or "")
     return value == "completed_by_user" or value.endswith("_saved")
+
+
+def _single_site_sequence(request, site_key: str) -> list[str]:
+    if site_key not in MILEAGE_FUEL_PAIR or not request.has_fuel_record():
+        return [site_key]
+    return [site_key] + [key for key in MILEAGE_FUEL_PAIR if key != site_key]
 
 
 def _vehicle_site_result_is_complete(result: object) -> bool:

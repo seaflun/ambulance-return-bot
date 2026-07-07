@@ -203,6 +203,54 @@ class DesktopFastRunnerTests(unittest.TestCase):
             disinfection_mock.assert_called_once()
             acs_login_mock.assert_not_called()
 
+    def test_mileage_fuel_single_site_continues_to_other_unfinished_pair_site(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-mileage-fuel",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="\u65b0\u576193",
+                fuel_record=FuelRecord(enabled=True, date="20260707", time="1240", quantity="35.0", unit_price="30.3"),
+            )
+            store.create(request)
+            store.update_site_result(
+                "task-mileage-fuel",
+                SimpleNamespace(key="vehicle_mileage", name="\u8eca\u8f1b\u91cc\u7a0b", status="vehicle_mileage_failed", detail="retry"),
+            )
+            store.update_site_result(
+                "task-mileage-fuel",
+                SimpleNamespace(key="fuel_record", name="\u767b\u6253\u52a0\u6cb9\u7d00\u9304", status="fuel_record_failed", detail="retry"),
+            )
+            runner = DesktopFastRunner(Path(tmp), store=store)
+            calls = []
+
+            def fuel_result(*args, **kwargs):
+                calls.append("fuel_record")
+                return SimpleNamespace(ok=True, status="fuel_record_saved", detail="fuel ok")
+
+            def mileage_result(*args, **kwargs):
+                calls.append("vehicle_mileage")
+                return SimpleNamespace(ok=True, status="vehicle_mileage_saved", detail="mileage ok")
+
+            with patch(
+                "ambulance_bot.desktop_fast_runner.run_fuel_record_task",
+                side_effect=fuel_result,
+            ) as fuel_mock, patch(
+                "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
+                side_effect=mileage_result,
+            ) as mileage_mock:
+                runner.start_site("task-mileage-fuel", "fuel_record")
+                self.assertTrue(runner.wait_for_idle())
+
+            payload = store.get("task-mileage-fuel")
+            self.assertEqual(calls, ["fuel_record", "vehicle_mileage"])
+            self.assertEqual(payload["overall_status"], "desktop_fast_completed")
+            self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
+            self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
+            fuel_mock.assert_called_once()
+            mileage_mock.assert_called_once()
+
     def test_four_site_run_skips_completed_sites_and_resumes_at_failed_site(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp) / "tasks")

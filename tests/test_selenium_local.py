@@ -719,6 +719,34 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIn("--headless=new", arguments)
         self.assertNotIn("", arguments)
 
+    def test_headless_driver_keeps_headless_when_env_arg_is_not_headless(self):
+        class FakeDriver:
+            def set_page_load_timeout(self, seconds: int) -> None:
+                pass
+
+            def set_script_timeout(self, seconds: int) -> None:
+                pass
+
+        calls = []
+        original_create = selenium_local_module._create_local_driver_with_retry
+        original_headless_arg = os.environ.get("SELENIUM_HEADLESS_ARG")
+        try:
+            os.environ["SELENIUM_HEADLESS_ARG"] = "--disable-gpu"
+            selenium_local_module._create_local_driver_with_retry = lambda options: calls.append(options) or FakeDriver()
+
+            with tempfile.TemporaryDirectory() as tmp:
+                selenium_local_module._create_driver(Path(tmp), profile_name="case_lookup_profile_test", headless=True)
+        finally:
+            selenium_local_module._create_local_driver_with_retry = original_create
+            if original_headless_arg is None:
+                os.environ.pop("SELENIUM_HEADLESS_ARG", None)
+            else:
+                os.environ["SELENIUM_HEADLESS_ARG"] = original_headless_arg
+
+        arguments = list(getattr(calls[0], "arguments", []))
+        self.assertIn("--headless=new", arguments)
+        self.assertIn("--disable-gpu", arguments)
+
     def test_local_driver_retries_when_chrome_is_not_reachable(self):
         class FakeDriver:
             pass
