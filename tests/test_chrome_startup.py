@@ -266,6 +266,12 @@ class ChromeStartupTests(unittest.TestCase):
                 "Name": "chromedriver.exe",
                 "CommandLine": r'"C:\tools\chromedriver.exe" --port=51342',
             },
+            {
+                "ProcessId": 16,
+                "ParentProcessId": 1,
+                "Name": "chrome.exe",
+                "CommandLine": r'"C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir=C:\Users\User\AppData\Local\ambulance_return_bot\case_lookup_profile_123',
+            },
         ]
         original_list = chrome_startup._list_chrome_processes
         original_terminate = chrome_startup._terminate_process
@@ -283,6 +289,78 @@ class ChromeStartupTests(unittest.TestCase):
         self.assertEqual(set(killed), {11, 12, 13, 15})
         self.assertNotIn(10, killed)
         self.assertNotIn(14, killed)
+        self.assertNotIn(16, killed)
+
+    def test_repair_cleanup_targets_generated_case_lookup_profiles(self):
+        class FakeOptions:
+            arguments = []
+
+        processes = [
+            {
+                "ProcessId": 20,
+                "ParentProcessId": 1,
+                "Name": "chrome.exe",
+                "CommandLine": r'"C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir=C:\Users\User\AppData\Local\Google\Chrome\User Data',
+            },
+            {
+                "ProcessId": 21,
+                "ParentProcessId": 1,
+                "Name": "chrome.exe",
+                "CommandLine": r'"C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir=C:\Users\User\AppData\Local\ambulance_return_bot\case_lookup_profile_1783392215',
+            },
+            {
+                "ProcessId": 22,
+                "ParentProcessId": 21,
+                "Name": "chrome.exe",
+                "CommandLine": r'"C:\Program Files\Google\Chrome\Application\chrome.exe" --type=renderer',
+            },
+            {
+                "ProcessId": 23,
+                "ParentProcessId": 1,
+                "Name": "chrome.exe",
+                "CommandLine": r'"C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir=C:\Users\User\AppData\Local\ambulance_return_bot\vehicle_mileage_profile_task1',
+            },
+            {
+                "ProcessId": 24,
+                "ParentProcessId": 1,
+                "Name": "chrome.exe",
+                "CommandLine": r'"C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir=C:\Users\User\AppData\Local\other_app\case_lookup_profile_1783392215',
+            },
+            {
+                "ProcessId": 25,
+                "ParentProcessId": 1,
+                "Name": "chrome.exe",
+                "CommandLine": r'"C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir=C:\Users\User\AppData\Local\ambulance_return_bot\unrelated_profile',
+            },
+            {
+                "ProcessId": 26,
+                "ParentProcessId": 1,
+                "Name": "chromedriver.exe",
+                "CommandLine": r'"C:\tools\chromedriver.exe" --port=51342',
+            },
+        ]
+        original_list = chrome_startup._list_chrome_processes
+        original_terminate = chrome_startup._terminate_process
+        killed = []
+        try:
+            chrome_startup._list_chrome_processes = lambda: processes
+            chrome_startup._terminate_process = lambda pid: killed.append(pid) or True
+
+            count = chrome_startup.cleanup_worker_chrome_residue(
+                FakeOptions(),
+                "worker repair",
+                include_generated_profiles=True,
+                profile_root=r"C:\Users\User\AppData\Local\ambulance_return_bot",
+            )
+        finally:
+            chrome_startup._list_chrome_processes = original_list
+            chrome_startup._terminate_process = original_terminate
+
+        self.assertEqual(count, 4)
+        self.assertEqual(set(killed), {21, 22, 23, 26})
+        self.assertNotIn(20, killed)
+        self.assertNotIn(24, killed)
+        self.assertNotIn(25, killed)
 
     def test_create_chrome_driver_with_retry_schedules_auto_close_after_default_delay(self):
         previous_delay = os.environ.get("WORKER_BROWSER_AUTO_CLOSE_SECONDS")

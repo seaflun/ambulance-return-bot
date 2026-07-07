@@ -4,16 +4,24 @@ import errno
 import json
 import os
 import queue
+import re
 import signal
 import subprocess
 import threading
 import time
+from pathlib import Path, PureWindowsPath
 
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.chrome.options import Options
 
-from .profile_paths import cleanup_runtime_profiles_for_startup_failure
+from .profile_paths import (
+    GENERATED_PROFILE_NAMES,
+    GENERATED_PROFILE_PREFIXES,
+    REPAIR_BACKUP_MARKER,
+    cleanup_runtime_profiles_for_startup_failure,
+    runtime_profile_root,
+)
 
 
 STARTUP_ERROR_MARKERS = (
@@ -145,16 +153,24 @@ def _browser_auto_close_seconds() -> float:
         return 600.0
 
 
-def cleanup_worker_chrome_residue(options: Options, label: str = "Chrome") -> int:
+def cleanup_worker_chrome_residue(
+    options: Options,
+    label: str = "Chrome",
+    include_generated_profiles: bool = False,
+    profile_root: str | Path | None = None,
+) -> int:
     if os.getenv("SELENIUM_CLEANUP_CHROME_ON_STARTUP_RETRY", "true").strip().lower() in {"0", "false", "no", "off"}:
         return 0
 
     user_data_dirs = _worker_user_data_dirs(options)
     debugger_ports = _worker_debugger_ports(options)
     processes = _list_chrome_processes()
-    target_ids = _target_worker_process_ids(processes, user_data_dirs, debugger_ports)
+    target_ids = set(_target_worker_process_ids(processes, user_data_dirs, debugger_ports))
+    if include_generated_profiles:
+        target_ids.update(_target_generated_profile_process_ids(processes, profile_root))
+    parent_by_id = {_process_id(process): _parent_process_id(process) for process in processes}
     killed = 0
-    for process_id in target_ids:
+    for process_id in sorted(target_ids, key=lambda value: _process_depth(value, parent_by_id), reverse=True):
         if _terminate_process(process_id):
             killed += 1
     if killed:
@@ -251,6 +267,38 @@ def _target_worker_process_ids(processes: list[dict[str, object]], user_data_dir
     return sorted(target_ids, key=lambda process_id: _process_depth(process_id, parent_by_id), reverse=True)
 
 
+def _target_generated_profile_process_ids(processes: list[dict[str, object]], profile_root: str | Path | None = None) -> list[int]:
+    root = Path(profile_root) if profile_root is not None else runtime_profile_root()
+    root_text = _normalize_match_text(str(root)).rstrip("\\")
+    target_ids: set[int] = set()
+    cleanup_chromedriver = os.getenv("SELENIUM_CLEANUP_CHROMEDRIVER_ON_STARTUP_RETRY", "true").strip().lower() not in {"0", "false", "no", "off"}
+    for process in processes:
+        process_id = _process_id(process)
+        if process_id <= 0:
+            continue
+        name = str(process.get("Name") or "").lower()
+        command_line = str(process.get("CommandLine") or "")
+        if name == "chromedriver.exe" and cleanup_chromedriver:
+            target_ids.add(process_id)
+            continue
+        if name == "chrome.exe" and _chrome_uses_generated_profile(command_line, root_text):
+            target_ids.add(process_id)
+
+    changed = True
+    while changed:
+        changed = False
+        for process in processes:
+            process_id = _process_id(process)
+            parent_id = _parent_process_id(process)
+            name = str(process.get("Name") or "").lower()
+            if process_id > 0 and parent_id in target_ids and name in {"chrome.exe", "chromedriver.exe"} and process_id not in target_ids:
+                target_ids.add(process_id)
+                changed = True
+
+    parent_by_id = {_process_id(process): _parent_process_id(process) for process in processes}
+    return sorted(target_ids, key=lambda process_id: _process_depth(process_id, parent_by_id), reverse=True)
+
+
 def _chrome_process_matches(command_line: str, user_data_dirs: list[str], debugger_ports: set[str]) -> bool:
     normalized = _normalize_match_text(command_line)
     if any(path and path in normalized for path in user_data_dirs):
@@ -259,6 +307,40 @@ def _chrome_process_matches(command_line: str, user_data_dirs: list[str], debugg
         if f"--remote-debugging-port={port}" in normalized or f"--remote-debugging-port {port}" in normalized:
             return True
     return False
+
+
+def _chrome_uses_generated_profile(command_line: str, root_text: str) -> bool:
+    for user_data_dir in _command_line_user_data_dirs(command_line):
+        profile_text = _normalize_match_text(user_data_dir).rstrip("\\")
+        if root_text and not (profile_text == root_text or profile_text.startswith(root_text + "\\")):
+            continue
+        if _is_generated_profile_name(_path_name(user_data_dir)):
+            return True
+    return False
+
+
+def _command_line_user_data_dirs(command_line: str) -> list[str]:
+    values: list[str] = []
+    patterns = (
+        r'--user-data-dir=(?:"([^"]+)"|([^\s]+))',
+        r'--user-data-dir\s+(?:"([^"]+)"|([^\s]+))',
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, command_line, flags=re.IGNORECASE):
+            value = next((group for group in match.groups() if group), "")
+            if value:
+                values.append(value)
+    return values
+
+
+def _is_generated_profile_name(profile_name: str) -> bool:
+    source_name = profile_name.split(REPAIR_BACKUP_MARKER, 1)[0]
+    return source_name in GENERATED_PROFILE_NAMES or source_name.startswith(GENERATED_PROFILE_PREFIXES)
+
+
+def _path_name(value: str) -> str:
+    text = str(value or "").strip().strip('"')
+    return PureWindowsPath(text).name or Path(text).name
 
 
 def _list_chrome_processes() -> list[dict[str, object]]:

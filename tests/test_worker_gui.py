@@ -183,6 +183,11 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn(r"--user-data-dir=C:\Worker\profiles\worker_browser_profile", options.arguments)
         self.assertIn("--remote-debugging-port=9223", options.arguments)
 
+    def test_worker_chrome_repair_includes_case_lookup_profiles(self):
+        source = Path(worker_gui.__file__).read_text(encoding="utf-8")
+
+        self.assertIn("include_generated_profiles=True", source)
+
     def test_worker_case_lookup_output_is_gui_readable(self):
         self.assertEqual(
             worker_gui.format_worker_output_line("[worker] scheduled case lookup range=24h"),

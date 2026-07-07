@@ -759,9 +759,12 @@ class WorkerGui(ctk.CTk):
         self._log(f"已開啟檢查更新：{launcher}")
 
     def _repair_worker_chrome(self) -> None:
+        self.deiconify()
+        self.lift()
         if not messagebox.askyesno(
             "修復 Chrome",
-            "將關閉 Worker 專用 Chrome/ChromeDriver，備份 runtime profiles，並重啟 Worker GUI。\n\n不會刪除任何檔案。確定執行？",
+            "將關閉 Worker 專用 Chrome/ChromeDriver，清理 Worker 產生的 runtime profiles，並重啟 Worker GUI。\n\n不會刪除一般 Chrome 資料、書籤或程式內帳密。確定執行？",
+            parent=self,
         ):
             return
         self.worker_status.set("修復 Chrome 中")
@@ -772,7 +775,12 @@ class WorkerGui(ctk.CTk):
             self.log_queue.put("Chrome 修復｜開始")
             if self._terminate_local_web_process_for_repair():
                 self.log_queue.put("Chrome 修復｜已停止本機網頁程序")
-            killed = cleanup_worker_chrome_residue(worker_chrome_repair_options(), "worker repair")
+            killed = cleanup_worker_chrome_residue(
+                worker_chrome_repair_options(),
+                "worker repair",
+                include_generated_profiles=True,
+                profile_root=worker_chrome_profile_root(),
+            )
             self.log_queue.put(f"Chrome 修復｜已關閉殘留 Chrome/ChromeDriver：{killed} 個")
             removed_profiles = purge_worker_chrome_profiles()
             if removed_profiles:
