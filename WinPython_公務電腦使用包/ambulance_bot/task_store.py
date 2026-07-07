@@ -19,6 +19,7 @@ SUCCESS_SITE_STATUSES = {
     "disinfection_saved",
     "consumables_saved",
 }
+COMPLETED_TASK_HISTORY_HOURS = 24 * 14
 
 
 def now_text() -> str:
@@ -393,13 +394,15 @@ class JsonTaskStore:
             event.update({str(key): str(value) for key, value in extra.items()})
         payload.setdefault("events", []).append(event)
 
-    def cleanup(self, max_age_hours: int = 24) -> None:
-        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+    def cleanup(self, max_age_hours: int = 24, completed_max_age_hours: int = COMPLETED_TASK_HISTORY_HOURS) -> None:
+        active_cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        completed_cutoff = datetime.now() - timedelta(hours=completed_max_age_hours)
         for path in self.tasks_dir.glob("*.json"):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            cutoff = completed_cutoff if self._is_fully_done(payload) else active_cutoff
             if self._is_expired(payload, cutoff):
                 try:
                     path.unlink()

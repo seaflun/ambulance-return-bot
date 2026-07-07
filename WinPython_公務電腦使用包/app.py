@@ -1326,6 +1326,16 @@ def case_lookup_cleanup_timeout_seconds() -> float:
         return 10.0
 
 
+def case_lookup_process_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["SELENIUM_REMOTE_URL"] = ""
+    env["SELENIUM_DETACH"] = "false"
+    env["SELENIUM_HEADLESS"] = "true"
+    env["SELENIUM_HEADLESS_ARG"] = "--headless=new"
+    env["OPEN_LOCAL_BROWSER_ON_RUN"] = "false"
+    return env
+
+
 def run_case_lookup_query(lookup_range: str):
     from ambulance_bot.selenium_local import DutyCaseLookupResult
 
@@ -1347,6 +1357,7 @@ def run_case_lookup_query(lookup_range: str):
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=case_lookup_process_env(),
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -1905,7 +1916,7 @@ def task_site_display_pairs(task: dict) -> list[tuple[str, str]]:
     return [(site_key, SITE_DISPLAY_NAMES.get(site_key, site_key)) for site_key in active_site_keys_for_task(task)]
 
 
-def last_vehicle_mileages(limit: int = 50) -> dict[str, str]:
+def last_vehicle_mileages(limit: int = 300) -> dict[str, str]:
     mileages: dict[str, str] = {}
     for payload in store.list_recent(limit=limit):
         if not isinstance(payload, dict):

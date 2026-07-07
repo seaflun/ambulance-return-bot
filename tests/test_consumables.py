@@ -38,6 +38,12 @@ class ConsumableInventoryTests(unittest.TestCase):
             ],
         )
 
+    def test_gauze_package_item_uses_trauma_category(self):
+        options = consumable_inventory_options()
+        gauze = next(item for item in options if item["name"] == "桃-4吋紗布塊(包)")
+
+        self.assertEqual(gauze["category"], "創傷類")
+
 
 if __name__ == "__main__":
     unittest.main()

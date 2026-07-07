@@ -351,6 +351,7 @@ class WebAppTests(unittest.TestCase):
             ("io", "IO套餐"),
             ("ecg", "心電圖套餐"),
             ("ohca", "OHCA套餐"),
+            ("gauze", "紗布套餐"),
         ]:
             self.assertIn(f'data-consumable-package="{package_key}"', body)
             self.assertIn(f">{label}</button>", body)
@@ -370,6 +371,7 @@ class WebAppTests(unittest.TestCase):
             "桃-連接管-長管(條)",
             "桃-非充氣聲門上呼吸道-4號(組)",
             "桃-細菌過濾器(組)",
+            "桃-4吋紗布塊(包)",
         ]:
             self.assertIn(consumable_name, body)
         self.assertIn('<span class="package-group-label">套餐帶入</span>', body)
@@ -2155,6 +2157,11 @@ class WebAppTests(unittest.TestCase):
         cmd, kwargs = calls[0]
         self.assertEqual(cmd[1:4], ["-m", "ambulance_bot.case_lookup_runner", "--artifacts-dir"])
         self.assertEqual(kwargs["cwd"], str(Path(app_module.__file__).resolve().parent))
+        self.assertEqual(kwargs["env"]["SELENIUM_REMOTE_URL"], "")
+        self.assertEqual(kwargs["env"]["SELENIUM_DETACH"], "false")
+        self.assertEqual(kwargs["env"]["SELENIUM_HEADLESS"], "true")
+        self.assertEqual(kwargs["env"]["SELENIUM_HEADLESS_ARG"], "--headless=new")
+        self.assertEqual(kwargs["env"]["OPEN_LOCAL_BROWSER_ON_RUN"], "false")
         self.assertGreaterEqual(kwargs["timeout"], 30)
         self.assertIn("[child] done", output.getvalue())
 
@@ -2914,6 +2921,21 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="fuel_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="2026/06/07"', body)
         self.assertIn('name="fuel_date_2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="2026/06/07"', body)
         self.assertIn('value="\u8d85\u7d1a\u67f4\u6cb9"', body)
+
+    def test_last_vehicle_mileages_scans_beyond_recent_ten_tasks(self):
+        for index in range(65):
+            request = AmbulanceReturnRequest(
+                task_id=f"mileage-history-{index:02d}",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="91A1" if index == 0 else f"91B{index:02d}",
+                mileage=str(10000 + index),
+            )
+            app_module.store.create(request)
+
+        mileages = app_module.last_vehicle_mileages()
+
+        self.assertEqual(mileages["91A1"], "10000")
 
     def test_task_edit_second_vehicle_fields_mark_saved_sites_for_update(self):
         previous_request = app_module.request_from_form(

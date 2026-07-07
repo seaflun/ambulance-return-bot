@@ -204,6 +204,32 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(len(store.list_recent()), 1)
             self.assertTrue((Path(tmp) / "done-task.json").exists())
 
+    def test_cleanup_keeps_fully_done_tasks_for_mileage_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="done-history-task", created_at=datetime.now(), raw_text="")
+            payload = store.create(request)
+            for site in payload["site_statuses"].values():
+                site["status"] = "completed_by_user"
+            payload["updated_at"] = (datetime.now() - timedelta(hours=25)).isoformat(timespec="seconds")
+            store.path_for("done-history-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
+
+            self.assertEqual(len(store.list_recent()), 1)
+            self.assertTrue((Path(tmp) / "done-history-task.json").exists())
+
+    def test_cleanup_removes_fully_done_tasks_after_history_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="done-expired-task", created_at=datetime.now(), raw_text="")
+            payload = store.create(request)
+            for site in payload["site_statuses"].values():
+                site["status"] = "completed_by_user"
+            payload["updated_at"] = (datetime.now() - timedelta(days=15)).isoformat(timespec="seconds")
+            store.path_for("done-expired-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
+
+            self.assertEqual(store.list_recent(), [])
+            self.assertFalse((Path(tmp) / "done-expired-task.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -551,6 +551,7 @@
                 <button type="button" class="secondary package-button" data-consumable-package="io" data-consumable-target="1" aria-pressed="false">IO套餐</button>
                 <button type="button" class="secondary package-button" data-consumable-package="ecg" data-consumable-target="1" aria-pressed="false">心電圖套餐</button>
                 <button type="button" class="secondary package-button" data-consumable-package="ohca" data-consumable-target="1" aria-pressed="false">OHCA套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="gauze" data-consumable-target="1" aria-pressed="false">紗布套餐</button>
               </div>
             </div>
             <button type="button" class="add-consumable-button" id="add-consumable">＋ 新增耗材</button>
@@ -684,6 +685,7 @@
                   <button type="button" class="secondary package-button" data-consumable-package="io" data-consumable-target="2" aria-pressed="false">IO套餐</button>
                   <button type="button" class="secondary package-button" data-consumable-package="ecg" data-consumable-target="2" aria-pressed="false">心電圖套餐</button>
                   <button type="button" class="secondary package-button" data-consumable-package="ohca" data-consumable-target="2" aria-pressed="false">OHCA套餐</button>
+                  <button type="button" class="secondary package-button" data-consumable-package="gauze" data-consumable-target="2" aria-pressed="false">紗布套餐</button>
                 </div>
               </div>
               <button type="button" class="add-consumable-button" id="add-consumable-2">新增耗材</button>
@@ -825,6 +827,13 @@
         notes: {
           "桃-非充氣聲門上呼吸道-4號(組)": "請確認尺寸"
         }
+      },
+      gauze: {
+        label: "紗布套餐",
+        consumables: [
+          ["桃-4吋紗布塊(包)", 1]
+        ],
+        notes: {}
       }
     };
     const activeConsumablePackages = new Set();
