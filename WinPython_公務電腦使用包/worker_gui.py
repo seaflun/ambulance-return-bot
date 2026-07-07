@@ -34,7 +34,12 @@ from ambulance_bot.duty_credentials import (
     set_last_selected_duty_automation_credential,
     stable_synced_account_selection,
 )
-from ambulance_bot.profile_paths import WORKER_BROWSER_PROFILE_NAME, runtime_profile_root, worker_browser_profile_dir
+from ambulance_bot.profile_paths import (
+    WORKER_BROWSER_PROFILE_NAME,
+    cleanup_stale_runtime_profiles,
+    runtime_profile_root,
+    worker_browser_profile_dir,
+)
 
 try:
     import pystray
@@ -763,12 +768,11 @@ class WorkerGui(ctk.CTk):
                 self.log_queue.put("Chrome 修復｜已停止本機網頁程序")
             killed = cleanup_worker_chrome_residue(worker_chrome_repair_options(), "worker repair")
             self.log_queue.put(f"Chrome 修復｜已關閉殘留 Chrome/ChromeDriver：{killed} 個")
-            backups = backup_worker_chrome_profiles()
-            if backups:
-                for _source, backup in backups:
-                    self.log_queue.put(f"Chrome 修復｜profile 已備份：{backup}")
+            removed_profiles = purge_worker_chrome_profiles()
+            if removed_profiles:
+                self.log_queue.put(f"Chrome 修復｜已清理舊 Worker profile：{len(removed_profiles)} 個")
             else:
-                self.log_queue.put("Chrome 修復｜沒有需要備份的 Worker profile")
+                self.log_queue.put("Chrome 修復｜沒有需要清理的 Worker profile")
             self._log_local_status_for_repair()
             if relaunch_worker_gui():
                 self.log_queue.put("Chrome 修復｜即將重啟 Worker GUI")
@@ -1693,6 +1697,11 @@ def backup_worker_chrome_profiles(root: Path | None = None, timestamp: str | Non
         path.rename(backup)
         backups.append((path, backup))
     return backups
+
+
+def purge_worker_chrome_profiles(root: Path | None = None) -> list[Path]:
+    profile_root = root or worker_chrome_profile_root()
+    return cleanup_stale_runtime_profiles(profile_root, max_age_hours=0)
 
 
 def unique_backup_path(path: Path) -> Path:

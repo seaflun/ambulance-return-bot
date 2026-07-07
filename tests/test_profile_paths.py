@@ -104,6 +104,54 @@ class ProfilePathTests(unittest.TestCase):
             self.assertTrue(locked_profile.exists())
             self.assertEqual(output.getvalue(), "")
 
+    def test_cleanup_stale_runtime_profiles_removes_old_repair_backups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_backup = root / "case_lookup_profile_123.chrome_repair_20260705_123142"
+            worker_backup = root / "worker_browser_profile.chrome_repair_20260705_123142"
+            old_backup.mkdir()
+            worker_backup.mkdir()
+            (old_backup / "cache.dat").write_text("old", encoding="utf-8")
+            (worker_backup / "cache.dat").write_text("old", encoding="utf-8")
+            unknown_backup = root / "personal_profile.chrome_repair_20260705_123142"
+            unknown_backup.mkdir()
+            old_time = time.time() - 7200
+            os.utime(old_backup / "cache.dat", (old_time, old_time))
+            os.utime(old_backup, (old_time, old_time))
+            os.utime(worker_backup / "cache.dat", (old_time, old_time))
+            os.utime(worker_backup, (old_time, old_time))
+            os.utime(unknown_backup, (old_time, old_time))
+
+            removed = profile_paths.cleanup_stale_runtime_profiles(root, max_age_hours=1)
+
+            self.assertEqual(
+                {path.name for path in removed},
+                {
+                    "case_lookup_profile_123.chrome_repair_20260705_123142",
+                    "worker_browser_profile.chrome_repair_20260705_123142",
+                },
+            )
+            self.assertFalse(old_backup.exists())
+            self.assertFalse(worker_backup.exists())
+            self.assertTrue(unknown_backup.exists())
+
+    def test_cleanup_runtime_profiles_for_startup_failure_removes_generated_profiles_and_backups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_profile = root / "case_lookup_profile_123"
+            repair_backup = root / "worker_browser_profile.chrome_repair_20260705_123142"
+            normal_chrome_profile = root / "Chrome User Data"
+            for path in (current_profile, repair_backup, normal_chrome_profile):
+                path.mkdir()
+                (path / "cache.dat").write_text("old", encoding="utf-8")
+
+            removed = profile_paths.cleanup_runtime_profiles_for_startup_failure([current_profile], profile_root=root)
+
+            self.assertEqual({path.name for path in removed}, {"case_lookup_profile_123", "worker_browser_profile.chrome_repair_20260705_123142"})
+            self.assertFalse(current_profile.exists())
+            self.assertFalse(repair_backup.exists())
+            self.assertTrue(normal_chrome_profile.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

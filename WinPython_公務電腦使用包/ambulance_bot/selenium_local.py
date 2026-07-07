@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import json
 import re
@@ -20,7 +21,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITION_BY_KEY, SITE_DEFINITIONS
-from .chrome_startup import cleanup_worker_chrome_residue, schedule_driver_auto_close
+from .chrome_startup import _worker_user_data_paths, cleanup_worker_chrome_residue, schedule_driver_auto_close
 from .duty_credentials import (
     DutyCredential,
     load_duty_credential,
@@ -29,7 +30,7 @@ from .duty_credentials import (
     update_saved_credential_id_number,
 )
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
-from .profile_paths import cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
+from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
 from .window_layout import apply_tile
 
 
@@ -734,6 +735,7 @@ def _create_local_driver_with_retry(options: Options) -> webdriver.Chrome:
                 break
             print(f"[selenium] local chrome session attempt {attempt} failed: {_short_webdriver_error(exc)}", flush=True)
             cleanup_worker_chrome_residue(options, "local selenium")
+            cleanup_runtime_profiles_for_startup_failure(_worker_user_data_paths(options))
             time.sleep(2)
     raise WebDriverException(f"local chrome session failed after {attempts} attempts: {_short_webdriver_error(last_error)}")
 
@@ -754,7 +756,8 @@ def _is_local_chrome_startup_error(exc: Exception) -> bool:
 def _is_invalid_argument_oserror(exc: Exception) -> bool:
     if not isinstance(exc, OSError):
         return False
-    return getattr(exc, "errno", None) == 22 or "invalid argument" in str(exc).lower()
+    message = str(exc).lower()
+    return getattr(exc, "errno", None) in {22, errno.ENOSPC} or "invalid argument" in message or "no space left" in message
 
 
 def _short_webdriver_error(exc: Exception | None) -> str:

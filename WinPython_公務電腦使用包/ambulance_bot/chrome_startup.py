@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import signal
@@ -10,6 +11,8 @@ import time
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.chrome.options import Options
+
+from .profile_paths import cleanup_runtime_profiles_for_startup_failure
 
 
 STARTUP_ERROR_MARKERS = (
@@ -47,6 +50,7 @@ def create_chrome_driver_with_retry(options: Options, label: str = "Chrome") -> 
                 break
             print(f"[chrome] {label} start attempt {attempt} failed: {_short_error(exc)}", flush=True)
             cleanup_worker_chrome_residue(options, label)
+            cleanup_runtime_profiles_for_startup_failure(_worker_user_data_paths(options))
             time.sleep(delay_seconds)
 
     raise WebDriverException(f"{label} Chrome 啟動失敗，已重試 {attempts} 次：{_short_error(last_error)}") from last_error
@@ -107,7 +111,8 @@ def _is_chrome_startup_error(exc: Exception) -> bool:
 def _is_invalid_argument_oserror(exc: Exception) -> bool:
     if not isinstance(exc, OSError):
         return False
-    return getattr(exc, "errno", None) == 22 or "invalid argument" in str(exc).lower()
+    message = str(exc).lower()
+    return getattr(exc, "errno", None) in {22, errno.ENOSPC} or "invalid argument" in message or "no space left" in message
 
 
 def _short_error(exc: Exception | None) -> str:
@@ -118,6 +123,10 @@ def _short_error(exc: Exception | None) -> str:
 
 
 def _worker_user_data_dirs(options: Options) -> list[str]:
+    return [_normalize_match_text(value) for value in _worker_user_data_paths(options)]
+
+
+def _worker_user_data_paths(options: Options) -> list[str]:
     values: list[str] = []
     args = _chrome_option_arguments(options)
     for index, arg in enumerate(args):
@@ -126,7 +135,7 @@ def _worker_user_data_dirs(options: Options) -> list[str]:
             values.append(text.split("=", 1)[1])
         elif text == "--user-data-dir" and index + 1 < len(args):
             values.append(str(args[index + 1]))
-    return [_normalize_match_text(value) for value in values if str(value).strip()]
+    return [value for value in values if str(value).strip()]
 
 
 def _worker_debugger_ports(options: Options) -> set[str]:

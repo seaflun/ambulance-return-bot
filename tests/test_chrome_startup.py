@@ -1,7 +1,10 @@
 import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.chrome.options import Options
 
 import ambulance_bot.chrome_startup as chrome_startup
 
@@ -48,6 +51,55 @@ class ChromeStartupTests(unittest.TestCase):
         self.assertEqual(calls["count"], 2)
         self.assertEqual(cleanups, [(options, "緊急救護消毒")])
 
+    def test_retry_cleans_failed_user_data_dir(self):
+        with TemporaryDirectory() as tmp:
+            previous_attempts = os.environ.get("SELENIUM_CHROME_START_ATTEMPTS")
+            previous_delay = os.environ.get("SELENIUM_CHROME_RETRY_DELAY_SECONDS")
+            original_chrome = chrome_startup.webdriver.Chrome
+            original_sleep = chrome_startup.time.sleep
+            original_cleanup = chrome_startup.cleanup_worker_chrome_residue
+            original_profile_cleanup = chrome_startup.cleanup_runtime_profiles_for_startup_failure
+            calls = {"count": 0}
+            profile_cleanups: list[tuple[Path, ...]] = []
+            user_data_dir = Path(tmp) / "profiles" / "consumables_profile_test"
+            options = Options()
+            options.add_argument(f"--user-data-dir={user_data_dir}")
+            try:
+                os.environ["SELENIUM_CHROME_START_ATTEMPTS"] = "2"
+                os.environ["SELENIUM_CHROME_RETRY_DELAY_SECONDS"] = "0"
+
+                def fake_chrome(options=None):
+                    calls["count"] += 1
+                    if calls["count"] == 1:
+                        raise WebDriverException("session not created: DevToolsActivePort file doesn't exist")
+                    return object()
+
+                chrome_startup.webdriver.Chrome = fake_chrome
+                chrome_startup.time.sleep = lambda seconds: None
+                chrome_startup.cleanup_worker_chrome_residue = lambda options, label="Chrome": 0
+                chrome_startup.cleanup_runtime_profiles_for_startup_failure = (
+                    lambda dirs: profile_cleanups.append(tuple(Path(path) for path in dirs)) or []
+                )
+
+                driver = chrome_startup.create_chrome_driver_with_retry(options, "consumables")
+            finally:
+                chrome_startup.webdriver.Chrome = original_chrome
+                chrome_startup.time.sleep = original_sleep
+                chrome_startup.cleanup_worker_chrome_residue = original_cleanup
+                chrome_startup.cleanup_runtime_profiles_for_startup_failure = original_profile_cleanup
+                if previous_attempts is None:
+                    os.environ.pop("SELENIUM_CHROME_START_ATTEMPTS", None)
+                else:
+                    os.environ["SELENIUM_CHROME_START_ATTEMPTS"] = previous_attempts
+                if previous_delay is None:
+                    os.environ.pop("SELENIUM_CHROME_RETRY_DELAY_SECONDS", None)
+                else:
+                    os.environ["SELENIUM_CHROME_RETRY_DELAY_SECONDS"] = previous_delay
+
+        self.assertIsNotNone(driver)
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(profile_cleanups, [(user_data_dir,)])
+
     def test_retries_oserror_invalid_argument_startup_error(self):
         previous_attempts = os.environ.get("SELENIUM_CHROME_START_ATTEMPTS")
         previous_delay = os.environ.get("SELENIUM_CHROME_RETRY_DELAY_SECONDS")
@@ -88,6 +140,9 @@ class ChromeStartupTests(unittest.TestCase):
         self.assertIsNotNone(driver)
         self.assertEqual(calls["count"], 2)
         self.assertEqual(cleanups, [(options, "consumables")])
+
+    def test_no_space_left_is_startup_error(self):
+        self.assertTrue(chrome_startup._is_chrome_startup_error(OSError(28, "No space left on device")))
 
     def test_final_startup_error_is_short_and_readable(self):
         previous_attempts = os.environ.get("SELENIUM_CHROME_START_ATTEMPTS")

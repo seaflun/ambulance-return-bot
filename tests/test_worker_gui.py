@@ -139,6 +139,23 @@ class WorkerGuiEnvTests(unittest.TestCase):
             self.assertTrue((backup / "Preferences").exists())
             self.assertTrue(existing_backup.exists())
 
+    def test_purge_worker_chrome_profiles_deletes_generated_profiles_and_backups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generated_profile = root / "worker_browser_profile"
+            repair_backup = root / "worker_browser_profile.chrome_repair_20260705_120000"
+            normal_profile = root / "Chrome User Data"
+            for path in (generated_profile, repair_backup, normal_profile):
+                path.mkdir()
+                (path / "Preferences").write_text("{}", encoding="utf-8")
+
+            removed = worker_gui.purge_worker_chrome_profiles(root)
+
+            self.assertEqual({path.name for path in removed}, {"worker_browser_profile", "worker_browser_profile.chrome_repair_20260705_120000"})
+            self.assertFalse(generated_profile.exists())
+            self.assertFalse(repair_backup.exists())
+            self.assertTrue(normal_profile.exists())
+
     def test_worker_chrome_repair_options_targets_worker_browser_profile_and_debugger_port(self):
         previous_profile = os.environ.get("CHROME_PROFILE_DIR")
         previous_root = os.environ.get("SELENIUM_PROFILE_ROOT")
