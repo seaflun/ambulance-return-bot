@@ -9,8 +9,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
 
 from dotenv import load_dotenv
 
@@ -35,6 +37,7 @@ load_dotenv()
 
 MANUAL_TASK_ACTIVE = threading.Event()
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
+MAX_PARALLEL_SITE_GROUPS = 2
 
 
 def task_site_count_label(request: AmbulanceReturnRequest) -> str:
@@ -248,66 +251,85 @@ def run_all_sites_task(
     profile_suffix = request.task_id.replace("-", "_")
     site_count_label = task_site_count_label(request)
     post_status(server_url, request.task_id, "desktop_fast_running", f"公務電腦 worker {site_count_label}登打已啟動。")
-    runners = [
-        (
-            "duty_work_log",
-            lambda payload: run_task(
-                server_url,
-                worker_id,
-                dict(payload.get("task") or task),
-                artifacts_dir,
-                profile_name=f"duty_work_log_profile_{profile_suffix}",
-                use_session_lock=False,
-                tile_name="duty_work_log",
-                force_new_driver=True,
-                update_overall=False,
-            ),
-        ),
-        (
-            "vehicle_mileage",
-            lambda payload: run_vehicle_task(
-                server_url,
-                worker_id,
-                dict(payload.get("task") or task),
-                artifacts_dir,
-                profile_name=f"vehicle_mileage_profile_{profile_suffix}",
-                use_session_lock=False,
-                tile_name="vehicle_mileage",
-                force_new_driver=True,
-                update_overall=False,
-                update_context=site_update_context_from_payload(payload, "vehicle_mileage"),
-            ),
-        ),
-        (
-            "consumables",
-            lambda payload: run_consumables_worker_task(
-                server_url,
-                worker_id,
-                dict(payload.get("task") or task),
-                artifacts_dir,
-                profile_name=f"consumables_profile_{profile_suffix}",
-                tile_name="consumables",
-                update_overall=False,
-            ),
-        ),
-        (
-            "disinfection",
-            lambda payload: run_disinfection_worker_task(
-                server_url,
-                worker_id,
-                dict(payload.get("task") or task),
-                artifacts_dir,
-                profile_name=f"disinfection_profile_{profile_suffix}",
-                use_session_lock=False,
-                tile_name="disinfection",
-                force_new_driver=True,
-                update_overall=False,
-            ),
-        ),
+    try:
+        payload = fetch_task_payload(server_url, request.task_id)
+    except Exception as exc:
+        detail = f"讀取任務狀態失敗，五站流程已停止：{exc}"
+        result = make_site_result("duty_work_log", SITE_NAMES.get("duty_work_log", "duty_work_log"), "duty_work_log_failed", detail, exc)
+        post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
+        return result
+    if not isinstance(payload, dict):
+        detail = "讀取任務狀態失敗，NAS 未回傳任務內容，五站流程已停止。"
+        result = make_site_result("duty_work_log", SITE_NAMES.get("duty_work_log", "duty_work_log"), "duty_work_log_failed", detail)
+        post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
+        return result
+    site_groups = [
+        [
+            (
+                "duty_work_log",
+                lambda payload: run_task(
+                    server_url,
+                    worker_id,
+                    dict(payload.get("task") or task),
+                    artifacts_dir,
+                    profile_name=f"duty_work_log_profile_{profile_suffix}",
+                    use_session_lock=False,
+                    tile_name="duty_work_log",
+                    force_new_driver=True,
+                    update_overall=False,
+                ),
+            )
+        ],
+        [
+            (
+                "vehicle_mileage",
+                lambda payload: run_vehicle_task(
+                    server_url,
+                    worker_id,
+                    dict(payload.get("task") or task),
+                    artifacts_dir,
+                    profile_name=f"vehicle_mileage_profile_{profile_suffix}",
+                    use_session_lock=False,
+                    tile_name="vehicle_mileage",
+                    force_new_driver=True,
+                    update_overall=False,
+                    update_context=site_update_context_from_payload(payload, "vehicle_mileage"),
+                ),
+            )
+        ],
+        [
+            (
+                "consumables",
+                lambda payload: run_consumables_worker_task(
+                    server_url,
+                    worker_id,
+                    dict(payload.get("task") or task),
+                    artifacts_dir,
+                    profile_name=f"consumables_profile_{profile_suffix}",
+                    tile_name="consumables",
+                    update_overall=False,
+                ),
+            )
+        ],
+        [
+            (
+                "disinfection",
+                lambda payload: run_disinfection_worker_task(
+                    server_url,
+                    worker_id,
+                    dict(payload.get("task") or task),
+                    artifacts_dir,
+                    profile_name=f"disinfection_profile_{profile_suffix}",
+                    use_session_lock=False,
+                    tile_name="disinfection",
+                    force_new_driver=True,
+                    update_overall=False,
+                ),
+            )
+        ],
     ]
     if request.has_fuel_record():
-        runners.insert(
-            2,
+        site_groups[1].append(
             (
                 "fuel_record",
                 lambda payload: run_fuel_worker_task(
@@ -325,30 +347,30 @@ def run_all_sites_task(
         )
     last_result = None
     failed_results = []
-    for site_key, runner in runners:
-        try:
+    group_results: list[tuple[object | None, list[object]] | None] = [None] * len(site_groups)
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_SITE_GROUPS) as executor:
+        futures = {
+            executor.submit(_run_worker_site_group, server_url, request.task_id, site_group): index
+            for index, site_group in enumerate(site_groups)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
             try:
-                payload = fetch_task_payload(server_url, request.task_id)
+                group_results[index] = future.result()
             except Exception as exc:
-                detail = f"讀取任務狀態失敗，五站流程已停止：{exc}"
-                result = make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail, exc)
-                post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
-                return result
-            if not isinstance(payload, dict):
-                detail = "讀取任務狀態失敗，NAS 未回傳任務內容，五站流程已停止。"
-                result = make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail)
-                post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
-                return result
-            site_statuses = payload.get("site_statuses") if isinstance(payload, dict) and isinstance(payload.get("site_statuses"), dict) else {}
-            current_status = str((site_statuses.get(site_key) or {}).get("status") or "")
-            if _site_is_complete(current_status):
-                print(f"[worker] skip completed site task={request.task_id} site={site_key}", flush=True)
-                continue
-            last_result = runner(payload)
-            if _result_blocks_progress(last_result):
-                failed_results.append(last_result)
-        finally:
-            maximize_worker_site_windows()
+                site_key = site_groups[index][0][0]
+                detail = f"公務電腦 worker 平行流程例外：{exc}"
+                group_results[index] = (
+                    None,
+                    [make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail, exc)],
+                )
+    for group_result in group_results:
+        if group_result is None:
+            continue
+        group_last_result, group_failed_results = group_result
+        if group_last_result is not None:
+            last_result = group_last_result
+        failed_results.extend(group_failed_results)
     if failed_results:
         post_status(
             server_url,
@@ -361,6 +383,40 @@ def run_all_sites_task(
     post_status(server_url, request.task_id, "desktop_fast_completed", f"公務電腦 worker {site_count_label}登打完成。")
     maximize_worker_site_windows()
     return last_result
+
+
+def _run_worker_site_group(
+    server_url: str,
+    task_id: str,
+    site_group: list[tuple[str, Callable[[dict[str, object]], object]]],
+) -> tuple[object | None, list[object]]:
+    last_result = None
+    failed_results = []
+    for site_key, runner in site_group:
+        try:
+            try:
+                payload = fetch_task_payload(server_url, task_id)
+            except Exception as exc:
+                detail = f"讀取任務狀態失敗，五站流程已停止：{exc}"
+                result = make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail, exc)
+                failed_results.append(result)
+                return last_result, failed_results
+            if not isinstance(payload, dict):
+                detail = "讀取任務狀態失敗，NAS 未回傳任務內容，五站流程已停止。"
+                result = make_site_result(site_key, SITE_NAMES.get(site_key, site_key), f"{site_key}_failed", detail)
+                failed_results.append(result)
+                return last_result, failed_results
+            site_statuses = payload.get("site_statuses") if isinstance(payload, dict) and isinstance(payload.get("site_statuses"), dict) else {}
+            current_status = str((site_statuses.get(site_key) or {}).get("status") or "")
+            if _site_is_complete(current_status):
+                print(f"[worker] skip completed site task={task_id} site={site_key}", flush=True)
+                continue
+            last_result = runner(payload)
+            if _result_blocks_progress(last_result):
+                failed_results.append(last_result)
+        finally:
+            maximize_worker_site_windows()
+    return last_result, failed_results
 
 
 def site_update_context_from_payload(payload: dict[str, object], site_key: str) -> dict[str, object] | None:

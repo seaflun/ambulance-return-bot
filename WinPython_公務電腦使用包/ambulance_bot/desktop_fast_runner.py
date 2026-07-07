@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
@@ -21,47 +22,60 @@ from .window_layout import maximize_worker_site_windows
 
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
 MILEAGE_FUEL_PAIR = ("vehicle_mileage", "fuel_record")
+MAX_PARALLEL_SITE_GROUPS = 2
 DEFAULT_RECORD_ROOT = Path(r"W:\救護硬碟\救護密錄器及行車紀錄器")
 
 
 def active_site_runners(request, profile_suffix: str, runner: "DesktopFastRunner") -> list[tuple[str, Callable[[], object]]]:
-    site_runners: list[tuple[str, Callable[[], object]]] = [
-        (
-            "duty_work_log",
-            lambda: run_local_selenium_task(
-                request,
-                runner.artifacts_dir,
-                profile_name=f"duty_work_log_profile_{profile_suffix}",
-                use_session_lock=False,
-                tile_name="duty_work_log",
-                force_new_driver=True,
-            ),
-        ),
-        (
-            "vehicle_mileage",
-            lambda: runner._run_vehicle_mileage(request, profile_suffix),
-        ),
+    return [site_runner for group in active_site_groups(request, profile_suffix, runner) for site_runner in group]
+
+
+def active_site_groups(request, profile_suffix: str, runner: "DesktopFastRunner") -> list[list[tuple[str, Callable[[], object]]]]:
+    site_groups: list[list[tuple[str, Callable[[], object]]]] = [
+        [
+            (
+                "duty_work_log",
+                lambda: run_local_selenium_task(
+                    request,
+                    runner.artifacts_dir,
+                    profile_name=f"duty_work_log_profile_{profile_suffix}",
+                    use_session_lock=False,
+                    tile_name="duty_work_log",
+                    force_new_driver=True,
+                ),
+            )
+        ],
+        [
+            (
+                "vehicle_mileage",
+                lambda: runner._run_vehicle_mileage(request, profile_suffix),
+            )
+        ],
     ]
     if request.has_fuel_record():
-        site_runners.append(
+        site_groups[1].append(
             (
                 "fuel_record",
                 lambda: runner._run_fuel_record(request, profile_suffix),
             )
         )
-    site_runners.extend(
+    site_groups.extend(
         [
-            (
-                "consumables",
-                lambda: runner._run_consumables(request, profile_suffix),
-            ),
-            (
-                "disinfection",
-                lambda: runner._run_disinfection(request, profile_suffix),
-            ),
+            [
+                (
+                    "consumables",
+                    lambda: runner._run_consumables(request, profile_suffix),
+                )
+            ],
+            [
+                (
+                    "disinfection",
+                    lambda: runner._run_disinfection(request, profile_suffix),
+                )
+            ],
         ]
     )
-    return site_runners
+    return site_groups
 
 
 def task_site_count_label(request) -> str:
@@ -127,15 +141,19 @@ class DesktopFastRunner:
         site_count_label = task_site_count_label(request)
         self._notify(task_id, f"{site_count_label}登打開始")
         profile_suffix = task_id.replace("-", "_")
-        site_runners = active_site_runners(request, profile_suffix, self)
+        site_groups = active_site_groups(request, profile_suffix, self)
         try:
             folder_detail = self._ensure_record_folders(request)
             if folder_detail:
                 self.store.set_overall_status(task_id, "desktop_fast_running", folder_detail)
-            for site_key, action in site_runners:
-                failed = self._run_site(task_id, site_key, action)
-                if failed:
-                    failures += 1
+            with ThreadPoolExecutor(max_workers=MAX_PARALLEL_SITE_GROUPS) as executor:
+                futures = [executor.submit(self._run_site_group, task_id, site_group) for site_group in site_groups]
+                for future in as_completed(futures):
+                    try:
+                        failures += future.result()
+                    except Exception as exc:
+                        failures += 1
+                        self.store.set_overall_status(task_id, "desktop_fast_running", f"本機快速執行平行流程例外：{exc}")
             if failures:
                 self.store.set_overall_status(
                     task_id,
@@ -151,6 +169,13 @@ class DesktopFastRunner:
             clear_manual_task_lock(self.artifacts_dir, lock_owner)
             with self._lock:
                 self._running.discard(task_id)
+
+    def _run_site_group(self, task_id: str, site_group: list[tuple[str, Callable[[], object]]]) -> int:
+        failures = 0
+        for site_key, action in site_group:
+            if self._run_site(task_id, site_key, action):
+                failures += 1
+        return failures
 
     def _run_single_site(self, task_id: str, site_key: str, run_key: str) -> None:
         lock_owner = f"desktop_fast:{run_key}"
@@ -369,16 +394,13 @@ class DesktopFastRunner:
         return {str(key): dict(value) for key, value in results.items() if isinstance(value, dict)}
 
     def _record_vehicle_site_result(self, task_id: str, site_key: str, vehicle_key: str, result) -> None:
-        payload = self.store.get(task_id)
-        site = payload["site_statuses"][site_key]
-        results = dict(site.get("vehicle_results") or {})
-        results[vehicle_key] = {
-            "status": str(getattr(result, "status", "") or ""),
-            "detail": str(getattr(result, "detail", "") or ""),
-            "updated_at": now_text(),
-        }
-        site["vehicle_results"] = results
-        self.store.save_payload(task_id, payload)
+        self.store.update_vehicle_site_result(
+            task_id,
+            site_key,
+            vehicle_key,
+            str(getattr(result, "status", "") or ""),
+            str(getattr(result, "detail", "") or ""),
+        )
 
     def _ensure_record_folders(self, request) -> str:
         root = DEFAULT_RECORD_ROOT

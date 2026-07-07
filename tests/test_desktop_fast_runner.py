@@ -1,4 +1,6 @@
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -108,6 +110,46 @@ class DesktopFastRunnerTests(unittest.TestCase):
             payload = store.get("task-fuel")
             self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
             fuel_mock.assert_called_once()
+
+    def test_full_run_limits_parallel_sites_to_two_and_keeps_mileage_fuel_sequential(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-parallel",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡91",
+                fuel_record=FuelRecord(enabled=True, date="20260707", time="1240", quantity="35.0", unit_price="30.3"),
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+            active = 0
+            peak = 0
+            intervals: dict[str, dict[str, float]] = {}
+            lock = threading.Lock()
+
+            def fake_run_site(task_id, site_key, action):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                    intervals.setdefault(site_key, {})["start"] = time.perf_counter()
+                time.sleep(0.05)
+                with lock:
+                    intervals[site_key]["end"] = time.perf_counter()
+                    active -= 1
+                return False
+
+            with patch.object(runner, "_ensure_record_folders", return_value=""), patch.object(
+                runner,
+                "_run_site",
+                side_effect=fake_run_site,
+            ), patch("ambulance_bot.desktop_fast_runner.maximize_worker_site_windows"):
+                runner.start_existing("task-parallel")
+                self.assertTrue(runner.wait_for_idle())
+
+            self.assertEqual(peak, 2)
+            self.assertLessEqual(intervals["vehicle_mileage"]["end"], intervals["fuel_record"]["start"])
 
     def test_continues_to_disinfection_when_consumables_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

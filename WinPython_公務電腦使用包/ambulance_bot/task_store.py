@@ -225,6 +225,20 @@ class JsonTaskStore:
             self.save_payload(task_id, payload)
             return payload
 
+    def update_vehicle_site_result(self, task_id: str, site_key: str, vehicle_key: str, status: str, detail: str) -> dict[str, Any]:
+        with self._lock:
+            payload = self.get(task_id)
+            site = payload["site_statuses"][site_key]
+            results = dict(site.get("vehicle_results") or {})
+            results[vehicle_key] = {
+                "status": status,
+                "detail": detail,
+                "updated_at": now_text(),
+            }
+            site["vehicle_results"] = results
+            self.save_payload(task_id, payload)
+            return payload
+
     def mark_site_completed(self, task_id: str, site_key: str) -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)
