@@ -370,6 +370,7 @@ class WorkerGui(ctk.CTk):
         self.after(500, self.ensure_startup_tray_icon)
         self.after(1200, self._refresh_startup_launcher)
         self.after(250, self._drain_log)
+        self.after(1500, self._auto_hide_after_startup)
 
     def _configure_styles(self) -> None:
         theme = GUI_THEME
@@ -847,6 +848,10 @@ class WorkerGui(ctk.CTk):
 
     def ensure_startup_tray_icon(self) -> None:
         self.ensure_tray_icon()
+
+    def _auto_hide_after_startup(self) -> None:
+        if worker_gui_start_minimized():
+            self.hide_to_tray()
 
     def _refresh_startup_launcher(self) -> None:
         threading.Thread(target=self._refresh_startup_launcher_background, daemon=True).start()
@@ -1717,6 +1722,10 @@ def relaunch_worker_gui(delay_seconds: int = 2) -> bool:
 
 def startup_launcher_enabled() -> bool:
     return os.getenv("WORKER_STARTUP_LAUNCHER_ENABLED", "true").strip().lower() not in FALSE_ENV_VALUES
+
+
+def worker_gui_start_minimized() -> bool:
+    return os.getenv("WORKER_GUI_START_MINIMIZED", "true").strip().lower() not in FALSE_ENV_VALUES
 
 
 def local_web_host() -> str:

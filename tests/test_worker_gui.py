@@ -70,6 +70,8 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
         self.assertIn('self.geometry("820x820")', source)
         self.assertIn('self.minsize(720, 720)', source)
+        self.assertIn("self.after(1500, self._auto_hide_after_startup)", source)
+        self.assertIn("def _auto_hide_after_startup(self) -> None:", source)
 
     def test_startup_launcher_can_be_disabled_by_env(self):
         previous = os.environ.get("WORKER_STARTUP_LAUNCHER_ENABLED")
@@ -82,6 +84,20 @@ class WorkerGuiEnvTests(unittest.TestCase):
                 os.environ.pop("WORKER_STARTUP_LAUNCHER_ENABLED", None)
             else:
                 os.environ["WORKER_STARTUP_LAUNCHER_ENABLED"] = previous
+
+    def test_worker_gui_start_minimized_defaults_on_and_can_be_disabled(self):
+        previous = os.environ.get("WORKER_GUI_START_MINIMIZED")
+        try:
+            os.environ.pop("WORKER_GUI_START_MINIMIZED", None)
+            self.assertTrue(worker_gui.worker_gui_start_minimized())
+
+            os.environ["WORKER_GUI_START_MINIMIZED"] = "false"
+            self.assertFalse(worker_gui.worker_gui_start_minimized())
+        finally:
+            if previous is None:
+                os.environ.pop("WORKER_GUI_START_MINIMIZED", None)
+            else:
+                os.environ["WORKER_GUI_START_MINIMIZED"] = previous
 
     def test_worker_chrome_profile_dirs_only_targets_worker_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -379,7 +395,10 @@ class WorkerGuiEnvTests(unittest.TestCase):
         repair_script = (package_dir / "repair_update_package.ps1").read_text(encoding="utf-8")
 
         self.assertIn("[System.Management.Automation.Language.Parser]::ParseFile", launcher)
+        self.assertIn('if /I "%~1"=="--minimized" goto run_update', launcher)
+        self.assertIn('start "" /min "%~f0" --minimized', launcher)
         self.assertIn("repair_update_package.ps1", launcher)
+        self.assertNotRegex(launcher, r"\[OK\] Update check completed\.[\s\S]{0,80}pause")
         self.assertIn("update_package.ps1", repair_script)
         self.assertIn("ambulance-return-public-package.zip", repair_script)
         self.assertIn("Get-LatestRelease", repair_script)

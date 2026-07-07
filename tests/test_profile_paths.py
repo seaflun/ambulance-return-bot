@@ -1,8 +1,11 @@
+import contextlib
+import io
 import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import ambulance_bot.profile_paths as profile_paths
 
@@ -78,6 +81,28 @@ class ProfilePathTests(unittest.TestCase):
             self.assertEqual(profile, old_worker_profile)
             self.assertTrue(profile.exists())
             self.assertFalse((profile / "cache.dat").exists())
+
+    def test_cleanup_stale_runtime_profiles_silently_skips_windows_locked_profiles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locked_profile = root / "case_lookup_profile_123.chrome_repair_20260705_123142"
+            locked_profile.mkdir()
+            (locked_profile / "Default").mkdir()
+            (locked_profile / "Default" / "Login Data-journal").write_text("locked", encoding="utf-8")
+            old_time = time.time() - 7200
+            os.utime(locked_profile / "Default" / "Login Data-journal", (old_time, old_time))
+            os.utime(locked_profile / "Default", (old_time, old_time))
+            os.utime(locked_profile, (old_time, old_time))
+            error = PermissionError(5, "Access is denied", str(locked_profile / "Default" / "Login Data-journal"))
+
+            output = io.StringIO()
+            with mock.patch.object(profile_paths.shutil, "rmtree", side_effect=error):
+                with contextlib.redirect_stdout(output):
+                    removed = profile_paths.cleanup_stale_runtime_profiles(root, max_age_hours=1)
+
+            self.assertEqual(removed, [])
+            self.assertTrue(locked_profile.exists())
+            self.assertEqual(output.getvalue(), "")
 
 
 if __name__ == "__main__":

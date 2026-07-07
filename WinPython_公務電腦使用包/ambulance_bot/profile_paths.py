@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import time
@@ -84,6 +85,8 @@ def cleanup_stale_runtime_profiles(
                 continue
             shutil.rmtree(path)
         except OSError as exc:
+            if _is_locked_profile_cleanup_error(exc):
+                continue
             print(f"[profiles] cleanup skipped {path.name}: {_short_error(exc)}", flush=True)
             continue
         removed.append(path)
@@ -105,6 +108,14 @@ def _is_generated_runtime_profile(profile_name: str) -> bool:
 
 def _profile_has_active_lock(profile_dir: Path) -> bool:
     return any((profile_dir / name).exists() for name in PROFILE_LOCK_NAMES)
+
+
+def _is_locked_profile_cleanup_error(exc: OSError) -> bool:
+    if isinstance(exc, PermissionError):
+        return True
+    if getattr(exc, "winerror", None) in {5, 32}:
+        return True
+    return getattr(exc, "errno", None) in {errno.EACCES, errno.EPERM}
 
 
 def _short_error(exc: Exception) -> str:

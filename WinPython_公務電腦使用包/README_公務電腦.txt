@@ -6,8 +6,9 @@
 2. 填入 `WORKER_TOKEN`，要和 NAS 的值相同。
 3. `SELENIUM_PROFILE_ROOT` 預設使用 `%LOCALAPPDATA%\ambulance_return_bot`，不要放到 Google Drive 資料夾；`chrome_profile` 只是舊快取資料，不是四站登打必要條件。
 4. 舊 runtime profiles 預設超過 4 小時且未被 Chrome 使用時會清理；登打網頁預設 10 分鐘後自動關閉。
-5. 執行 `SETUP_WINPYTHON.bat` 安裝套件、檢查環境，並建立登入後自動啟動工作排程。
-6. 平常用 `RUN_WORKER_GUI_WINPYTHON.vbs` 啟動，沒有黑色命令列視窗。
+5. Worker GUI 預設啟動後自動縮到系統匣；若要停用可設定 `WORKER_GUI_START_MINIMIZED=false`。
+6. 執行 `SETUP_WINPYTHON.bat` 安裝套件、檢查環境，並建立登入後自動啟動工作排程。
+7. 平常用 `RUN_WORKER_GUI_WINPYTHON.vbs` 啟動，沒有黑色命令列視窗。
 
 ## GitHub 更新
 

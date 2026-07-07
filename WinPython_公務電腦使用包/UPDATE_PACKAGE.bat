@@ -1,5 +1,10 @@
 @echo off
 setlocal
+if /I "%~1"=="--minimized" goto run_update
+start "" /min "%~f0" --minimized
+exit /b 0
+
+:run_update
 cd /d "%~dp0"
 
 echo SinpoSmart Ambulance Worker package updater
@@ -31,7 +36,6 @@ if not "%UPDATE_EXIT%"=="0" goto update_failed
 
 echo.
 echo [OK] Update check completed.
-pause
 exit /b 0
 
 :update_failed
