@@ -311,16 +311,24 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
         href = str(item.get("href") or "")
         sid = str(item.get("sid") or _emm_temsis_id_from_href(href))
         text = str(item.get("text") or "")
+        if not _consumable_candidate_date_matches(request.case_id, sid, text):
+            continue
         row_hhmm = _hhmm_from_row_text(text)
         score = 0
+        strong_score = 0
         sid_score = _consumable_sid_score(request.case_id, sid)
         score += sid_score
+        strong_score += sid_score
         if case_time and row_hhmm == case_time:
             score += 3
+            strong_score += 3
         if address and address in clean_case_address(text):
             score += 5
+            strong_score += 5
         if request.case_reason and request.case_reason in text:
             score += 1
+        if strong_score <= 0:
+            continue
         if sid_score > 0:
             sid_scored.append((score, href, text))
         scored.append((score, href, text))
@@ -351,8 +359,6 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
             if matched:
                 return matched
         return scored[0][1]
-    if len(candidates) == 1:
-        return str(candidates[0].get("href") or "")
     raise RuntimeError(f"耗材列表找不到符合案件的內容列：時間={case_time or '未填'} 地址={address or '未填'}")
 
 
@@ -383,6 +389,35 @@ def _case_id_sid_fragments(case_id: str) -> list[str]:
     else:
         fragments.append(digits[-6:])
     return [fragment for fragment in dict.fromkeys(fragments) if len(fragment) >= 6]
+
+
+def _consumable_candidate_date_matches(case_id: str, sid: str, text: str) -> bool:
+    case_date = _yyyymmdd_from_case_id(case_id)
+    if not case_date:
+        return True
+    candidate_date = _yyyymmdd_from_row_text(text) or _yyyymmdd_from_sid(sid)
+    return not candidate_date or candidate_date == case_date
+
+
+def _yyyymmdd_from_case_id(case_id: str) -> str:
+    digits = "".join(ch for ch in str(case_id or "") if ch.isdigit())
+    if len(digits) >= 8 and digits[:2] in {"19", "20"}:
+        return digits[:8]
+    return ""
+
+
+def _yyyymmdd_from_sid(sid: str) -> str:
+    digits = "".join(ch for ch in str(sid or "") if ch.isdigit())
+    if len(digits) >= 8 and digits[:2] in {"19", "20"}:
+        return digits[:8]
+    return ""
+
+
+def _yyyymmdd_from_row_text(text: str) -> str:
+    match = re.search(r"\b(\d{4})/(\d{1,2})/(\d{1,2})\b", str(text or ""))
+    if not match:
+        return ""
+    return f"{int(match.group(1)):04d}{int(match.group(2)):02d}{int(match.group(3)):02d}"
 
 
 def _text_matches_vehicle(text: str, vehicle: str) -> bool:
@@ -430,6 +465,9 @@ def _hhmm_from_row_text(text: str) -> str:
     match = re.search(r"\b\d{4}/\d{2}/\d{2}\s+(\d{2}):(\d{2}):\d{2}\b", text)
     if match:
         return f"{match.group(1)}{match.group(2)}"
+    match = re.search(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b", str(text or ""))
+    if match:
+        return f"{int(match.group(1)):02d}{match.group(2)}"
     return ""
 
 

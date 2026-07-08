@@ -168,6 +168,141 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026060210100301165202")
 
+    def test_consumable_detail_rejects_vehicle_only_old_case_match(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeDriver:
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026070610100316091001",
+                        "sid": "2026070610100316091001",
+                        "text": "2026/07/06 10:10:03 新坡93 車禍",
+                    }
+                ]
+
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="20260708204710016",
+            case_time="2047",
+            vehicle="新坡93",
+            case_address="桃園市中壢區月桃路一段270巷52號",
+            case_reason="車禍",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), self.assertRaisesRegex(RuntimeError, "耗材列表找不到符合案件"):
+            _find_consumable_detail_href(FakeDriver(), request)
+
+    def test_consumable_detail_rejects_old_case_even_when_time_and_vehicle_match(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeDriver:
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026070610100320471001",
+                        "sid": "2026070610100320471001",
+                        "text": "2026/07/06 20:47:03 \u65b0\u576193 \u8eca\u798d",
+                    }
+                ]
+
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="20260708204710016",
+            case_time="2047",
+            vehicle="\u65b0\u576193",
+            case_address="\u6843\u5712\u5e02\u4e2d\u58e2\u5340\u6708\u6843\u8def\u4e00\u6bb5270\u5df752\u865f",
+            case_reason="\u8eca\u798d",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), self.assertRaisesRegex(RuntimeError, "耗材列表找不到符合案件"):
+            _find_consumable_detail_href(FakeDriver(), request)
+
+    def test_consumable_detail_rejects_single_candidate_without_case_evidence(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeDriver:
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026070610100316091001",
+                        "sid": "2026070610100316091001",
+                        "text": "2026/07/06 10:10:03 新坡91 車禍",
+                    }
+                ]
+
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="20260708204710016",
+            case_time="2047",
+            vehicle="新坡93",
+            case_address="桃園市中壢區月桃路一段270巷52號",
+            case_reason="車禍",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), self.assertRaisesRegex(RuntimeError, "耗材列表找不到符合案件"):
+            _find_consumable_detail_href(FakeDriver(), request)
+
+    def test_consumable_detail_can_use_colon_time_as_case_evidence(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeDriver:
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026060210100301165202",
+                        "sid": "2026060210100301165202",
+                        "text": "01:16 新坡92",
+                    },
+                ]
+
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_time="0116",
+            vehicle="新坡92",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait):
+            href = _find_consumable_detail_href(FakeDriver(), request)
+
+        self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026060210100301165202")
+
     def test_consumable_detail_checks_detail_page_vehicle_when_list_rows_are_ambiguous(self):
         class FakeWait:
             def __init__(self, driver, timeout):

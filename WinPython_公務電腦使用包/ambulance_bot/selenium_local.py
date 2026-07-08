@@ -1394,6 +1394,22 @@ def _is_ppe_fuel_record_page(driver: webdriver.Chrome) -> bool:
     )
 
 
+def _is_ppe_fuel_record_detail_page(driver: webdriver.Chrome) -> bool:
+    return bool(
+        driver.execute_script(
+            """
+            if (!!document.getElementById('Account') && !!document.getElementById('Password')) return false;
+            const path = String(location.pathname || '');
+            if (!path.includes('/FUC04100/Detail')) return false;
+            const grid = window.jQuery ? jQuery('#grid').data('kendoGrid') : null;
+            if (!grid) return false;
+            const scripts = Array.from(document.scripts).map(script => String(script.textContent || '')).join('\\n');
+            return scripts.includes('DriverName') && scripts.includes('dataTextField: "Text"');
+            """
+        )
+    )
+
+
 def _wait_for_ppe_vehicle_mileage_page(driver: webdriver.Chrome, timeout: int = 12) -> bool:
     try:
         WebDriverWait(driver, timeout).until(
@@ -1412,6 +1428,16 @@ def _wait_for_ppe_fuel_record_page(driver: webdriver.Chrome, timeout: int = 12) 
     except TimeoutException:
         return False
     return _is_ppe_fuel_record_page(driver)
+
+
+def _wait_for_ppe_fuel_record_detail_page(driver: webdriver.Chrome, timeout: int = 12) -> bool:
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda current: _is_ppe_fuel_record_detail_page(current) or _is_ppe_login_page(current)
+        )
+    except TimeoutException:
+        return False
+    return _is_ppe_fuel_record_detail_page(driver)
 
 
 def _wait_for_ppe_login_result(driver: webdriver.Chrome, timeout: int = 12) -> bool:
@@ -1501,7 +1527,7 @@ def _prepare_fuel_record_form(
     if current_period and current_period != target_period:
         raise WebDriverException(f"fuel period mismatch: page={current_period} task={target_period}")
     _click_fuel_card_register(driver, _fuel_card_labels(request.vehicle, artifacts_dir))
-    if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
+    if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):
         raise WebDriverException("fuel detail page did not open")
     _click_fuel_add_row(driver)
     _fill_fuel_grid_record(driver, request)

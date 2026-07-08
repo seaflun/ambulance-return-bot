@@ -17,6 +17,10 @@ I:\我的雲端硬碟\專案\救護返隊小幫手\ambulance_return_bot
 
 The old `I:\我的雲端硬碟\專案\IOS` path is historical only. Do not introduce new commands, shortcuts, docs, or restart scripts that point there.
 
+## Fixed URLs
+
+- Rescue worker admin backend: `http://100.114.126.58:8080/admin/public-pc`.
+
 ## Source Ownership
 
 - `WinPython_公務電腦使用包` is the public-duty runtime source of truth.
@@ -132,3 +136,31 @@ If NAS behavior changed, deploy the generated `UPDATE\NAS包` contents to:
 ```
 
 Then restart the `ambulance_return_bot` stack in DSM Container Manager. If NAS still serves old HTML or returns 404 for new routes, verify the container mount and restart state.
+
+## NAS Remote Restart
+
+Use the established SSH restart path before asking the user to restart DSM manually:
+
+```powershell
+ssh -i "$env:USERPROFILE\.ssh\id_ed25519_ambulance_nas" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 codex_restart@100.114.126.58 "sudo -n /usr/local/bin/docker restart ambulance-app-1"
+```
+
+Then wait for Flask and Docker health to recover:
+
+```powershell
+Start-Sleep -Seconds 15
+Invoke-RestMethod -Uri 'http://100.114.126.58:8080/status' -TimeoutSec 20
+ssh -i "$env:USERPROFILE\.ssh\id_ed25519_ambulance_nas" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 codex_restart@100.114.126.58 "sudo -n /usr/local/bin/docker ps --format '{{.Names}} {{.Status}}'"
+```
+
+Expected container name: `ambulance-app-1`.
+Expected SSH user: `codex_restart`.
+Expected key: `%USERPROFILE%\.ssh\id_ed25519_ambulance_nas`.
+
+If the key is rejected, do not try `sinpo666` first. Re-check that the NAS `codex_restart` account still exists, that SSH on port `22` is enabled, and that the NAS still has this public key in `codex_restart` SSH `authorized_keys`:
+
+```text
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP1xcKm/naCpqhT60Cctltv91uW9ftjd8UMv4Ql5WGLj codex-ambulance-nas-restart
+```
+
+The prior setup also installed a narrow sudoers rule for `codex_restart`, allowing only Docker container listing and restart of `ambulance-app-1`. If `sudo -n` fails, restore that limited rule instead of broad passwordless sudo.

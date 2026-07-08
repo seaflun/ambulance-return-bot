@@ -298,6 +298,25 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("待填：", body)
         self.assertIn('setFieldState(field.name, "pending");', body)
 
+    def test_lookup_submit_locks_existing_import_buttons(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True, exist_ok=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "updated_at": "2026-06-03T08:00:00",
+                "cases": [{"case_id": "case-1", "title": "救護", "case_time": "1010"}],
+            },
+        )
+
+        response = self.client.get("/app")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn('<form method="post" action="/cases/import">', body)
+        self.assertIn('document.querySelectorAll(\'.case-card form[action="/cases/import"] button[type="submit"]\')', body)
+        self.assertIn("importButton.disabled = true;", body)
+
     def test_local_index_redirects_to_app(self):
         response = self.client.get("/", follow_redirects=False)
 

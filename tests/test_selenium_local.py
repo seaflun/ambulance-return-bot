@@ -1074,6 +1074,31 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(_ensure_fuel_query_period(driver, "2026/07"), "2026/07")
         self.assertEqual(_fuel_query_period(driver), "2026/07")
 
+    def test_fuel_record_detail_page_rejects_query_page(self):
+        class FakeDriver:
+            def __init__(self, path: str, ready: bool = True):
+                self.path = path
+                self.ready = ready
+                self.script = ""
+
+            def execute_script(self, script: str):
+                self.script = script
+                return self.path == "/FUC04100/Detail" and self.ready
+
+        query_driver = FakeDriver("/FUC04100/Query")
+        detail_driver = FakeDriver("/FUC04100/Detail")
+        loading_detail_driver = FakeDriver("/FUC04100/Detail", ready=False)
+
+        self.assertFalse(selenium_local_module._is_ppe_fuel_record_detail_page(query_driver))
+        self.assertTrue(selenium_local_module._is_ppe_fuel_record_detail_page(detail_driver))
+        self.assertFalse(selenium_local_module._is_ppe_fuel_record_detail_page(loading_detail_driver))
+        self.assertIn("/FUC04100/Detail", detail_driver.script)
+
+    def test_fuel_register_waits_for_detail_page_before_filling_grid(self):
+        source = Path(selenium_local_module.__file__).read_text(encoding="utf-8")
+
+        self.assertIn("if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):", source)
+
     def test_duty_work_log_login_uses_personnel_accounts(self):
         class FakeDriver:
             pass
