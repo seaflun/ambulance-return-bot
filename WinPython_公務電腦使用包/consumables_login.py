@@ -90,6 +90,7 @@ def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, ob
     driver.get(detail_url)
     if not _wait_for_consumable_detail_page(driver, wait):
         raise RuntimeError("consumable detail page did not open; SSO login may be required")
+    vehicle_notice = _consumable_vehicle_notice(driver, request)
     added = ""
     if _needs_extra_consumable_row(request):
         item_quantities = _resolve_consumable_item_quantities(driver, request)
@@ -107,7 +108,7 @@ def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, ob
             filled_count = _fill_consumables(driver, wait, request)
             _assert_consumable_rows_match(driver, item_quantities, "耗材預填後")
             added = f" 已清除舊資料、在畫面填入耗材 {filled_count} 筆，未按儲存。"
-    return f"已開啟耗材內容頁：{driver.current_url}{added}"
+    return f"已開啟耗材內容頁：{driver.current_url}{vehicle_notice}{added}"
 
 
 def _load_acs_credentials(task: dict[str, object] | AmbulanceReturnRequest | None = None) -> tuple[str, str]:
@@ -343,6 +344,8 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
         matched = _find_consumable_href_by_vehicle_code(driver, [href for _, href, _ in scored], request.vehicle)
         if matched:
             return matched
+        if len(scored) == 1:
+            return scored[0][1]
         raise RuntimeError(f"耗材內容頁找不到符合車輛的紀錄：車輛={request.vehicle} 候選={len(scored)}")
 
     sid_scored.sort(key=lambda item: item[0], reverse=True)
@@ -445,6 +448,25 @@ def _vehicle_match_tokens(vehicle: str) -> list[str]:
         if value and value not in normalized:
             normalized.append(value)
     return normalized
+
+
+def _consumable_detail_vehicle_label(driver: webdriver.Chrome) -> str:
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+    except Exception:
+        return ""
+    for label in vehicle_ppe_names():
+        if _text_matches_vehicle(body_text, label):
+            return label
+    return ""
+
+
+def _consumable_vehicle_notice(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
+    expected_vehicle = str(request.vehicle or "").strip()
+    actual_vehicle = _consumable_detail_vehicle_label(driver)
+    if expected_vehicle and actual_vehicle and expected_vehicle != actual_vehicle:
+        return f" APP車輛={expected_vehicle}，耗材內容頁出勤單位={actual_vehicle}，已依內容頁車輛登打。"
+    return ""
 
 
 def _find_consumable_href_by_vehicle_code(driver: webdriver.Chrome, hrefs: list[str], vehicle: str) -> str:

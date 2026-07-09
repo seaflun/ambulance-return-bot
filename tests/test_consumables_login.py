@@ -16,6 +16,7 @@ from consumables_login import (
     _find_consumable_detail_href,
     _load_acs_credentials,
     _wait_for_consumable_detail_page,
+    open_consumable_record_for_task,
     save_consumables_record_enabled,
 )
 
@@ -422,6 +423,92 @@ class ConsumablesLoginTests(unittest.TestCase):
                 "https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=2026070910100399999901",
             ],
         )
+
+    def test_consumable_detail_allows_single_candidate_with_different_detail_vehicle(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeElement:
+            def __init__(self, text=""):
+                self.text = text
+
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = ""
+                self.visited = []
+
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026070910100321364403",
+                        "sid": "2026070910100321364403",
+                        "text": "2026/07/09 21:40:25 桃園市觀音區廣大路542巷3弄7號 OHCA",
+                    }
+                ]
+
+            def get(self, url):
+                self.current_url = url
+                self.visited.append(url)
+
+            def find_element(self, by, value):
+                return FakeElement("出勤單位 新坡93 BSL-9230 救護人員 曾彥綸")
+
+        driver = FakeDriver()
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="20260709213644003",
+            case_time="2140",
+            vehicle="新坡92",
+            case_address="桃園市觀音區廣大路542巷3弄7號",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            href = _find_consumable_detail_href(driver, request)
+
+        self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026070910100321364403")
+        self.assertEqual(driver.visited, ["https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=2026070910100321364403"])
+
+    def test_open_consumable_record_notes_single_vehicle_detail_mismatch(self):
+        class FakeElement:
+            def __init__(self, text=""):
+                self.text = text
+
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = ""
+
+            def get(self, url):
+                self.current_url = url
+
+            def find_element(self, by, value):
+                return FakeElement("出勤單位 新坡93 BSL-9230 救護人員 曾彥綸")
+
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        with patch("consumables_login._open_consumable_maintenance_page"), patch(
+            "consumables_login._find_consumable_detail_href",
+            return_value="/ACS/ACS15002?emmTemsisid=2026070910100321364403",
+        ), patch("consumables_login._wait_for_consumable_detail_page", return_value=True), patch(
+            "consumables_login._needs_extra_consumable_row",
+            return_value=False,
+        ):
+            detail = open_consumable_record_for_task(FakeDriver(), request)
+
+        self.assertIn("APP車輛=新坡92", detail)
+        self.assertIn("出勤單位=新坡93", detail)
+        self.assertIn("已依內容頁車輛登打", detail)
 
     def test_consumable_detail_wait_fails_when_session_returns_to_sso(self):
         class FakeElement:
