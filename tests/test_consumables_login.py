@@ -358,6 +358,71 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026062510100312223802")
 
+    def test_consumable_detail_checks_detail_vehicle_before_unique_sid_fallback(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeElement:
+            def __init__(self, text=""):
+                self.text = text
+
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = ""
+                self.visited = []
+
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                return [
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026070910100321364403",
+                        "sid": "2026070910100321364403",
+                        "text": "2026/07/09 21:40:25 桃園市觀音區廣大路542巷3弄7號 OHCA",
+                    },
+                    {
+                        "href": "/ACS/ACS15002?emmTemsisid=2026070910100399999901",
+                        "sid": "2026070910100399999901",
+                        "text": "2026/07/09 21:40:17 桃園市觀音區廣大路542巷3弄7號 OHCA",
+                    },
+                ]
+
+            def get(self, url):
+                self.current_url = url
+                self.visited.append(url)
+
+            def find_element(self, by, value):
+                if self.current_url.endswith("99999901"):
+                    return FakeElement("出勤單位 新坡92 BXB-7593 救護人員 張家和")
+                return FakeElement("出勤單位 新坡93 BSL-9230 救護人員 曾彥綸")
+
+        driver = FakeDriver()
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="20260709213644003",
+            case_time="2140",
+            vehicle="新坡92",
+            case_address="桃園市觀音區廣大路542巷3弄7號",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            href = _find_consumable_detail_href(driver, request)
+
+        self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026070910100399999901")
+        self.assertEqual(
+            driver.visited,
+            [
+                "https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=2026070910100321364403",
+                "https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=2026070910100399999901",
+            ],
+        )
+
     def test_consumable_detail_wait_fails_when_session_returns_to_sso(self):
         class FakeElement:
             text = ""

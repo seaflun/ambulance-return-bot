@@ -338,6 +338,13 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
     if vehicle_scored:
         return vehicle_scored[0][1]
 
+    if request.vehicle and scored:
+        scored.sort(key=lambda item: item[0], reverse=True)
+        matched = _find_consumable_href_by_vehicle_code(driver, [href for _, href, _ in scored], request.vehicle)
+        if matched:
+            return matched
+        raise RuntimeError(f"耗材內容頁找不到符合車輛的紀錄：車輛={request.vehicle} 候選={len(scored)}")
+
     sid_scored.sort(key=lambda item: item[0], reverse=True)
     if sid_scored:
         tied = [item for item in sid_scored if item[0] == sid_scored[0][0]]
