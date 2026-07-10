@@ -3155,7 +3155,8 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
       const row = rows[rowIndex];
       const cells = Array.from(row.querySelectorAll('td, th')).map(textOf).filter(Boolean);
       const joined = cells.join(' ');
-      const isEmergencyOrFire = joined.includes('緊急救護') || joined.includes('火災');
+      const isSalvagedBody = joined.includes('其他-打撈浮屍');
+      const isEmergencyOrFire = joined.includes('緊急救護') || joined.includes('火災') || isSalvagedBody;
       if (!isEmergencyOrFire) continue;
       const caseId = cells[0] || '';
       if (!/^\\d{17}$/.test(caseId)) continue;
@@ -3165,9 +3166,9 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
       });
       const chooseDataMatch = String(choose ? (choose.getAttribute('onclick') || '') : '').match(/choose\\('([\\s\\S]*)'\\)/);
       const chooseParts = chooseDataMatch ? chooseDataMatch[1].split('(^w^)') : [];
-      const category = cells.find(cell => cell.includes('緊急救護') || cell.includes('火災')) || '';
-      if (!category.startsWith('緊急救護') && !category.includes('火災')) continue;
-      const reason = category.includes('-') ? category.split('-').slice(1).join('-').trim() : (category.includes('火災') ? '火災' : '');
+      const category = cells.find(cell => cell.includes('緊急救護') || cell.includes('火災') || cell.includes('其他-打撈浮屍')) || '';
+      if (!category.startsWith('緊急救護') && !category.includes('火災') && !category.includes('其他-打撈浮屍')) continue;
+      const reason = isSalvagedBody ? '溺水' : (category.includes('-') ? category.split('-').slice(1).join('-').trim() : (category.includes('火災') ? '火災' : ''));
       const personnelRaw = chooseParts[34] || '';
       cases.push({
         row_index: String(rowIndex),

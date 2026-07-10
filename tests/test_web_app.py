@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
@@ -481,6 +482,26 @@ class WebAppTests(unittest.TestCase):
         for package_key in ("glucose", "iv", "io", "ecg", "ohca"):
             self.assertIn(f'data-consumable-package="{package_key}" data-consumable-target="2"', body)
 
+    def test_imported_salvaged_body_case_is_treated_as_ambulance_drowning(self):
+        self.import_case_for_form(
+            {
+                "case_id": "case-salvaged-body",
+                "category": "其他-打撈浮屍",
+                "reason": "溺水",
+                "address": "桃園市觀音區",
+                "case_time_hhmm": "0911",
+                "personnel": ["甲", "乙", "丙", "丁"],
+            }
+        )
+
+        response = self.client.get("/app")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('<option value="溺水" selected>溺水</option>', body)
+        self.assertIn('name="two_vehicle"', body)
+        self.assertIn("兩車同時登打", body)
+
     def test_app_page_includes_last_mileage_by_vehicle(self):
         self.store.create(
             app_module.request_from_form(
@@ -590,7 +611,19 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('href="/admin/sinposmart"', body)
         self.assertNotIn("救護後台", body)
         self.assertNotIn("值班後台", body)
-        self.assertNotIn('class="header-actions"', body)
+        self.assertIn('class="header-actions"', body)
+        self.assertIn('href="/">返回首頁</a>', body)
+
+    def test_nas_app_page_shows_home_button_only_on_nas(self):
+        nas_body = html.unescape(
+            self.client.get("/app", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
+        )
+        local_body = html.unescape(
+            self.client.get("/app", headers={"Host": "127.0.0.1:8090"}).data.decode("utf-8")
+        )
+
+        self.assertIn('<a class="button secondary" href="/">返回首頁</a>', nas_body)
+        self.assertNotIn('<a class="button secondary" href="/">返回首頁</a>', local_body)
 
     def test_app_page_recent_task_does_not_show_delete_button(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
@@ -858,6 +891,12 @@ class WebAppTests(unittest.TestCase):
                     "case_address": "桃園市觀音區中山路",
                     "vehicle": "新坡91",
                     "driver": "曾彥綸",
+                    "case_time": "0830",
+                    "return_time": "0910",
+                    "patient_summary": "無",
+                    "mileage": "54620",
+                    "consumables": {"桃-口罩(片)": 2},
+                    "disinfection_items": ["擦拭消毒"],
                 },
                 "user": "8番 曾彥綸 - tyfd01510",
                 "synced_account": "8番 曾彥綸 - tyfd01510",
@@ -916,6 +955,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("緊急救護-急病 - 桃園市觀音區中山路", body)
         self.assertIn("四站登打成功", body)
         self.assertNotIn("五站登打成功", body)
+        self.assertIn("<strong>登打明細</strong>", body)
+        self.assertIn(
+            "新坡91 / 無 / 出勤 0830 / 返隊 0910 / 曾彥綸 / 54620 / 桃-口罩(片) x2 / 消毒1項",
+            body,
+        )
         reports = app_module.public_pc_reports()
         self.assertEqual(reports[0]["operator"], "8番 曾彥綸 - tyfd01510")
         self.assertEqual(reports[0]["synced_account"], "8番 曾彥綸 - tyfd01510")
@@ -941,6 +985,7 @@ class WebAppTests(unittest.TestCase):
                     "task_id": "local-task-two-vehicle",
                     "case_reason": "\u6025\u75c5",
                     "case_address": "\u6843\u5712\u5e02\u89c0\u97f3\u5340\u4e2d\u5c71\u8def1\u865f",
+                    "case_time": "1024",
                     "vehicle": "\u65b0\u576191",
                     "driver": "\u66fe\u5f65\u7db8",
                     "mileage": "12345",
@@ -979,9 +1024,9 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("1\u8eca", body)
         self.assertIn("2\u8eca", body)
-        self.assertIn("\u65b0\u576191 / \u7537 / \u66fe\u5f65\u7db8 / 12345 / \u6843-\u53e3\u7f69(\u7247) x2 / \u6d88\u6bd22\u9805", body)
+        self.assertIn("\u65b0\u576191 / \u7537 / \u51fa\u52e4 1024 / \u8fd4\u968a 1119 / \u66fe\u5f65\u7db8 / 12345 / \u6843-\u53e3\u7f69(\u7247) x2 / \u6d88\u6bd22\u9805", body)
         self.assertIn("\u65b0\u576192", body)
-        self.assertIn("\u65b0\u576192 / \u7121 / \u738b\u6631\u52db / 23456 / \u6843-9\u540b\u624b\u5957-L(\u96d9) x1 / \u6d88\u6bd21\u9805", body)
+        self.assertIn("\u65b0\u576192 / \u7121 / \u51fa\u52e4 1024 / \u8fd4\u968a 1125 / \u738b\u6631\u52db / 23456 / \u6843-9\u540b\u624b\u5957-L(\u96d9) x1 / \u6d88\u6bd21\u9805", body)
         self.assertIn("\u738b\u6631\u52db", body)
         self.assertIn("23456", body)
         self.assertIn("\u6843-9\u540b\u624b\u5957-L(\u96d9) x1", body)
@@ -1540,6 +1585,128 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertEqual(len(reports[0]["events"]), 1)
         self.assertEqual(reports[0]["events"][0]["event_id"], "evt-dedupe-1")
+
+    def test_public_pc_reports_keep_all_statuses_for_seven_days(self):
+        now = datetime(2026, 7, 10, 18, 0, 0)
+        path = app_module.public_pc_report_file()
+        app_module.write_json_atomic(
+            path,
+            {
+                "tasks": [
+                    {
+                        "task_id": "recent-success",
+                        "updated_at": (now - timedelta(days=6, hours=23)).isoformat(timespec="seconds"),
+                        "overall_status": "desktop_fast_completed",
+                    },
+                    {
+                        "task_id": "recent-failed",
+                        "updated_at": (now - timedelta(days=2)).isoformat(timespec="seconds"),
+                        "overall_status": "desktop_fast_completed_with_errors",
+                    },
+                    {
+                        "task_id": "expired-running",
+                        "updated_at": (now - timedelta(days=8)).isoformat(timespec="seconds"),
+                        "overall_status": "desktop_fast_running",
+                    },
+                ]
+            },
+        )
+
+        reports = app_module.public_pc_reports(now=now)
+
+        self.assertEqual([report["task_id"] for report in reports], ["recent-failed", "recent-success"])
+
+    def test_public_pc_reports_do_not_truncate_recent_history(self):
+        for index in range(101):
+            app_module.upsert_public_pc_report(
+                {
+                    "event_id": f"evt-recent-{index}",
+                    "task_id": f"recent-{index}",
+                    "task": {"task_id": f"recent-{index}", "case_reason": "急病"},
+                    "status": "desktop_fast_completed",
+                    "overall_status": "desktop_fast_completed",
+                }
+            )
+
+        self.assertEqual(len(app_module.public_pc_reports()), 101)
+
+    def test_public_pc_reports_recover_from_backup(self):
+        now = datetime(2026, 7, 10, 18, 0, 0)
+        main_path = app_module.public_pc_report_file()
+        backup_path = app_module.public_pc_report_backup_file()
+        main_path.parent.mkdir(parents=True, exist_ok=True)
+        main_path.write_text("{broken", encoding="utf-8")
+        app_module.write_json_atomic(
+            backup_path,
+            {
+                "tasks": [
+                    {
+                        "task_id": "from-backup",
+                        "updated_at": now.isoformat(timespec="seconds"),
+                        "overall_status": "desktop_fast_completed",
+                    }
+                ]
+            },
+        )
+
+        reports = app_module.public_pc_reports(now=now)
+
+        self.assertEqual([report["task_id"] for report in reports], ["from-backup"])
+
+    def test_public_pc_report_concurrent_upserts_keep_all_tasks(self):
+        def insert(index: int) -> None:
+            app_module.upsert_public_pc_report(
+                {
+                    "event_id": f"evt-concurrent-{index}",
+                    "task_id": f"concurrent-{index}",
+                    "task": {"task_id": f"concurrent-{index}", "case_reason": "急病"},
+                    "status": "desktop_fast_completed",
+                    "overall_status": "desktop_fast_completed",
+                }
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(insert, range(24)))
+
+        reports = app_module.public_pc_reports()
+        self.assertEqual(len(reports), 24)
+        self.assertEqual(len({report["task_id"] for report in reports}), 24)
+
+    def test_admin_public_pc_filters_success_and_failed_reports(self):
+        samples = [
+            ("success-task", "成功案件樣本", "desktop_fast_completed"),
+            ("failed-task", "失敗案件樣本", "desktop_fast_completed_with_errors"),
+            ("running-task", "執行中案件樣本", "desktop_fast_running"),
+        ]
+        for task_id, reason, status in samples:
+            app_module.upsert_public_pc_report(
+                {
+                    "event_id": f"evt-{task_id}",
+                    "task_id": task_id,
+                    "title": reason,
+                    "task": {"task_id": task_id, "case_reason": reason},
+                    "status": status,
+                    "overall_status": status,
+                }
+            )
+
+        all_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+        success_body = html.unescape(self.client.get("/admin/public-pc?result=success").data.decode("utf-8"))
+        failed_body = html.unescape(self.client.get("/admin/public-pc?result=failed").data.decode("utf-8"))
+
+        self.assertIn("成功案件樣本", all_body)
+        self.assertIn("失敗案件樣本", all_body)
+        self.assertIn("執行中案件樣本", all_body)
+        self.assertIn('href="/admin/public-pc?result=success"', all_body)
+        self.assertIn('href="/admin/public-pc?result=failed"', all_body)
+        self.assertIn("成功案件 1", all_body)
+        self.assertIn("失敗案件 1", all_body)
+        self.assertIn("成功案件樣本", success_body)
+        self.assertNotIn("失敗案件樣本", success_body)
+        self.assertNotIn("執行中案件樣本", success_body)
+        self.assertIn("失敗案件樣本", failed_body)
+        self.assertNotIn("成功案件樣本", failed_body)
+        self.assertNotIn("執行中案件樣本", failed_body)
 
     def test_admin_public_pc_shows_site_diagnostics(self):
         os.environ["WORKER_TOKEN"] = "test-token"

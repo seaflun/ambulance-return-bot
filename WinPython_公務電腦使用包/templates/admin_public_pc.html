@@ -95,6 +95,9 @@
     }
     .version-label { color: var(--muted); font-size: var(--text-sm); }
     .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
+    .result-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .result-filter { min-height: 40px; padding: 0 14px; background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
+    .result-filter.active { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 8px 18px rgba(184, 107, 91, .18); }
     .card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; margin-bottom: 12px; }
     .title { font-size: 17px; font-weight: 800; overflow-wrap: anywhere; }
     .meta { margin-top: 4px; color: var(--muted); font-size: 13px; }
@@ -226,6 +229,12 @@
       </section>
     {% endif %}
 
+    <nav class="result-filters" aria-label="案件分類">
+      <a class="button result-filter{% if result_filter == 'all' %} active{% endif %}" href="/admin/public-pc">顯示全部 {{ report_counts['all'] }}</a>
+      <a class="button result-filter{% if result_filter == 'success' %} active{% endif %}" href="/admin/public-pc?result=success">成功案件 {{ report_counts['success'] }}</a>
+      <a class="button result-filter{% if result_filter == 'failed' %} active{% endif %}" href="/admin/public-pc?result=failed">失敗案件 {{ report_counts['failed'] }}</a>
+    </nav>
+
     {% if reports %}
       <section class="task-list" aria-label="公務電腦任務">
         {% for item in reports %}
@@ -250,7 +259,7 @@
                 {% for entry in vehicle_entries %}
                   <div class="vehicle-line">
                     <strong>{{ entry.label }}</strong>
-                    {{ entry.vehicle or '未填車輛' }} / {{ entry.patient_gender or '未填傷病患' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }} / {{ entry.consumables_summary or '未填耗材' }} / {{ entry.disinfection_count_text or '消毒0項' }}
+                    {{ entry.vehicle or '未填車輛' }} / {{ entry.patient_gender or '未填傷病患' }} / 出勤 {{ entry.case_time or '未填' }} / 返隊 {{ entry.return_time or '未填' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }} / {{ entry.consumables_summary or '未填耗材' }} / {{ entry.disinfection_count_text or '消毒0項' }}
                   </div>
                 {% endfor %}
               </section>

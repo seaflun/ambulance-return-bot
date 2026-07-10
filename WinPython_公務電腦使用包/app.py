@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -75,7 +75,9 @@ runner = TaskRunner(artifacts_dir, store=store)
 desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 _local_case_lookup_thread_lock = threading.Lock()
 _local_case_lookup_thread: threading.Thread | None = None
+_public_pc_report_lock = threading.Lock()
 _case_lookup_start_error = ""
+PUBLIC_PC_REPORT_RETENTION_DAYS = 7
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
 SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"]
 SITE_SHORT_NAMES = {
@@ -442,7 +444,26 @@ def admin_vehicles():
 @app.get("/admin/public-pc")
 def admin_public_pc():
     reports = public_pc_reports()
-    return render_template("admin_public_pc.html", reports=reports, version_info=worker_admin_version_info(reports))
+    result_filter = str(request.args.get("result") or "all").strip().lower()
+    if result_filter not in {"all", "success", "failed"}:
+        result_filter = "all"
+    report_counts = {
+        "all": len(reports),
+        "success": sum(public_pc_report_result(item) == "success" for item in reports),
+        "failed": sum(public_pc_report_result(item) == "failed" for item in reports),
+    }
+    visible_reports = (
+        reports
+        if result_filter == "all"
+        else [item for item in reports if public_pc_report_result(item) == result_filter]
+    )
+    return render_template(
+        "admin_public_pc.html",
+        reports=visible_reports,
+        report_counts=report_counts,
+        result_filter=result_filter,
+        version_info=worker_admin_version_info(reports),
+    )
 
 
 @app.get("/admin/sinposmart")
@@ -795,82 +816,128 @@ def public_pc_report_file() -> Path:
     return artifacts_dir / "public_pc" / "task_events.json"
 
 
+def public_pc_report_backup_file() -> Path:
+    return artifacts_dir / "public_pc" / "task_events.backup.json"
+
+
 def public_pc_pending_report_file() -> Path:
     return artifacts_dir / "public_pc" / "pending_events.jsonl"
 
 
-def public_pc_reports() -> list[dict]:
-    path = public_pc_report_file()
-    if not path.exists():
-        return []
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    reports = payload.get("tasks") if isinstance(payload, dict) else []
-    if not isinstance(reports, list):
-        return []
+def _load_public_pc_reports(*, strict: bool = False) -> list[dict]:
+    found_file = False
+    for path in (public_pc_report_file(), public_pc_report_backup_file()):
+        if not path.exists():
+            continue
+        found_file = True
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        reports = payload.get("tasks") if isinstance(payload, dict) else None
+        if isinstance(reports, list):
+            return [item for item in reports if isinstance(item, dict)]
+    if strict and found_file:
+        raise ValueError("救護後台案件主檔與備份均無法讀取，已停止寫入以保留現場資料。")
+    return []
+
+
+def _recent_public_pc_reports(reports: list[dict], now: datetime) -> list[dict]:
+    cutoff = now - timedelta(days=PUBLIC_PC_REPORT_RETENTION_DAYS)
+    recent: list[dict] = []
+    for item in reports:
+        raw_time = str(item.get("updated_at") or item.get("created_at") or "").strip()
+        try:
+            updated_at = datetime.fromisoformat(raw_time)
+        except ValueError:
+            recent.append(item)
+            continue
+        if updated_at >= cutoff:
+            recent.append(item)
+    return recent
+
+
+def _public_pc_reports_unlocked(now: datetime) -> list[dict]:
+    reports = _recent_public_pc_reports(_load_public_pc_reports(), now)
     return sorted(reports, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
 
+def public_pc_reports(now: datetime | None = None) -> list[dict]:
+    with _public_pc_report_lock:
+        return _public_pc_reports_unlocked(now or datetime.now())
+
+
+def public_pc_report_result(report: dict) -> str:
+    current_class = status_class(effective_task_status(report))
+    if current_class == "complete":
+        return "success"
+    if current_class == "failed":
+        return "failed"
+    return "other"
+
+
 def upsert_public_pc_report(data: dict) -> dict:
-    path = public_pc_report_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    current = {"tasks": public_pc_reports()}
-    task = data.get("task") if isinstance(data.get("task"), dict) else {}
-    task_id = str(data.get("task_id") or task.get("task_id") or "").strip()
-    now = datetime.now().isoformat(timespec="seconds")
-    event_id = str(data.get("event_id") or "").strip() or str(uuid4())
-    ack_id = str(data.get("ack_id") or event_id).strip() or event_id
-    operator_label = str(data.get("operator") or data.get("user") or "未知使用者")
-    synced_account = str(data.get("synced_account") or operator_label)
-    event = {
-        "event_id": event_id,
-        "ack_id": ack_id,
-        "time": str(data.get("time") or now),
-        "operator": operator_label,
-        "user": operator_label,
-        "synced_account": synced_account,
-        "worker_id": str(data.get("worker_id") or ""),
-        "package_version": str(data.get("package_version") or ""),
-        "action": public_pc_action_for_task(task, str(data.get("action") or "更新")),
-        "status": str(data.get("status") or ""),
-        "detail": str(data.get("detail") or ""),
-    }
-    reports = [item for item in current["tasks"] if str(item.get("task_id") or "") != task_id]
-    existing = next((item for item in current["tasks"] if str(item.get("task_id") or "") == task_id), {})
-    events = list(existing.get("events") or [])
-    known_event_ids = {str(item.get("event_id") or "").strip() for item in events if isinstance(item, dict)}
-    if event_id not in known_event_ids:
-        events.append(event)
-    site_login_accounts = (
-        data.get("site_login_accounts")
-        if isinstance(data.get("site_login_accounts"), dict)
-        else existing.get("site_login_accounts", {})
-    )
-    payload = {
-        **existing,
-        "task_id": task_id,
-        "title": str(data.get("title") or task_title(task) or task_id),
-        "task": task,
-        "operator": operator_label,
-        "user": operator_label,
-        "synced_account": synced_account,
-        "site_login_accounts": site_login_accounts,
-        "worker_id": event["worker_id"],
-        "package_version": event["package_version"] or str(existing.get("package_version") or ""),
-        "overall_status": str(data.get("overall_status") or existing.get("overall_status") or ""),
-        "site_statuses": data.get("site_statuses") if isinstance(data.get("site_statuses"), dict) else existing.get("site_statuses", {}),
-        "created_at": str(data.get("created_at") or existing.get("created_at") or now),
-        "updated_at": now,
-        "last_action": event["action"],
-        "last_status": event["status"],
-        "last_detail": event["detail"],
-        "events": events,
-    }
-    reports.insert(0, payload)
-    write_json_atomic(path, {"tasks": reports[:100]})
-    return payload
+    with _public_pc_report_lock:
+        path = public_pc_report_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now_value = datetime.now()
+        current_reports = _recent_public_pc_reports(_load_public_pc_reports(strict=True), now_value)
+        task = data.get("task") if isinstance(data.get("task"), dict) else {}
+        task_id = str(data.get("task_id") or task.get("task_id") or "").strip()
+        now = now_value.isoformat(timespec="seconds")
+        event_id = str(data.get("event_id") or "").strip() or str(uuid4())
+        ack_id = str(data.get("ack_id") or event_id).strip() or event_id
+        operator_label = str(data.get("operator") or data.get("user") or "未知使用者")
+        synced_account = str(data.get("synced_account") or operator_label)
+        event = {
+            "event_id": event_id,
+            "ack_id": ack_id,
+            "time": str(data.get("time") or now),
+            "operator": operator_label,
+            "user": operator_label,
+            "synced_account": synced_account,
+            "worker_id": str(data.get("worker_id") or ""),
+            "package_version": str(data.get("package_version") or ""),
+            "action": public_pc_action_for_task(task, str(data.get("action") or "更新")),
+            "status": str(data.get("status") or ""),
+            "detail": str(data.get("detail") or ""),
+        }
+        reports = [item for item in current_reports if str(item.get("task_id") or "") != task_id]
+        existing = next((item for item in current_reports if str(item.get("task_id") or "") == task_id), {})
+        events = list(existing.get("events") or [])
+        known_event_ids = {str(item.get("event_id") or "").strip() for item in events if isinstance(item, dict)}
+        if event_id not in known_event_ids:
+            events.append(event)
+        site_login_accounts = (
+            data.get("site_login_accounts")
+            if isinstance(data.get("site_login_accounts"), dict)
+            else existing.get("site_login_accounts", {})
+        )
+        payload = {
+            **existing,
+            "task_id": task_id,
+            "title": str(data.get("title") or task_title(task) or task_id),
+            "task": task,
+            "operator": operator_label,
+            "user": operator_label,
+            "synced_account": synced_account,
+            "site_login_accounts": site_login_accounts,
+            "worker_id": event["worker_id"],
+            "package_version": event["package_version"] or str(existing.get("package_version") or ""),
+            "overall_status": str(data.get("overall_status") or existing.get("overall_status") or ""),
+            "site_statuses": data.get("site_statuses") if isinstance(data.get("site_statuses"), dict) else existing.get("site_statuses", {}),
+            "created_at": str(data.get("created_at") or existing.get("created_at") or now),
+            "updated_at": now,
+            "last_action": event["action"],
+            "last_status": event["status"],
+            "last_detail": event["detail"],
+            "events": events,
+        }
+        reports.insert(0, payload)
+        output = {"tasks": reports}
+        write_json_atomic(path, output)
+        write_json_atomic(public_pc_report_backup_file(), output)
+        return payload
 
 
 def _enqueue_public_pc_report(payload: dict) -> None:
@@ -1845,6 +1912,7 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
     if not entries:
         entries = [task]
     multiple = len(entries) > 1
+    shared_case_time = normalize_hhmm(str(task.get("case_time") or ""))
     display_entries: list[dict[str, object]] = []
     for index, raw_entry in enumerate(entries, start=1):
         entry = dict(raw_entry or {}) if isinstance(raw_entry, dict) else {}
@@ -1873,12 +1941,13 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
         ] if isinstance(entry.get("disinfection_items"), list) else []
         display_entries.append(
             {
-                "label": f"{index}\u8eca" if multiple else "\u8eca\u8f1b",
+                "label": f"{index}\u8eca" if multiple else "登打明細",
                 "vehicle": str(entry.get("vehicle") or "").strip(),
+                "case_time": normalize_hhmm(str(entry.get("case_time") or "")) or shared_case_time,
                 "driver": str(entry.get("driver") or "").strip(),
                 "mileage": str(entry.get("mileage") or "").strip(),
                 "return_date": str(entry.get("return_date") or "").strip(),
-                "return_time": str(entry.get("return_time") or "").strip(),
+                "return_time": normalize_hhmm(str(entry.get("return_time") or "")),
                 "patient_summary": patient_summary,
                 "patient_gender": patient_gender,
                 "consumables_items": list(consumable_parts),
@@ -2189,6 +2258,7 @@ def template_helpers() -> dict:
         "site_short_name": site_short_name,
         "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
+        "show_nas_home_button": show_nas_home_button,
         "show_public_pc_admin_button": show_public_pc_admin_button,
         "show_vehicle_settings_button": show_vehicle_settings_button,
         "sinposmart_fire_day_label": sinposmart_fire_day_label,
@@ -2213,6 +2283,10 @@ def template_helpers() -> dict:
 
 
 def show_public_pc_admin_button() -> bool:
+    return not request_is_local_host()
+
+
+def show_nas_home_button() -> bool:
     return not request_is_local_host()
 
 
@@ -2285,7 +2359,7 @@ def selected_case_is_ambulance_case(case: dict) -> bool:
         str(case.get(key) or "")
         for key in ("category", "case_type", "title", "description", "detail")
     )
-    return "\u6551\u8b77" in text
+    return "\u6551\u8b77" in text or "其他-打撈浮屍" in text
 
 
 def read_selected_case() -> dict:

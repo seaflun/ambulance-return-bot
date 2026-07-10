@@ -1358,6 +1358,20 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(cases[0]["reason"], "火災")
         self.assertIn("includes('火災')", driver.script)
 
+    def test_extract_emergency_cases_includes_salvaged_body_as_drowning(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                self.script = script
+                return [{"case_id": "20260710170000001", "category": "其他-打撈浮屍", "reason": "溺水"}]
+
+        driver = FakeDriver()
+        cases = selenium_local_module._extract_emergency_cases(driver)
+
+        self.assertEqual(cases[0]["category"], "其他-打撈浮屍")
+        self.assertEqual(cases[0]["reason"], "溺水")
+        self.assertIn("includes('其他-打撈浮屍')", driver.script)
+        self.assertIn("isSalvagedBody ? '溺水'", driver.script)
+
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]
         previous = {

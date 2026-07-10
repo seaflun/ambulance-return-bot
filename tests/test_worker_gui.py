@@ -513,6 +513,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn('start "" /min "%~f0" --minimized', launcher)
         self.assertIn("repair_update_package.ps1", launcher)
         self.assertNotRegex(launcher, r"\[OK\] Update check completed\.[\s\S]{0,80}pause")
+        self.assertNotRegex(launcher.lower(), r"(?m)^\s*pause\s*$")
         self.assertIn("update_package.ps1", repair_script)
         self.assertIn("ambulance-return-public-package.zip", repair_script)
         self.assertIn("Get-LatestRelease", repair_script)

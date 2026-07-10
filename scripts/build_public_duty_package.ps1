@@ -488,14 +488,12 @@ if errorlevel 1 (
   echo [WARN] update_package.ps1 is broken. Trying self repair...
   if not exist "%~dp0repair_update_package.ps1" (
     echo [ERROR] repair_update_package.ps1 is missing.
-    pause
     exit /b 1
   )
   powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0repair_update_package.ps1"
   if errorlevel 1 (
     echo.
     echo [ERROR] Could not repair update_package.ps1.
-    pause
     exit /b 1
   )
 )
@@ -513,7 +511,6 @@ exit /b 0
 if errorlevel 1 (
   echo.
   echo [ERROR] Update failed.
-  pause
   exit /b 1
 )
 '@
