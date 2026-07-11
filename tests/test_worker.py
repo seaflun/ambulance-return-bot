@@ -6,6 +6,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import worker as worker_module
 from ambulance_bot.manual_task_lock import manual_task_lock_active, manual_task_lock_path, set_manual_task_lock
@@ -38,9 +39,343 @@ class WorkerTests(unittest.TestCase):
             else:
                 os.environ["MANUAL_TASK_LOCK_MAX_AGE_SECONDS"] = original_max_age
 
+    def test_remote_update_waits_for_windows_idle_without_launching(self):
+        launches: list[str] = []
+        statuses: list[tuple[str, str, str, str]] = []
+        command = {"request_id": "update-1", "status": "pending"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            started = worker_module.maybe_run_remote_update(
+                "http://nas",
+                "PC-01",
+                Path(tmp),
+                fetch_command=lambda *_: command,
+                post_command_status=lambda *args, **_kwargs: statuses.append(args),
+                idle_seconds=lambda: 30.0,
+                launch_update=lambda request_id: launches.append(request_id),
+            )
+
+        self.assertFalse(started)
+        self.assertEqual(launches, [])
+        self.assertEqual(statuses[-1][2], "waiting_idle")
+        self.assertIn("120 秒", statuses[-1][3])
+
+    def test_remote_update_waits_for_cross_process_task_lock(self):
+        launches: list[str] = []
+        statuses: list[tuple[str, str, str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts_dir = Path(tmp)
+            set_manual_task_lock(artifacts_dir, "active-task")
+
+            started = worker_module.maybe_run_remote_update(
+                "http://nas",
+                "PC-01",
+                artifacts_dir,
+                fetch_command=lambda *_: {"request_id": "update-locked", "status": "pending"},
+                post_command_status=lambda *args, **_kwargs: statuses.append(args),
+                idle_seconds=lambda: 999.0,
+                launch_update=lambda request_id: launches.append(request_id),
+            )
+
+        self.assertFalse(started)
+        self.assertEqual(launches, [])
+        self.assertEqual(statuses[-1][2], "waiting_busy")
+        self.assertIn("勤務登打", statuses[-1][3])
+
+    def test_remote_update_waits_for_in_process_manual_task(self):
+        launches: list[str] = []
+        statuses: list[tuple[str, str, str, str]] = []
+        worker_module.MANUAL_TASK_ACTIVE.set()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                started = worker_module.maybe_run_remote_update(
+                    "http://nas",
+                    "PC-01",
+                    Path(tmp),
+                    fetch_command=lambda *_: {"request_id": "update-manual", "status": "pending"},
+                    post_command_status=lambda *args, **_kwargs: statuses.append(args),
+                    idle_seconds=lambda: 999.0,
+                    launch_update=lambda request_id: launches.append(request_id),
+                )
+        finally:
+            worker_module.MANUAL_TASK_ACTIVE.clear()
+
+        self.assertFalse(started)
+        self.assertEqual(launches, [])
+        self.assertEqual(statuses[-1][2], "waiting_busy")
+
+    def test_remote_update_waits_for_active_case_lookup(self):
+        launches: list[str] = []
+        statuses: list[tuple[str, str, str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts_dir = Path(tmp)
+            request_path = artifacts_dir / "cases" / "request.json"
+            request_path.parent.mkdir(parents=True, exist_ok=True)
+            request_path.write_text(json.dumps({"status": "case_lookup_requested"}), encoding="utf-8")
+
+            started = worker_module.maybe_run_remote_update(
+                "http://nas",
+                "PC-01",
+                artifacts_dir,
+                fetch_command=lambda *_: {"request_id": "update-lookup", "status": "pending"},
+                post_command_status=lambda *args, **_kwargs: statuses.append(args),
+                idle_seconds=lambda: 999.0,
+                launch_update=lambda request_id: launches.append(request_id),
+            )
+
+        self.assertFalse(started)
+        self.assertEqual(launches, [])
+        self.assertEqual(statuses[-1][2], "waiting_busy")
+        self.assertIn("案件查詢", statuses[-1][3])
+
+    def test_remote_update_does_not_relaunch_updating_command(self):
+        launches: list[str] = []
+        statuses: list[tuple[str, str, str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            started = worker_module.maybe_run_remote_update(
+                "http://nas",
+                "PC-01",
+                Path(tmp),
+                fetch_command=lambda *_: {"request_id": "update-running", "status": "updating"},
+                post_command_status=lambda *args, **_kwargs: statuses.append(args),
+                idle_seconds=lambda: 999.0,
+                launch_update=lambda request_id: launches.append(request_id),
+            )
+
+        self.assertFalse(started)
+        self.assertEqual(launches, [])
+        self.assertEqual(statuses, [])
+
+    def test_remote_update_reports_failed_when_hidden_launcher_cannot_start(self):
+        statuses: list[tuple[str, str, str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            started = worker_module.maybe_run_remote_update(
+                "http://nas",
+                "PC-01",
+                Path(tmp),
+                fetch_command=lambda *_: {"request_id": "update-launch-fail", "status": "pending"},
+                post_command_status=lambda *args, **_kwargs: statuses.append(args),
+                idle_seconds=lambda: 999.0,
+                launch_update=lambda _request_id: (_ for _ in ()).throw(OSError("cannot launch")),
+            )
+
+        self.assertFalse(started)
+        self.assertEqual([item[2] for item in statuses], ["updating", "failed"])
+        self.assertIn("cannot launch", statuses[-1][3])
+
+    def test_windows_user_idle_seconds_uses_tick_difference(self):
+        idle = worker_module.windows_user_idle_seconds(
+            last_input_tick=lambda: 30_000,
+            current_tick=lambda: 150_000,
+        )
+
+        self.assertEqual(idle, 120.0)
+
+    def test_fetch_remote_update_command_sends_worker_identity_and_version(self):
+        captured_urls: list[str] = []
+        original_request_json = worker_module.request_json
+        original_package_version = worker_module.current_package_version
+        try:
+            worker_module.request_json = lambda url: captured_urls.append(url) or {
+                "ok": True,
+                "command": {"request_id": "update-fetch", "status": "pending"},
+            }
+            worker_module.current_package_version = lambda: "2026.07.10.1950"
+
+            command = worker_module.fetch_remote_update_command("http://nas", "PC 01")
+        finally:
+            worker_module.request_json = original_request_json
+            worker_module.current_package_version = original_package_version
+
+        query = worker_module.urllib.parse.parse_qs(worker_module.urllib.parse.urlparse(captured_urls[0]).query)
+        self.assertEqual(command["request_id"], "update-fetch")
+        self.assertEqual(query["worker_id"], ["PC 01"])
+        self.assertEqual(query["package_version"], ["2026.07.10.1950"])
+
+    def test_fetch_remote_update_command_tolerates_old_nas_without_endpoint(self):
+        original_request_json = worker_module.request_json
+        try:
+            worker_module.request_json = lambda _url: (_ for _ in ()).throw(
+                RuntimeError("NAS worker API 回應 HTTP 404：NOT FOUND")
+            )
+
+            command = worker_module.fetch_remote_update_command("http://old-nas", "PC-01")
+        finally:
+            worker_module.request_json = original_request_json
+
+        self.assertIsNone(command)
+
+    def test_post_remote_update_status_sends_complete_json(self):
+        captured: dict[str, object] = {}
+        original_urlopen = worker_module.urllib.request.urlopen
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["payload"] = json.loads(req.data.decode("utf-8"))
+            return FakeResponse()
+
+        try:
+            worker_module.urllib.request.urlopen = fake_urlopen
+            worker_module.post_remote_update_status(
+                "http://nas",
+                "update-status",
+                "completed",
+                "遠端更新完成。",
+                worker_id="PC-01",
+                before_version="2026.07.10.1950",
+                installed_version="2026.07.11.1548",
+                exit_code=0,
+            )
+        finally:
+            worker_module.urllib.request.urlopen = original_urlopen
+
+        self.assertTrue(str(captured["url"]).endswith("/worker/remote-update/update-status/status"))
+        self.assertEqual(
+            captured["payload"],
+            {
+                "status": "completed",
+                "detail": "遠端更新完成。",
+                "worker_id": "PC-01",
+                "before_version": "2026.07.10.1950",
+                "installed_version": "2026.07.11.1548",
+                "exit_code": 0,
+            },
+        )
+
+    def test_launch_remote_update_uses_hidden_powershell_wrapper(self):
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp)
+            wrapper = package_dir / "REMOTE_UPDATE_PACKAGE.ps1"
+            wrapper.write_text("param([string]$RequestId)", encoding="utf-8")
+
+            worker_module.launch_remote_update(
+                "update-hidden",
+                package_dir=package_dir,
+                popen=lambda args, **kwargs: calls.append((args, kwargs)),
+            )
+
+        args, kwargs = calls[0]
+        self.assertIn("-WindowStyle", args)
+        self.assertIn("Hidden", args)
+        self.assertIn(str(wrapper), args)
+        self.assertIn("update-hidden", args)
+        self.assertEqual(kwargs["cwd"], package_dir)
+        self.assertEqual(
+            int(kwargs["creationflags"]) & int(getattr(worker_module.subprocess, "CREATE_NO_WINDOW", 0)),
+            int(getattr(worker_module.subprocess, "CREATE_NO_WINDOW", 0)),
+        )
+
+    def test_report_remote_update_result_posts_once_and_marks_reported(self):
+        posts: list[tuple[str, str, str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": tmp}):
+                path = worker_module.remote_update_result_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    json.dumps(
+                        {
+                            "request_id": "update-result",
+                            "status": "completed",
+                            "detail": "遠端更新完成。",
+                            "before_version": "2026.07.10.1950",
+                            "installed_version": "2026.07.11.1548",
+                            "exit_code": 0,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+                first = worker_module.report_remote_update_result(
+                    "http://nas",
+                    "PC-01",
+                    post_command_status=lambda *args, **_kwargs: posts.append(args),
+                    reported_at=lambda: "2026-07-11T15:55:00",
+                )
+                second = worker_module.report_remote_update_result(
+                    "http://nas",
+                    "PC-01",
+                    post_command_status=lambda *args, **_kwargs: posts.append(args),
+                    reported_at=lambda: "2026-07-11T15:56:00",
+                )
+                saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0][1], "update-result")
+        self.assertEqual(posts[0][2], "completed")
+        self.assertEqual(saved["reported_at"], "2026-07-11T15:55:00")
+
+    def test_remote_update_wrapper_runs_updater_hidden_and_records_result(self):
+        wrapper = Path(worker_module.__file__).with_name("REMOTE_UPDATE_PACKAGE.ps1")
+
+        self.assertTrue(wrapper.exists())
+        source = wrapper.read_text(encoding="utf-8")
+        self.assertIn("Start-Process", source)
+        self.assertIn("-WindowStyle Hidden", source)
+        self.assertIn("update_package.ps1", source)
+        self.assertIn("remote_update_result.json", source)
+        self.assertIn('"up_to_date"', source)
+        self.assertIn('"completed"', source)
+        self.assertIn('"failed"', source)
+        self.assertIn("Move-Item", source)
+        self.assertTrue(source.isascii())
+
+    def test_remote_update_idle_setting_is_documented_for_public_package(self):
+        env_example = Path(worker_module.__file__).with_name(".env.example").read_text(encoding="utf-8")
+
+        self.assertIn("REMOTE_UPDATE_IDLE_SECONDS=120", env_example)
+
+    def test_main_reports_result_and_checks_remote_update_before_other_work(self):
+        env_keys = ["WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
+        previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
+        original_report = worker_module.report_remote_update_result
+        original_remote = worker_module.maybe_run_remote_update
+        original_sync = worker_module.maybe_run_credential_sync
+        original_lookup = worker_module.maybe_run_case_lookup
+        calls: list[str] = []
+        try:
+            worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
+            worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "false"
+            worker_module.report_remote_update_result = lambda *_args, **_kwargs: calls.append("result") or False
+            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: calls.append("remote") or True
+            worker_module.maybe_run_credential_sync = lambda *_args, **_kwargs: calls.append("credential")
+            worker_module.maybe_run_case_lookup = (
+                lambda _server_url, _artifacts_dir, last_lookup_at, last_case_hash, _interval_seconds:
+                calls.append("lookup") or (last_lookup_at, last_case_hash)
+            )
+
+            worker_module.main()
+        finally:
+            worker_module.report_remote_update_result = original_report
+            worker_module.maybe_run_remote_update = original_remote
+            worker_module.maybe_run_credential_sync = original_sync
+            worker_module.maybe_run_case_lookup = original_lookup
+            for key, value in previous_env.items():
+                if value is None:
+                    worker_module.os.environ.pop(key, None)
+                else:
+                    worker_module.os.environ[key] = value
+
+        self.assertEqual(calls, ["result", "remote"])
+
     def test_main_defaults_scheduled_case_lookup_to_thirty_minutes(self):
         env_keys = ["CASE_LOOKUP_INTERVAL_SECONDS", "WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
         previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
+        original_report = worker_module.report_remote_update_result
+        original_remote = worker_module.maybe_run_remote_update
         original_sync = worker_module.maybe_run_credential_sync
         original_lookup = worker_module.maybe_run_case_lookup
         intervals: list[int] = []
@@ -48,6 +383,8 @@ class WorkerTests(unittest.TestCase):
             worker_module.os.environ.pop("CASE_LOOKUP_INTERVAL_SECONDS", None)
             worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
             worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "false"
+            worker_module.report_remote_update_result = lambda *_args, **_kwargs: False
+            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: False
             worker_module.maybe_run_credential_sync = lambda server_url: None
             worker_module.maybe_run_case_lookup = (
                 lambda server_url, artifacts_dir, last_lookup_at, last_case_hash, interval_seconds:
@@ -56,6 +393,8 @@ class WorkerTests(unittest.TestCase):
 
             worker_module.main()
         finally:
+            worker_module.report_remote_update_result = original_report
+            worker_module.maybe_run_remote_update = original_remote
             worker_module.maybe_run_credential_sync = original_sync
             worker_module.maybe_run_case_lookup = original_lookup
             for key, value in previous_env.items():
@@ -69,6 +408,8 @@ class WorkerTests(unittest.TestCase):
     def test_main_clamps_short_scheduled_case_lookup_interval_to_thirty_minutes(self):
         env_keys = ["CASE_LOOKUP_INTERVAL_SECONDS", "WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
         previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
+        original_report = worker_module.report_remote_update_result
+        original_remote = worker_module.maybe_run_remote_update
         original_sync = worker_module.maybe_run_credential_sync
         original_lookup = worker_module.maybe_run_case_lookup
         intervals: list[int] = []
@@ -76,6 +417,8 @@ class WorkerTests(unittest.TestCase):
             worker_module.os.environ["CASE_LOOKUP_INTERVAL_SECONDS"] = "300"
             worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
             worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "false"
+            worker_module.report_remote_update_result = lambda *_args, **_kwargs: False
+            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: False
             worker_module.maybe_run_credential_sync = lambda server_url: None
             worker_module.maybe_run_case_lookup = (
                 lambda server_url, artifacts_dir, last_lookup_at, last_case_hash, interval_seconds:
@@ -84,6 +427,8 @@ class WorkerTests(unittest.TestCase):
 
             worker_module.main()
         finally:
+            worker_module.report_remote_update_result = original_report
+            worker_module.maybe_run_remote_update = original_remote
             worker_module.maybe_run_credential_sync = original_sync
             worker_module.maybe_run_case_lookup = original_lookup
             for key, value in previous_env.items():

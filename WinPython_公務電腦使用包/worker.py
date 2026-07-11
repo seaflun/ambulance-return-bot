@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -62,6 +64,10 @@ def main() -> None:
     print(f"[worker] starting worker_id={worker_id} server={server_url}", flush=True)
     while True:
         try:
+            report_remote_update_result(server_url, worker_id)
+            if maybe_run_remote_update(server_url, worker_id, artifacts_dir):
+                print("[worker] remote update started; stopping worker loop", flush=True)
+                return
             maybe_run_credential_sync(server_url)
             last_case_lookup_at, last_case_hash = maybe_run_case_lookup(
                 server_url,
@@ -87,6 +93,172 @@ def main() -> None:
             if run_once:
                 return
             time.sleep(poll_seconds)
+
+
+def remote_update_idle_seconds() -> int:
+    try:
+        return max(30, int(os.getenv("REMOTE_UPDATE_IDLE_SECONDS", "120")))
+    except ValueError:
+        return 120
+
+
+def remote_update_busy_reason(artifacts_dir: Path) -> str:
+    if MANUAL_TASK_ACTIVE.is_set() or manual_task_lock_active(artifacts_dir):
+        return "勤務登打仍在執行。"
+    request_path = artifacts_dir / "cases" / "request.json"
+    if not request_path.exists():
+        return ""
+    try:
+        request_payload = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if str(request_payload.get("status") or "") == "case_lookup_requested":
+        return "案件查詢仍在執行。"
+    return ""
+
+
+def windows_user_idle_seconds(
+    *,
+    last_input_tick: Callable[[], int] | None = None,
+    current_tick: Callable[[], int] | None = None,
+) -> float:
+    if last_input_tick is None or current_tick is None:
+        if os.name != "nt":
+            return float("inf")
+
+        class LastInputInfo(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        info = LastInputInfo()
+        info.cbSize = ctypes.sizeof(info)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return 0.0
+        last_input_tick = lambda: int(info.dwTime)
+        current_tick = lambda: int(ctypes.windll.kernel32.GetTickCount())
+    elapsed_milliseconds = (int(current_tick()) - int(last_input_tick())) & 0xFFFFFFFF
+    return elapsed_milliseconds / 1000.0
+
+
+def launch_remote_update(
+    request_id: str,
+    *,
+    package_dir: Path | None = None,
+    popen: Callable[..., object] | None = None,
+) -> None:
+    root = package_dir or Path(__file__).resolve().parent
+    wrapper = root / "REMOTE_UPDATE_PACKAGE.ps1"
+    if not wrapper.exists():
+        raise RuntimeError(f"找不到遠端更新包裝器：{wrapper}")
+    args = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-File",
+        str(wrapper),
+        "-RequestId",
+        request_id,
+    ]
+    (popen or subprocess.Popen)(
+        args,
+        cwd=root,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def remote_update_result_path() -> Path:
+    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
+    root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    return root / "AmbulanceReturnBot" / "remote_update_result.json"
+
+
+def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def report_remote_update_result(
+    server_url: str,
+    worker_id: str,
+    *,
+    post_command_status: Callable[..., None] | None = None,
+    reported_at: Callable[[], str] | None = None,
+) -> bool:
+    path = remote_update_result_path()
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or str(payload.get("reported_at") or "").strip():
+        return False
+    request_id = str(payload.get("request_id") or "").strip()
+    status = str(payload.get("status") or "").strip()
+    if not request_id or status not in {"completed", "up_to_date", "failed"}:
+        return False
+    post = post_command_status or post_remote_update_status
+    post(
+        server_url,
+        request_id,
+        status,
+        str(payload.get("detail") or "遠端更新已結束。"),
+        worker_id=worker_id,
+        before_version=str(payload.get("before_version") or ""),
+        installed_version=str(payload.get("installed_version") or ""),
+        exit_code=payload.get("exit_code"),
+    )
+    payload["reported_at"] = (reported_at or (lambda: time.strftime("%Y-%m-%dT%H:%M:%S")))()
+    write_json_atomic(path, payload)
+    return True
+
+
+def maybe_run_remote_update(
+    server_url: str,
+    worker_id: str,
+    artifacts_dir: Path,
+    *,
+    fetch_command: Callable[[str, str], dict[str, object] | None] | None = None,
+    post_command_status: Callable[..., None] | None = None,
+    idle_seconds: Callable[[], float] | None = None,
+    launch_update: Callable[[str], None] | None = None,
+) -> bool:
+    fetch = fetch_command or fetch_remote_update_command
+    post = post_command_status or post_remote_update_status
+    idle = idle_seconds or windows_user_idle_seconds
+    launch = launch_update or launch_remote_update
+    command = fetch(server_url, worker_id)
+    if not command:
+        return False
+    request_id = str(command.get("request_id") or "").strip()
+    if not request_id:
+        return False
+    if str(command.get("status") or "").strip() == "updating":
+        return False
+    busy_reason = remote_update_busy_reason(artifacts_dir)
+    if busy_reason:
+        post(server_url, request_id, "waiting_busy", busy_reason, worker_id=worker_id)
+        return False
+    minimum_idle = remote_update_idle_seconds()
+    actual_idle = max(0.0, float(idle()))
+    if actual_idle < minimum_idle:
+        detail = f"等待電腦停止操作滿 {minimum_idle} 秒，目前已閒置 {int(actual_idle)} 秒。"
+        post(server_url, request_id, "waiting_idle", detail, worker_id=worker_id)
+        return False
+    post(server_url, request_id, "updating", "安全條件已符合，開始背景更新。", worker_id=worker_id)
+    try:
+        launch(request_id)
+    except Exception as exc:
+        post(server_url, request_id, "failed", f"無法啟動背景更新：{exc}", worker_id=worker_id)
+        return False
+    return True
 
 
 def maybe_run_case_lookup(
@@ -165,6 +337,33 @@ def fetch_credential_sync_request(server_url: str) -> dict[str, object] | None:
     data = request_json(url)
     request_payload = data.get("request") if data.get("ok") else None
     return request_payload if isinstance(request_payload, dict) else None
+
+
+def current_package_version() -> str:
+    path = Path(__file__).with_name("VERSION.txt")
+    if not path.exists():
+        return "0"
+    try:
+        return path.read_text(encoding="utf-8-sig").strip() or "0"
+    except OSError:
+        return "0"
+
+
+def fetch_remote_update_command(server_url: str, worker_id: str) -> dict[str, object] | None:
+    query = urllib.parse.urlencode(
+        {
+            "worker_id": worker_id,
+            "package_version": current_package_version(),
+        }
+    )
+    try:
+        data = request_json(f"{server_url}/worker/remote-update?{query}")
+    except RuntimeError as exc:
+        if "HTTP 404" in str(exc):
+            return None
+        raise
+    command = data.get("command") if data.get("ok") else None
+    return command if isinstance(command, dict) else None
 
 
 def maybe_run_credential_sync(server_url: str) -> None:
@@ -748,6 +947,44 @@ def ack_credential_sync_request(server_url: str, request_id: str, status: str, d
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         f"{server_url}/worker/credential-sync/{urllib.parse.quote(request_id)}/ack",
+        data=body,
+        headers={**worker_headers(), "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(worker_api_error_message(exc)) from exc
+
+
+def post_remote_update_status(
+    server_url: str,
+    request_id: str,
+    status: str,
+    detail: str,
+    *,
+    worker_id: str = "",
+    before_version: str = "",
+    installed_version: str = "",
+    exit_code: int | str | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "status": status,
+        "detail": detail,
+    }
+    for key, value in {
+        "worker_id": worker_id,
+        "before_version": before_version,
+        "installed_version": installed_version,
+    }.items():
+        if value:
+            payload[key] = value
+    if exit_code is not None:
+        payload["exit_code"] = exit_code
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{server_url}/worker/remote-update/{urllib.parse.quote(request_id)}/status",
         data=body,
         headers={**worker_headers(), "Content-Type": "application/json"},
         method="POST",
