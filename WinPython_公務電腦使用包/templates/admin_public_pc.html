@@ -272,6 +272,7 @@
           </div>
         </div>
         <form action="{{ url_for('admin_public_pc_remote_update') }}" method="post" onsubmit="return confirm('確定下達遠端更新？系統會等待勤務完成且電腦閒置後才在背景執行。');">
+          <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
           <button type="submit"{% if remote_update.active %} disabled aria-disabled="true"{% endif %}>
             {% if remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
           </button>

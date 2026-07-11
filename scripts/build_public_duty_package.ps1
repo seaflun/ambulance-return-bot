@@ -831,7 +831,9 @@ try {
 
     Write-Host "Update completed."
     Install-StartupLaunchers
-    Start-WorkerGui
+    if ($env:AMBULANCE_SKIP_WORKER_RESTART -notmatch "^(?i:1|true|yes|on)$") {
+        Start-WorkerGui
+    }
 } finally {
     try {
         if (Test-Path -LiteralPath $tempDir) {

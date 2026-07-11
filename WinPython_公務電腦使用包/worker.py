@@ -64,10 +64,10 @@ def main() -> None:
     print(f"[worker] starting worker_id={worker_id} server={server_url}", flush=True)
     while True:
         try:
-            report_remote_update_result(server_url, worker_id)
-            if maybe_run_remote_update(server_url, worker_id, artifacts_dir):
-                print("[worker] remote update started; stopping worker loop", flush=True)
-                return
+            try:
+                report_remote_update_result(server_url, worker_id)
+            except Exception as exc:
+                print(f"[worker] remote update result report deferred: {exc}", flush=True)
             maybe_run_credential_sync(server_url)
             last_case_lookup_at, last_case_hash = maybe_run_case_lookup(
                 server_url,
@@ -77,15 +77,18 @@ def main() -> None:
                 lookup_interval_seconds,
             )
             task = fetch_next_task(server_url, worker_id) if auto_claim_tasks else None
-            if task is None:
+            if task is not None:
+                run_all_sites_task(server_url, worker_id, task, artifacts_dir)
                 if run_once:
-                    print("[worker] no queued task", flush=True)
                     return
-                time.sleep(poll_seconds)
                 continue
-            run_all_sites_task(server_url, worker_id, task, artifacts_dir)
-            if run_once:
+            if maybe_run_remote_update(server_url, worker_id, artifacts_dir):
+                print("[worker] remote update active; stopping worker loop", flush=True)
                 return
+            if run_once:
+                print("[worker] no queued task", flush=True)
+                return
+            time.sleep(poll_seconds)
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -205,17 +208,26 @@ def report_remote_update_result(
     if not request_id or status not in {"completed", "up_to_date", "failed"}:
         return False
     post = post_command_status or post_remote_update_status
-    post(
-        server_url,
-        request_id,
-        status,
-        str(payload.get("detail") or "遠端更新已結束。"),
-        worker_id=worker_id,
-        before_version=str(payload.get("before_version") or ""),
-        installed_version=str(payload.get("installed_version") or ""),
-        exit_code=payload.get("exit_code"),
-    )
-    payload["reported_at"] = (reported_at or (lambda: time.strftime("%Y-%m-%dT%H:%M:%S")))()
+    timestamp = (reported_at or (lambda: time.strftime("%Y-%m-%dT%H:%M:%S")))()
+    try:
+        post(
+            server_url,
+            request_id,
+            status,
+            str(payload.get("detail") or "遠端更新已結束。"),
+            worker_id=worker_id,
+            before_version=str(payload.get("before_version") or ""),
+            installed_version=str(payload.get("installed_version") or ""),
+            exit_code=payload.get("exit_code"),
+        )
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+        payload["reported_at"] = timestamp
+        payload["report_error"] = str(exc)
+        write_json_atomic(path, payload)
+        return False
+    payload["reported_at"] = timestamp
     write_json_atomic(path, payload)
     return True
 
@@ -241,7 +253,7 @@ def maybe_run_remote_update(
     if not request_id:
         return False
     if str(command.get("status") or "").strip() == "updating":
-        return False
+        return True
     busy_reason = remote_update_busy_reason(artifacts_dir)
     if busy_reason:
         post(server_url, request_id, "waiting_busy", busy_reason, worker_id=worker_id)

@@ -128,7 +128,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(statuses[-1][2], "waiting_busy")
         self.assertIn("案件查詢", statuses[-1][3])
 
-    def test_remote_update_does_not_relaunch_updating_command(self):
+    def test_remote_update_blocks_other_work_without_relaunching_updating_command(self):
         launches: list[str] = []
         statuses: list[tuple[str, str, str, str]] = []
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,7 +142,7 @@ class WorkerTests(unittest.TestCase):
                 launch_update=lambda request_id: launches.append(request_id),
             )
 
-        self.assertFalse(started)
+        self.assertTrue(started)
         self.assertEqual(launches, [])
         self.assertEqual(statuses, [])
 
@@ -318,6 +318,45 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(posts[0][2], "completed")
         self.assertEqual(saved["reported_at"], "2026-07-11T15:55:00")
 
+    def test_report_remote_update_result_marks_stale_404_without_retrying(self):
+        attempts: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": tmp}):
+                path = worker_module.remote_update_result_path()
+                worker_module.write_json_atomic(
+                    path,
+                    {
+                        "request_id": "expired-update",
+                        "status": "failed",
+                        "detail": "old result",
+                        "exit_code": 1,
+                    },
+                )
+
+                def reject_stale(_server_url, request_id, *_args, **_kwargs):
+                    attempts.append(request_id)
+                    raise RuntimeError("NAS worker API 回應 HTTP 404：NOT FOUND")
+
+                first = worker_module.report_remote_update_result(
+                    "http://nas",
+                    "PC-01",
+                    post_command_status=reject_stale,
+                    reported_at=lambda: "2026-07-11T16:00:00",
+                )
+                second = worker_module.report_remote_update_result(
+                    "http://nas",
+                    "PC-01",
+                    post_command_status=reject_stale,
+                    reported_at=lambda: "2026-07-11T16:01:00",
+                )
+                saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(attempts, ["expired-update"])
+        self.assertEqual(saved["reported_at"], "2026-07-11T16:00:00")
+        self.assertIn("HTTP 404", saved["report_error"])
+
     def test_remote_update_wrapper_runs_updater_hidden_and_records_result(self):
         wrapper = Path(worker_module.__file__).with_name("REMOTE_UPDATE_PACKAGE.ps1")
 
@@ -333,12 +372,35 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("Move-Item", source)
         self.assertTrue(source.isascii())
 
+    def test_remote_update_wrapper_writes_result_before_restarting_worker_gui(self):
+        package_dir = Path(worker_module.__file__).parent
+        wrapper_source = (package_dir / "REMOTE_UPDATE_PACKAGE.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("AMBULANCE_SKIP_WORKER_RESTART", wrapper_source)
+        self.assertIn("RUN_WORKER_GUI_WINPYTHON.vbs", wrapper_source)
+        self.assertIn("function Start-WorkerGui", wrapper_source)
+        self.assertIn("Remove-Item Env:AMBULANCE_SKIP_WORKER_RESTART", wrapper_source)
+        self.assertLess(wrapper_source.index("Move-Item"), wrapper_source.rindex("Start-WorkerGui"))
+        self.assertLess(
+            wrapper_source.index("Remove-Item Env:AMBULANCE_SKIP_WORKER_RESTART"),
+            wrapper_source.rindex("Start-WorkerGui"),
+        )
+
+    def test_existing_updater_can_skip_restart_only_for_remote_wrapper(self):
+        package_dir = Path(worker_module.__file__).parent
+        updater_source = (package_dir / "update_package.ps1").read_text(encoding="utf-8-sig")
+        build_source = (package_dir.parent / "scripts" / "build_public_duty_package.ps1").read_text(encoding="utf-8")
+
+        for source in (updater_source, build_source):
+            self.assertIn("AMBULANCE_SKIP_WORKER_RESTART", source)
+            self.assertIn("Start-WorkerGui", source)
+
     def test_remote_update_idle_setting_is_documented_for_public_package(self):
         env_example = Path(worker_module.__file__).with_name(".env.example").read_text(encoding="utf-8")
 
         self.assertIn("REMOTE_UPDATE_IDLE_SECONDS=120", env_example)
 
-    def test_main_reports_result_and_checks_remote_update_before_other_work(self):
+    def test_main_checks_remote_update_after_confirming_no_pending_work(self):
         env_keys = ["WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
         previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
         original_report = worker_module.report_remote_update_result
@@ -369,7 +431,85 @@ class WorkerTests(unittest.TestCase):
                 else:
                     worker_module.os.environ[key] = value
 
-        self.assertEqual(calls, ["result", "remote"])
+        self.assertEqual(calls, ["result", "credential", "lookup", "remote"])
+
+    def test_main_runs_pending_nas_work_before_remote_update(self):
+        env_keys = ["WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
+        previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
+        originals = {
+            "report": worker_module.report_remote_update_result,
+            "remote": worker_module.maybe_run_remote_update,
+            "sync": worker_module.maybe_run_credential_sync,
+            "lookup": worker_module.maybe_run_case_lookup,
+            "fetch": worker_module.fetch_next_task,
+            "run": worker_module.run_all_sites_task,
+        }
+        calls: list[str] = []
+        try:
+            worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
+            worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "true"
+            worker_module.report_remote_update_result = lambda *_args, **_kwargs: calls.append("result") or False
+            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: calls.append("remote") or True
+            worker_module.maybe_run_credential_sync = lambda *_args, **_kwargs: calls.append("credential")
+            worker_module.maybe_run_case_lookup = (
+                lambda _server_url, _artifacts_dir, last_lookup_at, last_case_hash, _interval_seconds:
+                calls.append("lookup") or (last_lookup_at, last_case_hash)
+            )
+            worker_module.fetch_next_task = lambda *_args, **_kwargs: calls.append("claim") or {"task_id": "priority-task"}
+            worker_module.run_all_sites_task = lambda *_args, **_kwargs: calls.append("run")
+
+            worker_module.main()
+        finally:
+            worker_module.report_remote_update_result = originals["report"]
+            worker_module.maybe_run_remote_update = originals["remote"]
+            worker_module.maybe_run_credential_sync = originals["sync"]
+            worker_module.maybe_run_case_lookup = originals["lookup"]
+            worker_module.fetch_next_task = originals["fetch"]
+            worker_module.run_all_sites_task = originals["run"]
+            for key, value in previous_env.items():
+                if value is None:
+                    worker_module.os.environ.pop(key, None)
+                else:
+                    worker_module.os.environ[key] = value
+
+        self.assertEqual(calls, ["result", "credential", "lookup", "claim", "run"])
+
+    def test_main_continues_work_when_result_reporting_temporarily_fails(self):
+        env_keys = ["WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
+        previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
+        originals = {
+            "report": worker_module.report_remote_update_result,
+            "remote": worker_module.maybe_run_remote_update,
+            "sync": worker_module.maybe_run_credential_sync,
+            "lookup": worker_module.maybe_run_case_lookup,
+        }
+        calls: list[str] = []
+        try:
+            worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
+            worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "false"
+            worker_module.report_remote_update_result = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("NAS offline")
+            )
+            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: calls.append("remote") or False
+            worker_module.maybe_run_credential_sync = lambda *_args, **_kwargs: calls.append("credential")
+            worker_module.maybe_run_case_lookup = (
+                lambda _server_url, _artifacts_dir, last_lookup_at, last_case_hash, _interval_seconds:
+                calls.append("lookup") or (last_lookup_at, last_case_hash)
+            )
+
+            worker_module.main()
+        finally:
+            worker_module.report_remote_update_result = originals["report"]
+            worker_module.maybe_run_remote_update = originals["remote"]
+            worker_module.maybe_run_credential_sync = originals["sync"]
+            worker_module.maybe_run_case_lookup = originals["lookup"]
+            for key, value in previous_env.items():
+                if value is None:
+                    worker_module.os.environ.pop(key, None)
+                else:
+                    worker_module.os.environ[key] = value
+
+        self.assertEqual(calls, ["credential", "lookup", "remote"])
 
     def test_main_defaults_scheduled_case_lookup_to_thirty_minutes(self):
         env_keys = ["CASE_LOOKUP_INTERVAL_SECONDS", "WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]

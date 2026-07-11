@@ -20,6 +20,29 @@ function Get-PackageVersion {
     return (Get-Content -LiteralPath $versionPath -Raw -Encoding UTF8).Trim().TrimStart([char]0xFEFF)
 }
 
+function Start-WorkerGui {
+    $packagePath = [System.IO.Path]::GetFullPath($packageDir)
+    $processes = @(
+        Get-CimInstance Win32_Process |
+            Where-Object {
+                $commandLine = [string]$_.CommandLine
+                $commandLine -and
+                ($commandLine -match "worker_gui\.py|app\.py") -and
+                $commandLine.IndexOf($packagePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+            }
+    )
+    foreach ($process in $processes) {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    if ($processes.Count -gt 0) {
+        Start-Sleep -Seconds 1
+    }
+    $launcher = Join-Path $packageDir "RUN_WORKER_GUI_WINPYTHON.vbs"
+    if (Test-Path -LiteralPath $launcher -PathType Leaf) {
+        Start-Process -FilePath "wscript.exe" -ArgumentList ('"' + $launcher + '"') -WorkingDirectory $packageDir -WindowStyle Hidden | Out-Null
+    }
+}
+
 $beforeVersion = Get-PackageVersion
 $installedVersion = $beforeVersion
 $status = "failed"
@@ -30,6 +53,7 @@ try {
     if (-not (Test-Path -LiteralPath $updaterPath -PathType Leaf)) {
         throw "Updater not found: $updaterPath"
     }
+    $env:AMBULANCE_SKIP_WORKER_RESTART = "true"
     $process = Start-Process -FilePath "powershell.exe" -ArgumentList @(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -57,19 +81,24 @@ try {
     $exitCode = 1
     $installedVersion = Get-PackageVersion
 } finally {
-    New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
-    $payload = [ordered]@{
-        request_id = $RequestId
-        status = $status
-        detail = $detail
-        before_version = $beforeVersion
-        installed_version = $installedVersion
-        exit_code = $exitCode
-        completed_at = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
+    try {
+        New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
+        $payload = [ordered]@{
+            request_id = $RequestId
+            status = $status
+            detail = $detail
+            before_version = $beforeVersion
+            installed_version = $installedVersion
+            exit_code = $exitCode
+            completed_at = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
+        }
+        $json = $payload | ConvertTo-Json -Depth 4
+        [System.IO.File]::WriteAllText($tempResultPath, $json, $utf8NoBom)
+        Move-Item -LiteralPath $tempResultPath -Destination $resultPath -Force
+    } finally {
+        Remove-Item Env:AMBULANCE_SKIP_WORKER_RESTART -ErrorAction SilentlyContinue
+        Start-WorkerGui
     }
-    $json = $payload | ConvertTo-Json -Depth 4
-    [System.IO.File]::WriteAllText($tempResultPath, $json, $utf8NoBom)
-    Move-Item -LiteralPath $tempResultPath -Destination $resultPath -Force
 }
 
 exit $exitCode

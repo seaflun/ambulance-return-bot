@@ -82,6 +82,12 @@ class WebAppTests(unittest.TestCase):
         app_module.app.config.update(TESTING=True)
         self.client = app_module.app.test_client()
 
+    def post_remote_update(self):
+        return self.client.post(
+            "/admin/public-pc/remote-update",
+            data={"csrf_token": app_module.remote_update_csrf_token()},
+        )
+
     def tearDown(self):
         app_module.runner.wait_for_idle()
         app_module.desktop_runner.wait_for_idle()
@@ -1589,8 +1595,8 @@ class WebAppTests(unittest.TestCase):
     def test_remote_update_command_is_idempotent_and_worker_authenticated(self):
         os.environ["WORKER_TOKEN"] = "test-token"
 
-        first = self.client.post("/admin/public-pc/remote-update")
-        second = self.client.post("/admin/public-pc/remote-update")
+        first = self.post_remote_update()
+        second = self.post_remote_update()
 
         self.assertEqual(first.status_code, 302)
         self.assertEqual(second.status_code, 302)
@@ -1611,7 +1617,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_remote_update_status_requires_token_and_valid_transition(self):
         os.environ["WORKER_TOKEN"] = "test-token"
-        self.client.post("/admin/public-pc/remote-update")
+        self.post_remote_update()
         request_id = app_module.read_remote_update_command()["request_id"]
         status_url = f"/worker/remote-update/{request_id}/status"
 
@@ -1630,6 +1636,11 @@ class WebAppTests(unittest.TestCase):
             headers={"X-Worker-Token": "test-token"},
             json={"status": "waiting_busy", "detail": "勤務登打仍在執行。", "worker_id": "PC-01"},
         )
+        updating = self.client.post(
+            status_url,
+            headers={"X-Worker-Token": "test-token"},
+            json={"status": "updating", "detail": "開始背景更新。", "worker_id": "PC-01"},
+        )
         completed = self.client.post(
             status_url,
             headers={"X-Worker-Token": "test-token"},
@@ -1642,10 +1653,24 @@ class WebAppTests(unittest.TestCase):
         )
 
         self.assertEqual(waiting.status_code, 200)
+        self.assertEqual(updating.status_code, 200)
         self.assertEqual(completed.status_code, 200)
         command = app_module.read_remote_update_command()
         self.assertEqual(command["status"], "completed")
         self.assertEqual(command["installed_version"], "2026.07.11.1548")
+        reopened = self.client.post(
+            status_url,
+            headers={"X-Worker-Token": "test-token"},
+            json={"status": "waiting_idle", "detail": "late message"},
+        )
+        repeated = self.client.post(
+            status_url,
+            headers={"X-Worker-Token": "test-token"},
+            json={"status": "completed", "detail": "duplicate result"},
+        )
+        self.assertEqual(reopened.status_code, 409)
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(app_module.read_remote_update_command()["detail"], "遠端更新完成。")
         self.assertIsNone(
             self.client.get(
                 "/worker/remote-update?worker_id=PC-01",
@@ -1664,7 +1689,7 @@ class WebAppTests(unittest.TestCase):
     def test_remote_update_active_command_expires_after_stale_limit(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         with mock.patch.dict(os.environ, {"REMOTE_UPDATE_STALE_SECONDS": "60"}):
-            self.client.post("/admin/public-pc/remote-update")
+            self.post_remote_update()
             command = app_module.read_remote_update_command()
             command["updated_at"] = (datetime.now() - timedelta(seconds=61)).isoformat(timespec="seconds")
             app_module.write_json_atomic(app_module.remote_update_command_file(), command)
@@ -1801,7 +1826,8 @@ class WebAppTests(unittest.TestCase):
 
     def test_admin_public_pc_shows_remote_update_card_only_on_nas(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
-        self.client.post("/admin/public-pc/remote-update")
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.post_remote_update()
 
         nas_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
 
@@ -1815,6 +1841,26 @@ class WebAppTests(unittest.TestCase):
 
         self.assertNotIn("遠端更新公務電腦", local_body)
         self.assertNotIn('action="/admin/public-pc/remote-update"', local_body)
+
+    def test_admin_public_pc_remote_update_post_requires_csrf_token(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+
+        rejected = self.client.post("/admin/public-pc/remote-update")
+        accepted = self.client.post(
+            "/admin/public-pc/remote-update",
+            data={"csrf_token": app_module.remote_update_csrf_token()},
+        )
+
+        self.assertEqual(rejected.status_code, 403)
+        self.assertEqual(accepted.status_code, 302)
+        self.assertEqual(app_module.read_remote_update_command()["status"], "pending")
+
+    def test_admin_public_pc_hides_remote_update_when_worker_token_is_unconfigured(self):
+        os.environ["WORKER_TOKEN"] = ""
+
+        body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+
+        self.assertNotIn('<section class="remote-update-card"', body)
 
     def test_admin_public_pc_remote_update_meta_wraps_on_mobile(self):
         body = self.client.get("/admin/public-pc").data.decode("utf-8")

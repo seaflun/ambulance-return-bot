@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -90,6 +92,12 @@ REMOTE_UPDATE_STATUS_LABELS = {
     "up_to_date": "已是最新版本",
     "failed": "更新失敗",
     "timed_out": "更新命令逾時",
+}
+REMOTE_UPDATE_TRANSITIONS = {
+    "pending": {"pending", "waiting_busy", "waiting_idle", "updating"},
+    "waiting_busy": {"waiting_busy", "waiting_idle", "updating"},
+    "waiting_idle": {"waiting_idle", "waiting_busy", "updating"},
+    "updating": {"updating", "completed", "up_to_date", "failed"},
 }
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
 SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"]
@@ -457,7 +465,8 @@ def admin_vehicles():
 @app.get("/admin/public-pc")
 def admin_public_pc():
     reports = public_pc_reports()
-    remote_update_enabled = not public_pc_reporting_enabled()
+    csrf_token = remote_update_csrf_token()
+    remote_update_enabled = not public_pc_reporting_enabled() and bool(csrf_token)
     result_filter = str(request.args.get("result") or "all").strip().lower()
     if result_filter not in {"all", "success", "failed"}:
         result_filter = "all"
@@ -479,6 +488,7 @@ def admin_public_pc():
         version_info=worker_admin_version_info(reports),
         remote_update=remote_update_admin_view() if remote_update_enabled else {},
         remote_update_enabled=remote_update_enabled,
+        remote_update_csrf_token=csrf_token if remote_update_enabled else "",
     )
 
 
@@ -486,6 +496,10 @@ def admin_public_pc():
 def admin_public_pc_remote_update():
     if public_pc_reporting_enabled():
         abort(404)
+    expected_token = remote_update_csrf_token()
+    supplied_token = str(request.form.get("csrf_token") or "").strip()
+    if not expected_token or not hmac.compare_digest(supplied_token, expected_token):
+        abort(403)
     create_remote_update_command()
     return redirect(url_for("admin_public_pc"))
 
@@ -667,9 +681,16 @@ def worker_remote_update_status(request_id: str):
     if status not in REMOTE_UPDATE_STATUSES:
         abort(400)
     with _public_pc_report_lock:
-        command = _read_remote_update_command_unlocked()
+        command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
         if str(command.get("request_id") or "") != request_id:
             abort(404)
+        current_status = str(command.get("status") or "").strip()
+        if current_status in REMOTE_UPDATE_TERMINAL_STATUSES:
+            if status == current_status:
+                return jsonify({"ok": True, "command": command, "ack_id": request_id})
+            abort(409)
+        if status not in REMOTE_UPDATE_TRANSITIONS.get(current_status, set()):
+            abort(409)
         now = datetime.now().isoformat(timespec="seconds")
         command["status"] = status
         command["updated_at"] = now
@@ -894,6 +915,13 @@ def public_pc_pending_report_file() -> Path:
 
 def remote_update_command_file() -> Path:
     return artifacts_dir / "public_pc" / "remote_update.json"
+
+
+def remote_update_csrf_token() -> str:
+    secret = os.getenv("WORKER_TOKEN", "").strip().encode("utf-8")
+    if not secret:
+        return ""
+    return hmac.new(secret, b"ambulance-remote-update-admin", hashlib.sha256).hexdigest()
 
 
 def _read_remote_update_command_unlocked() -> dict:
