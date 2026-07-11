@@ -1586,6 +1586,97 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(reports[0]["events"]), 1)
         self.assertEqual(reports[0]["events"][0]["event_id"], "evt-dedupe-1")
 
+    def test_remote_update_command_is_idempotent_and_worker_authenticated(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+
+        first = self.client.post("/admin/public-pc/remote-update")
+        second = self.client.post("/admin/public-pc/remote-update")
+
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 302)
+        command = app_module.read_remote_update_command()
+        request_id = command["request_id"]
+        self.assertEqual(command["status"], "pending")
+        self.assertEqual(self.client.get("/worker/remote-update").status_code, 403)
+
+        response = self.client.get(
+            "/worker/remote-update?worker_id=PC-01&package_version=2026.07.10.1950",
+            headers={"X-Worker-Token": "test-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["command"]["request_id"], request_id)
+        self.assertEqual(app_module.read_remote_update_command()["worker_id"], "PC-01")
+        self.assertEqual(app_module.read_remote_update_command()["before_version"], "2026.07.10.1950")
+
+    def test_remote_update_status_requires_token_and_valid_transition(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.client.post("/admin/public-pc/remote-update")
+        request_id = app_module.read_remote_update_command()["request_id"]
+        status_url = f"/worker/remote-update/{request_id}/status"
+
+        self.assertEqual(self.client.post(status_url, json={"status": "waiting_busy"}).status_code, 403)
+        self.assertEqual(
+            self.client.post(
+                status_url,
+                headers={"X-Worker-Token": "test-token"},
+                json={"status": "unknown"},
+            ).status_code,
+            400,
+        )
+
+        waiting = self.client.post(
+            status_url,
+            headers={"X-Worker-Token": "test-token"},
+            json={"status": "waiting_busy", "detail": "勤務登打仍在執行。", "worker_id": "PC-01"},
+        )
+        completed = self.client.post(
+            status_url,
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "status": "completed",
+                "detail": "遠端更新完成。",
+                "worker_id": "PC-01",
+                "installed_version": "2026.07.11.1548",
+            },
+        )
+
+        self.assertEqual(waiting.status_code, 200)
+        self.assertEqual(completed.status_code, 200)
+        command = app_module.read_remote_update_command()
+        self.assertEqual(command["status"], "completed")
+        self.assertEqual(command["installed_version"], "2026.07.11.1548")
+        self.assertIsNone(
+            self.client.get(
+                "/worker/remote-update?worker_id=PC-01",
+                headers={"X-Worker-Token": "test-token"},
+            ).get_json()["command"]
+        )
+        self.assertEqual(
+            self.client.post(
+                "/worker/remote-update/not-current/status",
+                headers={"X-Worker-Token": "test-token"},
+                json={"status": "failed"},
+            ).status_code,
+            404,
+        )
+
+    def test_remote_update_active_command_expires_after_stale_limit(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        with mock.patch.dict(os.environ, {"REMOTE_UPDATE_STALE_SECONDS": "60"}):
+            self.client.post("/admin/public-pc/remote-update")
+            command = app_module.read_remote_update_command()
+            command["updated_at"] = (datetime.now() - timedelta(seconds=61)).isoformat(timespec="seconds")
+            app_module.write_json_atomic(app_module.remote_update_command_file(), command)
+
+            response = self.client.get(
+                "/worker/remote-update?worker_id=PC-01",
+                headers={"X-Worker-Token": "test-token"},
+            )
+
+        self.assertIsNone(response.get_json()["command"])
+        self.assertEqual(app_module.read_remote_update_command()["status"], "timed_out")
+
     def test_public_pc_reports_keep_all_statuses_for_seven_days(self):
         now = datetime(2026, 7, 10, 18, 0, 0)
         path = app_module.public_pc_report_file()

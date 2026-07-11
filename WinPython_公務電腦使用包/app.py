@@ -78,6 +78,9 @@ _local_case_lookup_thread: threading.Thread | None = None
 _public_pc_report_lock = threading.Lock()
 _case_lookup_start_error = ""
 PUBLIC_PC_REPORT_RETENTION_DAYS = 7
+REMOTE_UPDATE_ACTIVE_STATUSES = {"pending", "waiting_busy", "waiting_idle", "updating"}
+REMOTE_UPDATE_TERMINAL_STATUSES = {"completed", "up_to_date", "failed", "timed_out"}
+REMOTE_UPDATE_STATUSES = REMOTE_UPDATE_ACTIVE_STATUSES | REMOTE_UPDATE_TERMINAL_STATUSES
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
 SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"]
 SITE_SHORT_NAMES = {
@@ -466,6 +469,14 @@ def admin_public_pc():
     )
 
 
+@app.post("/admin/public-pc/remote-update")
+def admin_public_pc_remote_update():
+    if public_pc_reporting_enabled():
+        abort(404)
+    create_remote_update_command()
+    return redirect(url_for("admin_public_pc"))
+
+
 @app.get("/admin/sinposmart")
 def admin_sinposmart():
     days = sinposmart_store().list_days(limit=7)
@@ -614,6 +625,50 @@ def worker_credential_sync():
             },
         }
     )
+
+
+@app.get("/worker/remote-update")
+def worker_remote_update():
+    if not worker_authorized():
+        abort(403)
+    worker_id = str(request.args.get("worker_id") or "public-duty-pc").strip()
+    package_version = str(request.args.get("package_version") or "").strip()
+    with _public_pc_report_lock:
+        command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+        if str(command.get("status") or "") not in REMOTE_UPDATE_ACTIVE_STATUSES:
+            return jsonify({"ok": True, "command": None})
+        command["worker_id"] = worker_id
+        if package_version and not str(command.get("before_version") or "").strip():
+            command["before_version"] = package_version
+        command["last_seen_at"] = datetime.now().isoformat(timespec="seconds")
+        write_json_atomic(remote_update_command_file(), command)
+    return jsonify({"ok": True, "command": command})
+
+
+@app.post("/worker/remote-update/<request_id>/status")
+def worker_remote_update_status(request_id: str):
+    if not worker_authorized():
+        abort(403)
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "").strip()
+    if status not in REMOTE_UPDATE_STATUSES:
+        abort(400)
+    with _public_pc_report_lock:
+        command = _read_remote_update_command_unlocked()
+        if str(command.get("request_id") or "") != request_id:
+            abort(404)
+        now = datetime.now().isoformat(timespec="seconds")
+        command["status"] = status
+        command["updated_at"] = now
+        for key in ("detail", "worker_id", "before_version", "installed_version", "exit_code"):
+            if key in data:
+                command[key] = data[key]
+        if status == "updating":
+            command["started_at"] = now
+        if status in REMOTE_UPDATE_TERMINAL_STATUSES:
+            command["completed_at"] = now
+        write_json_atomic(remote_update_command_file(), command)
+    return jsonify({"ok": True, "command": command, "ack_id": request_id})
 
 
 @app.post("/worker/credential-sync/<request_id>/ack")
@@ -822,6 +877,80 @@ def public_pc_report_backup_file() -> Path:
 
 def public_pc_pending_report_file() -> Path:
     return artifacts_dir / "public_pc" / "pending_events.jsonl"
+
+
+def remote_update_command_file() -> Path:
+    return artifacts_dir / "public_pc" / "remote_update.json"
+
+
+def _read_remote_update_command_unlocked() -> dict:
+    path = remote_update_command_file()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def remote_update_stale_seconds() -> int:
+    try:
+        return max(60, int(os.getenv("REMOTE_UPDATE_STALE_SECONDS", "3600")))
+    except ValueError:
+        return 3600
+
+
+def remote_update_command_is_stale(command: dict, now: datetime | None = None) -> bool:
+    if str(command.get("status") or "") not in REMOTE_UPDATE_ACTIVE_STATUSES:
+        return False
+    timestamp = str(command.get("updated_at") or command.get("requested_at") or "").strip()
+    if not timestamp:
+        return False
+    try:
+        updated_at = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return False
+    return ((now or datetime.now()) - updated_at).total_seconds() > remote_update_stale_seconds()
+
+
+def _expire_remote_update_command_unlocked(command: dict) -> dict:
+    if not remote_update_command_is_stale(command):
+        return command
+    expired = {
+        **command,
+        "status": "timed_out",
+        "detail": "遠端更新命令逾時，請確認公務電腦 Worker 是否在線。",
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "completed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    write_json_atomic(remote_update_command_file(), expired)
+    return expired
+
+
+def read_remote_update_command() -> dict:
+    with _public_pc_report_lock:
+        return _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+
+
+def create_remote_update_command() -> tuple[dict, bool]:
+    with _public_pc_report_lock:
+        current = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+        if str(current.get("status") or "") in REMOTE_UPDATE_ACTIVE_STATUSES:
+            return current, False
+        now = datetime.now().isoformat(timespec="seconds")
+        command = {
+            "request_id": str(uuid4()),
+            "status": "pending",
+            "requested_at": now,
+            "updated_at": now,
+            "worker_id": "",
+            "before_version": "",
+            "installed_version": "",
+            "detail": "等待公務電腦接收更新命令。",
+        }
+        write_json_atomic(remote_update_command_file(), command)
+        return command, True
 
 
 def _load_public_pc_reports(*, strict: bool = False) -> list[dict]:
