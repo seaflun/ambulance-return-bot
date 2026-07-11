@@ -466,7 +466,8 @@ def admin_vehicles():
 def admin_public_pc():
     reports = public_pc_reports()
     csrf_token = remote_update_csrf_token()
-    remote_update_enabled = not public_pc_reporting_enabled() and bool(csrf_token)
+    admin_token = remote_update_admin_token()
+    remote_update_enabled = not public_pc_reporting_enabled() and bool(csrf_token) and bool(admin_token)
     result_filter = str(request.args.get("result") or "all").strip().lower()
     if result_filter not in {"all", "success", "failed"}:
         result_filter = "all"
@@ -499,6 +500,10 @@ def admin_public_pc_remote_update():
     expected_token = remote_update_csrf_token()
     supplied_token = str(request.form.get("csrf_token") or "").strip()
     if not expected_token or not hmac.compare_digest(supplied_token, expected_token):
+        abort(403)
+    expected_admin_token = remote_update_admin_token()
+    supplied_admin_token = str(request.form.get("admin_token") or "").strip()
+    if not expected_admin_token or not hmac.compare_digest(supplied_admin_token, expected_admin_token):
         abort(403)
     create_remote_update_command()
     return redirect(url_for("admin_public_pc"))
@@ -922,6 +927,10 @@ def remote_update_csrf_token() -> str:
     if not secret:
         return ""
     return hmac.new(secret, b"ambulance-remote-update-admin", hashlib.sha256).hexdigest()
+
+
+def remote_update_admin_token() -> str:
+    return os.getenv("REMOTE_UPDATE_ADMIN_TOKEN", "").strip()
 
 
 def _read_remote_update_command_unlocked() -> dict:

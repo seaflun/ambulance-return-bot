@@ -113,6 +113,18 @@
     .remote-update-detail { margin-top: 8px; color: var(--muted); font-size: var(--text-sm); }
     .remote-update-meta { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 8px; color: var(--muted); font-size: 12px; }
     .remote-update-meta span { min-width: 0; overflow-wrap: anywhere; }
+    .remote-update-secret {
+      width: 100%;
+      min-height: 42px;
+      margin-bottom: 8px;
+      padding: 0 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+    }
+    .remote-update-secret:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
     .remote-update-card button[disabled] { background: #d7d2ca; color: #706d68; box-shadow: none; cursor: not-allowed; }
     .result-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
     .result-filter { min-height: 40px; padding: 0 14px; background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
@@ -273,6 +285,7 @@
         </div>
         <form action="{{ url_for('admin_public_pc_remote_update') }}" method="post" onsubmit="return confirm('確定下達遠端更新？系統會等待勤務完成且電腦閒置後才在背景執行。');">
           <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
+          <input class="remote-update-secret" type="password" name="admin_token" autocomplete="current-password" placeholder="遠端更新管理密碼" required{% if remote_update.active %} disabled{% endif %}>
           <button type="submit"{% if remote_update.active %} disabled aria-disabled="true"{% endif %}>
             {% if remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
           </button>

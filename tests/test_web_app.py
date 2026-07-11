@@ -46,6 +46,7 @@ class WebAppTests(unittest.TestCase):
         os.environ["USE_LOCAL_SELENIUM"] = "false"
         self.tmp = tempfile.TemporaryDirectory()
         self.original_worker_token = os.environ.get("WORKER_TOKEN")
+        self.original_remote_update_admin_token = os.environ.get("REMOTE_UPDATE_ADMIN_TOKEN")
         self.original_credential_sync_token = os.environ.get("CREDENTIAL_SYNC_TOKEN")
         self.original_credential_sync_ttl = os.environ.get("CREDENTIAL_SYNC_TTL_SECONDS")
         self.original_duty_saved_login_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
@@ -63,6 +64,7 @@ class WebAppTests(unittest.TestCase):
         self.original_subprocess_run = getattr(getattr(app_module, "subprocess", subprocess), "run", subprocess.run)
         self.original_query_duty_emergency_cases = selenium_local_module.query_duty_emergency_cases
         os.environ["WORKER_TOKEN"] = ""
+        os.environ["REMOTE_UPDATE_ADMIN_TOKEN"] = "test-admin-token"
         os.environ["CREDENTIAL_SYNC_TOKEN"] = ""
         os.environ.pop("CREDENTIAL_SYNC_TTL_SECONDS", None)
         os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
@@ -85,7 +87,10 @@ class WebAppTests(unittest.TestCase):
     def post_remote_update(self):
         return self.client.post(
             "/admin/public-pc/remote-update",
-            data={"csrf_token": app_module.remote_update_csrf_token()},
+            data={
+                "csrf_token": app_module.remote_update_csrf_token(),
+                "admin_token": os.environ.get("REMOTE_UPDATE_ADMIN_TOKEN", ""),
+            },
         )
 
     def tearDown(self):
@@ -96,6 +101,10 @@ class WebAppTests(unittest.TestCase):
             os.environ.pop("WORKER_TOKEN", None)
         else:
             os.environ["WORKER_TOKEN"] = self.original_worker_token
+        if self.original_remote_update_admin_token is None:
+            os.environ.pop("REMOTE_UPDATE_ADMIN_TOKEN", None)
+        else:
+            os.environ["REMOTE_UPDATE_ADMIN_TOKEN"] = self.original_remote_update_admin_token
         if self.original_desktop_fast_mode is None:
             os.environ.pop("DESKTOP_FAST_MODE", None)
         else:
@@ -1846,17 +1855,27 @@ class WebAppTests(unittest.TestCase):
         os.environ["WORKER_TOKEN"] = "test-token"
 
         rejected = self.client.post("/admin/public-pc/remote-update")
-        accepted = self.client.post(
+        wrong_admin = self.client.post(
             "/admin/public-pc/remote-update",
-            data={"csrf_token": app_module.remote_update_csrf_token()},
+            data={"csrf_token": app_module.remote_update_csrf_token(), "admin_token": "wrong-token"},
         )
+        accepted = self.post_remote_update()
 
         self.assertEqual(rejected.status_code, 403)
+        self.assertEqual(wrong_admin.status_code, 403)
         self.assertEqual(accepted.status_code, 302)
         self.assertEqual(app_module.read_remote_update_command()["status"], "pending")
 
     def test_admin_public_pc_hides_remote_update_when_worker_token_is_unconfigured(self):
         os.environ["WORKER_TOKEN"] = ""
+
+        body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+
+        self.assertNotIn('<section class="remote-update-card"', body)
+
+    def test_admin_public_pc_hides_remote_update_when_admin_token_is_unconfigured(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        os.environ["REMOTE_UPDATE_ADMIN_TOKEN"] = ""
 
         body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
 
