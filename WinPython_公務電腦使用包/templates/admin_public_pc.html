@@ -46,7 +46,7 @@
     }
     main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 44px; }
     header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding-bottom: 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
-    h1 { margin: 0; font-size: var(--text-xl); line-height: 1.25; font-weight: 800; }
+    h1 { margin: 0; font-size: var(--text-xl); line-height: 1.25; font-weight: 800; overflow-wrap: anywhere; }
     h2, h3, p { margin: 0; }
     button, .button {
       display: inline-flex;
@@ -95,6 +95,25 @@
     }
     .version-label { color: var(--muted); font-size: var(--text-sm); }
     .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
+    .remote-update-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .remote-update-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .remote-update-title h2 { font-size: 18px; font-weight: 820; }
+    .remote-update-card > div { min-width: 0; }
+    .remote-update-detail { margin-top: 8px; color: var(--muted); font-size: var(--text-sm); }
+    .remote-update-meta { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .remote-update-meta span { min-width: 0; overflow-wrap: anywhere; }
+    .remote-update-card button[disabled] { background: #d7d2ca; color: #706d68; box-shadow: none; cursor: not-allowed; }
     .result-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
     .result-filter { min-height: 40px; padding: 0 14px; background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
     .result-filter.active { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 8px 18px rgba(184, 107, 91, .18); }
@@ -202,6 +221,8 @@
       header { align-items: stretch; flex-direction: column; }
       .button { width: 100%; }
       .card-head { grid-template-columns: 1fr; }
+      .remote-update-card { grid-template-columns: 1fr; }
+      .remote-update-card form, .remote-update-card button { width: 100%; }
       .site-grid { grid-template-columns: 1fr 1fr; }
       .login-grid { grid-template-columns: 1fr; }
       .events li { grid-template-columns: 1fr; gap: 2px; }
@@ -226,6 +247,35 @@
         {% if version_info.detail %}
           <div class="meta">{{ version_info.detail }}</div>
         {% endif %}
+      </section>
+    {% endif %}
+
+    {% if remote_update_enabled %}
+      <section class="remote-update-card" aria-label="遠端更新公務電腦">
+        <div>
+          <div class="remote-update-title">
+            <h2>遠端更新公務電腦</h2>
+            <span class="status {{ remote_update.status_class }}">{{ remote_update.status_label }}</span>
+          </div>
+          <p class="remote-update-detail">
+            案件與登打優先；勤務完成並閒置 120 秒後，才會在背景更新，不顯示黑色視窗。
+          </p>
+          {% if remote_update.detail %}
+            <p class="remote-update-detail">{{ remote_update.detail }}</p>
+          {% endif %}
+          <div class="remote-update-meta">
+            <span>目前版本：{{ remote_update.installed_version or remote_update.before_version or version_info.version }}</span>
+            {% if remote_update.worker_id %}<span>公務電腦：{{ remote_update.worker_id }}</span>{% endif %}
+            {% if remote_update.requested_at %}<span>下達：{{ remote_update.requested_at }}</span>{% endif %}
+            {% if remote_update.updated_at %}<span>更新：{{ remote_update.updated_at }}</span>{% endif %}
+            {% if remote_update.request_id %}<span>命令：{{ remote_update.request_id }}</span>{% endif %}
+          </div>
+        </div>
+        <form action="{{ url_for('admin_public_pc_remote_update') }}" method="post" onsubmit="return confirm('確定下達遠端更新？系統會等待勤務完成且電腦閒置後才在背景執行。');">
+          <button type="submit"{% if remote_update.active %} disabled aria-disabled="true"{% endif %}>
+            {% if remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
+          </button>
+        </form>
       </section>
     {% endif %}
 

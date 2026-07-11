@@ -81,6 +81,16 @@ PUBLIC_PC_REPORT_RETENTION_DAYS = 7
 REMOTE_UPDATE_ACTIVE_STATUSES = {"pending", "waiting_busy", "waiting_idle", "updating"}
 REMOTE_UPDATE_TERMINAL_STATUSES = {"completed", "up_to_date", "failed", "timed_out"}
 REMOTE_UPDATE_STATUSES = REMOTE_UPDATE_ACTIVE_STATUSES | REMOTE_UPDATE_TERMINAL_STATUSES
+REMOTE_UPDATE_STATUS_LABELS = {
+    "pending": "等待公務電腦接收",
+    "waiting_busy": "等待勤務完成",
+    "waiting_idle": "等待電腦閒置",
+    "updating": "背景更新中",
+    "completed": "更新完成",
+    "up_to_date": "已是最新版本",
+    "failed": "更新失敗",
+    "timed_out": "更新命令逾時",
+}
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
 SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"]
 SITE_SHORT_NAMES = {
@@ -447,6 +457,7 @@ def admin_vehicles():
 @app.get("/admin/public-pc")
 def admin_public_pc():
     reports = public_pc_reports()
+    remote_update_enabled = not public_pc_reporting_enabled()
     result_filter = str(request.args.get("result") or "all").strip().lower()
     if result_filter not in {"all", "success", "failed"}:
         result_filter = "all"
@@ -466,6 +477,8 @@ def admin_public_pc():
         report_counts=report_counts,
         result_filter=result_filter,
         version_info=worker_admin_version_info(reports),
+        remote_update=remote_update_admin_view() if remote_update_enabled else {},
+        remote_update_enabled=remote_update_enabled,
     )
 
 
@@ -951,6 +964,25 @@ def create_remote_update_command() -> tuple[dict, bool]:
         }
         write_json_atomic(remote_update_command_file(), command)
         return command, True
+
+
+def remote_update_admin_view() -> dict:
+    command = read_remote_update_command()
+    status = str(command.get("status") or "").strip()
+    status_class_name = ""
+    if status in {"completed", "up_to_date"}:
+        status_class_name = "complete"
+    elif status in {"failed", "timed_out"}:
+        status_class_name = "failed"
+    elif status == "updating":
+        status_class_name = "running"
+    return {
+        **command,
+        "status": status,
+        "status_label": REMOTE_UPDATE_STATUS_LABELS.get(status, "尚未下達更新命令"),
+        "status_class": status_class_name,
+        "active": status in REMOTE_UPDATE_ACTIVE_STATUSES,
+    }
 
 
 def _load_public_pc_reports(*, strict: bool = False) -> list[dict]:

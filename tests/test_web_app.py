@@ -1799,6 +1799,29 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("成功案件樣本", failed_body)
         self.assertNotIn("執行中案件樣本", failed_body)
 
+    def test_admin_public_pc_shows_remote_update_card_only_on_nas(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
+        self.client.post("/admin/public-pc/remote-update")
+
+        nas_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+
+        self.assertIn("遠端更新公務電腦", nas_body)
+        self.assertIn('action="/admin/public-pc/remote-update"', nas_body)
+        self.assertIn("等待公務電腦接收", nas_body)
+        self.assertIn("勤務完成並閒置 120 秒後", nas_body)
+
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        local_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+
+        self.assertNotIn("遠端更新公務電腦", local_body)
+        self.assertNotIn('action="/admin/public-pc/remote-update"', local_body)
+
+    def test_admin_public_pc_remote_update_meta_wraps_on_mobile(self):
+        body = self.client.get("/admin/public-pc").data.decode("utf-8")
+
+        self.assertIn(".remote-update-meta span {", body)
+        self.assertIn("overflow-wrap: anywhere", body)
+
     def test_admin_public_pc_shows_site_diagnostics(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         worker_headers = {"X-Worker-Token": "test-token"}
