@@ -68,6 +68,71 @@ _GENERATED_SELENIUM_PROFILE_PREFIXES = (
     "acs_login_test_",
 )
 _CHROME_PROFILE_LOCK_NAMES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+_PPE_OPTION_NAME_FIELDS = ("Text", "Name", "DriverName", "UserName", "EmpName")
+_PPE_OPTION_ID_FIELDS = ("Value", "Id", "UserId", "EmpId", "Code", "Driver")
+
+
+def _normalize_ppe_option_name(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _ppe_option_records_from_script(script_text: str) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for match in re.finditer(r"\{[^{}]*\}", str(script_text or "")):
+        fragment = match.group(0)
+        if not any(f'"{field}"' in fragment for field in _PPE_OPTION_NAME_FIELDS):
+            continue
+        if not any(f'"{field}"' in fragment for field in _PPE_OPTION_ID_FIELDS):
+            continue
+        try:
+            record = json.loads(fragment)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _ppe_option_name(record: dict[str, object]) -> str:
+    for field in _PPE_OPTION_NAME_FIELDS:
+        value = _normalize_ppe_option_name(record.get(field))
+        if value:
+            return value
+    return ""
+
+
+def _ppe_option_id(record: dict[str, object]) -> str:
+    for field in _PPE_OPTION_ID_FIELDS:
+        value = str(record.get(field) or "").strip()
+        if value and value != "0":
+            return value
+    return ""
+
+
+def _ppe_option_value(options: object, requested_name: str) -> str:
+    expected = _normalize_ppe_option_name(requested_name)
+    if not expected or not isinstance(options, list):
+        return ""
+    for item in options:
+        if not isinstance(item, dict) or _ppe_option_name(item) != expected:
+            continue
+        return _ppe_option_id(item)
+    return ""
+
+
+def _ppe_option_names(options: object, limit: int = 8) -> list[str]:
+    names: list[str] = []
+    if not isinstance(options, list) or limit <= 0:
+        return names
+    for item in options:
+        if not isinstance(item, dict):
+            continue
+        name = _ppe_option_name(item)
+        if name and name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
 
 
 @dataclass(frozen=True, slots=True)

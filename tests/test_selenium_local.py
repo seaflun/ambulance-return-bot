@@ -28,6 +28,9 @@ from ambulance_bot.selenium_local import (
     _id_number_from_cases_for_credential,
     lookup_synced_credential_id_number,
     _open_disinfection_detail_for_case,
+    _ppe_option_names,
+    _ppe_option_records_from_script,
+    _ppe_option_value,
     _set_disinfection_query_date,
     _ensure_ppe_vehicle_mileage_session,
     _create_local_driver_with_retry,
@@ -55,6 +58,31 @@ from ambulance_bot.duty_credentials import DutyCredential
 
 
 class SeleniumLocalTests(unittest.TestCase):
+    def test_ppe_option_records_decode_unicode_driver_names(self):
+        source = 'dataSource: [{"DeptSeq":null,"Value":"2448","Text":"\\u90ED\\u570B\\u5075"}]'
+
+        options = _ppe_option_records_from_script(source)
+
+        self.assertEqual(_ppe_option_value(options, "郭國偵"), "2448")
+
+    def test_ppe_option_value_accepts_reordered_fields_and_normalized_whitespace(self):
+        options = [{"Text": " 郭  國偵 ", "DeptSeq": None, "Value": "2448"}]
+
+        self.assertEqual(_ppe_option_value(options, "郭 國偵"), "2448")
+
+    def test_ppe_option_value_rejects_partial_name_and_zero_id(self):
+        self.assertEqual(_ppe_option_value([{"Text": "郭國偵", "Value": "2448"}], "郭國"), "")
+        self.assertEqual(_ppe_option_value([{"Text": "郭國偵", "Value": "0"}], "郭國偵"), "")
+
+    def test_ppe_option_names_are_unique_and_bounded(self):
+        options = [
+            {"Text": "郭國偵", "Value": "2448"},
+            {"DriverName": "郭國偵", "Driver": "2448"},
+            {"Name": "陳俊翰", "Id": "2481"},
+        ]
+
+        self.assertEqual(_ppe_option_names(options, limit=1), ["郭國偵"])
+
     def test_selenium_enabled_default_and_false(self):
         os.environ.pop("USE_LOCAL_SELENIUM", None)
         self.assertTrue(selenium_enabled())
