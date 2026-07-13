@@ -23,6 +23,8 @@ from ambulance_bot.selenium_local import (
     _duty_login_credential_attempts,
     _ensure_duty_login,
     _ensure_fuel_query_period,
+    _fill_fuel_grid_record,
+    _fill_vehicle_grid_values,
     _fuel_card_labels,
     _fuel_query_period,
     _id_number_from_cases_for_credential,
@@ -45,7 +47,9 @@ from ambulance_bot.selenium_local import (
     _save_disinfection_record_enabled,
     _save_vehicle_mileage_enabled,
     _vehicle_mileage_previous_request,
+    _vehicle_mileage_driver_value,
     _vehicle_mileage_values,
+    _wait_for_fuel_driver_value,
     _write_json_atomic,
     run_disinfection_task,
     run_fuel_record_task,
@@ -82,6 +86,122 @@ class SeleniumLocalTests(unittest.TestCase):
         ]
 
         self.assertEqual(_ppe_option_names(options, limit=1), ["郭國偵"])
+
+    def test_wait_for_fuel_driver_value_decodes_unicode_options(self):
+        class FakeDriver:
+            def execute_script(self, _script: str):
+                return 'dataSource: [{"Value":"2448","Text":"\\u90ED\\u570B\\u5075"}]'
+
+        self.assertEqual(_wait_for_fuel_driver_value(FakeDriver(), "郭國偵", timeout=0), "2448")
+
+    def test_wait_for_fuel_driver_value_reports_requested_and_candidates(self):
+        class FakeDriver:
+            def execute_script(self, _script: str):
+                return (
+                    'dataSource: ['
+                    '{"Value":"2448","Text":"\\u90ED\\u570B\\u5075"},'
+                    '{"Value":"2481","Text":"\\u9673\\u4FCA\\u7FF0"}'
+                    ']'
+                )
+
+        with self.assertRaisesRegex(
+            selenium_local_module.WebDriverException,
+            "missing fuel driver: requested=林志偉; candidates=郭國偵,陳俊翰",
+        ):
+            _wait_for_fuel_driver_value(FakeDriver(), "林志偉", timeout=0)
+
+    def test_fill_fuel_grid_uses_resolved_driver_without_existing_rows(self):
+        class FakeDriver:
+            def __init__(self):
+                self.driver_value = ""
+
+            def execute_script(self, script: str, *args):
+                if "return Array.from(document.scripts)" in script:
+                    return 'dataSource: [{"Value":"2448","Text":"\\u90ED\\u570B\\u5075"}]'
+                self.driver_value = str(args[1])
+                return {"ok": True}
+
+        request = AmbulanceReturnRequest.from_dict(
+            {
+                "vehicle": "新坡92",
+                "driver": "郭國偵",
+                "fuel_record": {
+                    "enabled": True,
+                    "date": "20260713",
+                    "time": "1320",
+                    "driver": "郭國偵",
+                    "product": "超級柴油",
+                    "quantity": "42.122",
+                    "unit_price": "30.3",
+                },
+            }
+        )
+        driver = FakeDriver()
+
+        _fill_fuel_grid_record(driver, request)
+
+        self.assertEqual(driver.driver_value, "2448")
+
+    def test_vehicle_mileage_driver_value_uses_exact_option(self):
+        class FakeDriver:
+            def execute_script(self, _script: str, _row_index: int):
+                return {
+                    "options": [
+                        {"Text": "郭國偵", "Value": "2448"},
+                        {"Text": "郭國", "Value": "9999"},
+                    ],
+                    "row_driver": "8888",
+                    "row_driver_name": "其他人",
+                }
+
+        self.assertEqual(_vehicle_mileage_driver_value(FakeDriver(), "郭國偵"), "2448")
+
+    def test_vehicle_mileage_driver_value_rejects_different_existing_row(self):
+        class FakeDriver:
+            def execute_script(self, _script: str, _row_index: int):
+                return {
+                    "options": [{"Text": "陳俊翰", "Value": "2481"}],
+                    "row_driver": "8888",
+                    "row_driver_name": "其他人",
+                }
+
+        with self.assertRaisesRegex(
+            selenium_local_module.WebDriverException,
+            "missing vehicle mileage driver: requested=郭國偵; candidates=陳俊翰",
+        ):
+            _vehicle_mileage_driver_value(FakeDriver(), "郭國偵")
+
+    def test_fill_vehicle_grid_passes_exact_driver_id(self):
+        class FakeDriver:
+            def __init__(self):
+                self.driver_value = ""
+
+            def execute_script(self, script: str, *args):
+                if "row_driver_name" in script:
+                    return {
+                        "options": [{"Text": "郭國偵", "Value": "2448"}],
+                        "row_driver": "",
+                        "row_driver_name": "",
+                    }
+                self.driver_value = str(args[2])
+                return []
+
+        driver = FakeDriver()
+        values = {
+            "開始日期": "20260713",
+            "開始時間": "1101",
+            "結束日期": "20260713",
+            "結束時間": "1320",
+            "開始里程": "20828",
+            "結束里程": "20910",
+            "事由": "急病",
+            "前往地點": "新華路一段886號",
+            "駕駛人": "郭國偵",
+        }
+
+        _fill_vehicle_grid_values(driver, values)
+
+        self.assertEqual(driver.driver_value, "2448")
 
     def test_selenium_enabled_default_and_false(self):
         os.environ.pop("USE_LOCAL_SELENIUM", None)

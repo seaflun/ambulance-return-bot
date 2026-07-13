@@ -1758,11 +1758,40 @@ def _click_fuel_add_row(driver: webdriver.Chrome) -> None:
     time.sleep(1)
 
 
+def _wait_for_fuel_driver_value(
+    driver: webdriver.Chrome,
+    driver_name: str,
+    timeout: float = 12,
+) -> str:
+    deadline = time.monotonic() + max(float(timeout), 0)
+    candidate_names: list[str] = []
+    while True:
+        script_text = str(
+            driver.execute_script(
+                "return Array.from(document.scripts).map(script => String(script.textContent || '')).join('\\n');"
+            )
+            or ""
+        )
+        options = _ppe_option_records_from_script(script_text)
+        value = _ppe_option_value(options, driver_name)
+        if value:
+            return value
+        candidate_names = _ppe_option_names(options)
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.25)
+    candidates = ",".join(candidate_names) or "none"
+    raise WebDriverException(f"missing fuel driver: requested={driver_name}; candidates={candidates}")
+
+
 def _fill_fuel_grid_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> None:
     fuel = request.fuel_record
+    driver_name = fuel.driver or request.driver
+    driver_value = _wait_for_fuel_driver_value(driver, driver_name)
     result = driver.execute_script(
         """
         const fuel = arguments[0];
+        const driverValue = arguments[1];
         const grid = window.jQuery ? jQuery('#grid').data('kendoGrid') : null;
         if (!grid) return {ok: false, reason: 'missing grid'};
         let item = Array.from(grid.dataSource.data()).find(row => Number(row.FCUseID || 0) === 0);
@@ -1780,9 +1809,7 @@ def _fill_fuel_grid_record(driver: webdriver.Chrome, request: AmbulanceReturnReq
           const matched = rows.find(row => String(row[fieldName + 'Name'] || '') === text);
           return matched ? matched[fieldName] : null;
         }
-        const driverValue = lookupValue(fuel.driver, 'Driver');
         const fuelTypeValue = lookupValue(fuel.product, 'FuelType') || 535;
-        if (!driverValue) return {ok: false, reason: 'missing driver'};
         const date = `${fuel.date.slice(0, 4)}-${fuel.date.slice(4, 6)}-${fuel.date.slice(6, 8)}T${fuel.time.slice(0, 2)}:${fuel.time.slice(2, 4)}:00`;
         const qty = Number(fuel.quantity);
         const price = Number(fuel.unit_price);
@@ -1808,6 +1835,7 @@ def _fill_fuel_grid_record(driver: webdriver.Chrome, request: AmbulanceReturnReq
             "quantity": fuel.quantity,
             "unit_price": fuel.unit_price,
         },
+        driver_value,
     )
     if not isinstance(result, dict) or not result.get("ok"):
         raise WebDriverException(f"fuel grid fill failed: {result}")
@@ -2692,11 +2720,47 @@ def _resolve_end_mileage(start_mileage: str, raw_mileage: str) -> str:
     return raw
 
 
+def _vehicle_mileage_driver_value(
+    driver: webdriver.Chrome,
+    driver_name: str,
+    row_index: int = 0,
+) -> str:
+    context = driver.execute_script(
+        """
+        const rowIndex = arguments[0] || 0;
+        const grid = window.$ && $("#grid").data("kendoGrid");
+        const row = grid && grid.dataSource.data()[rowIndex];
+        return {
+          options: Array.isArray(window.driverList) ? window.driverList : [],
+          row_driver: row ? String(row.Driver || '') : '',
+          row_driver_name: row ? String(row.DriverName || '') : '',
+        };
+        """,
+        row_index,
+    )
+    context = dict(context) if isinstance(context, dict) else {}
+    options = context.get("options")
+    value = _ppe_option_value(options, driver_name)
+    if value:
+        return value
+    row_name = _normalize_ppe_option_name(context.get("row_driver_name"))
+    row_value = str(context.get("row_driver") or "").strip()
+    if row_name == _normalize_ppe_option_name(driver_name) and row_value and row_value != "0":
+        return row_value
+    candidates = ",".join(_ppe_option_names(options)) or "none"
+    raise WebDriverException(
+        f"missing vehicle mileage driver: requested={driver_name}; candidates={candidates}"
+    )
+
+
 def _fill_vehicle_grid_values(driver: webdriver.Chrome, values: dict[str, str], row_index: int = 0) -> None:
+    driver_name = str(values.get("駕駛人") or "").strip()
+    driver_value = _vehicle_mileage_driver_value(driver, driver_name, row_index=row_index)
     missing = driver.execute_script(
         """
         const values = arguments[0];
         const rowIndex = arguments[1] || 0;
+        const driverId = arguments[2];
         const grid = window.$ && $("#grid").data("kendoGrid");
         if (!grid) return ['grid'];
         const rows = grid.dataSource.data();
@@ -2704,13 +2768,7 @@ def _fill_vehicle_grid_values(driver: webdriver.Chrome, values: dict[str, str], 
         const row = rows[rowIndex];
         if (!row) return ['row'];
         const driverName = values['駕駛人'] || '';
-        let driverId = row.Driver || null;
-        if (Array.isArray(window.driverList)) {
-          const driver = window.driverList.find(item => JSON.stringify(item).includes(driverName));
-          if (driver) {
-            driverId = driver.Id ?? driver.Value ?? driver.UserId ?? driver.EmpId ?? driver.Code ?? driver.Driver;
-          }
-        }
+        if (!driverId) return ['Driver'];
         const pairs = {
           StartDay: values['開始日期'],
           StartTime: values['開始時間'],
@@ -2731,13 +2789,14 @@ def _fill_vehicle_grid_values(driver: webdriver.Chrome, values: dict[str, str], 
         }
         grid.refresh();
         const missing = [];
-        for (const key of ['StartTime', 'EndTime', 'EndMileage', 'Reason', 'Destination', 'DriverName']) {
+        for (const key of ['StartTime', 'EndTime', 'EndMileage', 'Reason', 'Destination', 'Driver', 'DriverName']) {
           if (!row.get(key)) missing.push(key);
         }
         return missing;
         """,
         values,
         row_index,
+        driver_value,
     )
     if missing:
         raise WebDriverException(f"vehicle mileage grid values not filled: {missing}")
