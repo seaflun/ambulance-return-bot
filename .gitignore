@@ -46,6 +46,7 @@ credentials.json
 Thumbs.db
 .vscode/
 .idea/
+.worktrees/
 
 # Public-duty package local-only files
 WinPython_公務電腦使用包/.env
