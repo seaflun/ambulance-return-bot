@@ -71,7 +71,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     status = str(site.get("status") or "")
     detail = str(site.get("detail") or "")
     computed = diagnostic_payload(site_key, status, detail)
-    prefer_computed = computed["exception_type"] == "case_not_closed"
+    prefer_computed = computed["exception_type"] in {"case_not_closed", "ppe_driver"}
     def value_for(field: str) -> str:
         if prefer_computed:
             return str(computed[field])
@@ -129,6 +129,12 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return "vehicle_not_found"
     if "fuel period mismatch" in text:
         return "fuel_period"
+    if (
+        "missing fuel driver" in text
+        or "missing vehicle mileage driver" in text
+        or ("fuel_record" in status and "missing driver" in text)
+    ):
+        return "ppe_driver"
     if "同案多患者耗材分配／確認失敗" in raw_detail:
         return "multi_patient_consumables"
     if (
@@ -179,6 +185,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return "讀取任務"
     if category == "multi_patient_consumables":
         return "同案多患者耗材確認"
+    if category == "ppe_driver":
+        return "填寫加油紀錄" if site_key == "fuel_record" else "填寫返隊時間與里程"
     if category == "login":
         return _login_stage(site_key)
     if category == "case_not_found":
@@ -255,6 +263,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "case_detail": "找到清單後無法開啟該案件的明細頁。",
         "vehicle_not_found": "頁面內找不到任務指定的救護車。",
         "fuel_period": "加油頁月份與任務加油月份不一致，油卡清單尚未切到任務月份。",
+        "ppe_driver": "PPE 駕駛清單找不到指定人員或有效代碼。",
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
         "save": "填寫後的儲存動作未完成或未確認成功。",
@@ -286,6 +295,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "確認任務車號與系統車輛名稱一致，必要時到救護車設定修正後重試。"
     if category == "fuel_period":
         return "將加油頁月份切到任務月份後重新查詢油卡；新版 Worker 會自動切換月份後再登打。"
+    if category == "ppe_driver":
+        return f"確認 PPE 人員清單包含任務駕駛後，再回任務頁單獨重跑{site_name}。"
     if category == "validation":
         return "先不要儲存；檢查畫面是否仍有舊資料或欄位對應錯誤，修正後再重試。"
     if category == "save":

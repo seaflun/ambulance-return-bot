@@ -4,6 +4,58 @@ from ambulance_bot.site_diagnostics import diagnostic_payload, merge_diagnostic_
 
 
 class SiteDiagnosticsTests(unittest.TestCase):
+    def test_fuel_missing_driver_is_not_login_failure(self):
+        payload = diagnostic_payload(
+            "fuel_record",
+            "fuel_record_failed",
+            (
+                "登入帳號：加油=任務司機，25番 郭國偵 - tyfd02060。"
+                "加油紀錄操作失敗：Message: missing fuel driver: "
+                "requested=郭國偵; candidates=陳俊翰,林志偉"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "ppe_driver")
+        self.assertEqual(payload["failure_stage"], "填寫加油紀錄")
+        self.assertIn("駕駛清單", payload["failure_reason"])
+        self.assertNotIn("登入", payload["failure_reason"])
+        self.assertIn("PPE 人員清單", payload["next_action"])
+
+    def test_mileage_missing_driver_stops_at_fill_stage(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage",
+            "vehicle_mileage_failed",
+            (
+                "登入帳號：里程=任務司機，25番 郭國偵 - tyfd02060。"
+                "車輛里程操作失敗：Message: missing vehicle mileage driver: "
+                "requested=郭國偵; candidates=陳俊翰,林志偉"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "ppe_driver")
+        self.assertEqual(payload["failure_stage"], "填寫返隊時間與里程")
+        self.assertIn("駕駛清單", payload["failure_reason"])
+        self.assertNotIn("登入", payload["failure_reason"])
+
+    def test_merge_replaces_stored_login_diagnosis_for_missing_driver(self):
+        merged = merge_diagnostic_fields(
+            {
+                "key": "fuel_record",
+                "status": "fuel_record_failed",
+                "detail": (
+                    "登入帳號：加油=任務司機。加油紀錄操作失敗：Message: "
+                    "fuel grid fill failed: {'ok': False, 'reason': 'missing driver'}"
+                ),
+                "failure_stage": "登入 PPE",
+                "failure_reason": "登入、帳密、SSO 或驗證碼尚未完成。",
+                "next_action": "完成登入後重試。",
+                "exception_type": "login",
+            }
+        )
+
+        self.assertEqual(merged["exception_type"], "ppe_driver")
+        self.assertEqual(merged["failure_stage"], "填寫加油紀錄")
+
     def test_multi_patient_consumables_failure_is_not_button_error(self):
         payload = diagnostic_payload(
             "consumables",
