@@ -322,6 +322,29 @@
     }
   </style>
 </head>
+{% macro manual_confirmation_forms(task_id, site_key, site, task_active) -%}
+  {% if not task_active and site_waits_for_confirmation(site.status) %}
+    {% set confirmation = namespace(has_vehicle=false) %}
+    {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}
+      {% if site_waits_for_confirmation(vehicle_result.status) %}
+        {% set confirmation.has_vehicle = true %}
+        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
+          <input type="hidden" name="vehicle_key" value="{{ vehicle_key }}">
+          <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key, vehicle_key) }}">
+          <button class="secondary" type="submit" title="請先在官方頁確認資料已存在">
+            已確認 {{ vehicle_result.vehicle_label or vehicle_key }}
+          </button>
+        </form>
+      {% endif %}
+    {% endfor %}
+    {% if not confirmation.has_vehicle %}
+      <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
+        <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key) }}">
+        <button class="secondary" type="submit" title="請先在官方頁確認資料已存在">已在官方頁確認完成</button>
+      </form>
+    {% endif %}
+  {% endif %}
+{%- endmacro %}
 <body>
   <main>
     <header class="page-head">
@@ -335,18 +358,21 @@
 
     <section class="task-section" aria-label="任務內容">
       {% set task_active = task_payload_is_active(payload) %}
+      {% set task_edit_locked = task_edit_is_locked(payload) %}
       <div class="task-submit">
         {% if show_task_entry_controls() and task_active %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/abort">
             <button class="secondary" type="submit">中止登打</button>
           </form>
         {% endif %}
-        {% if show_task_entry_controls() and not task_active %}
+        {% if show_task_entry_controls() and not task_active and not task_has_waiting_confirmation(payload.site_statuses) %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
-            <button type="submit">{{ task_site_count_label(payload.task) }}登打啟動</button>
+            <button type="submit">{{ task_site_count_label(payload.task, payload.site_statuses) }}登打啟動</button>
           </form>
         {% endif %}
-        <a class="button secondary" href="/tasks/{{ payload.task.task_id }}/edit">返回編輯</a>
+        {% if not task_edit_locked %}
+          <a class="button secondary" href="/tasks/{{ payload.task.task_id }}/edit">返回編輯</a>
+        {% endif %}
       </div>
       <div class="section-head">
         <h2>任務內容</h2>
@@ -363,6 +389,7 @@
                   <button class="secondary" type="submit">{{ site_action_button_label(duty_site.status, 'duty_work_log') }}</button>
                 </form>
               {% endif %}
+              {{ manual_confirmation_forms(payload.task.task_id, 'duty_work_log', duty_site, task_active) }}
               <span class="status {{ status_class(duty_site.status) }}">{{ status_label(duty_site.status) }}</span>
             </div>
           </div>
@@ -386,13 +413,14 @@
         {% set mileage_run_site_key = mileage_site.run_site_key or 'vehicle_mileage' %}
         <article class="task-card {{ status_class(mileage_site.status) }}">
           <div class="card-head">
-            <h3>{{ '里程+加油' if task_has_fuel_record(payload.task) else '里程' }}</h3>
+            <h3>{{ '里程+加油' if task_has_active_fuel_site(payload.task, payload.site_statuses) else '里程' }}</h3>
             <div class="card-state">
               {% if show_task_entry_controls() and not task_active and site_can_run_individually(payload.site_statuses, mileage_run_site_key) %}
                 <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/{{ mileage_run_site_key }}/run">
                   <button class="secondary" type="submit">{{ site_action_button_label(mileage_site.status, mileage_run_site_key) }}</button>
                 </form>
               {% endif %}
+              {{ manual_confirmation_forms(payload.task.task_id, mileage_run_site_key, mileage_site, task_active) }}
               <span class="status {{ status_class(mileage_site.status) }}">{{ status_label(mileage_site.status) }}</span>
             </div>
           </div>
@@ -429,6 +457,7 @@
                   <button class="secondary" type="submit">{{ site_action_button_label(consumables_site.status, 'consumables') }}</button>
                 </form>
               {% endif %}
+              {{ manual_confirmation_forms(payload.task.task_id, 'consumables', consumables_site, task_active) }}
               <span class="status {{ status_class(consumables_site.status) }}">{{ status_label(consumables_site.status) }}</span>
             </div>
           </div>
@@ -460,6 +489,7 @@
                   <button class="secondary" type="submit">{{ site_action_button_label(disinfection_site.status, 'disinfection') }}</button>
                 </form>
               {% endif %}
+              {{ manual_confirmation_forms(payload.task.task_id, 'disinfection', disinfection_site, task_active) }}
               <span class="status {{ status_class(disinfection_site.status) }}">{{ status_label(disinfection_site.status) }}</span>
             </div>
           </div>
@@ -482,12 +512,12 @@
       </div>
     </section>
 
-    <section class="stage-panel" aria-label="{{ task_site_count_label(payload.task) }}階段檢查">
+    <section class="stage-panel" aria-label="{{ task_site_count_label(payload.task, payload.site_statuses) }}階段檢查">
       <div class="section-head">
-        <h2>{{ task_site_count_label(payload.task) }}階段檢查</h2>
+        <h2>{{ task_site_count_label(payload.task, payload.site_statuses) }}階段檢查</h2>
       </div>
       <div class="stage-grid">
-        {% for site_key, title in task_site_display_pairs(payload.task) %}
+        {% for site_key, title in task_site_display_pairs(payload.task, payload.site_statuses) %}
           <article class="stage-card">
             <h3>{{ title }}</h3>
             <ul class="stage-list">

@@ -6,6 +6,7 @@ import time
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import ddddocr
@@ -18,11 +19,13 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
-from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry
+from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry, mark_driver_operation_active
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.duty_credentials import load_synced_worker_credential
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm, vehicle_ppe_names
 from ambulance_bot.profile_paths import runtime_profile_dir
+from ambulance_bot.task_cancellation import TaskCancellationError
+from ambulance_bot.update_safety import ManualUpdateRequiredError, manual_update_reason
 from ambulance_bot.window_layout import apply_tile
 
 
@@ -102,8 +105,34 @@ def login_acs_and_get_driver(
         raise
 
 
-def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, object] | AmbulanceReturnRequest) -> str:
+def open_consumable_record_for_task(
+    driver: webdriver.Chrome,
+    task: dict[str, object] | AmbulanceReturnRequest,
+    cancel_check: Callable[[], None] | None = None,
+    update_context: dict[str, object] | None = None,
+) -> str:
+    mark_driver_operation_active(driver)
+    try:
+        return _open_consumable_record_for_task(
+            driver,
+            task,
+            cancel_check=cancel_check,
+            update_context=update_context,
+        )
+    finally:
+        mark_driver_operation_active(driver, False)
+
+
+def _open_consumable_record_for_task(
+    driver: webdriver.Chrome,
+    task: dict[str, object] | AmbulanceReturnRequest,
+    cancel_check: Callable[[], None] | None = None,
+    update_context: dict[str, object] | None = None,
+) -> str:
     request = task if isinstance(task, AmbulanceReturnRequest) else AmbulanceReturnRequest.from_dict(task)
+    manual_reason = manual_update_reason("consumables", request, update_context)
+    if manual_reason:
+        raise ManualUpdateRequiredError(f"manual correction required: {manual_reason}")
     wait = WebDriverWait(driver, 15)
     _open_consumable_maintenance_page(driver, wait)
     hrefs = _find_consumable_detail_hrefs(driver, request)
@@ -120,14 +149,20 @@ def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, ob
             driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
             if not _wait_for_consumable_detail_page(driver, wait):
                 raise RuntimeError("consumable detail page did not open; SSO login may be required")
-            if len(hrefs) > 1:
-                actual_vehicle = _consumable_detail_vehicle_label(driver)
-                if not actual_vehicle:
-                    raise RuntimeError(f"患者序號 {suffix} 無法讀取耗材頁車輛。")
-                if actual_vehicle != request.vehicle:
-                    raise RuntimeError(f"患者序號 {suffix} 車輛不符：預期={request.vehicle} 實際={actual_vehicle}")
+            actual_vehicle = _consumable_detail_vehicle_label(driver)
+            if len(hrefs) > 1 and not actual_vehicle:
+                raise RuntimeError(f"患者序號 {suffix} 無法讀取耗材頁車輛。")
+            if request.vehicle and actual_vehicle and actual_vehicle != request.vehicle:
+                raise RuntimeError(f"患者序號 {suffix} 車輛不符：預期={request.vehicle} 實際={actual_vehicle}")
             page_request = replace(request, consumables=dict(allocation))
-            single_detail = _write_current_consumable_page(driver, wait, page_request)
+            single_detail = _write_current_consumable_page(
+                driver,
+                wait,
+                page_request,
+                **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+            )
+        except TaskCancellationError:
+            raise
         except Exception as exc:
             if len(hrefs) == 1:
                 raise
@@ -152,17 +187,23 @@ def _write_current_consumable_page(
     driver: webdriver.Chrome,
     wait: WebDriverWait,
     request: AmbulanceReturnRequest,
+    cancel_check: Callable[[], None] | None = None,
 ) -> str:
     added = ""
     if _needs_extra_consumable_row(request):
+        detail_url = str(driver.current_url or "")
+        expected_sid = _emm_temsis_id_from_href(detail_url)
+        if not expected_sid:
+            raise RuntimeError("耗材內容頁缺少 emmTemsisid，停止填寫。")
         item_quantities = _resolve_consumable_item_quantities(driver, request)
         if save_consumables_record_enabled():
             _clear_existing_consumables(driver, wait)
             _inject_consumables_for_save(driver, item_quantities)
             _assert_consumable_rows_match(driver, item_quantities, "耗材儲存前")
-            _save_consumables(driver, wait)
+            _save_consumables(driver, wait, cancel_check=cancel_check)
             if _is_sso_page(driver):
                 raise RuntimeError("consumable save returned to SSO login page")
+            _reopen_consumable_detail_for_readback(driver, wait, detail_url, expected_sid)
             _verify_saved_consumables(driver, item_quantities)
             added = f" 已清除舊資料、填入耗材 {len(item_quantities)} 筆、按下儲存並確認。"
         else:
@@ -422,8 +463,6 @@ def _find_consumable_detail_hrefs(driver: webdriver.Chrome, request: AmbulanceRe
         matched = [item for item in scored if item[1] in matched_hrefs]
         if matched:
             return _select_consumable_patient_group(matched)
-        if len(scored) == 1:
-            return [scored[0][1]]
         raise RuntimeError(f"耗材內容頁找不到符合車輛的紀錄：車輛={request.vehicle} 候選={len(scored)}")
 
     sid_scored.sort(key=lambda item: item[0], reverse=True)
@@ -866,9 +905,12 @@ def _save_consumables_direct(
     driver: webdriver.Chrome,
     wait: WebDriverWait,
     item_quantities: list[dict[str, str]],
+    cancel_check: Callable[[], None] | None = None,
 ) -> None:
     driver.set_script_timeout(20)
     account = _load_acs_credentials()[0]
+    if cancel_check is not None:
+        cancel_check()
     result = driver.execute_async_script(
         """
         const itemQuantities = arguments[0];
@@ -931,6 +973,7 @@ def _save_consumables_direct(
     driver.refresh()
     wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
     wait.until(lambda d: _consumable_row_count(d) >= len(item_quantities))
+    _verify_saved_consumables(driver, item_quantities)
 
 
 def _verify_saved_consumables(driver: webdriver.Chrome, expected_items: list[dict[str, str]]) -> None:
@@ -938,6 +981,23 @@ def _verify_saved_consumables(driver: webdriver.Chrome, expected_items: list[dic
     actual = _normalize_consumable_pairs(_read_consumable_payload_rows(driver))
     if actual != expected:
         raise RuntimeError(f"耗材儲存後讀回不一致：expected={expected} actual={actual}")
+
+
+def _reopen_consumable_detail_for_readback(
+    driver: webdriver.Chrome,
+    wait: WebDriverWait,
+    detail_url: str,
+    expected_sid: str,
+) -> None:
+    driver.get(detail_url)
+    wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+    if not _wait_for_consumable_detail_page(driver, wait):
+        raise RuntimeError("耗材儲存後無法重新開啟內容頁讀回。")
+    if _is_sso_page(driver):
+        raise RuntimeError("耗材儲存後讀回時被導回 SSO 登入頁。")
+    actual_sid = _emm_temsis_id_from_href(str(driver.current_url or ""))
+    if actual_sid != expected_sid:
+        raise RuntimeError(f"耗材儲存後讀回案件不符：expected={expected_sid} actual={actual_sid or '空白'}")
 
 
 def _assert_consumable_rows_match(
@@ -1035,9 +1095,15 @@ def _filled_consumable_row_count(driver: webdriver.Chrome) -> int:
     )
 
 
-def _save_consumables(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+def _save_consumables(
+    driver: webdriver.Chrome,
+    wait: WebDriverWait,
+    cancel_check: Callable[[], None] | None = None,
+) -> str:
     button = wait.until(EC.presence_of_element_located((By.ID, "addAcsEmmForm")))
     driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", button)
+    if cancel_check is not None:
+        cancel_check()
     driver.execute_script(
         """
         const button = arguments[0];
@@ -1046,18 +1112,41 @@ def _save_consumables(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
         """,
         button,
     )
-    _accept_alert_if_present(driver, timeout_seconds=2)
+    alert_text = _accept_alert_if_present(driver, timeout_seconds=5)
     time.sleep(1.0)
     wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+    confirmation = _consumable_save_confirmation_state(alert_text)
+    if confirmation == "failure":
+        raise RuntimeError(f"耗材儲存失敗：{alert_text}")
+    if confirmation != "success":
+        detail = alert_text or "未出現確認訊息"
+        raise RuntimeError(f"耗材儲存未取得明確成功回應：{detail}")
+    return alert_text
 
 
-def _accept_alert_if_present(driver: webdriver.Chrome, timeout_seconds: int) -> bool:
+def _accept_alert_if_present(driver: webdriver.Chrome, timeout_seconds: int) -> str:
     try:
         WebDriverWait(driver, timeout_seconds).until(EC.alert_is_present())
-        driver.switch_to.alert.accept()
-        return True
+        alert = driver.switch_to.alert
+        text = str(alert.text or "").strip()
+        alert.accept()
+        return text
     except Exception:
-        return False
+        return ""
+
+
+def _consumable_save_confirmation_state(message: str) -> str:
+    compact = re.sub(r"\s+", "", str(message or "")).lower()
+    if not compact:
+        return "unknown"
+    if any(marker in compact for marker in ("失敗", "錯誤", "未成功", "無法儲存", "error", "failed")):
+        return "failure"
+    if any(
+        marker in compact
+        for marker in ("儲存成功", "存檔成功", "成功儲存", "操作成功", "儲存完成", "存檔完成", "success")
+    ):
+        return "success"
+    return "unknown"
 
 
 def _parse_consumable_code(code: str) -> tuple[str, str, str, str]:

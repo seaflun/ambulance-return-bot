@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -24,6 +25,76 @@ from ambulance_bot.duty_credentials import (
 
 
 class DutyCredentialTests(unittest.TestCase):
+    def test_concurrent_credential_updates_are_serialized_without_losing_accounts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            save_duty_automation_credential("base-user", "base-pass", path=path)
+            original_write = duty_credentials_module._write_json_atomic
+            first_at_write = threading.Event()
+            release_first = threading.Event()
+            second_at_write = threading.Event()
+            errors: list[BaseException] = []
+
+            def gated_write(target, payload):
+                if threading.current_thread().name == "credential-first":
+                    first_at_write.set()
+                    if not release_first.wait(2):
+                        raise TimeoutError("test did not release first credential writer")
+                elif threading.current_thread().name == "credential-second":
+                    second_at_write.set()
+                return original_write(target, payload)
+
+            def save(user_id: str, password: str) -> None:
+                try:
+                    save_duty_automation_credential(user_id, password, path=path)
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            with patch.object(duty_credentials_module, "_write_json_atomic", side_effect=gated_write):
+                first = threading.Thread(
+                    target=save,
+                    args=("first-user", "first-pass"),
+                    name="credential-first",
+                )
+                second = threading.Thread(
+                    target=save,
+                    args=("second-user", "second-pass"),
+                    name="credential-second",
+                )
+                first.start()
+                self.assertTrue(first_at_write.wait(1))
+                second.start()
+                serialized = not second_at_write.wait(0.1)
+                try:
+                    release_first.set()
+                    first.join(2)
+                    second.join(2)
+                finally:
+                    release_first.set()
+
+            self.assertTrue(serialized)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                {str(item.get("user_id") or "") for item in saved.get("accounts", [])},
+                {"base-user", "first-user", "second-user"},
+            )
+
+    def test_failed_atomic_replace_preserves_existing_saved_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            save_duty_automation_credential("existing-user", "existing-pass", path=path)
+            original = path.read_bytes()
+
+            with patch.object(Path, "replace", side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    save_duty_automation_credential("new-user", "new-pass", path=path)
+
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
+
     def test_loads_legacy_saved_login(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "saved_login.json"

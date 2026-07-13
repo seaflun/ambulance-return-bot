@@ -1,6 +1,9 @@
 ﻿param(
     [string]$ProjectRoot,
-    [string]$Version
+    [string]$Version,
+    [string]$OutputDir,
+    [switch]$SkipSourceVersionUpdate,
+    [switch]$BuildLockAlreadyHeld
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,16 +21,23 @@ if ($Version -notmatch "^\d{4}\.\d{2}\.\d{2}\.\d{4}$") {
 $project = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $packageName = "WinPython_公務電腦使用包"
 $packageDir = Join-Path $project $packageName
-$updateDir = Join-Path $project "UPDATE"
-$zipPath = Join-Path $updateDir "$packageName.zip"
-$shaPath = "$zipPath.sha256.txt"
+$updateDir = if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+    Join-Path $project "UPDATE"
+} else {
+    [System.IO.Path]::GetFullPath($OutputDir)
+}
+$finalZipPath = Join-Path $updateDir "$packageName.zip"
+$finalShaPath = "$finalZipPath.sha256.txt"
 $releaseVersionAsset = "ambulance-return-version.txt"
 $releaseZipAsset = "ambulance-return-public-package.zip"
 $releaseShaAsset = "ambulance-return-public-package.zip.sha256.txt"
 $releaseUpdaterAsset = "update_package.ps1"
+$manifestName = "UPDATE_MANIFEST.json"
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$stageRoot = Join-Path (Join-Path $project "tmp") "public-duty-package-$stamp"
+$stageRoot = Join-Path (Join-Path $project "tmp") "public-duty-package-$stamp-$([guid]::NewGuid().ToString('N'))"
 $stagePackageDir = Join-Path $stageRoot $packageName
+$assetStageDir = Join-Path $stageRoot "assets"
+$publishRollbackDir = Join-Path $stageRoot "publish-rollback"
 
 function Resolve-FullPath {
     param([string]$Path)
@@ -58,6 +68,120 @@ function Remove-SafeDirectory {
     Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
+function Enter-PackageBuildLock {
+    param([string]$LockPath)
+
+    $lockDir = Split-Path -Parent $LockPath
+    New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+    try {
+        $stream = [System.IO.File]::Open(
+            $LockPath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+    } catch [System.IO.IOException] {
+        throw "Another package build is already in progress: $LockPath"
+    }
+    try {
+        $metadata = [System.Text.Encoding]::UTF8.GetBytes("pid=$PID started_utc=$([DateTime]::UtcNow.ToString('o'))")
+        $stream.SetLength(0)
+        $stream.Write($metadata, 0, $metadata.Length)
+        $stream.Flush($true)
+        return $stream
+    } catch {
+        $stream.Dispose()
+        throw
+    }
+}
+
+function Restore-PublishedFiles {
+    param([object[]]$Entries)
+
+    $errors = @()
+    $reverseEntries = @($Entries)
+    [array]::Reverse($reverseEntries)
+    foreach ($entry in $reverseEntries) {
+        if ($entry.Published) {
+            try {
+                if (Test-Path -LiteralPath $entry.Target -PathType Leaf) {
+                    Remove-Item -LiteralPath $entry.Target -Force
+                }
+                $entry.Published = $false
+            } catch {
+                $errors += "remove published target $($entry.Target): $($_.Exception.Message)"
+            }
+        }
+        if ($entry.HadExisting -and -not $entry.Published) {
+            try {
+                if (-not (Test-Path -LiteralPath $entry.Backup -PathType Leaf)) {
+                    throw "backup is missing"
+                }
+                Move-Item -LiteralPath $entry.Backup -Destination $entry.Target -Force
+                $entry.HadExisting = $false
+            } catch {
+                $errors += "restore backup $($entry.Backup): $($_.Exception.Message)"
+            }
+        }
+        try {
+            if (Test-Path -LiteralPath $entry.Temp -PathType Leaf) {
+                Remove-Item -LiteralPath $entry.Temp -Force
+            }
+        } catch {
+            $errors += "remove publish temp $($entry.Temp): $($_.Exception.Message)"
+        }
+    }
+    if ($errors.Count -gt 0) {
+        throw "Public package rollback incomplete: $($errors -join '; ')"
+    }
+}
+
+function Publish-StagedFiles {
+    param(
+        [object[]]$Mappings,
+        [string]$RollbackRoot,
+        [object]$State
+    )
+
+    New-Item -ItemType Directory -Path $RollbackRoot -Force | Out-Null
+    $entries = @()
+    $index = 0
+    $State.Attempted = $true
+    foreach ($mapping in $Mappings) {
+        if (-not (Test-Path -LiteralPath $mapping.Source -PathType Leaf)) {
+            throw "Missing staged release asset: $($mapping.Source)"
+        }
+        if ((Test-Path -LiteralPath $mapping.Target) -and -not (Test-Path -LiteralPath $mapping.Target -PathType Leaf)) {
+            throw "Release asset target is not a file: $($mapping.Target)"
+        }
+        $targetDir = Split-Path -Parent $mapping.Target
+        if (-not (Test-Path -LiteralPath $targetDir -PathType Container)) {
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        }
+        $temp = Join-Path $targetDir (".{0}.publish-{1}.tmp" -f (Split-Path -Leaf $mapping.Target), [guid]::NewGuid().ToString("N"))
+        $backup = Join-Path $RollbackRoot ("{0:D3}.bak" -f $index)
+        Copy-Item -LiteralPath $mapping.Source -Destination $temp -Force
+        $entries += [PSCustomObject]@{
+            Target = $mapping.Target
+            Temp = $temp
+            Backup = $backup
+            HadExisting = $false
+            Published = $false
+        }
+        $State.Entries = @($entries)
+        $index += 1
+    }
+
+    foreach ($entry in $entries) {
+        if (Test-Path -LiteralPath $entry.Target -PathType Leaf) {
+            Move-Item -LiteralPath $entry.Target -Destination $entry.Backup -Force
+            $entry.HadExisting = $true
+        }
+        Move-Item -LiteralPath $entry.Temp -Destination $entry.Target -Force
+        $entry.Published = $true
+    }
+}
+
 function Write-PackageText {
     param(
         [string]$RelativePath,
@@ -77,7 +201,11 @@ function Copy-ZipStage {
         [string]$SourceDir,
         [string]$DestDir
     )
-    $skipDirs = @("artifacts", "logs", "tmp", "temp", "cache", ".cache", "local_data", "__pycache__", ".pytest_cache")
+    $skipDirs = @(
+        ".git", "artifacts", "logs", "runtime_outputs", "tmp", "temp", "cache", ".cache",
+        "local_data", "snapshots", "__pycache__", ".pytest_cache", "chrome_profile",
+        "profiles", "runtime_profiles", "selenium_profiles", "browser_profiles"
+    )
     $skipFiles = @(".env", "update_urls.json")
     $sourceRoot = (Resolve-FullPath -Path $SourceDir).TrimEnd([char]92) + [string][char]92
     Get-ChildItem -LiteralPath $SourceDir -Recurse -File -Force | ForEach-Object {
@@ -101,6 +229,32 @@ function Copy-ZipStage {
     }
 }
 
+function Write-UpdateManifest {
+    param([string]$StagePackageDir)
+
+    $stageRoot = (Resolve-FullPath -Path $StagePackageDir).TrimEnd([char]92) + [string][char]92
+    $managedFiles = @(
+        Get-ChildItem -LiteralPath $StagePackageDir -Recurse -File -Force |
+            ForEach-Object {
+                $relative = $_.FullName.Substring($stageRoot.Length) -replace "\\", "/"
+                if ($_.Name -in @(".env", "update_urls.json", "UPDATE_PACKAGE.bat")) {
+                    return
+                }
+                $relative
+            }
+    )
+    $managedFiles += $manifestName
+    $managedFiles = @($managedFiles | Sort-Object -Unique)
+    if ($managedFiles.Count -eq 0 -or $managedFiles.Count -gt 10000) {
+        throw "Invalid update manifest file count: $($managedFiles.Count)"
+    }
+    $payload = [ordered]@{
+        schema_version = 1
+        files = $managedFiles
+    }
+    $payload | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $StagePackageDir $manifestName) -Encoding UTF8
+}
+
 function Assert-PackageFile {
     param([string]$RelativePath)
     $path = Join-Path $packageDir $RelativePath
@@ -117,6 +271,12 @@ function Assert-PackageDirectory {
     }
 }
 
+$buildLockStream = $null
+if (-not $BuildLockAlreadyHeld) {
+    $buildLockStream = Enter-PackageBuildLock -LockPath (Join-Path (Join-Path $project "UPDATE") ".package-build.lock")
+}
+
+try {
 if (-not (Test-Path -LiteralPath $packageDir -PathType Container)) {
     throw "Missing public-duty package source directory: $packageDir"
 }
@@ -134,16 +294,15 @@ foreach ($file in @(
     "run_worker_forever.vbs",
     "run_worker_headless.bat",
     "run_worker_once.bat",
-    "repair_update_package.ps1"
+    "repair_update_package.ps1",
+    "UPDATE_PACKAGE.ps1",
+    "REMOTE_UPDATE_PACKAGE.ps1"
 )) {
     Assert-PackageFile -RelativePath $file
 }
 foreach ($dir in @("ambulance_bot", "templates")) {
     Assert-PackageDirectory -RelativePath $dir
 }
-
-$Version | Set-Content -LiteralPath (Join-Path $packageDir "VERSION.txt") -Encoding UTF8
-$Version | Set-Content -LiteralPath (Join-Path $updateDir "VERSION.txt") -Encoding UTF8
 
 Write-PackageText -RelativePath "README_公務電腦.txt" -Text @'
 # SinpoSmart - 救護Worker 公務電腦使用包
@@ -586,293 +745,91 @@ if __name__ == "__main__":
     raise SystemExit(main())
 '@
 
-Write-PackageText -RelativePath "update_package.ps1" -Text @'
-$ErrorActionPreference = "Stop"
+# UPDATE_PACKAGE.ps1 is maintained as runtime source so builds cannot overwrite
+# rollback/restart logic. AMBULANCE_SKIP_WORKER_RESTART and Start-WorkerGui
+# remain part of that updater contract for REMOTE_UPDATE_PACKAGE.ps1.
+Assert-PackageFile -RelativePath "UPDATE_PACKAGE.ps1"
 
-$packageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$localVersionPath = Join-Path $packageDir "VERSION.txt"
-$releaseBaseUrl = if ($env:AMBULANCE_RETURN_RELEASE_BASE_URL) { $env:AMBULANCE_RETURN_RELEASE_BASE_URL.TrimEnd("/") } else { "" }
-$downloadCacheKey = Get-Date -Format "yyyyMMddHHmmss"
-$latestReleaseApiUrl = "https://api.github.com/repos/seaflun/ambulance-return-bot/releases/latest"
-$backupRoot = Join-Path $env:LOCALAPPDATA "AmbulanceReturnBot"
-$backupDir = Join-Path $backupRoot "update_backups"
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$tempDir = Join-Path $env:TEMP "AmbulanceReturnBotUpdate-$stamp"
-$zipPath = Join-Path $tempDir "package.zip"
-$extractDir = Join-Path $tempDir "extract"
-
-function Get-TextFromUrl {
-    param([string]$Url)
-    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -MaximumRedirection 5
-    if ($response.Content -is [byte[]]) {
-        $text = [System.Text.Encoding]::UTF8.GetString($response.Content)
-    } else {
-        $text = [string]$response.Content
-    }
-    return $text.Trim().TrimStart([char]0xFEFF)
+$publishCompleted = $false
+$publishState = [PSCustomObject]@{
+    Attempted = $false
+    RollbackComplete = $false
+    Entries = @()
 }
-
-function Test-VersionText {
-    param(
-        [string]$Version,
-        [switch]$AllowZero
-    )
-
-    if ($AllowZero -and $Version -eq "0") {
-        return $true
-    }
-    return $Version -match "^\d{4}\.\d{2}\.\d{2}\.\d{4}$"
-}
-
-function Get-Sha256FromText {
-    param([string]$Text)
-    $firstToken = ($Text.Trim().TrimStart([char]0xFEFF) -split "\s+")[0]
-    if ($firstToken -notmatch "^[0-9a-fA-F]{64}$") {
-        throw "Remote SHA256 file has an invalid hash: $firstToken"
-    }
-    return $firstToken.ToLowerInvariant()
-}
-
-function Add-DownloadCacheBust {
-    param([string]$Url)
-    $separator = if ($Url.Contains("?")) { "&" } else { "?" }
-    return "$Url${separator}cachebust=$downloadCacheKey"
-}
-
-function Get-ReleaseAssetUrl {
-    param(
-        [object]$Release,
-        [string]$Name
-    )
-
-    $asset = $Release.assets | Where-Object { $_.name -eq $Name } | Select-Object -First 1
-    if (-not $asset -or -not $asset.browser_download_url) {
-        throw "Latest GitHub release is missing asset: $Name"
-    }
-    return [string]$asset.browser_download_url
-}
-
-function Resolve-RemoteDownloadUrls {
-    if (-not [string]::IsNullOrWhiteSpace($releaseBaseUrl)) {
-        return [pscustomobject]@{
-            Version = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-version.txt"
-            Zip = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-public-package.zip"
-            Sha256 = Add-DownloadCacheBust "$releaseBaseUrl/ambulance-return-public-package.zip.sha256.txt"
-        }
-    }
-
-    $release = Invoke-RestMethod -Uri $latestReleaseApiUrl -UseBasicParsing -Headers @{
-        "Accept" = "application/vnd.github+json"
-        "User-Agent" = "AmbulanceReturnBotUpdater"
-    }
-    Write-Host "Latest release: $($release.tag_name)"
-    return [pscustomobject]@{
-        Version = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-version.txt")
-        Zip = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-public-package.zip")
-        Sha256 = Add-DownloadCacheBust (Get-ReleaseAssetUrl -Release $release -Name "ambulance-return-public-package.zip.sha256.txt")
-    }
-}
-
-function Copy-UpdateTree {
-    param(
-        [string]$SourceDir,
-        [string]$DestDir
-    )
-
-    $skipDirs = @("logs", "runtime_outputs", "tmp", "temp", "cache", ".cache", "local_data", "snapshots", "__pycache__", "artifacts")
-    $alwaysSkipFiles = @(".env", "update_urls.json", "UPDATE_PACKAGE.bat")
-    $slash = [string][char]92
-    $sourceRoot = $SourceDir.TrimEnd([char]92) + $slash
-
-    Get-ChildItem -LiteralPath $SourceDir -Recurse -File -Force | ForEach-Object {
-        $relative = $_.FullName.Substring($sourceRoot.Length)
-        $parts = $relative -split "[\\/]"
-        if ($parts | Where-Object { $skipDirs -contains $_ }) {
-            return
-        }
-        if ($alwaysSkipFiles -contains $_.Name) {
-            Write-Host "Preserved local file: $($_.Name)"
-            return
-        }
-
-        $target = Join-Path $DestDir $relative
-        $targetDir = Split-Path -Parent $target
-        if (-not (Test-Path -LiteralPath $targetDir)) {
-            New-Item -ItemType Directory -Path $targetDir | Out-Null
-        }
-        Copy-Item -LiteralPath $_.FullName -Destination $target -Force
-        Write-Host "Updated: $relative"
-    }
-}
-
-function Get-WorkerPackageProcesses {
-    $packagePath = [System.IO.Path]::GetFullPath($packageDir)
-    Get-CimInstance Win32_Process |
-        Where-Object {
-            $commandLine = [string]$_.CommandLine
-            $commandLine -and
-            ($commandLine -match "worker_gui\.py|app\.py") -and
-            (
-                $commandLine.IndexOf($packagePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-                $commandLine -match "ambulance_return_bot|WinPython_"
-            )
-        }
-}
-
-function Stop-WorkerPackageProcesses {
-    $processes = @(Get-WorkerPackageProcesses)
-    foreach ($process in $processes) {
-        Write-Host "Stopping running worker process: $($process.ProcessId) $($process.Name)"
-        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
-    }
-    if ($processes.Count -gt 0) {
-        Start-Sleep -Seconds 2
-    }
-}
-
-function Start-WorkerGui {
-    $launcher = Join-Path $packageDir "RUN_WORKER_GUI_WINPYTHON.vbs"
-    if (Test-Path -LiteralPath $launcher -PathType Leaf) {
-        Write-Host "Restarting worker GUI..."
-        Start-Process -FilePath "wscript.exe" -ArgumentList "`"$launcher`"" -WorkingDirectory $packageDir | Out-Null
-    } else {
-        Write-Warning "Cannot restart worker GUI because launcher is missing: $launcher"
-    }
-}
-
-function Install-StartupLaunchers {
-    $installer = Join-Path $packageDir "install_startup_shortcut.ps1"
-    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-        Write-Warning "Cannot refresh startup launcher because installer is missing: $installer"
-        return
-    }
-    Write-Host "Refreshing startup launcher..."
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -SkipScheduledTask
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Startup launcher refresh exited with code $LASTEXITCODE"
-    }
-}
-
-if (-not (Test-Path -LiteralPath $localVersionPath)) {
-    "0" | Set-Content -LiteralPath $localVersionPath -Encoding UTF8
-}
-
-$localVersion = (Get-Content -LiteralPath $localVersionPath -Raw -Encoding UTF8).Trim().TrimStart([char]0xFEFF)
-$remoteUrls = Resolve-RemoteDownloadUrls
-$remoteVersionUrl = $remoteUrls.Version
-$remoteZipUrl = $remoteUrls.Zip
-$remoteSha256Url = $remoteUrls.Sha256
-$remoteVersion = Get-TextFromUrl -Url $remoteVersionUrl
-$remoteSha256 = Get-Sha256FromText -Text (Get-TextFromUrl -Url $remoteSha256Url)
-
-if (-not (Test-VersionText -Version $localVersion -AllowZero)) {
-    throw "Local VERSION.txt has an invalid version: $localVersion"
-}
-if (-not (Test-VersionText -Version $remoteVersion)) {
-    throw "Remote VERSION.txt has an invalid version: $remoteVersion"
-}
-
-Write-Host "Local version : $localVersion"
-Write-Host "Remote version: $remoteVersion"
-
-if ([string]::CompareOrdinal($remoteVersion, $localVersion) -le 0) {
-    Write-Host "Already up to date."
-    exit 0
-}
-
-try {
-    New-Item -ItemType Directory -Path $tempDir | Out-Null
-    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-
-    Write-Host "Downloading update package..."
-    Invoke-WebRequest -Uri $remoteZipUrl -OutFile $zipPath -UseBasicParsing -MaximumRedirection 5
-
-    if (-not (Test-Path -LiteralPath $zipPath) -or (Get-Item -LiteralPath $zipPath).Length -lt 1024) {
-        throw "Downloaded package is missing or too small."
-    }
-    $downloadedSha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($downloadedSha256 -ne $remoteSha256) {
-        throw "Downloaded package SHA256 mismatch. Expected $remoteSha256 but got $downloadedSha256."
-    }
-
-    Stop-WorkerPackageProcesses
-
-    $backupZip = Join-Path $backupDir "AmbulanceReturnBot-package-backup-$stamp.zip"
-    Write-Host "Creating backup: $backupZip"
-    Compress-Archive -LiteralPath (Join-Path $packageDir "*") -DestinationPath $backupZip -Force
-
-    New-Item -ItemType Directory -Path $extractDir | Out-Null
-    Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
-
-    $sourceDir = Get-ChildItem -LiteralPath $extractDir -Directory |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "worker_gui.py") } |
-        Select-Object -First 1 -ExpandProperty FullName
-    if (-not $sourceDir -and (Test-Path -LiteralPath (Join-Path $extractDir "worker_gui.py"))) {
-        $sourceDir = $extractDir
-    }
-    if (-not $sourceDir -or -not (Test-Path -LiteralPath $sourceDir -PathType Container)) {
-        throw "Update zip does not contain a valid worker package folder."
-    }
-
-    $packageVersionPath = Join-Path $sourceDir "VERSION.txt"
-    if (-not (Test-Path -LiteralPath $packageVersionPath -PathType Leaf)) {
-        throw "Update zip does not contain VERSION.txt."
-    }
-    $packageVersion = (Get-Content -LiteralPath $packageVersionPath -Raw -Encoding UTF8).Trim().TrimStart([char]0xFEFF)
-    if (-not (Test-VersionText -Version $packageVersion)) {
-        throw "Update zip VERSION.txt has an invalid version: $packageVersion"
-    }
-    if ($packageVersion -ne $remoteVersion) {
-        throw "Update version mismatch. Remote VERSION.txt is $remoteVersion but package VERSION.txt is $packageVersion."
-    }
-
-    Copy-UpdateTree -SourceDir $sourceDir -DestDir $packageDir
-    $packageVersion | Set-Content -LiteralPath $localVersionPath -Encoding UTF8
-
-    Write-Host "Update completed."
-    Install-StartupLaunchers
-    if ($env:AMBULANCE_SKIP_WORKER_RESTART -notmatch "^(?i:1|true|yes|on)$") {
-        Start-WorkerGui
-    }
-} finally {
-    try {
-        if (Test-Path -LiteralPath $tempDir) {
-            Remove-Item -LiteralPath $tempDir -Recurse -Force
-        }
-    } catch {
-        Write-Warning "Could not remove temporary update folder: $tempDir"
-    }
-}
-'@
-
 try {
     Remove-SafeDirectory -Path $stageRoot -ExpectedRoot (Join-Path $project "tmp")
     New-Item -ItemType Directory -Path $stagePackageDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $assetStageDir -Force | Out-Null
     Copy-ZipStage -SourceDir $packageDir -DestDir $stagePackageDir
+    $Version | Set-Content -LiteralPath (Join-Path $stagePackageDir "VERSION.txt") -Encoding UTF8
+    Write-UpdateManifest -StagePackageDir $stagePackageDir
 
-    if (Test-Path -LiteralPath $zipPath) {
-        Remove-Item -LiteralPath $zipPath -Force
-    }
+    $zipPath = Join-Path $assetStageDir "$packageName.zip"
+    $shaPath = "$zipPath.sha256.txt"
+    $releaseVersionPath = Join-Path $assetStageDir $releaseVersionAsset
+    $releaseZipPath = Join-Path $assetStageDir $releaseZipAsset
+    $releaseShaPath = Join-Path $assetStageDir $releaseShaAsset
+    $releaseUpdaterPath = Join-Path $assetStageDir $releaseUpdaterAsset
+    $updateVersionStagePath = Join-Path $assetStageDir "VERSION.txt"
+    $sourceVersionStagePath = Join-Path $assetStageDir "SOURCE_VERSION.txt"
+
     Compress-Archive -LiteralPath $stagePackageDir -DestinationPath $zipPath -Force
     $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $packageName.zip" | Set-Content -LiteralPath $shaPath -Encoding UTF8
-    $releaseVersionPath = Join-Path $updateDir $releaseVersionAsset
-    $releaseZipPath = Join-Path $updateDir $releaseZipAsset
-    $releaseShaPath = Join-Path $updateDir $releaseShaAsset
-    $releaseUpdaterPath = Join-Path $updateDir $releaseUpdaterAsset
     $Version | Set-Content -LiteralPath $releaseVersionPath -Encoding UTF8
     Copy-Item -LiteralPath $zipPath -Destination $releaseZipPath -Force
     "$hash  $releaseZipAsset" | Set-Content -LiteralPath $releaseShaPath -Encoding UTF8
     Copy-Item -LiteralPath (Join-Path $packageDir "update_package.ps1") -Destination $releaseUpdaterPath -Force
+    $Version | Set-Content -LiteralPath $updateVersionStagePath -Encoding UTF8
+    $Version | Set-Content -LiteralPath $sourceVersionStagePath -Encoding UTF8
+
+    if ((Get-FileHash -LiteralPath $releaseZipPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash) {
+        throw "Staged public/release zip byte hash mismatch."
+    }
+
+    $mappings = @(
+        [PSCustomObject]@{ Source = $zipPath; Target = $finalZipPath },
+        [PSCustomObject]@{ Source = $shaPath; Target = $finalShaPath },
+        [PSCustomObject]@{ Source = $releaseVersionPath; Target = (Join-Path $updateDir $releaseVersionAsset) },
+        [PSCustomObject]@{ Source = $releaseZipPath; Target = (Join-Path $updateDir $releaseZipAsset) },
+        [PSCustomObject]@{ Source = $releaseShaPath; Target = (Join-Path $updateDir $releaseShaAsset) },
+        [PSCustomObject]@{ Source = $releaseUpdaterPath; Target = (Join-Path $updateDir $releaseUpdaterAsset) },
+        [PSCustomObject]@{ Source = $updateVersionStagePath; Target = (Join-Path $updateDir "VERSION.txt") }
+    )
+    if (-not $SkipSourceVersionUpdate) {
+        $mappings += [PSCustomObject]@{ Source = $sourceVersionStagePath; Target = (Join-Path $packageDir "VERSION.txt") }
+    }
+    Publish-StagedFiles -Mappings $mappings -RollbackRoot $publishRollbackDir -State $publishState
+    $publishCompleted = $true
+} catch {
+    $publishError = $_
+    if ($publishState.Attempted) {
+        try {
+            Restore-PublishedFiles -Entries $publishState.Entries
+            $publishState.RollbackComplete = $true
+        } catch {
+            throw "Public package publish failed and rollback is incomplete. Recovery files: $publishRollbackDir. Publish error: $($publishError.Exception.Message). Rollback error: $($_.Exception.Message)"
+        }
+    }
+    throw
 } finally {
-    Remove-SafeDirectory -Path $stageRoot -ExpectedRoot (Join-Path $project "tmp")
+    if ($publishState.Attempted -and -not $publishCompleted -and -not $publishState.RollbackComplete) {
+        Write-Warning "Public package rollback was incomplete; recovery files were preserved at $publishRollbackDir"
+    } else {
+        Remove-SafeDirectory -Path $stageRoot -ExpectedRoot (Join-Path $project "tmp")
+    }
 }
 
 [PSCustomObject]@{
     Version = $Version
     PackageDir = $packageDir
     UpdateDir = $updateDir
-    Zip = $zipPath
-    Sha256 = (Get-Content -LiteralPath $shaPath -Raw -Encoding UTF8).Trim()
+    Zip = $finalZipPath
+    Sha256 = (Get-Content -LiteralPath $finalShaPath -Raw -Encoding UTF8).Trim()
     ReleaseAssets = @($releaseVersionAsset, $releaseZipAsset, $releaseShaAsset, $releaseUpdaterAsset) -join ", "
 } | Format-List
+} finally {
+    if ($null -ne $buildLockStream) {
+        $buildLockStream.Dispose()
+    }
+}

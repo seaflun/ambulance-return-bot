@@ -4,6 +4,16 @@ from ambulance_bot.site_diagnostics import diagnostic_payload, merge_diagnostic_
 
 
 class SiteDiagnosticsTests(unittest.TestCase):
+    def test_waiting_confirmation_status_has_save_stage_and_no_five_site_wording(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage",
+            "vehicle_mileage_waiting_confirmation",
+            "waiting_confirmation: 已按儲存但未收到成功回應",
+        )
+
+        self.assertEqual(payload["exception_type"], "waiting_confirmation")
+        self.assertEqual(payload["failure_stage"], "儲存")
+        self.assertNotIn("五站", payload["next_action"])
     def test_fuel_missing_driver_is_not_login_failure(self):
         payload = diagnostic_payload(
             "fuel_record",

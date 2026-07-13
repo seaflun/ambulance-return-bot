@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import ambulance_bot.selenium_local as selenium_local_module
 from ambulance_bot.models import AmbulanceReturnRequest
@@ -62,6 +63,483 @@ from ambulance_bot.duty_credentials import DutyCredential
 
 
 class SeleniumLocalTests(unittest.TestCase):
+    def test_saved_duty_edit_returns_manual_update_required_before_driver_start(self):
+        request = AmbulanceReturnRequest(
+            task_id="duty-update",
+            created_at=datetime(2026, 7, 13, 8, 0),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        context = {"previous_task": request.to_dict(), "current_task": request.to_dict()}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(selenium_local_module, "_create_driver") as create_driver:
+            result = selenium_local_module.run_local_selenium_task(
+                request,
+                Path(tmp),
+                update_context=context,
+            )
+
+        self.assertEqual(result.status, "duty_work_log_waiting_confirmation")
+        self.assertIn("人工", result.detail)
+        create_driver.assert_not_called()
+
+    def test_disinfection_removed_item_returns_manual_update_required_before_driver_start(self):
+        previous = AmbulanceReturnRequest(
+            task_id="disinfection-update",
+            created_at=datetime(2026, 7, 13, 8, 0),
+            raw_text="",
+            vehicle="新坡92",
+            disinfection_items=["救護車體", "擔架床"],
+        )
+        current = AmbulanceReturnRequest.from_dict(
+            {**previous.to_dict(), "disinfection_items": ["救護車體"]}
+        )
+        context = {"previous_task": previous.to_dict(), "current_task": current.to_dict()}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(selenium_local_module, "_create_driver") as create_driver:
+            result = selenium_local_module.run_disinfection_task(
+                current,
+                Path(tmp),
+                update_context=context,
+            )
+
+        self.assertEqual(result.status, "disinfection_waiting_confirmation")
+        self.assertIn("人工", result.detail)
+        create_driver.assert_not_called()
+
+    def test_disinfection_case_time_change_returns_manual_update_required_before_driver_start(self):
+        previous = AmbulanceReturnRequest(
+            task_id="disinfection-time-update",
+            created_at=datetime(2026, 7, 13, 8, 0),
+            raw_text="",
+            case_date="2026/07/13",
+            case_time="0805",
+            vehicle="新坡92",
+            disinfection_items=["救護車體"],
+        )
+        current = AmbulanceReturnRequest.from_dict({**previous.to_dict(), "case_time": "0810"})
+        context = {"previous_task": previous.to_dict(), "current_task": current.to_dict()}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(selenium_local_module, "_create_driver") as create_driver:
+            result = selenium_local_module.run_disinfection_task(
+                current,
+                Path(tmp),
+                update_context=context,
+            )
+
+        self.assertEqual(result.status, "disinfection_waiting_confirmation")
+        self.assertIn("人工", result.detail)
+        create_driver.assert_not_called()
+    def test_work_log_case_match_prefers_exact_case_id_and_all_metadata(self):
+        request = AmbulanceReturnRequest(
+            task_id="match-exact",
+            created_at=datetime(2026, 7, 13, 9, 0),
+            raw_text="",
+            case_id="20260713080500002",
+            case_date="2026-07-13",
+            case_time="0805",
+            case_address="桃園市中壢區月桃路一段270巷52號",
+        )
+        cases = [
+            {
+                "case_id": "20260713080500001",
+                "case_date": "1150713",
+                "case_time_hhmm": "0805",
+                "address": "桃園市中壢區月桃路一段270巷52號",
+            },
+            {
+                "case_id": "20260713080500002",
+                "case_date": "1150713",
+                "case_time_hhmm": "0805",
+                "address": "桃園市中壢區月桃路一段270巷52號",
+            },
+        ]
+
+        matched = selenium_local_module._match_case_for_request(cases, request)
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["case_id"], request.case_id)
+
+    def test_work_log_case_match_fails_closed_when_explicit_case_id_is_absent(self):
+        request = AmbulanceReturnRequest(
+            task_id="match-missing",
+            created_at=datetime(2026, 7, 13, 9, 0),
+            raw_text="",
+            case_id="20260713080599999",
+            case_date="2026-07-13",
+            case_time="0805",
+            case_address="桃園市中壢區月桃路一段270巷52號",
+        )
+        cases = [
+            {
+                "case_id": "20260713080500001",
+                "case_date": "1150713",
+                "case_time_hhmm": "0805",
+                "address": "桃園市中壢區月桃路一段270巷52號",
+            }
+        ]
+
+        self.assertIsNone(selenium_local_module._match_case_for_request(cases, request))
+
+    def test_work_log_case_match_rejects_missing_candidate_address_when_request_has_address(self):
+        request = AmbulanceReturnRequest(
+            task_id="match-address",
+            created_at=datetime(2026, 7, 13, 9, 0),
+            raw_text="",
+            case_id="20260713080500002",
+            case_date="2026-07-13",
+            case_time="0805",
+            case_address="No. 70 Zhongshan Road",
+        )
+        cases = [
+            {
+                "case_id": request.case_id,
+                "case_date": "1150713",
+                "case_time_hhmm": "0805",
+                "address": "",
+            }
+        ]
+
+        self.assertIsNone(selenium_local_module._match_case_for_request(cases, request))
+
+    def test_disinfection_selector_rejects_time_match_when_vehicle_mismatches(self):
+        rows = [{"index": 0, "text": "2026/07/13 08:05:00 新坡93 明細"}]
+
+        self.assertIsNone(selenium_local_module._select_disinfection_detail_row(rows, "0805", "新坡92"))
+
+    def test_disinfection_waits_raise_when_required_page_state_never_appears(self):
+        class FakeDriver:
+            def execute_script(self, _script):
+                return False
+
+        for wait_function in (
+            selenium_local_module._wait_for_disinfection_query_fields,
+            selenium_local_module._wait_for_disinfection_query_completed,
+            selenium_local_module._wait_for_disinfection_detail_ready,
+        ):
+            with self.subTest(wait_function=wait_function.__name__), self.assertRaises(
+                selenium_local_module.TimeoutException
+            ):
+                wait_function(FakeDriver(), timeout=0)
+
+    def test_disinfection_partial_item_update_stops_before_save(self):
+        request = AmbulanceReturnRequest(
+            task_id="partial-disinfection",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+            case_time="0805",
+            disinfection_items=["救護車體", "擔架床"],
+        )
+
+        class SwitchTo:
+            def default_content(self):
+                pass
+
+        class FakeDriver:
+            switch_to = SwitchTo()
+
+            def get(self, _url):
+                pass
+
+        with patch.object(selenium_local_module, "_switch_to_disinfection_content_if_present"), patch.object(
+            selenium_local_module, "_wait_for_disinfection_query_fields"
+        ), patch.object(selenium_local_module, "_set_disinfection_query_date"), patch.object(
+            selenium_local_module, "_click_disinfection_query", return_value=True
+        ), patch.object(selenium_local_module, "_wait_for_disinfection_query_completed"), patch.object(
+            selenium_local_module, "_save_disinfection_progress_artifacts"
+        ), patch.object(selenium_local_module, "_assert_disinfection_not_login"), patch.object(
+            selenium_local_module, "_open_disinfection_detail_for_case", return_value=True
+        ), patch.object(selenium_local_module, "_wait_for_disinfection_detail_ready"), patch.object(
+            selenium_local_module, "_set_disinfection_item_statuses", return_value=1
+        ), patch.object(selenium_local_module, "_save_disinfection_record_enabled", return_value=True), patch.object(
+            selenium_local_module, "_click_disinfection_save", return_value=True
+        ) as save:
+            expected_count = len(selenium_local_module._effective_disinfection_items(request.disinfection_items))
+            with self.assertRaisesRegex(
+                selenium_local_module.WebDriverException,
+                f"updated=1 expected={expected_count}",
+            ):
+                selenium_local_module._prepare_disinfection_record(FakeDriver(), request, Path("artifacts"))
+
+        save.assert_not_called()
+
+    def test_click_only_save_helpers_report_waiting_confirmation(self):
+        class FakeDriver:
+            current_url = "https://ppe.tyfd.gov.tw/CarRecord/List"
+            page_source = ""
+
+            def execute_script(self, _script, *_args):
+                return True
+
+        driver = FakeDriver()
+        request = AmbulanceReturnRequest(
+            task_id="save-no-confirm",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        with patch.object(selenium_local_module, "_accept_alert_if_present", return_value=""), patch.object(
+            selenium_local_module, "_confirm_sweetalert_if_present", return_value=""
+        ), patch.object(selenium_local_module, "_is_ppe_login_page", return_value=False), patch.object(
+            selenium_local_module.time, "sleep"
+        ):
+            mileage = selenium_local_module._save_vehicle_mileage_form(driver)
+            fuel = selenium_local_module._save_fuel_record_form(driver, request)
+
+        self.assertIn("waiting_confirmation", mileage)
+        self.assertIn("waiting_confirmation", fuel)
+
+    def test_all_record_submit_helpers_check_cancellation_before_driver_side_effect(self):
+        helper_names = (
+            "_click_duty_work_log_save",
+            "_click_vehicle_mileage_save",
+            "_save_fuel_record_form",
+            "_click_disinfection_save",
+        )
+        for helper_name in helper_names:
+            helper = getattr(selenium_local_module, helper_name)
+            self.assertIn(
+                "cancel_check",
+                inspect.signature(helper).parameters,
+                f"{helper_name} must expose a last-moment cancellation gate",
+            )
+
+        class Cancelled(RuntimeError):
+            pass
+
+        class FakeDriver:
+            execute_calls = 0
+
+            def execute_script(self, *_args):
+                self.execute_calls += 1
+                return True
+
+        request = AmbulanceReturnRequest(
+            task_id="cancel-before-save",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+
+        def cancel():
+            raise Cancelled("stale claim")
+
+        for helper_name, invoke in (
+            (
+                "_click_duty_work_log_save",
+                lambda driver: selenium_local_module._click_duty_work_log_save(driver, cancel_check=cancel),
+            ),
+            (
+                "_click_vehicle_mileage_save",
+                lambda driver: selenium_local_module._click_vehicle_mileage_save(driver, cancel_check=cancel),
+            ),
+            (
+                "_save_fuel_record_form",
+                lambda driver: selenium_local_module._save_fuel_record_form(driver, request, cancel_check=cancel),
+            ),
+            (
+                "_click_disinfection_save",
+                lambda driver: selenium_local_module._click_disinfection_save(driver, cancel_check=cancel),
+            ),
+        ):
+            with self.subTest(helper=helper_name):
+                driver = FakeDriver()
+                with self.assertRaises(Cancelled):
+                    invoke(driver)
+                self.assertEqual(driver.execute_calls, 0)
+
+    def test_vehicle_mileage_fallback_save_rechecks_cancellation_before_click(self):
+        class Cancelled(RuntimeError):
+            pass
+
+        class FakeDriver:
+            def __init__(self):
+                self.execute_calls = 0
+
+            def execute_script(self, *_args):
+                self.execute_calls += 1
+                return False
+
+        checks = {"count": 0}
+
+        def cancel():
+            checks["count"] += 1
+            if checks["count"] >= 2:
+                raise Cancelled("stale claim while locating fallback save")
+
+        driver = FakeDriver()
+        with self.assertRaises(Cancelled):
+            _click_vehicle_mileage_save(driver, cancel_check=cancel)
+
+        self.assertEqual(checks["count"], 2)
+        self.assertEqual(driver.execute_calls, 1)
+
+    def test_disinfection_fallback_save_rechecks_cancellation_before_click(self):
+        class Cancelled(RuntimeError):
+            pass
+
+        class FakeDriver:
+            def __init__(self):
+                self.execute_calls = 0
+
+            def execute_script(self, *_args):
+                self.execute_calls += 1
+                return False
+
+        checks = {"count": 0}
+
+        def cancel():
+            checks["count"] += 1
+            if checks["count"] >= 2:
+                raise Cancelled("stale claim while locating fallback save")
+
+        driver = FakeDriver()
+        with self.assertRaises(Cancelled):
+            _click_disinfection_save(driver, cancel_check=cancel)
+
+        self.assertEqual(checks["count"], 2)
+        self.assertEqual(driver.execute_calls, 1)
+
+    def test_selenium_site_wrappers_propagate_task_cancellation(self):
+        cancellation_error = getattr(selenium_local_module, "TaskCancellationError", None)
+        self.assertIsNotNone(cancellation_error, "TaskCancellationError is required for worker fencing")
+
+        class FakeDriver:
+            page_source = ""
+
+            def implicitly_wait(self, _seconds):
+                pass
+
+        signal = cancellation_error("stale claim")
+        request = AmbulanceReturnRequest(task_id="cancel-wrapper", created_at=datetime.now(), raw_text="")
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            selenium_local_module,
+            "mark_driver_operation_active",
+        ), patch.object(selenium_local_module, "apply_tile"), patch.object(
+            selenium_local_module,
+            "_set_window_size_if_enabled",
+        ):
+            specs = (
+                (
+                    selenium_local_module.run_local_selenium_task,
+                    "_prepare_duty_work_log_form",
+                    {"force_new_driver": True},
+                ),
+                (
+                    selenium_local_module.run_vehicle_mileage_task,
+                    "_open_vehicle_mileage_page",
+                    {"existing_driver": FakeDriver()},
+                ),
+                (
+                    selenium_local_module.run_fuel_record_task,
+                    "_open_fuel_record_page",
+                    {"existing_driver": FakeDriver()},
+                ),
+                (
+                    selenium_local_module.run_disinfection_task,
+                    "_open_disinfection_page",
+                    {"existing_driver": FakeDriver()},
+                ),
+            )
+            for runner, inner_name, kwargs in specs:
+                with self.subTest(runner=runner.__name__), patch.object(
+                    selenium_local_module,
+                    "_create_driver",
+                    return_value=FakeDriver(),
+                ), patch.object(selenium_local_module, inner_name, side_effect=signal):
+                    with self.assertRaises(cancellation_error):
+                        runner(request, Path(temp_dir), use_session_lock=False, **kwargs)
+
+    def test_site_wrappers_do_not_mark_waiting_confirmation_as_saved(self):
+        request = AmbulanceReturnRequest(
+            task_id="wrapper-waiting",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+
+        class FakeDriver:
+            def implicitly_wait(self, _seconds):
+                pass
+
+        cases = (
+            ("vehicle_mileage", selenium_local_module.run_vehicle_mileage_task, "_open_vehicle_mileage_page"),
+            ("fuel_record", selenium_local_module.run_fuel_record_task, "_open_fuel_record_page"),
+            ("disinfection", selenium_local_module.run_disinfection_task, "_open_disinfection_page"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for site_key, runner, open_name in cases:
+                with self.subTest(site_key=site_key), patch.object(
+                    selenium_local_module, open_name, return_value="waiting_confirmation: save response not confirmed"
+                ), patch.object(selenium_local_module, "apply_tile"), patch.object(
+                    selenium_local_module, "_set_window_size_if_enabled"
+                ):
+                    result = runner(
+                        request,
+                        Path(tmp),
+                        existing_driver=FakeDriver(),
+                        use_session_lock=False,
+                    )
+                self.assertEqual(result.status, f"{site_key}_waiting_confirmation")
+
+    def test_duty_work_log_click_without_confirmation_is_not_saved(self):
+        request = AmbulanceReturnRequest(
+            task_id="duty-waiting",
+            created_at=datetime.now(),
+            raw_text="",
+            case_id="20260713080500001",
+            case_time="0805",
+        )
+
+        class FakeDriver:
+            def get(self, _url):
+                pass
+
+        with patch.object(selenium_local_module, "_ensure_duty_login", return_value=True), patch.object(
+            selenium_local_module, "_click_by_text_or_id"
+        ), patch.object(selenium_local_module, "_switch_to_window_containing"), patch.object(
+            selenium_local_module, "_set_case_query_date_range"
+        ), patch.object(selenium_local_module, "_click_query_if_present"), patch.object(
+            selenium_local_module, "_extract_all_emergency_cases", return_value=[{"case_id": request.case_id}]
+        ), patch.object(
+            selenium_local_module, "_match_case_for_request", return_value={"case_id": request.case_id}
+        ), patch.object(selenium_local_module, "_click_case_choose", return_value=True), patch.object(
+            selenium_local_module, "_switch_to_work_log_form_for_case"
+        ), patch.object(selenium_local_module, "_fill_duty_work_log_values", return_value=[]), patch.object(
+            selenium_local_module, "_save_artifacts"
+        ), patch.object(selenium_local_module, "_save_duty_work_log_enabled", return_value=True), patch.object(
+            selenium_local_module, "_click_duty_work_log_save", return_value={"ok": True}
+        ), patch.object(selenium_local_module.time, "sleep"):
+            result = selenium_local_module._prepare_duty_work_log_form(
+                FakeDriver(), request, Path("artifacts"), Path("summary.txt")
+            )
+
+        self.assertEqual(result.status, "duty_work_log_waiting_confirmation")
+
+    def test_operation_failure_after_driver_creation_is_not_chrome_start_failed(self):
+        request = AmbulanceReturnRequest(
+            task_id="operation-failed",
+            created_at=datetime.now(),
+            raw_text="",
+        )
+
+        class FakeDriver:
+            def implicitly_wait(self, _seconds):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            selenium_local_module, "_create_driver", return_value=FakeDriver()
+        ), patch.object(selenium_local_module, "apply_tile"), patch.object(
+            selenium_local_module, "_set_window_size_if_enabled"
+        ), patch.object(
+            selenium_local_module, "_prepare_duty_work_log_form", side_effect=RuntimeError("form changed")
+        ), patch.object(selenium_local_module, "_save_artifacts"):
+            result = selenium_local_module.run_local_selenium_task(
+                request, Path(tmp), use_session_lock=False, force_new_driver=True
+            )
+
+        self.assertEqual(result.status, "duty_work_log_failed")
     def test_ppe_option_records_decode_unicode_driver_names(self):
         source = 'dataSource: [{"DeptSeq":null,"Value":"2448","Text":"\\u90ED\\u570B\\u5075"}]'
 
@@ -330,6 +808,200 @@ class SeleniumLocalTests(unittest.TestCase):
         assert request is not None
         self.assertEqual(request.vehicle, "\u65b0\u576191")
         self.assertEqual(request.mileage, "142842")
+
+    def test_vehicle_mileage_previous_request_maps_second_vehicle_by_stable_index(self):
+        self.assertIn(
+            "current_request",
+            inspect.signature(_vehicle_mileage_previous_request).parameters,
+            "multi-vehicle updates must identify the current vehicle request",
+        )
+        previous_task = {
+            "task_id": "task-multi-old",
+            "created_at": "2026-07-13T08:00:00",
+            "two_vehicle": True,
+            "vehicle_entries": [
+                {"vehicle": "新坡92", "driver": "甲", "mileage": "101", "return_time": "0900"},
+                {"vehicle": "新坡93", "driver": "乙", "mileage": "202", "return_time": "0910"},
+            ],
+        }
+        current_task = {
+            **previous_task,
+            "vehicle_entries": [
+                {"vehicle": "新坡92", "driver": "甲", "mileage": "101", "return_time": "0900"},
+                {"vehicle": "新坡91", "driver": "乙", "mileage": "210", "return_time": "0910"},
+            ],
+        }
+        current_second = AmbulanceReturnRequest.from_dict(current_task).vehicle_requests()[1]
+        context = {
+            "previous_task": previous_task,
+            "current_task": current_task,
+            "vehicle_index": 2,
+            "vehicle_key": "新坡91",
+        }
+
+        previous_second = _vehicle_mileage_previous_request(context, current_second)
+
+        self.assertIsNotNone(previous_second)
+        assert previous_second is not None
+        self.assertEqual(previous_second.vehicle, "新坡93")
+        self.assertEqual(previous_second.mileage, "202")
+        self.assertNotEqual(previous_second.vehicle, "新坡92")
+
+    def test_vehicle_mileage_vehicle_change_fails_closed_before_delete_or_add(self):
+        self.assertIn(
+            "current_request",
+            inspect.signature(_vehicle_mileage_previous_request).parameters,
+            "multi-vehicle updates must identify the current vehicle request",
+        )
+        previous_task = {
+            "task_id": "task-multi-edit",
+            "created_at": "2026-07-13T08:00:00",
+            "two_vehicle": True,
+            "vehicle_entries": [
+                {"vehicle": "新坡92", "driver": "甲", "mileage": "101", "return_time": "0900"},
+                {"vehicle": "新坡93", "driver": "乙", "mileage": "202", "return_time": "0910"},
+            ],
+        }
+        current_task = {
+            **previous_task,
+            "vehicle_entries": [
+                {"vehicle": "新坡92", "driver": "甲", "mileage": "101", "return_time": "0900"},
+                {"vehicle": "新坡91", "driver": "乙", "mileage": "210", "return_time": "0910"},
+            ],
+        }
+        current_second = AmbulanceReturnRequest.from_dict(current_task).vehicle_requests()[1]
+        context = {
+            "previous_task": previous_task,
+            "current_task": current_task,
+            "vehicle_index": 2,
+            "vehicle_key": "新坡91",
+        }
+
+        class FakeDriver:
+            def get(self, _url):
+                pass
+
+        with patch.object(selenium_local_module, "_wait_for_ppe_vehicle_mileage_page", return_value=True), patch.object(
+            selenium_local_module,
+            "_click_text_if_present",
+        ), patch.object(selenium_local_module.time, "sleep"), patch.object(
+            selenium_local_module,
+            "vehicle_ppe_names",
+            return_value={"新坡92": "92牌", "新坡93": "93牌", "新坡91": "91牌"},
+        ), patch.object(
+            selenium_local_module,
+            "_select_vehicle_record",
+        ) as select_vehicle, patch.object(
+            selenium_local_module,
+            "_delete_vehicle_mileage_row",
+        ) as delete_row, patch.object(
+            selenium_local_module,
+            "_save_vehicle_mileage_enabled",
+            return_value=False,
+        ), patch.object(
+            selenium_local_module,
+            "_add_vehicle_mileage_record",
+        ) as add_row:
+            with self.assertRaisesRegex(selenium_local_module.WebDriverException, "vehicle change requires manual correction"):
+                selenium_local_module._prepare_vehicle_mileage_form(
+                    FakeDriver(),
+                    current_second,
+                    Path("artifacts"),
+                    update_context=context,
+                )
+
+        select_vehicle.assert_not_called()
+        delete_row.assert_not_called()
+        add_row.assert_not_called()
+
+    def test_vehicle_mileage_unique_current_row_is_idempotent_before_update_or_add(self):
+        matcher = getattr(selenium_local_module, "_vehicle_mileage_matching_row_indices", None)
+        self.assertIsNotNone(matcher, "strict current mileage matcher is required")
+        request = AmbulanceReturnRequest(
+            task_id="mileage-existing",
+            created_at=datetime(2026, 7, 13, 8, 0),
+            raw_text="",
+            case_date="2026/07/13",
+            case_time="0805",
+            return_date="2026/07/13",
+            return_time="0910",
+            vehicle="新坡92",
+            driver="甲",
+            mileage="12345",
+            case_address="桃園市中壢區",
+        )
+
+        class FakeDriver:
+            def get(self, _url):
+                pass
+
+        with patch.object(selenium_local_module, "_wait_for_ppe_vehicle_mileage_page", return_value=True), patch.object(
+            selenium_local_module,
+            "_click_text_if_present",
+        ), patch.object(selenium_local_module.time, "sleep"), patch.object(
+            selenium_local_module,
+            "vehicle_ppe_names",
+            return_value={"新坡92": "92牌"},
+        ), patch.object(selenium_local_module, "_select_vehicle_record"), patch.object(
+            selenium_local_module,
+            "_vehicle_mileage_matching_row_indices",
+            return_value=[1],
+        ), patch.object(selenium_local_module, "_find_vehicle_mileage_row_index") as find_previous, patch.object(
+            selenium_local_module,
+            "_fill_vehicle_grid_values",
+        ) as fill, patch.object(selenium_local_module, "_add_vehicle_mileage_record") as add, patch.object(
+            selenium_local_module,
+            "_delete_vehicle_mileage_row",
+        ) as delete, patch.object(selenium_local_module, "_save_vehicle_mileage_form") as save:
+            detail = selenium_local_module._prepare_vehicle_mileage_form(FakeDriver(), request, Path("artifacts"))
+
+        self.assertIn("已存在", detail)
+        find_previous.assert_not_called()
+        fill.assert_not_called()
+        add.assert_not_called()
+        delete.assert_not_called()
+        save.assert_not_called()
+
+    def test_vehicle_mileage_ambiguous_current_rows_fail_before_mutation(self):
+        matcher = getattr(selenium_local_module, "_vehicle_mileage_matching_row_indices", None)
+        self.assertIsNotNone(matcher, "strict current mileage matcher is required")
+        request = AmbulanceReturnRequest(
+            task_id="mileage-ambiguous",
+            created_at=datetime(2026, 7, 13, 8, 0),
+            raw_text="",
+            case_date="2026/07/13",
+            case_time="0805",
+            return_time="0910",
+            vehicle="新坡92",
+            driver="甲",
+            mileage="12345",
+        )
+
+        class FakeDriver:
+            def get(self, _url):
+                pass
+
+        with patch.object(selenium_local_module, "_wait_for_ppe_vehicle_mileage_page", return_value=True), patch.object(
+            selenium_local_module,
+            "_click_text_if_present",
+        ), patch.object(selenium_local_module.time, "sleep"), patch.object(
+            selenium_local_module,
+            "vehicle_ppe_names",
+            return_value={"新坡92": "92牌"},
+        ), patch.object(selenium_local_module, "_select_vehicle_record"), patch.object(
+            selenium_local_module,
+            "_vehicle_mileage_matching_row_indices",
+            return_value=[0, 1],
+        ), patch.object(selenium_local_module, "_fill_vehicle_grid_values") as fill, patch.object(
+            selenium_local_module,
+            "_add_vehicle_mileage_record",
+        ) as add, patch.object(selenium_local_module, "_delete_vehicle_mileage_row") as delete:
+            with self.assertRaisesRegex(selenium_local_module.WebDriverException, "multiple current mileage rows"):
+                selenium_local_module._prepare_vehicle_mileage_form(FakeDriver(), request, Path("artifacts"))
+
+        fill.assert_not_called()
+        add.assert_not_called()
+        delete.assert_not_called()
 
     def test_vehicle_mileage_values_keep_existing_start_mileage_for_update(self):
         request = AmbulanceReturnRequest(
@@ -1165,6 +1837,242 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertIn("SaveData('save')", source)
         self.assertNotIn("SaveData('submit')", source)
+
+    def test_fuel_grid_exact_match_uses_all_record_identity_fields(self):
+        matcher = getattr(selenium_local_module, "_fuel_grid_matching_row_indices", None)
+        self.assertIsNotNone(matcher, "fuel grid exact matcher is required for idempotent retries")
+
+        class FakeDriver:
+            def execute_script(self, _script):
+                return [
+                    {
+                        "row_index": 0,
+                        "date": "2026-07-13T09:15:00",
+                        "time": "0915",
+                        "driver": "甲",
+                        "product": "超級柴油",
+                        "quantity": "20.1",
+                        "unit_price": "30.0",
+                    },
+                    {
+                        "row_index": 1,
+                        "date": "2026-07-13T09:15:00",
+                        "time": "0915",
+                        "driver": "甲",
+                        "product": "超級柴油",
+                        "quantity": "20.2",
+                        "unit_price": "30.0",
+                    },
+                ]
+
+        request = AmbulanceReturnRequest.from_dict(
+            {
+                "task_id": "fuel-match",
+                "created_at": "2026-07-13T08:00:00",
+                "vehicle": "新坡92",
+                "fuel_record": {
+                    "enabled": True,
+                    "date": "20260713",
+                    "time": "0915",
+                    "driver": "甲",
+                    "product": "超級柴油",
+                    "quantity": "20.1",
+                    "unit_price": "30.0",
+                },
+            }
+        )
+
+        self.assertEqual(matcher(FakeDriver(), request), [0])
+
+    def test_fuel_prepare_treats_unique_current_record_as_already_saved(self):
+        matcher = getattr(selenium_local_module, "_fuel_grid_matching_row_indices", None)
+        self.assertIsNotNone(matcher, "fuel grid exact matcher is required for idempotent retries")
+        request = AmbulanceReturnRequest.from_dict(
+            {
+                "task_id": "fuel-existing",
+                "created_at": "2026-07-13T08:00:00",
+                "vehicle": "新坡92",
+                "fuel_record": {
+                    "enabled": True,
+                    "date": "20260713",
+                    "time": "0915",
+                    "driver": "甲",
+                    "product": "超級柴油",
+                    "quantity": "20.1",
+                    "unit_price": "30.0",
+                },
+            }
+        )
+        with patch.object(selenium_local_module, "_wait_for_ppe_fuel_record_page", return_value=True), patch.object(
+            selenium_local_module,
+            "_ensure_fuel_query_period",
+            return_value="2026/07",
+        ), patch.object(selenium_local_module, "_click_fuel_card_register"), patch.object(
+            selenium_local_module,
+            "_wait_for_ppe_fuel_record_detail_page",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_fuel_grid_matching_row_indices",
+            return_value=[0],
+        ), patch.object(selenium_local_module, "_click_fuel_add_row") as add_row, patch.object(
+            selenium_local_module,
+            "_fill_fuel_grid_record",
+        ) as fill, patch.object(selenium_local_module, "_save_fuel_record_form") as save:
+            detail = selenium_local_module._prepare_fuel_record_form(
+                SimpleNamespace(get=lambda _url: None),
+                request,
+                Path("artifacts"),
+            )
+
+        self.assertIn("已存在", detail)
+        add_row.assert_not_called()
+        fill.assert_not_called()
+        save.assert_not_called()
+
+    def test_fuel_update_changes_only_unique_previous_row_without_adding(self):
+        matcher = getattr(selenium_local_module, "_fuel_grid_matching_row_indices", None)
+        self.assertIsNotNone(matcher, "fuel grid exact matcher is required for idempotent updates")
+        previous_task = self._fuel_update_task(quantity="20.1")
+        current_task = self._fuel_update_task(quantity="25.5")
+        request = AmbulanceReturnRequest.from_dict(current_task)
+        context = {
+            "previous_task": previous_task,
+            "current_task": current_task,
+            "vehicle_index": 1,
+            "vehicle_key": "新坡92",
+        }
+
+        def match_rows(_driver, matched_request):
+            return [1] if matched_request.fuel_record.quantity == "20.1" else []
+
+        with patch.object(selenium_local_module, "_wait_for_ppe_fuel_record_page", return_value=True), patch.object(
+            selenium_local_module,
+            "_ensure_fuel_query_period",
+            return_value="2026/07",
+        ), patch.object(selenium_local_module, "_click_fuel_card_register"), patch.object(
+            selenium_local_module,
+            "_wait_for_ppe_fuel_record_detail_page",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_fuel_grid_matching_row_indices",
+            side_effect=match_rows,
+        ), patch.object(selenium_local_module, "_click_fuel_add_row") as add_row, patch.object(
+            selenium_local_module,
+            "_fill_fuel_grid_record",
+        ) as fill, patch.object(selenium_local_module, "_assert_fuel_grid_record_present"), patch.object(
+            selenium_local_module,
+            "_save_fuel_record_enabled",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_save_fuel_record_form",
+            return_value="saved",
+        ):
+            detail = selenium_local_module._prepare_fuel_record_form(
+                SimpleNamespace(get=lambda _url: None),
+                request,
+                Path("artifacts"),
+                update_context=context,
+            )
+
+        add_row.assert_not_called()
+        fill.assert_called_once()
+        self.assertEqual(fill.call_args.kwargs["row_index"], 1)
+        self.assertIn("已更新", detail)
+
+    def test_fuel_update_fails_closed_when_previous_row_is_missing_or_ambiguous(self):
+        matcher = getattr(selenium_local_module, "_fuel_grid_matching_row_indices", None)
+        self.assertIsNotNone(matcher, "fuel grid exact matcher is required for safe updates")
+        previous_task = self._fuel_update_task(quantity="20.1")
+        current_task = self._fuel_update_task(quantity="25.5")
+        request = AmbulanceReturnRequest.from_dict(current_task)
+        context = {
+            "previous_task": previous_task,
+            "current_task": current_task,
+            "vehicle_index": 1,
+            "vehicle_key": "新坡92",
+        }
+        for previous_matches in ([], [0, 1]):
+            with self.subTest(previous_matches=previous_matches), patch.object(
+                selenium_local_module,
+                "_wait_for_ppe_fuel_record_page",
+                return_value=True,
+            ), patch.object(selenium_local_module, "_ensure_fuel_query_period", return_value="2026/07"), patch.object(
+                selenium_local_module,
+                "_click_fuel_card_register",
+            ), patch.object(
+                selenium_local_module,
+                "_wait_for_ppe_fuel_record_detail_page",
+                return_value=True,
+            ), patch.object(
+                selenium_local_module,
+                "_fuel_grid_matching_row_indices",
+                side_effect=[[], previous_matches],
+            ), patch.object(selenium_local_module, "_click_fuel_add_row") as add_row:
+                with self.assertRaisesRegex(selenium_local_module.WebDriverException, "previous fuel row"):
+                    selenium_local_module._prepare_fuel_record_form(
+                        SimpleNamespace(get=lambda _url: None),
+                        request,
+                        Path("artifacts"),
+                        update_context=context,
+                    )
+                add_row.assert_not_called()
+
+    def test_fuel_update_fails_closed_before_opening_card_when_vehicle_or_month_changed(self):
+        current_task = self._fuel_update_task(quantity="25.5")
+        request = AmbulanceReturnRequest.from_dict(current_task)
+        scenarios: list[tuple[str, dict[str, object]]] = []
+        changed_vehicle = self._fuel_update_task(quantity="20.1")
+        changed_vehicle["vehicle"] = "新坡93"
+        scenarios.append(("vehicle change", changed_vehicle))
+        changed_month = self._fuel_update_task(quantity="20.1")
+        changed_month["fuel_record"] = {**dict(changed_month["fuel_record"]), "date": "20260630"}
+        scenarios.append(("period change", changed_month))
+
+        for expected_error, previous_task in scenarios:
+            context = {
+                "previous_task": previous_task,
+                "current_task": current_task,
+                "vehicle_index": 1,
+                "vehicle_key": "新坡92",
+            }
+            with self.subTest(expected_error=expected_error), patch.object(
+                selenium_local_module,
+                "_wait_for_ppe_fuel_record_page",
+                return_value=True,
+            ), patch.object(selenium_local_module, "_ensure_fuel_query_period", return_value="2026/07"), patch.object(
+                selenium_local_module,
+                "_click_fuel_card_register",
+            ) as click_card, patch.object(selenium_local_module, "_fuel_grid_matching_row_indices") as matcher:
+                with self.assertRaisesRegex(selenium_local_module.WebDriverException, expected_error):
+                    selenium_local_module._prepare_fuel_record_form(
+                        SimpleNamespace(get=lambda _url: None),
+                        request,
+                        Path("artifacts"),
+                        update_context=context,
+                    )
+                click_card.assert_not_called()
+                matcher.assert_not_called()
+
+    @staticmethod
+    def _fuel_update_task(*, quantity: str) -> dict[str, object]:
+        return {
+            "task_id": "fuel-update",
+            "created_at": "2026-07-13T08:00:00",
+            "vehicle": "新坡92",
+            "driver": "甲",
+            "fuel_record": {
+                "enabled": True,
+                "date": "20260713",
+                "time": "0915",
+                "driver": "甲",
+                "product": "超級柴油",
+                "quantity": quantity,
+                "unit_price": "30.0",
+            },
+        }
 
     def test_fuel_card_register_uses_plate_first_and_clicks_register_button(self):
         class FakeDriver:

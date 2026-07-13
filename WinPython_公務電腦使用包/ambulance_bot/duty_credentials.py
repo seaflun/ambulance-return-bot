@@ -4,12 +4,74 @@ import base64
 import json
 import os
 import re
+import threading
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 
 ID_NUMBER_RE = re.compile(r"^[A-Z][1289]\d{8}$", re.IGNORECASE)
+_CREDENTIAL_LOCKS_GUARD = threading.Lock()
+_CREDENTIAL_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _credential_lock_for(path: Path) -> threading.RLock:
+    key = os.path.normcase(str(path.resolve()))
+    with _CREDENTIAL_LOCKS_GUARD:
+        return _CREDENTIAL_LOCKS.setdefault(key, threading.RLock())
+
+
+@contextmanager
+def _credential_write_lock(path: Path) -> Iterator[None]:
+    """Serialize saved-login read/modify/write cycles across GUI and worker processes."""
+
+    path = Path(path)
+    process_lock = _credential_lock_for(path)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with process_lock:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:  # pragma: no cover - production writes run on Windows
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,16 +281,16 @@ def set_last_selected_duty_automation_credential(identifier: str, path: Path | N
         raise ValueError("selected credential id is required")
 
     source = path or saved_login_path()
-    payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
-    accounts = payload.get("accounts")
-    if not isinstance(accounts, list):
-        raise ValueError("saved credential file does not contain synced accounts")
-    if _select_account(accounts, selected) is None:
-        raise ValueError(f"saved credential not found: {selected}")
+    with _credential_write_lock(source):
+        payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+        accounts = payload.get("accounts")
+        if not isinstance(accounts, list):
+            raise ValueError("saved credential file does not contain synced accounts")
+        if _select_account(accounts, selected) is None:
+            raise ValueError(f"saved credential not found: {selected}")
 
-    payload["last_selected"] = selected
-    source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload["last_selected"] = selected
+        _write_json_atomic(source, payload)
     return source
 
 
@@ -246,27 +308,27 @@ def update_saved_credential_id_number(
         raise ValueError("valid id_number is required")
 
     source = path or saved_login_path()
-    payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
-    accounts = payload.get("accounts")
-    if isinstance(accounts, list):
-        account = next(
-            (item for item in accounts if isinstance(item, dict) and _account_matches_identifier(item, selected)),
-            None,
-        )
-        if account is None:
-            raise ValueError(f"saved credential not found: {selected}")
-        account["id_number"] = normalized_id_number
-        if name and not str(account.get("name", "") or "").strip():
-            account["name"] = str(name or "").strip()
-    elif _account_matches_identifier(payload, selected):
-        payload["id_number"] = normalized_id_number
-        if name and not str(payload.get("name", "") or "").strip():
-            payload["name"] = str(name or "").strip()
-    else:
-        raise ValueError("saved credential file does not contain synced accounts")
+    with _credential_write_lock(source):
+        payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+        accounts = payload.get("accounts")
+        if isinstance(accounts, list):
+            account = next(
+                (item for item in accounts if isinstance(item, dict) and _account_matches_identifier(item, selected)),
+                None,
+            )
+            if account is None:
+                raise ValueError(f"saved credential not found: {selected}")
+            account["id_number"] = normalized_id_number
+            if name and not str(account.get("name", "") or "").strip():
+                account["name"] = str(name or "").strip()
+        elif _account_matches_identifier(payload, selected):
+            payload["id_number"] = normalized_id_number
+            if name and not str(payload.get("name", "") or "").strip():
+                payload["name"] = str(name or "").strip()
+        else:
+            raise ValueError("saved credential file does not contain synced accounts")
 
-    source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(source, payload)
     return source
 
 
@@ -375,40 +437,40 @@ def save_duty_automation_credentials(
         raise ValueError("at least one account with user_id and password is required")
 
     source = path or saved_login_path()
-    existing = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
-    accounts = existing.get("accounts")
-    account_list = [account for account in accounts if isinstance(account, dict)] if isinstance(accounts, list) else []
+    with _credential_write_lock(source):
+        existing = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+        accounts = existing.get("accounts")
+        account_list = [account for account in accounts if isinstance(account, dict)] if isinstance(accounts, list) else []
 
-    for normalized in normalized_accounts:
-        password = normalized.pop("password")
-        duty_password = normalized.pop("duty_password", "")
-        encrypted_password = encrypt_dpapi(password)
-        if not encrypted_password:
-            raise RuntimeError("Windows DPAPI is not available")
-        updated = {
-            **normalized,
-            "password_dpapi": encrypted_password,
-        }
-        if duty_password:
-            encrypted_duty_password = encrypt_dpapi(duty_password)
-            if not encrypted_duty_password:
+        for normalized in normalized_accounts:
+            password = normalized.pop("password")
+            duty_password = normalized.pop("duty_password", "")
+            encrypted_password = encrypt_dpapi(password)
+            if not encrypted_password:
                 raise RuntimeError("Windows DPAPI is not available")
-            updated["duty_password_dpapi"] = encrypted_duty_password
-        _upsert_account(account_list, updated)
+            updated = {
+                **normalized,
+                "password_dpapi": encrypted_password,
+            }
+            if duty_password:
+                encrypted_duty_password = encrypt_dpapi(duty_password)
+                if not encrypted_duty_password:
+                    raise RuntimeError("Windows DPAPI is not available")
+                updated["duty_password_dpapi"] = encrypted_duty_password
+            _upsert_account(account_list, updated)
 
-    selected = str(last_selected or "").strip()
-    if not selected:
-        selected = normalized_accounts[0]["user_id"]
+        selected = str(last_selected or "").strip()
+        if not selected:
+            selected = normalized_accounts[0]["user_id"]
 
-    payload = {
-        "last_selected": selected,
-        "accounts": account_list,
-    }
-    recent = str(last_synced or existing.get("last_synced_user_id") or existing.get("last_synced_actor_no") or "").strip()
-    if recent:
-        payload["last_synced_user_id"] = recent
-    source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = {
+            "last_selected": selected,
+            "accounts": account_list,
+        }
+        recent = str(last_synced or existing.get("last_synced_user_id") or existing.get("last_synced_actor_no") or "").strip()
+        if recent:
+            payload["last_synced_user_id"] = recent
+        _write_json_atomic(source, payload)
     return source
 
 

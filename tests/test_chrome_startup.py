@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -10,6 +11,51 @@ import ambulance_bot.chrome_startup as chrome_startup
 
 
 class ChromeStartupTests(unittest.TestCase):
+    def test_cleanup_only_targets_chromedriver_that_owns_matching_worker_chrome(self):
+        class FakeOptions:
+            arguments = [r"--user-data-dir=C:\runtime\profiles\vehicle_mileage_profile_task_a"]
+
+        processes = [
+            {
+                "ProcessId": 100,
+                "ParentProcessId": 1,
+                "Name": "chromedriver.exe",
+                "CommandLine": r'"C:\tools\chromedriver.exe" --port=51000',
+            },
+            {
+                "ProcessId": 101,
+                "ParentProcessId": 100,
+                "Name": "chrome.exe",
+                "CommandLine": r'chrome.exe --user-data-dir=C:\runtime\profiles\vehicle_mileage_profile_task_a',
+            },
+            {
+                "ProcessId": 200,
+                "ParentProcessId": 1,
+                "Name": "chromedriver.exe",
+                "CommandLine": r'"C:\tools\chromedriver.exe" --port=52000',
+            },
+            {
+                "ProcessId": 201,
+                "ParentProcessId": 200,
+                "Name": "chrome.exe",
+                "CommandLine": r'chrome.exe --user-data-dir=C:\runtime\profiles\disinfection_profile_task_b',
+            },
+        ]
+        killed: list[int] = []
+        original_list = chrome_startup._list_chrome_processes
+        original_terminate = chrome_startup._terminate_process
+        try:
+            chrome_startup._list_chrome_processes = lambda: processes
+            chrome_startup._terminate_process = lambda process_id: killed.append(process_id) or True
+
+            chrome_startup.cleanup_worker_chrome_residue(FakeOptions(), "mileage retry")
+        finally:
+            chrome_startup._list_chrome_processes = original_list
+            chrome_startup._terminate_process = original_terminate
+
+        self.assertEqual(set(killed), {100, 101})
+        self.assertNotIn(200, killed)
+        self.assertNotIn(201, killed)
     def test_retries_devtools_active_port_startup_error(self):
         previous_attempts = os.environ.get("SELENIUM_CHROME_START_ATTEMPTS")
         previous_delay = os.environ.get("SELENIUM_CHROME_RETRY_DELAY_SECONDS")
@@ -285,10 +331,11 @@ class ChromeStartupTests(unittest.TestCase):
             chrome_startup._list_chrome_processes = original_list
             chrome_startup._terminate_process = original_terminate
 
-        self.assertEqual(count, 4)
-        self.assertEqual(set(killed), {11, 12, 13, 15})
+        self.assertEqual(count, 3)
+        self.assertEqual(set(killed), {11, 12, 13})
         self.assertNotIn(10, killed)
         self.assertNotIn(14, killed)
+        self.assertNotIn(15, killed)
         self.assertNotIn(16, killed)
 
     def test_repair_cleanup_targets_generated_case_lookup_profiles(self):
@@ -356,11 +403,12 @@ class ChromeStartupTests(unittest.TestCase):
             chrome_startup._list_chrome_processes = original_list
             chrome_startup._terminate_process = original_terminate
 
-        self.assertEqual(count, 4)
-        self.assertEqual(set(killed), {21, 22, 23, 26})
+        self.assertEqual(count, 3)
+        self.assertEqual(set(killed), {21, 22, 23})
         self.assertNotIn(20, killed)
         self.assertNotIn(24, killed)
         self.assertNotIn(25, killed)
+        self.assertNotIn(26, killed)
 
     def test_create_chrome_driver_with_retry_schedules_auto_close_after_default_delay(self):
         previous_delay = os.environ.get("WORKER_BROWSER_AUTO_CLOSE_SECONDS")
@@ -429,6 +477,40 @@ class ChromeStartupTests(unittest.TestCase):
 
         self.assertIsNotNone(driver)
         self.assertEqual(timers, [])
+
+    def test_auto_close_defers_while_worker_operation_is_active(self):
+        timers = []
+
+        class FakeDriver:
+            quit_called = False
+            _ambulance_operation_active = True
+
+            def quit(self):
+                self.quit_called = True
+
+        class FakeTimer:
+            daemon = False
+
+            def __init__(self, seconds, callback):
+                self.seconds = seconds
+                self.callback = callback
+                timers.append(self)
+
+            def start(self):
+                pass
+
+        driver = FakeDriver()
+        with mock.patch.dict(os.environ, {"WORKER_BROWSER_AUTO_CLOSE_SECONDS": "1"}), mock.patch.object(
+            chrome_startup.threading, "Timer", FakeTimer
+        ):
+            chrome_startup.schedule_driver_auto_close(driver, "active")
+            timers[0].callback()
+            self.assertFalse(driver.quit_called)
+            self.assertEqual(len(timers), 2)
+            driver._ambulance_operation_active = False
+            timers[1].callback()
+
+        self.assertTrue(driver.quit_called)
 
 
 if __name__ == "__main__":

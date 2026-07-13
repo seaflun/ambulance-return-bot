@@ -133,17 +133,32 @@ def schedule_driver_auto_close(driver: webdriver.Chrome, label: str = "Chrome") 
     if seconds <= 0:
         return None
 
+    def _arm(delay: float) -> threading.Timer:
+        timer = threading.Timer(delay, _close)
+        timer.daemon = True
+        timer.start()
+        return timer
+
     def _close() -> None:
+        if bool(getattr(driver, "_ambulance_operation_active", False)):
+            _arm(min(max(seconds / 10, 1), 60))
+            return
         try:
             quit_driver()
             print(f"[chrome] auto closed {label} after {seconds:g} seconds", flush=True)
         except Exception as exc:
             print(f"[chrome] auto close skipped {label}: {_short_error(exc)}", flush=True)
 
-    timer = threading.Timer(seconds, _close)
-    timer.daemon = True
-    timer.start()
-    return timer
+    return _arm(seconds)
+
+
+def mark_driver_operation_active(driver: object, active: bool = True) -> None:
+    if driver is None:
+        return
+    try:
+        setattr(driver, "_ambulance_operation_active", bool(active))
+    except Exception:
+        pass
 
 
 def _browser_auto_close_seconds() -> float:
@@ -246,11 +261,11 @@ def _target_worker_process_ids(processes: list[dict[str, object]], user_data_dir
             continue
         name = str(process.get("Name") or "").lower()
         command_line = str(process.get("CommandLine") or "")
-        if name == "chromedriver.exe" and cleanup_chromedriver:
-            target_ids.add(process_id)
-            continue
         if name == "chrome.exe" and _chrome_process_matches(command_line, user_data_dirs, debugger_ports):
             target_ids.add(process_id)
+
+    if cleanup_chromedriver:
+        _add_owning_chromedriver_ancestors(target_ids, processes)
 
     changed = True
     while changed:
@@ -278,11 +293,11 @@ def _target_generated_profile_process_ids(processes: list[dict[str, object]], pr
             continue
         name = str(process.get("Name") or "").lower()
         command_line = str(process.get("CommandLine") or "")
-        if name == "chromedriver.exe" and cleanup_chromedriver:
-            target_ids.add(process_id)
-            continue
         if name == "chrome.exe" and _chrome_uses_generated_profile(command_line, root_text):
             target_ids.add(process_id)
+
+    if cleanup_chromedriver:
+        _add_owning_chromedriver_ancestors(target_ids, processes)
 
     changed = True
     while changed:
@@ -297,6 +312,23 @@ def _target_generated_profile_process_ids(processes: list[dict[str, object]], pr
 
     parent_by_id = {_process_id(process): _parent_process_id(process) for process in processes}
     return sorted(target_ids, key=lambda process_id: _process_depth(process_id, parent_by_id), reverse=True)
+
+
+def _add_owning_chromedriver_ancestors(target_ids: set[int], processes: list[dict[str, object]]) -> None:
+    process_by_id = {_process_id(process): process for process in processes}
+    pending = list(target_ids)
+    while pending:
+        process = process_by_id.get(pending.pop())
+        if not process:
+            continue
+        parent_id = _parent_process_id(process)
+        parent = process_by_id.get(parent_id)
+        if not parent:
+            continue
+        if str(parent.get("Name") or "").lower() != "chromedriver.exe" or parent_id in target_ids:
+            continue
+        target_ids.add(parent_id)
+        pending.append(parent_id)
 
 
 def _chrome_process_matches(command_line: str, user_data_dirs: list[str], debugger_ports: set[str]) -> bool:

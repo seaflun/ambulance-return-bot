@@ -1,8 +1,10 @@
 import os
+import inspect
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import consumables_login as consumables_login_module
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
@@ -26,6 +28,293 @@ from consumables_login import (
 
 
 class ConsumablesLoginTests(unittest.TestCase):
+    def test_consumables_case_identity_change_fails_before_opening_maintenance_page(self):
+        previous = AmbulanceReturnRequest(
+            task_id="consumables-case-change",
+            created_at=datetime(2026, 7, 13, 8, 0),
+            raw_text="",
+            case_id="20260713080500001",
+            case_date="2026-07-13",
+            case_time="0805",
+            vehicle="新坡92",
+            consumables={"口罩": 2},
+        )
+        current = AmbulanceReturnRequest.from_dict(
+            {
+                **previous.to_dict(),
+                "case_id": "20260713081000002",
+                "case_time": "0810",
+            }
+        )
+        context = {"previous_task": previous.to_dict(), "current_task": current.to_dict()}
+
+        with patch.object(consumables_login_module, "_open_consumable_maintenance_page") as open_page:
+            with self.assertRaisesRegex(RuntimeError, "manual correction"):
+                consumables_login_module.open_consumable_record_for_task(
+                    Mock(),
+                    current,
+                    update_context=context,
+                )
+
+        open_page.assert_not_called()
+
+    def test_cross_vehicle_consumables_update_fails_before_opening_maintenance_page(self):
+        previous = AmbulanceReturnRequest(
+            task_id="consumables-cross-vehicle",
+            created_at=datetime(2026, 7, 13, 8, 0),
+            raw_text="",
+            vehicle="新坡92",
+            consumables={"口罩": 2},
+        )
+        current = AmbulanceReturnRequest.from_dict(
+            {**previous.to_dict(), "vehicle": "新坡93", "consumables": {"口罩": 1}}
+        )
+        context = {"previous_task": previous.to_dict(), "current_task": current.to_dict()}
+
+        with patch.object(consumables_login_module, "_open_consumable_maintenance_page") as open_page:
+            with self.assertRaisesRegex(RuntimeError, "manual correction"):
+                consumables_login_module.open_consumable_record_for_task(
+                    Mock(),
+                    current,
+                    update_context=context,
+                )
+
+        open_page.assert_not_called()
+    def test_consumables_save_checks_cancellation_before_click(self):
+        save = getattr(consumables_login_module, "_save_consumables")
+        self.assertIn(
+            "cancel_check",
+            inspect.signature(save).parameters,
+            "consumables save must expose a last-moment cancellation gate",
+        )
+
+        class Cancelled(RuntimeError):
+            pass
+
+        class FakeWait:
+            def until(self, _predicate):
+                return object()
+
+        class FakeDriver:
+            scripts: list[str] = []
+
+            def execute_script(self, script, *_args):
+                self.scripts.append(script)
+                return True
+
+        def cancel():
+            raise Cancelled("stale claim")
+
+        driver = FakeDriver()
+        with self.assertRaises(Cancelled):
+            save(driver, FakeWait(), cancel_check=cancel)
+
+        self.assertFalse(any("button.click" in script for script in driver.scripts))
+
+    def test_consumables_save_rejects_failure_alert(self):
+        class FakeWait:
+            def until(self, _predicate):
+                return object()
+
+        class FakeDriver:
+            def execute_script(self, _script, *_args):
+                return True
+
+        with patch.object(
+            consumables_login_module,
+            "_accept_alert_if_present",
+            return_value="儲存失敗：資料格式錯誤",
+        ), patch.object(consumables_login_module.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "耗材儲存失敗"):
+                consumables_login_module._save_consumables(FakeDriver(), FakeWait())
+
+    def test_consumables_save_rejects_missing_or_unknown_confirmation(self):
+        class FakeWait:
+            def until(self, _predicate):
+                return object()
+
+        class FakeDriver:
+            def execute_script(self, _script, *_args):
+                return True
+
+        for alert_text in ("", "資料處理中，請稍候"):
+            with self.subTest(alert_text=alert_text), patch.object(
+                consumables_login_module,
+                "_accept_alert_if_present",
+                return_value=alert_text,
+            ), patch.object(consumables_login_module.time, "sleep"):
+                with self.assertRaisesRegex(RuntimeError, "未取得明確成功回應"):
+                    consumables_login_module._save_consumables(FakeDriver(), FakeWait())
+
+    def test_consumables_save_reopens_same_temsis_detail_before_readback(self):
+        detail_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=2026071310100308031901"
+        expected = [{"itemId": "816", "quantity": "2", "name": "桃-口罩(片)"}]
+
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = detail_url
+                self.reopened_urls = []
+
+            def get(self, url):
+                self.reopened_urls.append(url)
+                self.current_url = url
+
+            def execute_script(self, script, *_args):
+                if "document.readyState" in script:
+                    return "complete"
+                if "document.querySelectorAll('.snu_one')" in script:
+                    return [{"itemId": "816", "quantity": "2"}]
+                return True
+
+        class FakeWait:
+            def __init__(self, driver):
+                self.driver = driver
+
+            def until(self, predicate):
+                return predicate(self.driver)
+
+        driver = FakeDriver()
+        request = AmbulanceReturnRequest(
+            task_id="task-readback",
+            created_at=datetime.now(),
+            raw_text="",
+            consumables={"桃-口罩(片)": 2},
+        )
+        with patch.object(consumables_login_module, "_resolve_consumable_item_quantities", return_value=expected), patch.object(
+            consumables_login_module, "_clear_existing_consumables"
+        ), patch.object(consumables_login_module, "_inject_consumables_for_save"), patch.object(
+            consumables_login_module, "_assert_consumable_rows_match"
+        ), patch.object(consumables_login_module, "_save_consumables", return_value="儲存成功"), patch.object(
+            consumables_login_module, "_is_sso_page", return_value=False
+        ):
+            consumables_login_module._write_current_consumable_page(driver, FakeWait(driver), request)
+
+        self.assertEqual(driver.reopened_urls, [detail_url])
+
+    def test_consumables_save_rejects_noop_after_server_readback(self):
+        detail_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=2026071310100308031901"
+        expected = [{"itemId": "816", "quantity": "2", "name": "桃-口罩(片)"}]
+
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = detail_url
+                self.reopened = False
+
+            def get(self, url):
+                self.reopened = True
+                self.current_url = url
+
+            def execute_script(self, script, *_args):
+                if "document.readyState" in script:
+                    return "complete"
+                if "document.querySelectorAll('.snu_one')" in script:
+                    return [] if self.reopened else [{"itemId": "816", "quantity": "2"}]
+                return True
+
+        class FakeWait:
+            def __init__(self, driver):
+                self.driver = driver
+
+            def until(self, predicate):
+                return predicate(self.driver)
+
+        driver = FakeDriver()
+        request = AmbulanceReturnRequest(
+            task_id="task-noop",
+            created_at=datetime.now(),
+            raw_text="",
+            consumables={"桃-口罩(片)": 2},
+        )
+        with patch.object(consumables_login_module, "_resolve_consumable_item_quantities", return_value=expected), patch.object(
+            consumables_login_module, "_clear_existing_consumables"
+        ), patch.object(consumables_login_module, "_inject_consumables_for_save"), patch.object(
+            consumables_login_module, "_assert_consumable_rows_match"
+        ), patch.object(consumables_login_module, "_save_consumables", return_value="儲存成功"), patch.object(
+            consumables_login_module, "_is_sso_page", return_value=False
+        ):
+            with self.assertRaisesRegex(RuntimeError, "耗材儲存後讀回不一致"):
+                consumables_login_module._write_current_consumable_page(driver, FakeWait(driver), request)
+
+        self.assertTrue(driver.reopened)
+
+    def test_direct_consumables_save_rejects_same_count_wrong_server_rows(self):
+        expected = [{"itemId": "816", "quantity": "2"}]
+
+        class FakeDriver:
+            def set_script_timeout(self, _seconds):
+                pass
+
+            def execute_async_script(self, _script, *_args):
+                return {"ok": True, "payload": {"result": "success"}}
+
+            def refresh(self):
+                pass
+
+            def execute_script(self, script, *_args):
+                if "document.readyState" in script:
+                    return "complete"
+                if "select.acs_class_type" in script:
+                    return 1
+                if "document.querySelectorAll('.snu_one')" in script:
+                    return [{"itemId": "999", "quantity": "2"}]
+                return True
+
+        class FakeWait:
+            def __init__(self, driver):
+                self.driver = driver
+
+            def until(self, predicate):
+                return predicate(self.driver)
+
+        driver = FakeDriver()
+        with patch.object(consumables_login_module, "_load_acs_credentials", return_value=("A123456789", "secret")), patch.object(
+            consumables_login_module.time, "sleep"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "耗材儲存後讀回不一致"):
+                consumables_login_module._save_consumables_direct(driver, FakeWait(driver), expected)
+
+    def test_multi_patient_consumables_propagates_task_cancellation_without_wrapping(self):
+        cancellation_error = getattr(consumables_login_module, "TaskCancellationError", None)
+        self.assertIsNotNone(cancellation_error, "TaskCancellationError is required for worker fencing")
+        hrefs = [
+            "/ACS/ACS15002?emmTemsisid=2026071310100308031901",
+            "/ACS/ACS15002?emmTemsisid=2026071310100308031902",
+        ]
+
+        class FakeDriver:
+            current_url = ""
+
+            def get(self, url):
+                self.current_url = url
+
+        request = AmbulanceReturnRequest(
+            task_id="task-cancel-consumables",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            vehicle="新坡93",
+            consumables={"桃-9吋手套-L(雙)": 2},
+        )
+        signal = cancellation_error("stale claim")
+        with patch.object(consumables_login_module, "_open_consumable_maintenance_page"), patch.object(
+            consumables_login_module,
+            "_find_consumable_detail_hrefs",
+            return_value=hrefs,
+        ), patch.object(
+            consumables_login_module,
+            "_wait_for_consumable_detail_page",
+            return_value=True,
+        ), patch.object(
+            consumables_login_module,
+            "_consumable_detail_vehicle_label",
+            return_value="新坡93",
+        ), patch.object(
+            consumables_login_module,
+            "_write_current_consumable_page",
+            side_effect=signal,
+        ), patch.object(consumables_login_module, "save_consumables_record_enabled", return_value=True):
+            with self.assertRaises(cancellation_error):
+                open_consumable_record_for_task(FakeDriver(), request)
+
     def test_distribute_consumables_splits_remainder_to_lower_suffix(self):
         self.assertEqual(
             _distribute_consumables({"桃-9吋手套-L(雙)": 3, "桃-口罩(片)": 3}, 2),
@@ -680,7 +969,7 @@ class ConsumablesLoginTests(unittest.TestCase):
             ],
         )
 
-    def test_consumable_detail_allows_single_candidate_with_different_detail_vehicle(self):
+    def test_consumable_detail_rejects_single_candidate_with_different_detail_vehicle(self):
         class FakeWait:
             def __init__(self, driver, timeout):
                 pass
@@ -726,13 +1015,14 @@ class ConsumablesLoginTests(unittest.TestCase):
             vehicle="新坡92",
             case_address="桃園市觀音區廣大路542巷3弄7號",
         )
-        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
-            href = _find_consumable_detail_href(driver, request)
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"), self.assertRaisesRegex(
+            RuntimeError, "找不到符合車輛"
+        ):
+            _find_consumable_detail_href(driver, request)
 
-        self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026070910100321364403")
         self.assertEqual(driver.visited, ["https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=2026070910100321364403"])
 
-    def test_open_consumable_record_notes_single_vehicle_detail_mismatch(self):
+    def test_open_consumable_record_rejects_single_vehicle_detail_mismatch_before_writing(self):
         class FakeElement:
             def __init__(self, text=""):
                 self.text = text
@@ -757,14 +1047,11 @@ class ConsumablesLoginTests(unittest.TestCase):
             "consumables_login._find_consumable_detail_hrefs",
             return_value=["/ACS/ACS15002?emmTemsisid=2026070910100321364403"],
         ), patch("consumables_login._wait_for_consumable_detail_page", return_value=True), patch(
-            "consumables_login._needs_extra_consumable_row",
-            return_value=False,
-        ):
-            detail = open_consumable_record_for_task(FakeDriver(), request)
+            "consumables_login._write_current_consumable_page",
+        ) as write, self.assertRaisesRegex(RuntimeError, "車輛不符"):
+            open_consumable_record_for_task(FakeDriver(), request)
 
-        self.assertIn("APP車輛=新坡92", detail)
-        self.assertIn("出勤單位=新坡93", detail)
-        self.assertIn("已依內容頁車輛登打", detail)
+        write.assert_not_called()
 
     def test_consumable_detail_wait_fails_when_session_returns_to_sso(self):
         class FakeElement:

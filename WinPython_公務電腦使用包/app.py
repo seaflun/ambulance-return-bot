@@ -23,15 +23,25 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.consumables import consumable_inventory_options
+from ambulance_bot.credential_envelope import (
+    CredentialEnvelopeError,
+    MAX_CREDENTIAL_PAYLOAD_BYTES,
+    seal_credential_payload,
+)
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
 from ambulance_bot.duty_credentials import (
     credential_sync_accounts_from_payload,
     load_synced_worker_credential,
-    select_credential_sync_account,
 )
 from ambulance_bot.login_audit import compact_login_account_summary, site_login_account_summaries
 from ambulance_bot.line_api import reply_text, verify_signature
-from ambulance_bot.manual_task_lock import clear_manual_task_lock, manual_task_lock_max_age_seconds
+from ambulance_bot.manual_task_lock import (
+    manual_task_lock_active,
+    manual_task_lock_max_age_seconds,
+    manual_task_lock_snapshot,
+    run_with_manual_task_lock_absent,
+    run_with_manual_task_lock_owner,
+)
 from ambulance_bot.models import (
     AmbulanceReturnRequest,
     CASE_REASON_OPTIONS,
@@ -64,7 +74,16 @@ from ambulance_bot.sinposmart_backend import (
     sinposmart_trigger_label,
 )
 from ambulance_bot.task_runner import TaskRunner
-from ambulance_bot.task_store import JsonTaskStore
+from ambulance_bot.task_cancellation import clear_task_cancellation, request_task_cancellation
+from ambulance_bot.task_store import (
+    JsonTaskStore,
+    SiteCompletionConflictError,
+    TaskActiveError,
+    WorkerClaimConflictError,
+    task_payload_is_active_for_edit,
+    worker_claim_lease_is_active,
+    worker_queue_state,
+)
 
 
 load_dotenv()
@@ -78,8 +97,11 @@ desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 _local_case_lookup_thread_lock = threading.Lock()
 _local_case_lookup_thread: threading.Thread | None = None
 _public_pc_report_lock = threading.Lock()
+_public_pc_pending_report_lock = threading.RLock()
+_credential_sync_relay_lock = threading.RLock()
 _case_lookup_start_error = ""
 PUBLIC_PC_REPORT_RETENTION_DAYS = 7
+MAX_CREDENTIAL_RELAY_FILE_BYTES = ((MAX_CREDENTIAL_PAYLOAD_BYTES + 2) // 3) * 4 + (64 * 1024)
 REMOTE_UPDATE_ACTIVE_STATUSES = {"pending", "waiting_busy", "waiting_idle", "updating"}
 REMOTE_UPDATE_TERMINAL_STATUSES = {"completed", "up_to_date", "failed", "timed_out"}
 REMOTE_UPDATE_STATUSES = REMOTE_UPDATE_ACTIVE_STATUSES | REMOTE_UPDATE_TERMINAL_STATUSES
@@ -243,6 +265,9 @@ def edit_task(task_id: str):
         payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    payload = refresh_stale_running_task(payload)
+    if task_edit_is_locked(payload):
+        return task_edit_lock_message(payload), 409
     task = dict(payload.get("task") or {})
     selected_case = task_form_values(task)
     return render_template(
@@ -273,6 +298,9 @@ def update_task(task_id: str):
         previous_payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    previous_payload = refresh_stale_running_task(previous_payload)
+    if task_edit_is_locked(previous_payload):
+        return task_edit_lock_message(previous_payload), 409
     task_request = request_from_form(request.form)
     errors = validate_task_form(task_request)
     if errors:
@@ -290,7 +318,15 @@ def update_task(task_id: str):
         ), 400
     changed_site_keys = changed_sites_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict())
     site_update_contexts = site_update_contexts_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict(), changed_site_keys)
-    payload = store.update_task(task_id, task_request, changed_site_keys=changed_site_keys, site_update_contexts=site_update_contexts)
+    try:
+        payload = store.update_task(
+            task_id,
+            task_request,
+            changed_site_keys=changed_site_keys,
+            site_update_contexts=site_update_contexts,
+        )
+    except TaskActiveError:
+        return "任務正在執行中，請等待完成或先中止登打後再編輯。", 409
     report_public_pc_task_event(payload, "修改任務")
     return redirect(url_for("task_detail", task_id=task_id))
 
@@ -309,6 +345,8 @@ def task_detail(task_id: str):
 def delete_task(task_id: str):
     try:
         store.delete(task_id)
+    except TaskActiveError:
+        return "任務正在執行中，請先中止登打再刪除。", 409
     except FileNotFoundError:
         abort(404)
     return redirect(url_for("new_task"))
@@ -321,6 +359,8 @@ def run_task(task_id: str):
     except FileNotFoundError:
         abort(404)
     payload = refresh_stale_running_task(payload)
+    if status_class(effective_task_status(payload)) == "complete":
+        return "任務已全部完成；如需修正，請先編輯內容產生待更新站別。", 409
     if task_payload_is_active(payload):
         store.set_overall_status(
             task_id,
@@ -374,8 +414,17 @@ def run_task_site(task_id: str, site_key: str):
 
 @app.post("/tasks/<task_id>/sites/<site_key>/complete")
 def complete_site(task_id: str, site_key: str):
+    vehicle_key = str(request.form.get("vehicle_key") or "").strip()
+    expected_token = site_manual_complete_token(task_id, site_key, vehicle_key)
+    if not expected_token:
+        return "人工確認功能缺少安全設定，請先設定 WORKER_TOKEN。", 503
+    supplied_token = str(request.form.get("confirmation_token") or "").strip()
+    if not hmac.compare_digest(supplied_token, expected_token):
+        abort(403)
     try:
-        store.mark_site_completed(task_id, site_key)
+        store.mark_site_completed(task_id, site_key, vehicle_key=vehicle_key)
+    except SiteCompletionConflictError as exc:
+        return str(exc), 409
     except (FileNotFoundError, KeyError):
         abort(404)
     return redirect(url_for("task_detail", task_id=task_id))
@@ -383,13 +432,106 @@ def complete_site(task_id: str, site_key: str):
 
 @app.post("/tasks/<task_id>/abort")
 def abort_task(task_id: str):
-    killed = cleanup_active_worker_browsers()
-    clear_manual_task_lock(artifacts_dir)
-    detail = f"使用者中止登打；已關閉 {killed} 個 Chrome/ChromeDriver 程序。"
+    lock_before = manual_task_lock_snapshot(artifacts_dir)
+    if lock_before.get("guard_busy"):
+        return "本機執行鎖正在更新，為避免中止錯誤任務，請稍後再試。", 409
     try:
-        store.abort_running_task(task_id, detail)
+        payload = store.get(task_id)
     except FileNotFoundError:
         abort(404)
+    lock_after = manual_task_lock_snapshot(artifacts_dir)
+    if lock_after.get("guard_busy"):
+        return "本機執行鎖正在更新，為避免中止錯誤任務，請稍後再試。", 409
+    lock_before_identity = (
+        str(lock_before.get("owner") or "").strip(),
+        str(lock_before.get("task_id") or "").strip(),
+        str(lock_before.get("started_at") or "").strip(),
+    )
+    lock_after_identity = (
+        str(lock_after.get("owner") or "").strip(),
+        str(lock_after.get("task_id") or "").strip(),
+        str(lock_after.get("started_at") or "").strip(),
+    )
+    if lock_before_identity != lock_after_identity:
+        return "任務執行租約已變更，為避免中止新一輪登打，本次未執行中止。", 409
+    lease_owner = task_execution_lease_owner(payload, lock_before)
+    active_owner = lock_before_identity[0]
+    if active_owner and not lease_owner:
+        return "目前執行中的是另一筆任務，未中止也未關閉其瀏覽器。", 409
+    initial_queue_state = worker_queue_state(payload)
+    expected_claim_id = str(initial_queue_state.get("claim_id") or "").strip()
+    expected_queue_id = str(initial_queue_state.get("queue_id") or "").strip()
+    marker_identity: dict[str, str] = {}
+    abort_committed = False
+
+    def clear_abort_marker() -> None:
+        marker_owner = marker_identity.get("owner", "")
+        if marker_owner:
+            clear_task_cancellation(
+                artifacts_dir,
+                task_id,
+                execution_owner=marker_owner,
+                claim_id=marker_identity.get("claim_id", ""),
+            )
+
+    def abort_current_generation() -> None:
+        nonlocal abort_committed
+        store.get(task_id)
+        marker_claim_id = expected_claim_id if lease_owner.startswith("worker-manual:") else ""
+        if lease_owner:
+            request_task_cancellation(
+                artifacts_dir,
+                task_id,
+                execution_owner=lease_owner,
+                claim_id=marker_claim_id,
+            )
+            marker_identity.update(owner=lease_owner, claim_id=marker_claim_id)
+        store.abort_running_task(
+            task_id,
+            "使用者中止登打。",
+            execution_lease_active=bool(lease_owner),
+            expected_claim_id=expected_claim_id,
+            expected_queue_id=expected_queue_id,
+        )
+        abort_committed = True
+        if lease_owner.startswith(("desktop_fast:", "desktop-fast:", "worker-manual:")):
+            try:
+                cleanup_active_worker_browsers()
+            except Exception as exc:
+                print(f"[worker] abort browser cleanup deferred task={task_id}: {exc}", flush=True)
+
+    try:
+        if lease_owner:
+            lease_still_matches = run_with_manual_task_lock_owner(
+                artifacts_dir,
+                lease_owner,
+                task_id,
+                abort_current_generation,
+                clear_after=lease_owner.startswith(("desktop_fast:", "desktop-fast:")),
+                expected_started_at=lock_before.get("started_at"),
+            )
+        else:
+            lease_still_matches = run_with_manual_task_lock_absent(
+                artifacts_dir,
+                abort_current_generation,
+            )
+    except FileNotFoundError:
+        if not abort_committed:
+            clear_abort_marker()
+        abort(404)
+    except WorkerClaimConflictError as exc:
+        if not abort_committed:
+            clear_abort_marker()
+        return exc.detail, 409
+    except (OSError, ValueError) as exc:
+        print(f"[worker] abort signal or guarded mutation failed task={task_id}: {exc}", flush=True)
+        if abort_committed:
+            return "任務已完成中止，但本機執行鎖尚未清除；已保留中止訊號阻止舊流程繼續寫入，請稍後重試或重啟 Worker。", 503
+        clear_abort_marker()
+        return "無法建立中止訊號或安全更新任務，為避免狀態與實際執行不一致，本次未中止也未關閉瀏覽器，請稍後再試。", 503
+    if not lease_still_matches:
+        clear_abort_marker()
+        return "任務執行租約已變更，為避免中止新一輪登打，本次未執行中止。", 409
     return redirect(url_for("task_detail", task_id=task_id))
 
 
@@ -422,8 +564,11 @@ def credential_sync():
     accounts = credential_sync_accounts_from_payload(data)
     if not accounts:
         return jsonify({"ok": False, "error": "missing_credentials"}), 400
-    selected = select_credential_sync_account(accounts, data) or accounts[0]
     ack_id = str(data.get("sync_code") or data.get("event_id") or uuid4())
+    try:
+        sealed_payload = seal_credential_payload(data, credential_envelope_secret())
+    except CredentialEnvelopeError as exc:
+        return jsonify({"ok": False, "error": "credential_sealing_unavailable", "detail": str(exc)}), 503
     write_credential_sync_relay(
         {
             "request_id": ack_id,
@@ -432,8 +577,7 @@ def credential_sync():
             "status": "pending",
             "source_host": request.host,
             "account_count": len(accounts),
-            "selected_user_id": str(selected.get("user_id") or ""),
-            "payload": data,
+            "sealed_payload": sealed_payload,
         }
     )
     return jsonify({"ok": True, "ack_id": ack_id, "count": len(accounts), "queued": True})
@@ -599,6 +743,30 @@ def worker_task(task_id: str):
     return jsonify({"ok": True, "payload": payload, "task": payload["task"]})
 
 
+@app.post("/worker/tasks/<task_id>/claim")
+def worker_claim_task(task_id: str):
+    if not worker_authorized():
+        abort(403)
+    data = request.get_json(silent=True) or {}
+    worker_id = str(data.get("worker_id") or "").strip()
+    if not worker_id:
+        return jsonify({"ok": False, "error": "worker_id_required"}), 400
+    try:
+        payload = store.claim_task_for_worker(task_id, worker_id)
+    except WorkerClaimConflictError as exc:
+        return jsonify({"ok": False, "error": exc.code, "detail": exc.detail}), 409
+    except FileNotFoundError:
+        abort(404)
+    return jsonify(
+        {
+            "ok": True,
+            "task": payload["task"],
+            "payload": payload,
+            "worker_queue": payload["worker_queue"],
+        }
+    )
+
+
 @app.post("/worker/tasks/<task_id>/status")
 def worker_task_status(task_id: str):
     if not worker_authorized():
@@ -608,24 +776,37 @@ def worker_task_status(task_id: str):
     detail = str(data.get("detail") or "").strip()
     overall_status = str(data.get("overall_status") or "").strip()
     overall_detail = str(data.get("overall_detail") or detail).strip()
+    claim_id = str(data.get("claim_id") or "").strip()
+    worker_id = str(data.get("worker_id") or "").strip()
+    status_event_id = str(data.get("status_event_id") or "").strip()
     if not status_text:
         abort(400)
     site_key = str(data.get("site_key") or "").strip()
     site_name = str(data.get("site_name") or "公務電腦 worker").strip()
     try:
+        site_result = None
         if site_key:
             diagnostic_fields = {field: str(data.get(field) or "").strip() for field in DIAGNOSTIC_FIELDS}
-            payload = store.update_site_result(
-                task_id,
-                SiteAutomationResult(site_key, site_name, status_text, detail, **diagnostic_fields),
-            )
-            if overall_status:
-                payload = store.set_overall_status(task_id, overall_status, overall_detail)
-        else:
-            payload = store.set_overall_status(task_id, overall_status or status_text, overall_detail if overall_status else detail)
+            site_result = SiteAutomationResult(site_key, site_name, status_text, detail, **diagnostic_fields)
+        target_overall_status = overall_status if site_key else overall_status or status_text
+        target_overall_detail = overall_detail if overall_status else detail
+        payload, duplicate = store.apply_worker_status(
+            task_id,
+            result=site_result,
+            vehicle_key=str(data.get("vehicle_key") or "").strip(),
+            vehicle_label=str(data.get("vehicle_label") or "").strip(),
+            overall_status=target_overall_status,
+            overall_detail=target_overall_detail,
+            status_event_id=status_event_id,
+            claim_id=claim_id,
+            worker_id=worker_id,
+            enforce_claim_identity=True,
+        )
+    except WorkerClaimConflictError as exc:
+        return jsonify({"ok": False, "error": exc.code, "detail": exc.detail}), 409
     except (FileNotFoundError, KeyError):
         abort(404)
-    return jsonify({"ok": True, "payload": payload})
+    return jsonify({"ok": True, "duplicate": duplicate, "payload": payload})
 
 
 @app.get("/worker/case-lookup-request")
@@ -642,7 +823,10 @@ def worker_case_lookup_request():
 def worker_credential_sync():
     if not worker_authorized():
         abort(403)
-    record = read_credential_sync_relay()
+    try:
+        record = credential_sync_record_for_worker()
+    except CredentialEnvelopeError as exc:
+        return jsonify({"ok": False, "error": "credential_sealing_unavailable", "detail": str(exc)}), 503
     if not record or record.get("status") != "pending":
         return jsonify({"ok": True, "request": None})
     return jsonify(
@@ -652,8 +836,9 @@ def worker_credential_sync():
                 "request_id": str(record.get("request_id") or ""),
                 "created_at": str(record.get("created_at") or ""),
                 "account_count": int(record.get("account_count") or 0),
-                "selected_user_id": str(record.get("selected_user_id") or ""),
-                "payload": record.get("payload") if isinstance(record.get("payload"), dict) else {},
+                "sealed_payload": record.get("sealed_payload")
+                if isinstance(record.get("sealed_payload"), dict)
+                else {},
             },
         }
     )
@@ -669,7 +854,11 @@ def worker_remote_update():
         command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
         if str(command.get("status") or "") not in REMOTE_UPDATE_ACTIVE_STATUSES:
             return jsonify({"ok": True, "command": None})
-        command["worker_id"] = worker_id
+        owner = str(command.get("worker_id") or "").strip()
+        if owner and owner != worker_id:
+            return jsonify({"ok": True, "command": None})
+        if not owner:
+            command["worker_id"] = worker_id
         if package_version and not str(command.get("before_version") or "").strip():
             command["before_version"] = package_version
         command["last_seen_at"] = datetime.now().isoformat(timespec="seconds")
@@ -690,6 +879,16 @@ def worker_remote_update_status(request_id: str):
         if str(command.get("request_id") or "") != request_id:
             abort(404)
         current_status = str(command.get("status") or "").strip()
+        owner = str(command.get("worker_id") or "").strip()
+        supplied_worker_id = str(data.get("worker_id") or "").strip()
+        if owner:
+            idempotent_terminal_retry = current_status in REMOTE_UPDATE_TERMINAL_STATUSES and status == current_status
+            if supplied_worker_id != owner and not (idempotent_terminal_retry and not supplied_worker_id):
+                abort(409)
+        else:
+            if not supplied_worker_id:
+                abort(409)
+            command["worker_id"] = supplied_worker_id
         if current_status in REMOTE_UPDATE_TERMINAL_STATUSES:
             if status == current_status:
                 return jsonify({"ok": True, "command": command, "ack_id": request_id})
@@ -699,7 +898,7 @@ def worker_remote_update_status(request_id: str):
         now = datetime.now().isoformat(timespec="seconds")
         command["status"] = status
         command["updated_at"] = now
-        for key in ("detail", "worker_id", "before_version", "installed_version", "exit_code"):
+        for key in ("detail", "before_version", "installed_version", "exit_code"):
             if key in data:
                 command[key] = data[key]
         if status == "updating":
@@ -714,11 +913,13 @@ def worker_remote_update_status(request_id: str):
 def worker_credential_sync_ack(request_id: str):
     if not worker_authorized():
         abort(403)
-    record = read_credential_sync_relay()
-    if not record or str(record.get("request_id") or "") != request_id:
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "saved").strip().lower()
+    detail = str(data.get("detail") or "").strip()
+    outcome = ack_credential_sync_relay(request_id, status=status, detail=detail)
+    if not outcome:
         abort(404)
-    clear_credential_sync_relay()
-    return jsonify({"ok": True, "ack_id": request_id})
+    return jsonify({"ok": True, "ack_id": request_id, "retained": outcome == "retained"})
 
 
 @app.post("/worker/cases")
@@ -729,6 +930,14 @@ def worker_cases():
     cases = data.get("cases")
     if not isinstance(cases, list):
         abort(400)
+    request_id = str(data.get("request_id") or "").strip()
+    current_request = read_case_lookup_request()
+    active_request = current_request.get("status") == "case_lookup_requested"
+    current_request_id = str(current_request.get("request_id") or "").strip()
+    if active_request and (not request_id or request_id != current_request_id):
+        abort(409)
+    if not active_request and request_id:
+        abort(409)
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -738,10 +947,14 @@ def worker_cases():
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "source": str(data.get("source") or "public_duty_pc_worker"),
         "case_hash": str(data.get("case_hash") or ""),
+        "request_id": request_id,
         "cases": cases,
     }
     write_json_atomic(output_dir / "latest.json", payload)
-    mark_case_lookup_request_completed(payload)
+    if payload["status"] == "cases_loaded":
+        mark_case_lookup_request_completed(payload)
+    else:
+        mark_case_lookup_request_failed(payload)
     return jsonify({"ok": True, "case_count": len(cases), "payload": payload})
 
 
@@ -765,6 +978,9 @@ def artifact_file(filename: str):
     root = artifacts_dir.resolve()
     target = (root / filename).resolve()
     if root not in target.parents and target != root:
+        abort(404)
+    selenium_root = (root / "selenium").resolve()
+    if selenium_root not in target.parents or target.suffix.lower() not in {".png", ".html"}:
         abort(404)
     if not target.exists() or not target.is_file():
         abort(404)
@@ -857,6 +1073,10 @@ def credential_sync_token() -> str:
     return os.getenv("CREDENTIAL_SYNC_TOKEN", "").strip() or os.getenv("WORKER_TOKEN", "").strip()
 
 
+def credential_envelope_secret() -> str:
+    return os.getenv("WORKER_TOKEN", "").strip()
+
+
 def credential_sync_receiver_enabled() -> bool:
     return bool(credential_sync_token())
 
@@ -874,36 +1094,132 @@ def credential_sync_authorized() -> bool:
 
 def credential_sync_ttl_seconds() -> int:
     try:
-        return max(60, int(os.getenv("CREDENTIAL_SYNC_TTL_SECONDS", "3600")))
+        return max(60, int(os.getenv("CREDENTIAL_SYNC_TTL_SECONDS", "900")))
     except ValueError:
-        return 3600
+        return 900
 
 
 def read_credential_sync_relay() -> dict:
     path = credential_sync_relay_file()
+    with _credential_sync_relay_lock:
+        return _read_credential_sync_relay_unlocked(path)
+
+
+def _read_credential_sync_relay_unlocked(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        if time.time() - path.stat().st_mtime > credential_sync_ttl_seconds():
+        if path.stat().st_size > MAX_CREDENTIAL_RELAY_FILE_BYTES:
             path.unlink()
             return {}
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    created_epoch = credential_sync_created_epoch(payload, path)
+    if time.time() - created_epoch > credential_sync_ttl_seconds():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return {}
+    return payload
+
+
+def credential_sync_created_epoch(payload: dict, path: Path) -> float:
+    raw_created_at = str(payload.get("created_at") or "").strip()
+    if raw_created_at:
+        try:
+            return datetime.fromisoformat(raw_created_at).timestamp()
+        except (ValueError, OverflowError, OSError):
+            pass
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return time.time()
 
 
 def write_credential_sync_relay(payload: dict) -> None:
-    write_json_atomic(credential_sync_relay_file(), payload)
+    with _credential_sync_relay_lock:
+        _write_credential_sync_relay_unlocked(payload)
+
+
+def _write_credential_sync_relay_unlocked(payload: dict) -> None:
+    path = credential_sync_relay_file()
+    write_json_atomic(path, payload)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def credential_sync_record_for_worker() -> dict:
+    path = credential_sync_relay_file()
+    with _credential_sync_relay_lock:
+        record = _read_credential_sync_relay_unlocked(path)
+        changed = False
+        if record and not str(record.get("created_at") or "").strip():
+            record = dict(record)
+            record["created_at"] = datetime.fromtimestamp(
+                credential_sync_created_epoch(record, path)
+            ).isoformat(timespec="seconds")
+            changed = True
+        legacy_payload = record.get("payload") if isinstance(record, dict) else None
+        if isinstance(legacy_payload, dict):
+            sealed_payload = seal_credential_payload(legacy_payload, credential_envelope_secret())
+            record = dict(record)
+            record.pop("payload", None)
+            record["sealed_payload"] = sealed_payload
+            record["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            changed = True
+        if changed:
+            _write_credential_sync_relay_unlocked(record)
+        return record
 
 
 def clear_credential_sync_relay() -> None:
-    try:
-        credential_sync_relay_file().unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
+    with _credential_sync_relay_lock:
+        try:
+            credential_sync_relay_file().unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+def ack_credential_sync_relay(request_id: str, *, status: str = "saved", detail: str = "") -> str:
+    """Delete a saved relay record; retain failed attempts for safe retry."""
+
+    expected = str(request_id or "").strip()
+    if not expected:
+        return ""
+    path = credential_sync_relay_file()
+    with _credential_sync_relay_lock:
+        record = _read_credential_sync_relay_unlocked(path)
+        if not record or str(record.get("request_id") or "") != expected:
+            return ""
+        if status != "saved":
+            retained = dict(record)
+            if not str(retained.get("created_at") or "").strip():
+                retained["created_at"] = datetime.fromtimestamp(
+                    credential_sync_created_epoch(record, path)
+                ).isoformat(timespec="seconds")
+            retained["status"] = "pending"
+            retained["attempt_count"] = max(0, int(retained.get("attempt_count") or 0)) + 1
+            retained["last_error_code"] = "worker_save_failed"
+            retained["last_error"] = "公務電腦未能儲存帳密，系統將稍後重試。"
+            retained["last_attempt_at"] = datetime.now().isoformat(timespec="seconds")
+            retained["updated_at"] = retained["last_attempt_at"]
+            _write_credential_sync_relay_unlocked(retained)
+            return "retained"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return ""
+        except OSError:
+            return ""
+        return "deleted"
 
 
 def public_pc_report_file() -> Path:
@@ -927,6 +1243,14 @@ def remote_update_csrf_token() -> str:
     if not secret:
         return ""
     return hmac.new(secret, b"ambulance-remote-update-admin", hashlib.sha256).hexdigest()
+
+
+def site_manual_complete_token(task_id: str, site_key: str, vehicle_key: str = "") -> str:
+    secret = os.getenv("WORKER_TOKEN", "").strip().encode("utf-8")
+    if len(secret) < 32:
+        return ""
+    message = f"ambulance-manual-complete\x00{task_id}\x00{site_key}\x00{vehicle_key}".encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
 
 
 def remote_update_admin_token() -> str:
@@ -1139,44 +1463,55 @@ def upsert_public_pc_report(data: dict) -> dict:
 
 
 def _enqueue_public_pc_report(payload: dict) -> None:
-    path = public_pc_pending_report_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    with _public_pc_pending_report_lock:
+        path = public_pc_pending_report_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def _load_pending_public_pc_reports() -> list[dict]:
-    path = public_pc_pending_report_file()
-    if not path.exists():
-        return []
-    entries: list[dict] = []
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                entries.append(payload)
-    except OSError:
-        return []
-    return entries
+    with _public_pc_pending_report_lock:
+        path = public_pc_pending_report_file()
+        if not path.exists():
+            return []
+        entries: list[dict] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    entries.append(payload)
+        except (OSError, UnicodeError):
+            return []
+        return entries
 
 
 def _write_pending_public_pc_reports(entries: list[dict]) -> None:
-    path = public_pc_pending_report_file()
-    if not entries:
+    with _public_pc_pending_report_lock:
+        path = public_pc_pending_report_file()
+        if not entries:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries) + "\n"
+        tmp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
-            path.unlink()
-        except OSError:
-            pass
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    body = "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries) + "\n"
-    path.write_text(body, encoding="utf-8")
+            tmp_path.write_text(body, encoding="utf-8")
+            tmp_path.replace(path)
+        finally:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _post_public_pc_report(server_url: str, payload: dict) -> dict:
@@ -1227,21 +1562,22 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
     server_url = public_pc_report_server_url()
     if not server_url:
         return
-    pending = _load_pending_public_pc_reports()
-    pending.append(body)
-    sent_count = 0
-    try:
-        for index, entry in enumerate(pending, start=1):
-            ack_payload = _post_public_pc_report(server_url, entry)
-            ack_id = str((ack_payload or {}).get("ack_id") or entry.get("event_id") or "").strip()
-            if ack_id != str(entry.get("event_id") or "").strip():
-                break
-            sent_count = index
-    except (OSError, urllib.error.URLError) as exc:
-        _write_pending_public_pc_reports(pending[sent_count:])
-        print(f"[public_pc_report] pending task_id={task_id} action={action} server={server_url} error={exc}", flush=True)
-    else:
-        _write_pending_public_pc_reports(pending[sent_count:])
+    with _public_pc_pending_report_lock:
+        pending = _load_pending_public_pc_reports()
+        pending.append(body)
+        sent_count = 0
+        try:
+            for index, entry in enumerate(pending, start=1):
+                ack_payload = _post_public_pc_report(server_url, entry)
+                ack_id = str((ack_payload or {}).get("ack_id") or entry.get("event_id") or "").strip()
+                if ack_id != str(entry.get("event_id") or "").strip():
+                    break
+                sent_count = index
+        except (OSError, urllib.error.URLError) as exc:
+            _write_pending_public_pc_reports(pending[sent_count:])
+            print(f"[public_pc_report] pending task_id={task_id} action={action} server={server_url} error={exc}", flush=True)
+        else:
+            _write_pending_public_pc_reports(pending[sent_count:])
 
 
 def public_pc_reporting_enabled() -> bool:
@@ -1469,6 +1805,7 @@ def write_case_lookup_request(lookup_range: str, source: str = "", mode: str = "
     output_dir.mkdir(parents=True, exist_ok=True)
     range_label = case_lookup_range_label(lookup_range)
     payload = {
+        "request_id": str(uuid4()),
         "status": "case_lookup_requested",
         "lookup_range": lookup_range,
         "mode": mode,
@@ -1525,7 +1862,13 @@ def case_lookup_request_needs_local_thread(payload: dict) -> bool:
 
 def mark_case_lookup_request_completed(latest_payload: dict) -> None:
     current = read_case_lookup_request()
-    if current.get("status") != "case_lookup_requested":
+    current_request_id = str(current.get("request_id") or "").strip()
+    result_request_id = str(latest_payload.get("request_id") or "").strip()
+    if (
+        current.get("status") != "case_lookup_requested"
+        or (current_request_id and result_request_id != current_request_id)
+        or (not current_request_id and result_request_id)
+    ):
         return
     payload = {
         **current,
@@ -1539,7 +1882,13 @@ def mark_case_lookup_request_completed(latest_payload: dict) -> None:
 
 def mark_case_lookup_request_failed(latest_payload: dict) -> None:
     current = read_case_lookup_request()
-    if current.get("status") != "case_lookup_requested":
+    current_request_id = str(current.get("request_id") or "").strip()
+    result_request_id = str(latest_payload.get("request_id") or "").strip()
+    if (
+        current.get("status") != "case_lookup_requested"
+        or (current_request_id and result_request_id != current_request_id)
+        or (not current_request_id and result_request_id)
+    ):
         return
     payload = {
         **current,
@@ -1556,10 +1905,10 @@ def local_case_lookup_thread_is_running() -> bool:
         return _local_case_lookup_thread is not None and _local_case_lookup_thread.is_alive()
 
 
-def _run_and_clear_local_case_lookup(lookup_range: str) -> None:
+def _run_and_clear_local_case_lookup(lookup_range: str, request_id: str) -> None:
     global _local_case_lookup_thread
     try:
-        run_local_case_lookup(lookup_range)
+        run_local_case_lookup(lookup_range, request_id=request_id)
     finally:
         with _local_case_lookup_thread_lock:
             if _local_case_lookup_thread is threading.current_thread():
@@ -1571,7 +1920,8 @@ def start_local_case_lookup(lookup_range: str) -> threading.Thread:
     with _local_case_lookup_thread_lock:
         if _local_case_lookup_thread is not None and _local_case_lookup_thread.is_alive():
             return _local_case_lookup_thread
-        thread = threading.Thread(target=_run_and_clear_local_case_lookup, args=(lookup_range,), daemon=True)
+        request_id = str(read_case_lookup_request().get("request_id") or "").strip()
+        thread = threading.Thread(target=_run_and_clear_local_case_lookup, args=(lookup_range, request_id), daemon=True)
         _local_case_lookup_thread = thread
     thread.start()
     return thread
@@ -1686,7 +2036,8 @@ def cleanup_case_lookup_timeout_residue() -> int:
     return int(result.get("killed") or 0)
 
 
-def run_local_case_lookup(lookup_range: str) -> None:
+def run_local_case_lookup(lookup_range: str, request_id: str = "") -> None:
+    request_id = str(request_id or read_case_lookup_request().get("request_id") or "").strip()
     try:
         result = run_case_lookup_query(lookup_range)
     except CaseLookupProcessTimeout as exc:
@@ -1695,6 +2046,7 @@ def run_local_case_lookup(lookup_range: str) -> None:
         if killed:
             detail = f"{detail} 已清理 {killed} 個殘留 Chrome/ChromeDriver。"
         payload = {
+            "request_id": request_id,
             "status": "case_lookup_timeout",
             "detail": detail,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1710,6 +2062,7 @@ def run_local_case_lookup(lookup_range: str) -> None:
         return
     except Exception as exc:
         payload = {
+            "request_id": request_id,
             "status": "case_lookup_failed",
             "detail": f"案件查詢失敗：{exc}",
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1733,6 +2086,7 @@ def run_local_case_lookup(lookup_range: str) -> None:
             "cases": cases,
         }
     payload["lookup_range"] = lookup_range
+    payload["request_id"] = request_id
     payload["source"] = "local_public_duty_pc"
     payload["case_hash"] = hash_cases(cases)
     payload["case_count"] = len(cases)
@@ -1753,13 +2107,27 @@ def hash_cases(cases: list[dict[str, object]]) -> str:
 
 def write_json_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f"{path.name}.tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    tmp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def changed_sites_for_task_edit(previous_task: dict, current_task: dict) -> set[str]:
     changed_sites: set[str] = set()
+    if task_fields_changed(previous_task, current_task, ("case_date", "case_time")):
+        changed_sites.update({"duty_work_log", "vehicle_mileage", "consumables", "disinfection"})
+    if task_fields_changed(previous_task, current_task, ("case_address",)):
+        changed_sites.update({"duty_work_log", "vehicle_mileage"})
     if task_fields_changed(previous_task, current_task, ("two_vehicle",)):
         changed_sites.update({"duty_work_log", "vehicle_mileage", "consumables", "disinfection"})
     if task_fields_changed(previous_task, current_task, ("vehicle", "driver")):
@@ -1780,7 +2148,7 @@ def changed_sites_for_task_edit(previous_task: dict, current_task: dict) -> set[
         changed_sites.add("vehicle_mileage")
     if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "driver", "fuel_record")):
         changed_sites.add("fuel_record")
-    if task_vehicle_entries_changed(previous_task, current_task, ("consumables",)):
+    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "consumables")):
         changed_sites.add("consumables")
     if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "disinfection", "disinfection_items")):
         changed_sites.add("disinfection")
@@ -1847,6 +2215,8 @@ def normalized_task_edit_value(value: object) -> object:
 
 def status_label(status: str) -> str:
     value = str(status or "")
+    if site_waits_for_confirmation(value):
+        return "待人工確認"
     if value == "desktop_fast_running":
         return "本機快速執行"
     if value == "desktop_fast_completed_with_errors":
@@ -1870,6 +2240,8 @@ def status_label(status: str) -> str:
 
 def status_class(status: str) -> str:
     value = str(status or "")
+    if site_waits_for_confirmation(value):
+        return "waiting"
     if value == "desktop_fast_completed":
         return "complete"
     if value == "desktop_fast_completed_with_errors":
@@ -1889,6 +2261,30 @@ def status_class(status: str) -> str:
 
 def site_is_complete(status: str) -> bool:
     return status_class(status) == "complete"
+
+
+def site_waits_for_confirmation(status: str) -> bool:
+    value = str(status or "")
+    return "waiting_confirmation" in value or value == "manual_confirmation_required"
+
+
+def task_has_waiting_confirmation(site_statuses: dict) -> bool:
+    return any(
+        site_waits_for_confirmation(str(dict(site or {}).get("status") or ""))
+        for site in dict(site_statuses or {}).values()
+    )
+
+
+def task_edit_is_locked(payload: dict) -> bool:
+    return task_payload_is_active_for_edit(payload) or task_has_waiting_confirmation(
+        dict(payload.get("site_statuses") or {})
+    )
+
+
+def task_edit_lock_message(payload: dict) -> str:
+    if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
+        return "任務尚有待人工確認的資料，請先到官方網頁核對或完成人工更新，再按「已確認」。"
+    return "任務正在執行中，請等待完成或先中止登打後再編輯。"
 
 
 def site_can_run_individually(site_statuses: dict, site_key: str) -> bool:
@@ -1915,7 +2311,7 @@ def site_action_button_label(status: str, site_key: str) -> str:
 
 def combined_mileage_site_status(site_statuses: dict, task: dict) -> dict:
     mileage_site = dict((site_statuses or {}).get("vehicle_mileage") or {})
-    if not task_has_fuel_record(task):
+    if not task_has_active_fuel_site(task, site_statuses):
         mileage_site["run_site_key"] = "vehicle_mileage"
         return mileage_site
 
@@ -1993,13 +2389,18 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
 
 def effective_task_status(payload: dict) -> str:
     site_statuses = dict(payload.get("site_statuses") or {})
-    sites = [dict(site_statuses.get(site_key) or {}) for site_key in active_site_keys_for_task(payload.get("task") or {})]
+    sites = [
+        dict(site_statuses.get(site_key) or {})
+        for site_key in active_site_keys_for_task(payload.get("task") or {}, site_statuses)
+    ]
     if any(status_class(str(site.get("status") or "")) == "running" for site in sites):
         return "desktop_fast_running"
     if any(status_class(str(site.get("status") or "")) == "failed" for site in sites):
         return "failed"
     if any(str(site.get("status") or "").endswith("_needs_update") for site in sites):
         return "site_needs_update"
+    if any(site_waits_for_confirmation(str(site.get("status") or "")) for site in sites):
+        return "manual_confirmation_required"
     if any(status_class(str(site.get("status") or "")) == "waiting" for site in sites):
         return "manual_captcha_required"
     if sites and all(status_class(str(site.get("status") or "")) == "complete" for site in sites):
@@ -2008,11 +2409,36 @@ def effective_task_status(payload: dict) -> str:
 
 
 def task_payload_is_active(payload: dict) -> bool:
+    queue_state = worker_queue_state(payload)
+    if queue_state.get("status") == "queued" or worker_claim_lease_is_active(payload):
+        return True
+    lock_snapshot = manual_task_lock_snapshot(artifacts_dir)
+    if lock_snapshot.get("guard_busy") or task_execution_lease_owner(payload, lock_snapshot):
+        return True
     return status_class(effective_task_status(payload)) == "running"
+
+
+def task_execution_lease_owner(
+    payload: dict,
+    lock_snapshot: dict[str, object] | None = None,
+) -> str:
+    task = payload.get("task")
+    task_id = str(task.get("task_id") or "").strip() if isinstance(task, dict) else ""
+    if not task_id:
+        return ""
+    snapshot = lock_snapshot if lock_snapshot is not None else manual_task_lock_snapshot(artifacts_dir)
+    owner = str(snapshot.get("owner") or "").strip()
+    if not owner:
+        return ""
+    if str(snapshot.get("task_id") or "").strip() == task_id:
+        return owner
+    return ""
 
 
 def refresh_stale_running_task(payload: dict) -> dict:
     if not task_payload_is_active(payload):
+        return payload
+    if worker_claim_lease_is_active(payload) or manual_task_lock_active(artifacts_dir):
         return payload
     task = payload.get("task")
     if not isinstance(task, dict):
@@ -2021,9 +2447,6 @@ def refresh_stale_running_task(payload: dict) -> dict:
     if not task_id:
         return payload
     refreshed = store.expire_stale_running_sites(task_id, manual_task_lock_max_age_seconds(), STALE_RUNNING_TASK_DETAIL)
-    if task_payload_is_active(payload) and not task_payload_is_active(refreshed) and request_is_local_host():
-        clear_manual_task_lock(artifacts_dir)
-        cleanup_active_worker_browsers()
     return refreshed
 
 
@@ -2038,7 +2461,7 @@ def recent_tasks_need_refresh(recent_tasks: list[dict]) -> bool:
 def task_progress_summary(payload: dict) -> str:
     site_statuses = dict(payload.get("site_statuses") or {})
     completed_count = 0
-    site_keys = active_site_keys_for_task(payload.get("task") or {})
+    site_keys = active_site_keys_for_task(payload.get("task") or {}, site_statuses)
     total_count = len(site_keys)
     failed_sites: list[str] = []
     updated_sites: list[str] = []
@@ -2169,18 +2592,28 @@ def task_has_fuel_record(task: dict) -> bool:
     return AmbulanceReturnRequest.from_dict(dict(task or {})).has_fuel_record()
 
 
-def active_site_keys_for_task(task: dict) -> list[str]:
+def task_has_active_fuel_site(task: dict, site_statuses: dict | None = None) -> bool:
     if task_has_fuel_record(task):
+        return True
+    fuel_status = str(dict((site_statuses or {}).get("fuel_record") or {}).get("status") or "")
+    return "waiting_confirmation" in fuel_status
+
+
+def active_site_keys_for_task(task: dict, site_statuses: dict | None = None) -> list[str]:
+    if task_has_active_fuel_site(task, site_statuses):
         return list(SITE_RUN_ORDER)
     return [site_key for site_key in SITE_RUN_ORDER if site_key != "fuel_record"]
 
 
-def task_site_count_label(task: dict) -> str:
-    return "五站" if len(active_site_keys_for_task(task)) == 5 else "四站"
+def task_site_count_label(task: dict, site_statuses: dict | None = None) -> str:
+    return "五站" if len(active_site_keys_for_task(task, site_statuses)) == 5 else "四站"
 
 
-def task_site_display_pairs(task: dict) -> list[tuple[str, str]]:
-    return [(site_key, SITE_DISPLAY_NAMES.get(site_key, site_key)) for site_key in active_site_keys_for_task(task)]
+def task_site_display_pairs(task: dict, site_statuses: dict | None = None) -> list[tuple[str, str]]:
+    return [
+        (site_key, SITE_DISPLAY_NAMES.get(site_key, site_key))
+        for site_key in active_site_keys_for_task(task, site_statuses)
+    ]
 
 
 def last_vehicle_mileages(limit: int = 300) -> dict[str, str]:
@@ -2453,6 +2886,8 @@ def template_helpers() -> dict:
         "recent_tasks_need_refresh": recent_tasks_need_refresh,
         "site_action_button_label": site_action_button_label,
         "site_diagnostic": site_diagnostic,
+        "site_waits_for_confirmation": site_waits_for_confirmation,
+        "site_manual_complete_token": site_manual_complete_token,
         "site_short_name": site_short_name,
         "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
@@ -2469,8 +2904,12 @@ def template_helpers() -> dict:
         "status_class": status_class,
         "status_label": status_label,
         "task_datetime_display": task_datetime_display,
+        "task_has_waiting_confirmation": task_has_waiting_confirmation,
         "task_payload_is_active": task_payload_is_active,
+        "task_payload_is_active_for_edit": task_payload_is_active_for_edit,
+        "task_edit_is_locked": task_edit_is_locked,
         "task_progress_summary": task_progress_summary,
+        "task_has_active_fuel_site": task_has_active_fuel_site,
         "task_has_fuel_record": task_has_fuel_record,
         "task_site_count_label": task_site_count_label,
         "task_site_display_pairs": task_site_display_pairs,
@@ -2502,8 +2941,19 @@ def should_auto_queue_task_on_create() -> bool:
 
 def queue_task_for_worker(task_id: str) -> None:
     request_payload = store.request_for(task_id)
+    payload = store.get(task_id)
+    site_statuses = dict(payload.get("site_statuses") or {})
     for adapter in default_adapters():
-        store.update_site_result(task_id, adapter.run(request_payload))
+        site = dict(site_statuses.get(adapter.key) or {})
+        status = str(site.get("status") or "")
+        should_prepare = (
+            status in {"", "not_started"}
+            or "failed" in status
+            or "error" in status
+            or status.endswith("_needs_update")
+        )
+        if should_prepare:
+            store.update_site_result(task_id, adapter.run(request_payload))
     store.queue_for_worker(task_id)
 
 
@@ -2614,7 +3064,13 @@ def prepared_case_lookup() -> dict:
         if case_lookup_request_needs_local_thread(lookup_request) and not local_case_lookup_thread_is_running():
             case_lookup["detail"] = f"上一輪本機案件查詢已中斷，請重新查詢{range_label}案件。"
             case_lookup["is_running"] = False
-            mark_case_lookup_request_failed({"detail": case_lookup["detail"], "cases": []})
+            mark_case_lookup_request_failed(
+                {
+                    "request_id": str(lookup_request.get("request_id") or ""),
+                    "detail": case_lookup["detail"],
+                    "cases": [],
+                }
+            )
         elif case_lookup_request_is_stale(lookup_request):
             case_lookup["detail"] = f"案件查詢逾時，請確認公務電腦 Worker 是否啟動後再重新查詢{range_label}案件。"
             case_lookup["is_running"] = False
@@ -2835,6 +3291,10 @@ desktop_runner.event_callback = report_public_pc_task_event
 def run_web_app(host: str | None = None, port: int | None = None) -> None:
     host = host or os.getenv("WEB_HOST", "0.0.0.0")
     port = port or int(os.getenv("WEB_PORT", "8080"))
+    try:
+        credential_sync_record_for_worker()
+    except CredentialEnvelopeError as exc:
+        print(f"[app] credential relay migration deferred: {exc}", flush=True)
     print(f"[app] starting SinpoSmart ambulance worker web app on {host}:{port}", flush=True)
     try:
         from waitress import serve

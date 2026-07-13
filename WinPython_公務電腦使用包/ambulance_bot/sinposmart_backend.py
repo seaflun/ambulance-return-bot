@@ -5,8 +5,10 @@ import json
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from threading import Lock, RLock
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 
 SINPOSMART_RECORD_TYPES = {
@@ -25,6 +27,7 @@ SINPOSMART_RECORD_TYPES = {
 SINPOSMART_LOGIN_RECORD_TYPES = {"login", "login_failed", "login_expired", "logout"}
 SINPOSMART_EVENT_FIELDS = (
     "event_id",
+    "merged_event_ids",
     "occurred_at",
     "fire_day",
     "record_type",
@@ -48,10 +51,29 @@ SINPOSMART_EVENT_FIELDS = (
 )
 SENSITIVE_KEY_PATTERN = re.compile(r"(password|passwd|pwd|token|secret|cookie|authorization|credential)", re.I)
 SENSITIVE_TEXT_PATTERN = re.compile(r"(?i)(password|token|secret|cookie|authorization)\s*[:=]\s*[^,\s;]+")
+TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
+_STORE_LOCKS_GUARD = Lock()
+_STORE_LOCKS: dict[str, RLock] = {}
+
+
+def shared_store_lock(root_dir: Path) -> RLock:
+    key = str(root_dir.resolve()).casefold()
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.get(key)
+        if lock is None:
+            lock = RLock()
+            _STORE_LOCKS[key] = lock
+        return lock
+
+
+def taipei_local_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value
+    return value.astimezone(TAIPEI_TIMEZONE).replace(tzinfo=None)
 
 
 def sinposmart_fire_day_for(value: datetime | None = None) -> str:
-    value = value or datetime.now()
+    value = taipei_local_datetime(value or datetime.now())
     business_date = value.date() if value.hour >= 8 else value.date() - timedelta(days=1)
     return business_date.isoformat()
 
@@ -619,76 +641,81 @@ class SinpoSmartBackendStore:
         self.root_dir = root_dir
         self.retention_days = max(1, retention_days)
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = shared_store_lock(self.root_dir)
 
     def upsert_event(self, raw_event: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
-        self.cleanup(now)
-        event = normalize_sinposmart_event(raw_event, now=now)
-        path = self.path_for_day(event["fire_day"])
-        payload = self.read_day(event["fire_day"])
-        payload.pop("admin_view", None)
-        events = compact_sinposmart_events(list(payload.get("events") or []))
-        known_ids = {str(item.get("event_id") or "") for item in events if isinstance(item, dict)}
-        if event["event_id"] in known_ids:
-            events = [item if str(item.get("event_id") or "") == event["event_id"] else item for item in events]
-        elif sinposmart_event_keeps_individual_record(event):
-            events.append(event)
-        else:
-            duplicate_index = next((index for index, item in enumerate(events) if sinposmart_event_merge_key(item) == sinposmart_event_merge_key(event)), None)
-            if duplicate_index is None:
+        with self._lock:
+            self.cleanup(now)
+            event = normalize_sinposmart_event(raw_event, now=now)
+            path = self.path_for_day(event["fire_day"])
+            payload = self.read_day(event["fire_day"])
+            payload.pop("admin_view", None)
+            events = compact_sinposmart_events(list(payload.get("events") or []))
+            known_ids = {event_id for item in events for event_id in sinposmart_event_ids(item)}
+            if event["event_id"] in known_ids:
+                pass
+            elif sinposmart_event_keeps_individual_record(event):
                 events.append(event)
             else:
-                events[duplicate_index] = merge_sinposmart_event(events[duplicate_index], event)
-        payload["fire_day"] = event["fire_day"]
-        payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        payload["events"] = sorted(events, key=lambda item: str(item.get("occurred_at") or ""))
-        payload["summary"] = summarize_sinposmart_events(payload["events"])
-        payload.pop("admin_view", None)
-        write_json_atomic(path, payload)
+                duplicate_index = next((index for index, item in enumerate(events) if sinposmart_event_merge_key(item) == sinposmart_event_merge_key(event)), None)
+                if duplicate_index is None:
+                    events.append(event)
+                else:
+                    events[duplicate_index] = merge_sinposmart_event(events[duplicate_index], event)
+            payload["fire_day"] = event["fire_day"]
+            payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            payload["events"] = sorted(events, key=lambda item: str(item.get("occurred_at") or ""))
+            payload["summary"] = summarize_sinposmart_events(payload["events"])
+            payload.pop("admin_view", None)
+            write_json_atomic(path, payload)
         return event
 
     def list_days(self, limit: int = 7, now: datetime | None = None) -> list[dict[str, Any]]:
-        self.cleanup(now)
-        days: list[dict[str, Any]] = []
-        for path in sorted(self.root_dir.glob("*.json"), reverse=True):
+        with self._lock:
+            self.cleanup(now)
+            days: list[dict[str, Any]] = []
+            for path in sorted(self.root_dir.glob("*.json"), reverse=True):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict):
+                    payload["events"] = compact_sinposmart_events(payload.get("events") or [])
+                    payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
+                    payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [])
+                    days.append(payload)
+            return days[:limit]
+
+    def read_day(self, fire_day: str) -> dict[str, Any]:
+        with self._lock:
+            path = self.path_for_day(fire_day)
+            if not path.exists():
+                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                continue
-            if isinstance(payload, dict):
-                payload["events"] = compact_sinposmart_events(payload.get("events") or [])
-                payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
-                payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [])
-                days.append(payload)
-        return days[:limit]
-
-    def read_day(self, fire_day: str) -> dict[str, Any]:
-        path = self.path_for_day(fire_day)
-        if not path.exists():
-            return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
-        if not isinstance(payload, dict):
-            return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
-        payload["events"] = compact_sinposmart_events(payload.get("events") or [])
-        payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
-        payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [])
-        return payload
+                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
+            if not isinstance(payload, dict):
+                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
+            payload["events"] = compact_sinposmart_events(payload.get("events") or [])
+            payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
+            payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [])
+            return payload
 
     def cleanup(self, now: datetime | None = None) -> None:
-        current_day = date.fromisoformat(sinposmart_fire_day_for(now))
-        cutoff = current_day - timedelta(days=self.retention_days - 1)
-        for path in self.root_dir.glob("*.json"):
-            try:
-                fire_day = date.fromisoformat(path.stem)
-            except ValueError:
-                continue
-            if fire_day < cutoff:
+        with self._lock:
+            current_day = date.fromisoformat(sinposmart_fire_day_for(now))
+            cutoff = current_day - timedelta(days=self.retention_days - 1)
+            for path in self.root_dir.glob("*.json"):
                 try:
-                    path.unlink()
-                except OSError:
-                    pass
+                    fire_day = date.fromisoformat(path.stem)
+                except ValueError:
+                    continue
+                if fire_day < cutoff:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
 
     def path_for_day(self, fire_day: str) -> Path:
         safe_day = str(fire_day or "").strip()
@@ -708,6 +735,7 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         fire_day = sinposmart_fire_day_for(occurred_at)
     event = {
         "event_id": str(raw_event.get("event_id") or uuid4()).strip(),
+        "merged_event_ids": [],
         "occurred_at": occurred_at.isoformat(timespec="seconds"),
         "fire_day": fire_day,
         "record_type": record_type,
@@ -729,6 +757,7 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         "last_occurred_at": occurred_at.isoformat(timespec="seconds"),
         "snapshot": sanitize_value(raw_event.get("snapshot"), depth=0),
     }
+    event["merged_event_ids"] = [event["event_id"]]
     if record_type == "tool_action_started" and not event["item_title"]:
         snapshot = event["snapshot"] if isinstance(event.get("snapshot"), dict) else {}
         tool_label = sanitize_scalar(snapshot.get("tool_label"), 120)
@@ -768,8 +797,16 @@ def event_repeat_count(event: dict[str, Any]) -> int:
         return 1
 
 
+def sinposmart_event_ids(event: dict[str, Any]) -> list[str]:
+    raw_ids = event.get("merged_event_ids")
+    candidates = raw_ids if isinstance(raw_ids, list) else []
+    values = [str(event.get("event_id") or ""), *(str(item or "") for item in candidates)]
+    return list(dict.fromkeys(value for value in values if value))
+
+
 def merge_sinposmart_event(existing: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     merged = dict(existing)
+    merged["merged_event_ids"] = list(dict.fromkeys(sinposmart_event_ids(existing) + sinposmart_event_ids(event)))
     merged["repeat_count"] = event_repeat_count(existing) + event_repeat_count(event)
     merged["first_occurred_at"] = str(existing.get("first_occurred_at") or existing.get("occurred_at") or event.get("occurred_at") or "")
     merged["last_occurred_at"] = str(event.get("occurred_at") or existing.get("last_occurred_at") or existing.get("occurred_at") or "")
@@ -791,25 +828,27 @@ def compact_sinposmart_events(events: list[dict[str, Any]]) -> list[dict[str, An
         event.setdefault("repeat_count", 1)
         event.setdefault("first_occurred_at", event.get("occurred_at") or "")
         event.setdefault("last_occurred_at", event.get("occurred_at") or "")
+        event["merged_event_ids"] = sinposmart_event_ids(event)
         if sinposmart_event_keeps_individual_record(event):
             event["repeat_count"] = 1
-        event_id = str(event.get("event_id") or "")
-        if event_id and event_id in known_ids:
+        event_ids = sinposmart_event_ids(event)
+        event_id = event_ids[0] if event_ids else ""
+        if any(item in known_ids for item in event_ids):
             continue
         if sinposmart_event_keeps_individual_record(event):
-            if event_id:
-                known_ids[event_id] = len(compacted)
+            for item in event_ids:
+                known_ids[item] = len(compacted)
             compacted.append(event)
             continue
         merge_key = sinposmart_event_merge_key(event)
         if merge_key in index_by_key:
             compacted[index_by_key[merge_key]] = merge_sinposmart_event(compacted[index_by_key[merge_key]], event)
-            if event_id:
-                known_ids[event_id] = index_by_key[merge_key]
+            for item in sinposmart_event_ids(compacted[index_by_key[merge_key]]):
+                known_ids[item] = index_by_key[merge_key]
             continue
         index_by_key[merge_key] = len(compacted)
-        if event_id:
-            known_ids[event_id] = len(compacted)
+        for item in event_ids:
+            known_ids[item] = len(compacted)
         compacted.append(event)
     return sorted(compacted, key=lambda item: str(item.get("occurred_at") or ""))
 
@@ -817,14 +856,14 @@ def compact_sinposmart_events(events: list[dict[str, Any]]) -> list[dict[str, An
 def parse_event_datetime(value: Any, fallback: datetime) -> datetime:
     text = str(value or "").strip()
     if not text:
-        return fallback
+        return taipei_local_datetime(fallback)
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
-        return fallback
-    return parsed.replace(tzinfo=None)
+        return taipei_local_datetime(fallback)
+    return taipei_local_datetime(parsed)
 
 
 def sanitize_value(value: Any, depth: int = 0) -> Any:
@@ -891,6 +930,12 @@ def summarize_sinposmart_events(events: list[dict[str, Any]]) -> dict[str, int]:
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    tmp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass

@@ -1,11 +1,13 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import json
 from pathlib import Path
 import tempfile
 
 from ambulance_bot.models import clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_form
 from ambulance_bot.models import AmbulanceReturnRequest
-from ambulance_bot.models import delete_vehicle_record, vehicle_options, vehicle_ppe_names
+from ambulance_bot.models import delete_vehicle_record, load_vehicle_records, save_vehicle_record, vehicle_options, vehicle_ppe_names
 
 
 class ModelParsingTests(unittest.TestCase):
@@ -45,6 +47,20 @@ class ModelParsingTests(unittest.TestCase):
             self.assertNotIn("新坡95", vehicle_options(base_dir))
             self.assertFalse(delete_vehicle_record("新坡91", base_dir))
             self.assertIn("新坡91", vehicle_options(base_dir))
+
+    def test_concurrent_vehicle_settings_updates_do_not_lose_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            labels = [f"測試車{index:02d}" for index in range(40)]
+
+            try:
+                with ThreadPoolExecutor(max_workers=16) as pool:
+                    list(pool.map(lambda label: save_vehicle_record(label, f"PLATE-{label}", base_dir), labels))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                self.fail(f"concurrent vehicle settings writes must remain readable: {exc}")
+
+            saved_labels = {record["label"] for record in load_vehicle_records(base_dir)}
+            self.assertTrue(set(labels).issubset(saved_labels))
 
     def test_parse_full_request(self):
         request = parse_request(

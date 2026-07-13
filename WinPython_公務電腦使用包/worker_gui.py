@@ -17,8 +17,6 @@ from tkinter import filedialog, messagebox
 from typing import Any
 
 import customtkinter as ctk
-from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task
-from disinfect import login_and_get_driver
 from dotenv import load_dotenv
 
 import worker
@@ -339,6 +337,20 @@ def current_package_version(root: Path | None = None) -> str:
         except OSError:
             pass
     return "未知"
+
+
+def _manual_task_for_execution(
+    server_url: str,
+    task_id: str,
+    worker_id: str,
+    claimed_task: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    if claimed_task is not None:
+        claimed_task_id = str(claimed_task.get("task_id") or "").strip()
+        if claimed_task_id != str(task_id or "").strip():
+            raise ValueError(f"已領取任務與執行目標不一致：{claimed_task_id or '(missing)'} != {task_id}")
+        return claimed_task
+    return worker.claim_task(server_url, task_id, worker_id)
 
 
 class WorkerGui(ctk.CTk):
@@ -852,6 +864,7 @@ class WorkerGui(ctk.CTk):
 
     def _run_worker(self) -> None:
         try:
+            os.environ["WORKER_RUNTIME_MODE"] = "gui"
             writer = QueueTextWriter(self.log_queue)
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 worker.main()
@@ -1144,6 +1157,132 @@ class WorkerGui(ctk.CTk):
             return ""
         return str(selected[0])
 
+    def _run_selected_site_background_common(
+        self,
+        site_key: str,
+        task_id: str,
+        *,
+        profile_name: str,
+        debugger_port: int | None,
+        use_session_lock: bool,
+        tile_name: str,
+        force_new_driver: bool,
+        manage_manual_lock: bool,
+        update_overall: bool | None,
+        claimed_task: dict[str, object] | None,
+        cancellation_event: threading.Event | None,
+    ):
+        server_url = self.server_url.get().strip().rstrip("/")
+        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
+        effective_update_overall = manage_manual_lock if update_overall is None else update_overall
+        execution_event = cancellation_event
+        stop_heartbeat = lambda: None
+        if manage_manual_lock:
+            execution_event = worker.begin_manual_task_execution(task_id, artifacts_dir)
+            if execution_event is None:
+                self.log_queue.put("目前已有其他登打任務執行中，已略過重複啟動。")
+                return None
+        try:
+            self.log_queue.put(f"{site_key}：向 NAS 領取任務...")
+            task = _manual_task_for_execution(server_url, task_id, worker_id, claimed_task)
+            if not task:
+                self.log_queue.put(f"找不到或無法領取任務：{task_id}")
+                return None
+            if manage_manual_lock:
+                stop_heartbeat = worker._start_worker_claim_heartbeat(server_url, task_id, worker_id)
+            cancel_check = (
+                (lambda: worker._raise_if_task_cancelled(task_id, execution_event))
+                if execution_event is not None
+                else None
+            )
+            common_kwargs = {
+                "profile_name": profile_name,
+                "debugger_port": debugger_port,
+                "tile_name": tile_name,
+                "update_overall": effective_update_overall,
+                "cancel_check": cancel_check,
+            }
+            if site_key == "duty_work_log":
+                result = worker.run_task(
+                    server_url,
+                    worker_id,
+                    task,
+                    artifacts_dir,
+                    use_session_lock=use_session_lock,
+                    force_new_driver=force_new_driver,
+                    **common_kwargs,
+                )
+            elif site_key == "vehicle_mileage":
+                result = worker.run_vehicle_task(
+                    server_url,
+                    worker_id,
+                    task,
+                    artifacts_dir,
+                    use_session_lock=use_session_lock,
+                    force_new_driver=force_new_driver,
+                    **common_kwargs,
+                )
+            elif site_key == "fuel_record":
+                result = worker.run_fuel_worker_task(
+                    server_url,
+                    worker_id,
+                    task,
+                    artifacts_dir,
+                    use_session_lock=use_session_lock,
+                    force_new_driver=force_new_driver,
+                    **common_kwargs,
+                )
+            elif site_key == "consumables":
+                result = worker.run_consumables_worker_task(
+                    server_url,
+                    worker_id,
+                    task,
+                    artifacts_dir,
+                    **common_kwargs,
+                )
+            elif site_key == "disinfection":
+                result = worker.run_disinfection_worker_task(
+                    server_url,
+                    worker_id,
+                    task,
+                    artifacts_dir,
+                    use_session_lock=use_session_lock,
+                    force_new_driver=force_new_driver,
+                    **common_kwargs,
+                )
+            else:
+                raise KeyError(site_key)
+            if site_key == "disinfection":
+                if result is not None:
+                    self.log_queue.put(
+                        f"消毒紀錄完成：{getattr(result, 'status', '')}；{getattr(result, 'detail', '')}"
+                    )
+                else:
+                    self.log_queue.put(f"消毒紀錄沒有回傳結果：{task_id}")
+            if result is not None:
+                self.log_queue.put(
+                    f"{site_key} 結果：{getattr(result, 'status', '')}；{getattr(result, 'detail', '')}"
+                )
+            self._refresh_tasks()
+            return result
+        except worker.TaskCancellationError as exc:
+            self.log_queue.put(f"任務已中止或 claim 已失效：{task_id} {exc}")
+            if not manage_manual_lock:
+                raise
+            return None
+        except Exception as exc:
+            self.log_queue.put(f"執行 {site_key} 失敗：{task_id} {exc}")
+            if not manage_manual_lock:
+                raise
+            return None
+        finally:
+            try:
+                stop_heartbeat()
+            finally:
+                if manage_manual_lock and execution_event is not None:
+                    worker.end_manual_task_execution(task_id, execution_event, artifacts_dir)
+
     def _run_selected_task_background(
         self,
         task_id: str,
@@ -1154,46 +1293,23 @@ class WorkerGui(ctk.CTk):
         force_new_driver: bool = False,
         manage_manual_lock: bool = True,
         update_overall: bool | None = None,
+        claimed_task: dict[str, object] | None = None,
+        cancellation_event: threading.Event | None = None,
     ):
-        server_url = self.server_url.get().strip().rstrip("/")
-        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
-        if update_overall is None:
-            update_overall = manage_manual_lock
-        if manage_manual_lock:
-            worker.MANUAL_TASK_ACTIVE.set()
-        started_at = time.monotonic()
-        try:
-            self.log_queue.put("工作紀錄：向 NAS 取任務...")
-            task = worker.fetch_task(server_url, task_id)
-            self.log_queue.put(f"工作紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
-            if not task:
-                self.log_queue.put(f"找不到任務：{task_id}")
-                return
-            self.log_queue.put(f"開始執行選取任務：{task_id}")
-            selenium_started_at = time.monotonic()
-            result = worker.run_task(
-                server_url,
-                worker_id,
-                task,
-                Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
-                profile_name=profile_name,
-                debugger_port=debugger_port,
-                use_session_lock=use_session_lock,
-                tile_name=tile_name,
-                force_new_driver=force_new_driver,
-                update_overall=update_overall,
-            )
-            if result is not None:
-                self.log_queue.put(f"工作紀錄結果：{result.status}；{result.detail}")
-            self.log_queue.put(f"選取任務已執行完成：{task_id}，登打耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
-            self._refresh_tasks()
-            return result
-        except Exception as exc:
-            self.log_queue.put(f"執行選取任務失敗：{task_id} {exc}")
-            return None
-        finally:
-            if manage_manual_lock:
-                worker.MANUAL_TASK_ACTIVE.clear()
+        return WorkerGui._run_selected_site_background_common(
+            self,
+            "duty_work_log",
+            task_id,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+            manage_manual_lock=manage_manual_lock,
+            update_overall=update_overall,
+            claimed_task=claimed_task,
+            cancellation_event=cancellation_event,
+        )
 
     def _run_selected_vehicle_mileage_background(
         self,
@@ -1205,46 +1321,23 @@ class WorkerGui(ctk.CTk):
         force_new_driver: bool = False,
         manage_manual_lock: bool = True,
         update_overall: bool | None = None,
+        claimed_task: dict[str, object] | None = None,
+        cancellation_event: threading.Event | None = None,
     ):
-        server_url = self.server_url.get().strip().rstrip("/")
-        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
-        if update_overall is None:
-            update_overall = manage_manual_lock
-        if manage_manual_lock:
-            worker.MANUAL_TASK_ACTIVE.set()
-        started_at = time.monotonic()
-        try:
-            self.log_queue.put("車輛里程：向 NAS 取任務...")
-            task = worker.fetch_task(server_url, task_id)
-            self.log_queue.put(f"車輛里程：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
-            if not task:
-                self.log_queue.put(f"找不到任務：{task_id}")
-                return
-            self.log_queue.put(f"開始執行車輛里程：{task_id}")
-            selenium_started_at = time.monotonic()
-            result = worker.run_vehicle_task(
-                server_url,
-                worker_id,
-                task,
-                Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
-                profile_name=profile_name,
-                debugger_port=debugger_port,
-                use_session_lock=use_session_lock,
-                tile_name=tile_name,
-                force_new_driver=force_new_driver,
-                update_overall=update_overall,
-            )
-            if result is not None:
-                self.log_queue.put(f"車輛里程結果：{result.status}；{result.detail}")
-            self.log_queue.put(f"車輛里程已執行完成：{task_id}，登打耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
-            self._refresh_tasks()
-            return result
-        except Exception as exc:
-            self.log_queue.put(f"執行車輛里程失敗：{task_id} {exc}")
-            return None
-        finally:
-            if manage_manual_lock:
-                worker.MANUAL_TASK_ACTIVE.clear()
+        return WorkerGui._run_selected_site_background_common(
+            self,
+            "vehicle_mileage",
+            task_id,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+            manage_manual_lock=manage_manual_lock,
+            update_overall=update_overall,
+            claimed_task=claimed_task,
+            cancellation_event=cancellation_event,
+        )
 
     def _run_selected_disinfection_background(
         self,
@@ -1256,71 +1349,23 @@ class WorkerGui(ctk.CTk):
         force_new_driver: bool = False,
         manage_manual_lock: bool = True,
         update_overall: bool | None = None,
+        claimed_task: dict[str, object] | None = None,
+        cancellation_event: threading.Event | None = None,
     ):
-        server_url = self.server_url.get().strip().rstrip("/")
-        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
-        if update_overall is None:
-            update_overall = manage_manual_lock
-        if manage_manual_lock:
-            worker.MANUAL_TASK_ACTIVE.set()
-        started_at = time.monotonic()
-        try:
-            self.log_queue.put("消毒紀錄：向 NAS 取任務...")
-            task = worker.fetch_task(server_url, task_id)
-            self.log_queue.put(f"消毒紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
-            
-            if not task:
-                self.log_queue.put(f"找不到任務：{task_id}")
-                return
-                
-            self.log_queue.put(f"開始執行消毒紀錄：{task_id}")
-            selenium_started_at = time.monotonic()
-            
-            # 🚀 方案 B 核心改動：先呼叫自動化登入，拿到已經登入成功的瀏覽器 driver
-            self.log_queue.put("消毒紀錄：正在啟動 Chrome 並進行 AI 驗證碼登入...")
-            active_driver = login_and_get_driver(profile_name=profile_name, debugger_port=debugger_port, tile_name=tile_name)
-            
-            # 將這個登入好的 active_driver 餵給原本的 worker 任務執行後續動作
-            # (備註：請確保你的 worker.run_disinfection_worker_task 支援傳入自訂 driver 參數)
-            result = worker.run_disinfection_worker_task(
-                server_url,
-                worker_id,
-                task,
-                Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
-                driver=active_driver,
-                profile_name=profile_name,
-                debugger_port=debugger_port,
-                use_session_lock=use_session_lock,
-                tile_name=tile_name,
-                force_new_driver=force_new_driver,
-                update_overall=update_overall,
-            )
-            elapsed = time.monotonic() - selenium_started_at
-            if result is not None:
-                self.log_queue.put(f"消毒紀錄完成：{result.status}，耗時 {elapsed:.1f} 秒")
-                self.log_queue.put(f"消毒紀錄結果：{result.detail}")
-            else:
-                self.log_queue.put(f"消毒紀錄沒有回傳結果：{task_id}，耗時 {elapsed:.1f} 秒")
-            self._refresh_tasks()
-            return result
-            
-        except Exception as exc:
-            self.log_queue.put(f"執行消毒紀錄失敗：{task_id} {exc}")
-            try:
-                worker.post_status(
-                    server_url,
-                    task_id,
-                    "disinfection_failed",
-                    f"消毒紀錄操作失敗：{exc}",
-                    site_key="disinfection",
-                    site_name="緊急救護消毒",
-                )
-            except Exception as post_exc:
-                self.log_queue.put(f"消毒紀錄失敗狀態回寫失敗：{post_exc}")
-            return None
-        finally:
-            if manage_manual_lock:
-                worker.MANUAL_TASK_ACTIVE.clear()
+        return WorkerGui._run_selected_site_background_common(
+            self,
+            "disinfection",
+            task_id,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+            manage_manual_lock=manage_manual_lock,
+            update_overall=update_overall,
+            claimed_task=claimed_task,
+            cancellation_event=cancellation_event,
+        )
 
     def _run_selected_fuel_record_background(
         self,
@@ -1332,50 +1377,23 @@ class WorkerGui(ctk.CTk):
         force_new_driver: bool = False,
         manage_manual_lock: bool = True,
         update_overall: bool | None = None,
+        claimed_task: dict[str, object] | None = None,
+        cancellation_event: threading.Event | None = None,
     ):
-        server_url = self.server_url.get().strip().rstrip("/")
-        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
-        if update_overall is None:
-            update_overall = manage_manual_lock
-        if manage_manual_lock:
-            worker.MANUAL_TASK_ACTIVE.set()
-        started_at = time.monotonic()
-        try:
-            self.log_queue.put("加油紀錄：向 NAS 取任務...")
-            task = worker.fetch_task(server_url, task_id)
-            self.log_queue.put(f"加油紀錄：取任務完成，耗時 {time.monotonic() - started_at:.1f} 秒")
-            if not task:
-                self.log_queue.put(f"找不到任務：{task_id}")
-                return
-            request = worker.AmbulanceReturnRequest.from_dict(task)
-            if not request.has_fuel_record():
-                self.log_queue.put(f"加油紀錄：未勾選，略過 {task_id}")
-                return worker.make_site_result("fuel_record", "登打加油紀錄", "fuel_record_skipped", "未勾選加油紀錄，已略過。")
-            self.log_queue.put(f"開始執行加油紀錄：{task_id}")
-            selenium_started_at = time.monotonic()
-            result = worker.run_fuel_worker_task(
-                server_url,
-                worker_id,
-                task,
-                Path(os.getenv("ARTIFACTS_DIR", "artifacts")),
-                profile_name=profile_name,
-                debugger_port=debugger_port,
-                use_session_lock=use_session_lock,
-                tile_name=tile_name,
-                force_new_driver=force_new_driver,
-                update_overall=update_overall,
-            )
-            if result is not None:
-                self.log_queue.put(f"加油紀錄結果：{result.status}；{result.detail}")
-            self.log_queue.put(f"加油紀錄已執行完成：{task_id}，登打耗時 {time.monotonic() - selenium_started_at:.1f} 秒")
-            self._refresh_tasks()
-            return result
-        except Exception as exc:
-            self.log_queue.put(f"執行加油紀錄失敗：{task_id} {exc}")
-            return None
-        finally:
-            if manage_manual_lock:
-                worker.MANUAL_TASK_ACTIVE.clear()
+        return WorkerGui._run_selected_site_background_common(
+            self,
+            "fuel_record",
+            task_id,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+            manage_manual_lock=manage_manual_lock,
+            update_overall=update_overall,
+            claimed_task=claimed_task,
+            cancellation_event=cancellation_event,
+        )
 
     def _run_selected_consumables_background(
         self,
@@ -1387,58 +1405,25 @@ class WorkerGui(ctk.CTk):
         force_new_driver: bool = False,
         manage_manual_lock: bool = True,
         update_overall: bool = True,
+        claimed_task: dict[str, object] | None = None,
+        cancellation_event: threading.Event | None = None,
     ):
-        server_url = self.server_url.get().strip().rstrip("/")
-        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
-        if manage_manual_lock:
-            worker.MANUAL_TASK_ACTIVE.set()
-        started_at = time.monotonic()
-        try:
-            self.log_queue.put("耗材：向 NAS 取任務...")
-            task = worker.fetch_task(server_url, task_id)
-            if not task:
-                self.log_queue.put(f"找不到任務：{task_id}")
-                return
-            self.log_queue.put("耗材：正在啟動 Chrome 並登入一站通...")
-            driver = login_acs_and_get_driver(profile_name=profile_name, debugger_port=debugger_port, tile_name=tile_name)
-            detail = open_consumable_record_for_task(driver, task)
-            worker.post_status(
-                server_url,
-                task_id,
-                "consumables_saved",
-                detail,
-                site_key="consumables",
-                site_name="一站通耗材",
-            )
-            if update_overall:
-                worker.post_status(server_url, task_id, "desktop_fast_completed", detail)
-            self.log_queue.put(f"耗材系統已開啟案件內容：{detail}，耗時 {time.monotonic() - started_at:.1f} 秒")
-            self._refresh_tasks()
-            return "consumables_saved"
-        except Exception as exc:
-            self.log_queue.put(f"執行耗材失敗：{task_id} {exc}")
-            try:
-                worker.post_status(
-                    server_url,
-                    task_id,
-                    "consumables_failed",
-                    f"耗材操作失敗：{exc}",
-                    site_key="consumables",
-                    site_name="一站通耗材",
-                )
-            except Exception as post_exc:
-                self.log_queue.put(f"耗材失敗狀態回寫失敗：{post_exc}")
-            if update_overall:
-                try:
-                    worker.post_status(server_url, task_id, "desktop_fast_completed_with_errors", f"耗材操作失敗：{exc}")
-                except Exception:
-                    pass
-            return "consumables_failed"
-        finally:
-            if manage_manual_lock:
-                worker.MANUAL_TASK_ACTIVE.clear()
+        return WorkerGui._run_selected_site_background_common(
+            self,
+            "consumables",
+            task_id,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+            manage_manual_lock=manage_manual_lock,
+            update_overall=update_overall,
+            claimed_task=claimed_task,
+            cancellation_event=cancellation_event,
+        )
 
-    def _run_selected_all_sites_background(self, task_id: str) -> None:
+    def _run_selected_all_sites_with_lease(self, task_id: str) -> None:
         profile_suffix = task_id.replace("-", "_")
         all_runners = [
             ("工作紀錄", "duty_work_log", self._run_selected_task_background, f"duty_work_log_profile_{profile_suffix}", None, "duty_work_log"),
@@ -1448,26 +1433,54 @@ class WorkerGui(ctk.CTk):
             ("消毒紀錄", "disinfection", self._run_selected_disinfection_background, f"disinfection_profile_{profile_suffix}", None, "disinfection"),
         ]
         server_url = self.server_url.get().strip().rstrip("/")
-        worker.MANUAL_TASK_ACTIVE.set()
+        worker_id = self.worker_id.get().strip() or socket.gethostname() or "public-duty-pc"
+        artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
+        execution_event = worker.begin_manual_task_execution(task_id, artifacts_dir)
+        if execution_event is None:
+            self.log_queue.put("目前已有其他登打任務執行中，已略過重複啟動。")
+            return
+        stop_heartbeat = lambda: None
         try:
-            initial_payload = worker.fetch_task_payload(server_url, task_id)
-            request = worker.AmbulanceReturnRequest.from_dict(dict(initial_payload.get("task") or {})) if initial_payload else None
+            task = _manual_task_for_execution(server_url, task_id, worker_id)
+            if not task:
+                self.log_queue.put(f"找不到或無法領取任務：{task_id}")
+                return
+            stop_heartbeat = worker._start_worker_claim_heartbeat(server_url, task_id, worker_id)
+            worker._raise_if_task_cancelled(task_id, execution_event)
+            request = worker.AmbulanceReturnRequest.from_dict(task)
             runners = [runner for runner in all_runners if runner[1] != "fuel_record" or (request and request.has_fuel_record())]
             site_count_label = "五站" if request and request.has_fuel_record() else "四站"
             worker.post_status(server_url, task_id, "desktop_fast_running", f"本機快速執行已啟動：{site_count_label}登打。")
             blocked_site = ""
             for name, site_key, target, profile_name, debugger_port, tile_name in runners:
+                worker._raise_if_task_cancelled(task_id, execution_event)
                 payload = worker.fetch_task_payload(server_url, task_id)
                 if not payload:
                     blocked_site = name
                     break
+                worker._assert_task_payload_claim_current(task_id, payload)
                 site_statuses = payload.get("site_statuses") if isinstance(payload.get("site_statuses"), dict) else {}
                 current_status = str((site_statuses.get(site_key) or {}).get("status") or "")
                 if _gui_site_is_complete(current_status):
                     self.log_queue.put(f"{site_count_label}登打略過：{name} 已完成")
                     continue
                 self.log_queue.put(f"{site_count_label}登打已啟動：{name}")
-                target(task_id, profile_name, debugger_port, False, tile_name, True, False)
+                result = target(
+                    task_id,
+                    profile_name=profile_name,
+                    debugger_port=debugger_port,
+                    use_session_lock=False,
+                    tile_name=tile_name,
+                    force_new_driver=True,
+                    manage_manual_lock=False,
+                    update_overall=False,
+                    claimed_task=task,
+                    cancellation_event=execution_event,
+                )
+                if result is None:
+                    blocked_site = name
+                    break
+                worker._raise_if_task_cancelled(task_id, execution_event)
                 payload = worker.fetch_task_payload(server_url, task_id)
                 if not payload:
                     blocked_site = name
@@ -1483,8 +1496,27 @@ class WorkerGui(ctk.CTk):
                 worker.post_status(server_url, task_id, "desktop_fast_completed", f"{site_count_label}登打完成。")
             self.log_queue.put(f"{site_count_label}登打流程結束：{task_id}")
             self._refresh_tasks()
+        except worker.TaskCancellationError as exc:
+            self.log_queue.put(f"任務已中止或 claim 已失效：{task_id} {exc}")
+        except Exception as exc:
+            self.log_queue.put(f"多站登打失敗：{task_id} {exc}")
+            try:
+                worker.post_status(
+                    server_url,
+                    task_id,
+                    "desktop_fast_completed_with_errors",
+                    f"多站登打未完成：{exc}",
+                )
+            except Exception:
+                pass
         finally:
-            worker.MANUAL_TASK_ACTIVE.clear()
+            try:
+                stop_heartbeat()
+            finally:
+                worker.end_manual_task_execution(task_id, execution_event, artifacts_dir)
+
+    def _run_selected_all_sites_background(self, task_id: str) -> None:
+        return WorkerGui._run_selected_all_sites_with_lease(self, task_id)
 
     def _warm_worker_chrome(self) -> None:
         if os.getenv("WORKER_WARM_CHROME_ON_START", "true").strip().lower() in FALSE_ENV_VALUES:
@@ -1550,7 +1582,7 @@ def _gui_site_blocks_next(status: str) -> bool:
     value = str(status or "")
     if "failed" in value or "error" in value:
         return True
-    if value.startswith("needs_") or "login" in value:
+    if value.startswith("needs_") or "login" in value or "waiting_confirmation" in value:
         return True
     return False
 

@@ -1,16 +1,29 @@
 import json
 import os
+import queue
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import worker_gui
 from ambulance_bot.duty_credentials import DutyCredential, load_synced_worker_credential
 
 
 class WorkerGuiEnvTests(unittest.TestCase):
+    @staticmethod
+    def _manual_gui_stub(**overrides):
+        values = {
+            "server_url": SimpleNamespace(get=lambda: "http://nas/"),
+            "worker_id": SimpleNamespace(get=lambda: "PC-01"),
+            "log_queue": queue.Queue(),
+            "_refresh_tasks": mock.Mock(),
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
     def test_gui_theme_uses_pastel_orange_white_and_deep_navy(self):
         self.assertEqual(worker_gui.GUI_THEME["bg"], "#fff7ef")
         self.assertEqual(worker_gui.GUI_THEME["surface"], "#ffffff")
@@ -462,7 +475,223 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertFalse(worker_gui._gui_site_is_complete("consumables_running"))
         self.assertTrue(worker_gui._gui_site_blocks_next("disinfection_failed"))
         self.assertTrue(worker_gui._gui_site_blocks_next("needs_duty_login"))
+        self.assertTrue(worker_gui._gui_site_blocks_next("consumables_waiting_confirmation"))
         self.assertFalse(worker_gui._gui_site_blocks_next("vehicle_mileage_saved"))
+
+    def test_manual_site_heartbeat_stop_error_still_ends_execution_lease(self):
+        task = {"task_id": "task-site-stop-error", "created_at": "2026-07-13T08:00:00", "vehicle": "新坡91"}
+        gui = self._manual_gui_stub()
+        event = __import__("threading").Event()
+
+        def fail_stop():
+            raise RuntimeError("heartbeat stop failed")
+
+        with mock.patch.object(
+            worker_gui.worker,
+            "begin_manual_task_execution",
+            return_value=event,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "end_manual_task_execution",
+        ) as end_execution, mock.patch.object(
+            worker_gui.worker,
+            "_start_worker_claim_heartbeat",
+            return_value=fail_stop,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "claim_task",
+            return_value=task,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "run_task",
+            return_value=SimpleNamespace(status="duty_work_log_saved", detail="ok"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "heartbeat stop failed"):
+                worker_gui.WorkerGui._run_selected_site_background_common(
+                    gui,
+                    "duty_work_log",
+                    task["task_id"],
+                    profile_name="duty_work_log_profile",
+                    debugger_port=None,
+                    use_session_lock=True,
+                    tile_name="duty_work_log",
+                    force_new_driver=False,
+                    manage_manual_lock=True,
+                    update_overall=None,
+                    claimed_task=None,
+                    cancellation_event=None,
+                )
+
+        end_execution.assert_called_once_with(task["task_id"], event, mock.ANY)
+
+    def test_manual_all_sites_heartbeat_stop_error_still_ends_execution_lease(self):
+        task = {"task_id": "task-all-stop-error", "created_at": "2026-07-13T08:00:00", "vehicle": "新坡91"}
+        gui = self._manual_gui_stub(
+            _run_selected_task_background=mock.Mock(),
+            _run_selected_vehicle_mileage_background=mock.Mock(),
+            _run_selected_fuel_record_background=mock.Mock(),
+            _run_selected_consumables_background=mock.Mock(),
+            _run_selected_disinfection_background=mock.Mock(),
+        )
+        event = __import__("threading").Event()
+
+        def fail_stop():
+            raise RuntimeError("heartbeat stop failed")
+
+        with mock.patch.object(
+            worker_gui.worker,
+            "begin_manual_task_execution",
+            return_value=event,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "end_manual_task_execution",
+        ) as end_execution, mock.patch.object(
+            worker_gui.worker,
+            "_start_worker_claim_heartbeat",
+            return_value=fail_stop,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "claim_task",
+            return_value=task,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "_raise_if_task_cancelled",
+            side_effect=worker_gui.worker.TaskCancellationError("cancelled"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "heartbeat stop failed"):
+                worker_gui.WorkerGui._run_selected_all_sites_with_lease(gui, task["task_id"])
+
+        end_execution.assert_called_once_with(task["task_id"], event, mock.ANY)
+
+    def test_manual_all_sites_does_not_report_complete_when_child_returns_none(self):
+        task = {"task_id": "task-child-none", "created_at": "2026-07-13T08:00:00", "vehicle": "新坡91"}
+        site_keys = ("duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection")
+        payload = {
+            "task": task,
+            "worker_queue": {"status": "claimed", "claim_id": "claim-none", "worker_id": "PC-01"},
+            "site_statuses": {site_key: {"status": "not_started"} for site_key in site_keys},
+        }
+        duty_runner = mock.Mock(return_value=None)
+        gui = self._manual_gui_stub(
+            _run_selected_task_background=duty_runner,
+            _run_selected_vehicle_mileage_background=mock.Mock(),
+            _run_selected_fuel_record_background=mock.Mock(),
+            _run_selected_consumables_background=mock.Mock(),
+            _run_selected_disinfection_background=mock.Mock(),
+        )
+        event = __import__("threading").Event()
+        posts: list[str] = []
+
+        with mock.patch.object(worker_gui.worker, "begin_manual_task_execution", return_value=event), mock.patch.object(
+            worker_gui.worker, "end_manual_task_execution"
+        ), mock.patch.object(worker_gui.worker, "_start_worker_claim_heartbeat", return_value=lambda: None), mock.patch.object(
+            worker_gui.worker, "claim_task", return_value=task
+        ), mock.patch.object(worker_gui.worker, "fetch_task_payload", return_value=payload), mock.patch.object(
+            worker_gui.worker,
+            "post_status",
+            side_effect=lambda _server, _task, status, _detail, **_kwargs: posts.append(status),
+        ):
+            worker_gui.WorkerGui._run_selected_all_sites_background(gui, task["task_id"])
+
+        self.assertEqual(posts[-1], "desktop_fast_completed_with_errors")
+        self.assertNotIn("desktop_fast_completed", posts)
+
+    def test_manual_all_sites_waiting_confirmation_does_not_report_complete(self):
+        task = {"task_id": "task-child-wait", "created_at": "2026-07-13T08:00:00", "vehicle": "新坡91"}
+        site_keys = ("duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection")
+        before = {
+            "task": task,
+            "worker_queue": {"status": "claimed", "claim_id": "claim-wait", "worker_id": "PC-01"},
+            "site_statuses": {site_key: {"status": "not_started"} for site_key in site_keys},
+        }
+        after = json.loads(json.dumps(before))
+        after["site_statuses"]["duty_work_log"]["status"] = "duty_work_log_waiting_confirmation"
+        duty_runner = mock.Mock(return_value=SimpleNamespace(status="duty_work_log_waiting_confirmation"))
+        gui = self._manual_gui_stub(
+            _run_selected_task_background=duty_runner,
+            _run_selected_vehicle_mileage_background=mock.Mock(),
+            _run_selected_fuel_record_background=mock.Mock(),
+            _run_selected_consumables_background=mock.Mock(),
+            _run_selected_disinfection_background=mock.Mock(),
+        )
+        event = __import__("threading").Event()
+        posts: list[str] = []
+
+        with mock.patch.object(worker_gui.worker, "begin_manual_task_execution", return_value=event), mock.patch.object(
+            worker_gui.worker, "end_manual_task_execution"
+        ), mock.patch.object(worker_gui.worker, "_start_worker_claim_heartbeat", return_value=lambda: None), mock.patch.object(
+            worker_gui.worker, "claim_task", return_value=task
+        ), mock.patch.object(worker_gui.worker, "fetch_task_payload", side_effect=[before, after]), mock.patch.object(
+            worker_gui.worker,
+            "post_status",
+            side_effect=lambda _server, _task, status, _detail, **_kwargs: posts.append(status),
+        ):
+            worker_gui.WorkerGui._run_selected_all_sites_background(gui, task["task_id"])
+
+        self.assertEqual(posts[-1], "desktop_fast_completed_with_errors")
+        self.assertNotIn("desktop_fast_completed", posts)
+
+    def test_manual_site_backgrounds_claim_selected_task_instead_of_read_only_fetch(self):
+        gui = self._manual_gui_stub()
+        backgrounds = (
+            worker_gui.WorkerGui._run_selected_task_background,
+            worker_gui.WorkerGui._run_selected_vehicle_mileage_background,
+            worker_gui.WorkerGui._run_selected_disinfection_background,
+            worker_gui.WorkerGui._run_selected_fuel_record_background,
+            worker_gui.WorkerGui._run_selected_consumables_background,
+        )
+
+        with mock.patch.object(worker_gui.worker, "claim_task", return_value=None, create=True) as claim_task, mock.patch.object(
+            worker_gui.worker,
+            "fetch_task",
+            return_value=None,
+        ) as fetch_task:
+            for background in backgrounds:
+                with self.subTest(background=background.__name__):
+                    background(gui, "task-claim", manage_manual_lock=False)
+
+        self.assertEqual(
+            claim_task.call_args_list,
+            [mock.call("http://nas", "task-claim", "PC-01")] * len(backgrounds),
+        )
+        fetch_task.assert_not_called()
+
+    def test_manual_all_sites_claims_once_and_reuses_task_for_every_site(self):
+        task = {
+            "task_id": "task-all-sites",
+            "created_at": "2026-07-13T08:00:00",
+            "vehicle": "新坡91",
+            "fuel_record": {"enabled": True},
+        }
+        site_keys = ("duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection")
+        payload = {
+            "task": task,
+            "worker_queue": {"status": "claimed", "claim_id": "claim-1", "worker_id": "PC-01"},
+            "site_statuses": {site_key: {"status": "not_started"} for site_key in site_keys},
+        }
+        runners = {site_key: mock.Mock(name=site_key) for site_key in site_keys}
+        gui = self._manual_gui_stub(
+            _run_selected_task_background=runners["duty_work_log"],
+            _run_selected_vehicle_mileage_background=runners["vehicle_mileage"],
+            _run_selected_fuel_record_background=runners["fuel_record"],
+            _run_selected_consumables_background=runners["consumables"],
+            _run_selected_disinfection_background=runners["disinfection"],
+        )
+
+        with mock.patch.object(worker_gui.worker, "claim_task", return_value=task, create=True) as claim_task, mock.patch.object(
+            worker_gui.worker,
+            "fetch_task_payload",
+            return_value=payload,
+        ), mock.patch.object(worker_gui.worker, "post_status"):
+            worker_gui.WorkerGui._run_selected_all_sites_background(gui, task["task_id"])
+
+        claim_task.assert_called_once_with("http://nas", task["task_id"], "PC-01")
+        for site_key, runner in runners.items():
+            with self.subTest(site_key=site_key):
+                runner.assert_called_once()
+                self.assertIs(runner.call_args.kwargs["claimed_task"], task)
+                self.assertFalse(runner.call_args.kwargs["manage_manual_lock"])
+                self.assertFalse(runner.call_args.kwargs["update_overall"])
 
     def test_worker_restart_enables_auto_claim_tasks(self):
         source = Path(worker_gui.__file__).read_text(encoding="utf-8")
@@ -524,6 +753,152 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn('$releaseUpdaterAsset = "update_package.ps1"', source)
         self.assertIn('Copy-Item -LiteralPath (Join-Path $packageDir "update_package.ps1")', source)
         self.assertIn("@($releaseVersionAsset, $releaseZipAsset, $releaseShaAsset, $releaseUpdaterAsset)", source)
+
+    def test_manual_updater_stages_and_validates_before_stopping_worker(self):
+        source = Path("WinPython_公務電腦使用包/UPDATE_PACKAGE.ps1").read_text(encoding="utf-8-sig")
+
+        stop_marker = "Stop-WorkerPackageProcesses -Processes"
+        self.assertIn(stop_marker, source)
+        stop_call = source.index(stop_marker, source.index("Expand-Archive"))
+        self.assertLess(source.index("Expand-Archive"), stop_call)
+        self.assertLess(source.index("if ($packageVersion -ne $remoteVersion)"), stop_call)
+
+    def test_manual_updater_rolls_back_and_restores_prior_running_state(self):
+        source = Path("WinPython_公務電腦使用包/UPDATE_PACKAGE.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn("function Restore-UpdateTree", source)
+        self.assertRegex(source, r"(?s)catch\s*\{.*Restore-UpdateTree")
+        self.assertIn("$workerGuiWasRunning", source)
+        self.assertIn("$workerHeadlessWasRunning", source)
+        self.assertIn("$workerStopped", source)
+        self.assertRegex(source, r"(?s)finally\s*\{.*if \(\$workerStopped.*Restart-WorkerRuntimes")
+
+    def test_remote_update_wrapper_uses_unique_result_and_compatibility_file(self):
+        source = Path("WinPython_公務電腦使用包/REMOTE_UPDATE_PACKAGE.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[guid]::NewGuid", source)
+        self.assertIn('"remote_update_results"', source)
+        self.assertIn('$compatibilityResultPath = Join-Path $resultDir "remote_update_result.json"', source)
+        self.assertIn("$resultPath = Join-Path $uniqueResultDir", source)
+        self.assertIn("$compatibilityTempPath", source)
+        self.assertLess(source.index("Move-Item -LiteralPath $tempResultPath"), source.index("Move-Item -LiteralPath $compatibilityTempPath"))
+
+    def test_remote_update_wrapper_prunes_only_expired_results(self):
+        source = Path("WinPython_公務電腦使用包/REMOTE_UPDATE_PACKAGE.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("function Remove-ExpiredRemoteUpdateResults", source)
+        self.assertIn("AddDays(-7)", source)
+        self.assertIn("$resultPath", source)
+        self.assertIn("$tempResultPath", source)
+        self.assertIn("LastWriteTimeUtc", source)
+        self.assertIn("Get-ChildItem -LiteralPath $uniqueResultDir -File", source)
+        self.assertNotRegex(source, r"Remove-Item[^\r\n]*-Recurse")
+
+    def test_one_version_orchestrator_builds_and_verifies_both_packages(self):
+        path = Path("scripts/build_all_packages.ps1")
+
+        self.assertTrue(path.exists())
+        source = path.read_text(encoding="utf-8")
+        self.assertIn("[Parameter(Mandatory = $true)]", source)
+        self.assertIn("build_public_duty_package.ps1", source)
+        self.assertIn("build_nas_package.ps1", source)
+        self.assertGreaterEqual(source.count("-Version $Version"), 2)
+        self.assertIn("Read-ZipVersion", source)
+        self.assertIn("Assert-VersionEquals", source)
+        self.assertIn("Read-Sha256Text", source)
+        self.assertIn("Assert-FileSha256", source)
+        self.assertIn("Public/release zip byte hash", source)
+        self.assertGreaterEqual(source.count("Get-FileHash"), 1)
+
+    def test_one_version_orchestrator_stages_everything_before_transactional_publish(self):
+        source = Path("scripts/build_all_packages.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("package-build-stage-", source)
+        self.assertIn("-OutputDir $stagePublicDir", source)
+        self.assertIn("-SkipSourceVersionUpdate", source)
+        self.assertIn("-SourceDir $stagePublicPackageDir", source)
+        self.assertIn("Publish-StagedBuild", source)
+        self.assertRegex(source, r"(?s)catch\s*\{.*Restore-PublishedBuild")
+        self.assertIn("$entry.Published = $false", source)
+        self.assertIn("$entry.HadExisting = $false", source)
+        self.assertIn("RollbackComplete", source)
+        self.assertIn("Recovery files:", source)
+
+    def test_all_package_build_entrypoints_share_an_exclusive_process_lock(self):
+        sources = {
+            name: Path(f"scripts/{name}").read_text(encoding="utf-8")
+            for name in (
+                "build_all_packages.ps1",
+                "build_public_duty_package.ps1",
+                "build_nas_package.ps1",
+            )
+        }
+
+        for name, source in sources.items():
+            with self.subTest(script=name):
+                self.assertIn(".package-build.lock", source)
+                self.assertIn("FileShare]::None", source)
+                self.assertIn("Another package build is already in progress", source)
+        self.assertGreaterEqual(sources["build_all_packages.ps1"].count("-BuildLockAlreadyHeld"), 2)
+
+    def test_public_builder_commits_versions_only_after_assets_and_writes_manifest_to_stage(self):
+        source = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
+
+        source_version_write = "$Version | Set-Content -LiteralPath $sourceVersionStagePath"
+        update_version_write = "$Version | Set-Content -LiteralPath $updateVersionStagePath"
+        archive = source.index("Compress-Archive")
+        release_copy = source.index("Copy-Item -LiteralPath $zipPath -Destination $releaseZipPath")
+        self.assertGreater(source.index(source_version_write), archive)
+        self.assertGreater(source.index(source_version_write), release_copy)
+        self.assertGreater(source.index(update_version_write), archive)
+        self.assertGreater(source.index("Publish-StagedFiles -Mappings"), source.index(update_version_write))
+        self.assertIn('Target = (Join-Path $packageDir "VERSION.txt")', source)
+        self.assertIn('$Version | Set-Content -LiteralPath (Join-Path $stagePackageDir "VERSION.txt")', source)
+        self.assertIn("Write-UpdateManifest -StagePackageDir $stagePackageDir", source)
+
+    def test_public_builder_publishes_staged_assets_with_rollback(self):
+        source = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[string]$OutputDir", source)
+        self.assertIn("[switch]$SkipSourceVersionUpdate", source)
+        self.assertIn("$assetStageDir", source)
+        self.assertIn("Publish-StagedFiles", source)
+        self.assertRegex(source, r"(?s)catch\s*\{.*Restore-PublishedFiles")
+        self.assertIn("$entry.Published = $false", source)
+        self.assertIn("$entry.HadExisting = $false", source)
+        self.assertIn("RollbackComplete", source)
+        self.assertIn("Recovery files:", source)
+
+    def test_nas_build_asserts_explicit_version_matches_source_and_output(self):
+        source = Path("scripts/build_nas_package.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[string]$Version", source)
+        self.assertIn("Source VERSION.txt", source)
+        self.assertIn("NAS VERSION.txt", source)
+        self.assertIn("Assert-VersionEquals", source)
+
+    def test_nas_builder_rejects_update_root_and_requires_core_files(self):
+        source = Path("scripts/build_nas_package.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[string]$SourceDir", source)
+        self.assertIn("OutputDir must be a child directory of UPDATE", source)
+        required_loop = source[source.index('foreach ($file in @(') : source.index('foreach ($dir in @(')]
+        self.assertNotIn("if (Test-Path", required_loop)
+        self.assertIn("Copy-FileToOutput -Source $source -RelativePath $file", required_loop)
+
+    def test_nas_builder_stages_and_rolls_back_standalone_publish(self):
+        source = Path("scripts/build_nas_package.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("$nasStageDir", source)
+        self.assertIn("$nasRollbackDir", source)
+        self.assertIn("Publish-NasStage", source)
+        self.assertIn("Restore-NasOutput", source)
+        self.assertRegex(source, r"(?s)catch\s*\{.*Restore-NasOutput")
+        self.assertIn("$State.Published = $false", source)
+        self.assertIn("$State.HadExisting = $false", source)
+        self.assertIn('throw "backup is missing"', source)
+        self.assertIn("RollbackComplete", source)
+        self.assertIn("Recovery files:", source)
 
     def test_credential_choice_label_uses_display_name(self):
         credential = DutyCredential(user_id="user1", password="pass", actor_no="8", display_name="8番 王小明")

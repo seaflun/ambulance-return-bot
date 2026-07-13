@@ -2,5 +2,6 @@
 setlocal
 cd /d "%~dp0"
 set WORKER_RUN_ONCE=false
-py -u worker.py
+set WORKER_RUNTIME_MODE=headless
+py -u "%~dp0worker.py"
 pause

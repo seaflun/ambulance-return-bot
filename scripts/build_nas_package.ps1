@@ -1,6 +1,9 @@
 param(
     [string]$ProjectRoot,
-    [string]$OutputDir
+    [string]$OutputDir,
+    [string]$Version,
+    [string]$SourceDir,
+    [switch]$BuildLockAlreadyHeld
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +18,27 @@ $nasPackageName = "NAS" + [string][char]0x5305
 function Resolve-FullPath {
     param([string]$Path)
     return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Read-VersionText {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Missing version file: $Path"
+    }
+    return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8).Trim().TrimStart([char]0xFEFF)
+}
+
+function Assert-VersionEquals {
+    param(
+        [string]$Label,
+        [string]$Actual,
+        [string]$Expected
+    )
+
+    if ($Actual -ne $Expected) {
+        throw "$Label version mismatch. Expected $Expected but got $Actual."
+    }
 }
 
 function Assert-UnderPath {
@@ -41,6 +65,90 @@ function Remove-SafeDirectory {
     }
     Assert-UnderPath -Path $Path -Root $ExpectedRoot
     Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
+function Enter-PackageBuildLock {
+    param([string]$LockPath)
+
+    $lockDir = Split-Path -Parent $LockPath
+    New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+    try {
+        $stream = [System.IO.File]::Open(
+            $LockPath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+    } catch [System.IO.IOException] {
+        throw "Another package build is already in progress: $LockPath"
+    }
+    try {
+        $metadata = [System.Text.Encoding]::UTF8.GetBytes("pid=$PID started_utc=$([DateTime]::UtcNow.ToString('o'))")
+        $stream.SetLength(0)
+        $stream.Write($metadata, 0, $metadata.Length)
+        $stream.Flush($true)
+        return $stream
+    } catch {
+        $stream.Dispose()
+        throw
+    }
+}
+
+function Restore-NasOutput {
+    param([object]$State)
+
+    if ($null -eq $State) {
+        return
+    }
+    $errors = @()
+    if ($State.Published) {
+        try {
+            if (Test-Path -LiteralPath $State.FinalOutput) {
+                Remove-SafeDirectory -Path $State.FinalOutput -ExpectedRoot $State.CleanRoot
+            }
+            $State.Published = $false
+        } catch {
+            $errors += "remove published NAS output $($State.FinalOutput): $($_.Exception.Message)"
+        }
+    }
+    if ($State.HadExisting -and -not $State.Published) {
+        try {
+            if (-not (Test-Path -LiteralPath $State.RollbackOutput -PathType Container)) {
+                throw "backup is missing"
+            }
+            Move-Item -LiteralPath $State.RollbackOutput -Destination $State.FinalOutput -Force
+            $State.HadExisting = $false
+        } catch {
+            $errors += "restore NAS backup $($State.RollbackOutput): $($_.Exception.Message)"
+        }
+    }
+    if ($errors.Count -gt 0) {
+        throw "NAS rollback incomplete: $($errors -join '; ')"
+    }
+}
+
+function Publish-NasStage {
+    param(
+        [string]$StageOutput,
+        [string]$FinalOutput,
+        [string]$RollbackOutput,
+        [string]$CleanRoot,
+        [object]$State
+    )
+
+    if (-not (Test-Path -LiteralPath $StageOutput -PathType Container)) {
+        throw "Missing staged NAS output: $StageOutput"
+    }
+    if ((Test-Path -LiteralPath $FinalOutput) -and -not (Test-Path -LiteralPath $FinalOutput -PathType Container)) {
+        throw "NAS output target is not a directory: $FinalOutput"
+    }
+    $State.Attempted = $true
+    if (Test-Path -LiteralPath $FinalOutput -PathType Container) {
+        Move-Item -LiteralPath $FinalOutput -Destination $RollbackOutput -Force
+        $State.HadExisting = $true
+    }
+    Move-Item -LiteralPath $StageOutput -Destination $FinalOutput -Force
+    $State.Published = $true
 }
 
 function Find-PublicDutyPackage {
@@ -123,24 +231,71 @@ function Write-OutputText {
     $Text.TrimStart() | Set-Content -LiteralPath $target -Encoding UTF8
 }
 
-$publicDutyDir = Find-PublicDutyPackage
+$buildLockStream = $null
+if (-not $BuildLockAlreadyHeld) {
+    $buildLockStream = Enter-PackageBuildLock -LockPath (Join-Path (Join-Path $project "UPDATE") ".package-build.lock")
+}
+
+try {
+if ([string]::IsNullOrWhiteSpace($SourceDir)) {
+    $publicDutyDir = Find-PublicDutyPackage
+} else {
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+        throw "Missing explicit NAS package source directory: $SourceDir"
+    }
+    $publicDutyDir = (Resolve-Path -LiteralPath $SourceDir).Path
+}
+$sourceVersionPath = Join-Path $publicDutyDir "VERSION.txt"
+$sourceVersion = Read-VersionText -Path $sourceVersionPath
+if ($sourceVersion -notmatch "^\d{4}\.\d{2}\.\d{2}\.\d{4}$") {
+    throw "Source VERSION.txt has an invalid version: $sourceVersion"
+}
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = $sourceVersion
+} elseif ($Version -notmatch "^\d{4}\.\d{2}\.\d{2}\.\d{4}$") {
+    throw "Version must use yyyy.MM.dd.HHmm format. Got: $Version"
+}
+Assert-VersionEquals -Label "Source VERSION.txt" -Actual $sourceVersion -Expected $Version
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
     $OutputDir = Join-Path (Join-Path $project "UPDATE") $nasPackageName
-}
-
-$output = Resolve-FullPath -Path $OutputDir
-Assert-UnderPath -Path $output -Root $project
-if ($output.TrimEnd([char]92).Equals((Resolve-FullPath -Path $publicDutyDir).TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "OutputDir must not be the public-duty source package."
 }
 
 $cleanRoot = Join-Path $project "UPDATE"
 if (-not (Test-Path -LiteralPath $cleanRoot -PathType Container)) {
     New-Item -ItemType Directory -Path $cleanRoot -Force | Out-Null
 }
-Remove-SafeDirectory -Path $output -ExpectedRoot $cleanRoot
-New-Item -ItemType Directory -Path $output -Force | Out-Null
+$cleanRootFull = (Resolve-FullPath -Path $cleanRoot).TrimEnd([char]92)
+$finalOutput = Resolve-FullPath -Path $OutputDir
+Assert-UnderPath -Path $finalOutput -Root $cleanRoot
+if ($finalOutput.TrimEnd([char]92).Equals($cleanRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "OutputDir must be a child directory of UPDATE, not UPDATE itself."
+}
+if ($finalOutput.TrimEnd([char]92).Equals((Resolve-FullPath -Path $publicDutyDir).TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "OutputDir must not be the public-duty source package."
+}
+
+$outputParent = Split-Path -Parent $finalOutput
+$outputLeaf = Split-Path -Leaf $finalOutput
+$nonce = [guid]::NewGuid().ToString("N")
+$nasStageDir = Join-Path $outputParent ".$outputLeaf.build-$nonce.tmp"
+$nasRollbackDir = Join-Path $outputParent ".$outputLeaf.rollback-$nonce.tmp"
+$output = $nasStageDir
+$publishState = [PSCustomObject]@{
+    FinalOutput = $finalOutput
+    RollbackOutput = $nasRollbackDir
+    CleanRoot = $cleanRoot
+    Attempted = $false
+    RollbackComplete = $false
+    HadExisting = $false
+    Published = $false
+}
+$publishSucceeded = $false
+
+try {
+    Remove-SafeDirectory -Path $nasStageDir -ExpectedRoot $cleanRoot
+    Remove-SafeDirectory -Path $nasRollbackDir -ExpectedRoot $cleanRoot
+    New-Item -ItemType Directory -Path $output -Force | Out-Null
 
 foreach ($file in @(
     "app.py",
@@ -152,9 +307,7 @@ foreach ($file in @(
     "VERSION.txt"
 )) {
     $source = Join-Path $publicDutyDir $file
-    if (Test-Path -LiteralPath $source -PathType Leaf) {
-        Copy-FileToOutput -Source $source -RelativePath $file
-    }
+    Copy-FileToOutput -Source $source -RelativePath $file
 }
 
 foreach ($dir in @("ambulance_bot", "templates")) {
@@ -196,8 +349,46 @@ NAS package generated from the public-duty runtime source.
 4. Restart the ambulance_return_bot stack in DSM Container Manager.
 '@
 
+    $nasVersion = Read-VersionText -Path (Join-Path $output "VERSION.txt")
+    Assert-VersionEquals -Label "NAS VERSION.txt" -Actual $nasVersion -Expected $Version
+
+    Publish-NasStage `
+        -StageOutput $nasStageDir `
+        -FinalOutput $finalOutput `
+        -RollbackOutput $nasRollbackDir `
+        -CleanRoot $cleanRoot `
+        -State $publishState
+    $nasVersion = Read-VersionText -Path (Join-Path $finalOutput "VERSION.txt")
+    Assert-VersionEquals -Label "Published NAS VERSION.txt" -Actual $nasVersion -Expected $Version
+    $publishSucceeded = $true
+} catch {
+    $publishError = $_
+    if ($publishState.Attempted) {
+        try {
+            Restore-NasOutput -State $publishState
+            $publishState.RollbackComplete = $true
+        } catch {
+            throw "NAS package publish failed and rollback is incomplete. Recovery files: $nasRollbackDir. Publish error: $($publishError.Exception.Message). Rollback error: $($_.Exception.Message)"
+        }
+    }
+    throw
+} finally {
+    Remove-SafeDirectory -Path $nasStageDir -ExpectedRoot $cleanRoot
+    if ($publishSucceeded) {
+        Remove-SafeDirectory -Path $nasRollbackDir -ExpectedRoot $cleanRoot
+    } elseif ($publishState.Attempted -and -not $publishState.RollbackComplete) {
+        Write-Warning "NAS package rollback was incomplete; recovery files were preserved at $nasRollbackDir"
+    }
+}
+
 [PSCustomObject]@{
+    Version = $Version
     Source = $publicDutyDir
-    Output = $output
-    Files = (Get-ChildItem -LiteralPath $output -Recurse -File | Measure-Object).Count
+    Output = $finalOutput
+    Files = (Get-ChildItem -LiteralPath $finalOutput -Recurse -File | Measure-Object).Count
 } | Format-List
+} finally {
+    if ($null -ne $buildLockStream) {
+        $buildLockStream.Dispose()
+    }
+}

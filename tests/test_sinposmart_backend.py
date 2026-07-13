@@ -1,6 +1,7 @@
 import tempfile
 import unittest
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ambulance_bot.sinposmart_backend import (
@@ -16,6 +17,49 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
     def test_fire_day_uses_0800_boundary(self):
         self.assertEqual(sinposmart_fire_day_for(datetime(2026, 6, 15, 7, 59)), "2026-06-14")
         self.assertEqual(sinposmart_fire_day_for(datetime(2026, 6, 15, 8, 0)), "2026-06-15")
+
+    def test_aware_timestamp_is_converted_to_taipei_before_fire_day_boundary(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-aware-time",
+                "occurred_at": "2026-07-13T00:00:00Z",
+                "record_type": "action_result",
+                "status": "submitted",
+            },
+            now=datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(event["occurred_at"], "2026-07-13T08:00:00")
+        self.assertEqual(event["fire_day"], "2026-07-13")
+
+    def test_concurrent_store_instances_preserve_every_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def write_event(index: int) -> str:
+                try:
+                    SinpoSmartBackendStore(root).upsert_event(
+                        {
+                            "event_id": f"evt-concurrent-{index}",
+                            "occurred_at": f"2026-07-13T09:00:{index:02d}",
+                            "record_type": "action_result",
+                            "status": "submitted",
+                            "content": f"concurrent event {index}",
+                        },
+                        now=datetime(2026, 7, 13, 9, 0),
+                    )
+                except OSError as exc:
+                    return type(exc).__name__
+                return ""
+
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                errors = [error for error in pool.map(write_event, range(24)) if error]
+
+            events = SinpoSmartBackendStore(root).read_day("2026-07-13")["events"]
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(events), 24)
+            self.assertEqual({event["event_id"] for event in events}, {f"evt-concurrent-{index}" for index in range(24)})
 
     def test_event_dedupes_and_sanitizes_sensitive_values(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -72,6 +116,28 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             self.assertEqual(day["events"][0]["repeat_count"], 2)
             self.assertEqual(day["events"][0]["first_occurred_at"], "2026-06-15T09:00:00")
             self.assertEqual(day["events"][0]["last_occurred_at"], "2026-06-15T09:01:00")
+
+    def test_retry_of_merged_event_id_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            first_payload = {
+                "event_id": "evt-merged-retry-1",
+                "occurred_at": "2026-06-15T09:00:00",
+                "record_type": "action_result",
+                "status": "submitted",
+                "actor_no": "8",
+                "content": "same logical result",
+            }
+            second_payload = dict(first_payload, event_id="evt-merged-retry-2", occurred_at="2026-06-15T09:01:00")
+
+            store.upsert_event(first_payload, now=datetime(2026, 6, 15, 9, 0))
+            store.upsert_event(second_payload, now=datetime(2026, 6, 15, 9, 1))
+            store.upsert_event(second_payload, now=datetime(2026, 6, 15, 9, 2))
+            merged = store.read_day("2026-06-15")["events"][0]
+
+            self.assertEqual(merged["repeat_count"], 2)
+            self.assertEqual(merged["merged_event_ids"], ["evt-merged-retry-1", "evt-merged-retry-2"])
+            self.assertEqual(merged["last_occurred_at"], "2026-06-15T09:01:00")
 
     def test_same_event_id_retry_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:

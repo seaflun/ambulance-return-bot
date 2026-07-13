@@ -5,6 +5,8 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
@@ -14,8 +16,17 @@ from unittest import mock
 
 import app as app_module
 import ambulance_bot.selenium_local as selenium_local_module
+from ambulance_bot.credential_envelope import open_credential_payload
+from ambulance_bot.manual_task_lock import (
+    clear_manual_task_lock,
+    manual_task_lock_active,
+    manual_task_lock_owner,
+    manual_task_lock_path,
+    set_manual_task_lock,
+)
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import DutyCaseLookupResult
+from ambulance_bot.task_cancellation import task_cancellation_marker_path, task_cancellation_requested
 from ambulance_bot.task_runner import TaskRunner
 from ambulance_bot.task_store import JsonTaskStore
 
@@ -193,9 +204,43 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_credential_sync_rejects_short_worker_secret_without_persisting_plaintext(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "short-worker-token"
+
+        response = self.client.post(
+            "/api/credential-sync",
+            json=self.credential_sync_payload(),
+            headers={"X-Credential-Sync-Token": "sync-token"},
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "credential_sealing_unavailable")
+        self.assertFalse(app_module.credential_sync_relay_file().exists())
+
+    def test_credential_sync_default_ttl_is_fifteen_minutes(self):
+        os.environ.pop("CREDENTIAL_SYNC_TTL_SECONDS", None)
+
+        self.assertEqual(app_module.credential_sync_ttl_seconds(), 900)
+
+    def test_credential_sync_relay_rejects_oversized_file_before_json_read(self):
+        path = app_module.credential_sync_relay_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * (app_module.MAX_CREDENTIAL_RELAY_FILE_BYTES + 1))
+
+        with mock.patch.object(
+            Path,
+            "read_text",
+            side_effect=AssertionError("oversized relay must not be read into memory"),
+        ):
+            self.assertEqual(app_module.read_credential_sync_relay(), {})
+
+        self.assertFalse(path.exists())
+
     def test_credential_sync_endpoint_queues_for_worker_without_local_save(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
-        os.environ["WORKER_TOKEN"] = "worker-token"
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["WORKER_TOKEN"] = worker_token
         saved_login = Path(self.tmp.name) / "nas_should_not_save.json"
         os.environ["DUTY_SAVED_LOGIN_PATH"] = str(saved_login)
         os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
@@ -207,7 +252,8 @@ class WebAppTests(unittest.TestCase):
         )
         response_body = response.data.decode("utf-8")
         relay_path = app_module.credential_sync_relay_file()
-        record = json.loads(relay_path.read_text(encoding="utf-8"))
+        relay_text = relay_path.read_text(encoding="utf-8")
+        record = json.loads(relay_text)
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("pass9", response_body)
@@ -216,25 +262,270 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(response.get_json()["queued"])
         self.assertEqual(record["status"], "pending")
         self.assertEqual(record["account_count"], 2)
-        self.assertEqual(record["selected_user_id"], "user9")
+        self.assertNotIn("selected_user_id", record)
+        self.assertNotIn("payload", record)
+        self.assertIn("sealed_payload", record)
+        self.assertNotIn("pass8", relay_text)
+        self.assertNotIn("pass9", relay_text)
         self.assertFalse(saved_login.exists())
 
-        worker_response = self.client.get("/worker/credential-sync", headers={"X-Worker-Token": "worker-token"})
+        worker_response = self.client.get("/worker/credential-sync", headers={"X-Worker-Token": worker_token})
         worker_payload = worker_response.get_json()["request"]
         self.assertEqual(worker_response.status_code, 200)
         self.assertEqual(worker_payload["request_id"], "sync-test-1")
-        self.assertEqual(worker_payload["payload"]["accounts"][1]["password"], "pass9")
+        self.assertNotIn("payload", worker_payload)
+        self.assertEqual(
+            open_credential_payload(worker_payload["sealed_payload"], worker_token)["accounts"][1]["password"],
+            "pass9",
+        )
 
         ack_response = self.client.post(
             "/worker/credential-sync/sync-test-1/ack",
             json={"status": "saved", "detail": "saved"},
-            headers={"X-Worker-Token": "worker-token"},
+            headers={"X-Worker-Token": worker_token},
         )
         self.assertEqual(ack_response.status_code, 200)
         self.assertFalse(relay_path.exists())
 
-        empty_response = self.client.get("/worker/credential-sync", headers={"X-Worker-Token": "worker-token"})
+        empty_response = self.client.get("/worker/credential-sync", headers={"X-Worker-Token": worker_token})
         self.assertIsNone(empty_response.get_json()["request"])
+
+    def test_credential_sync_failed_ack_retains_pending_request_without_plaintext(self):
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = worker_token
+        queued = self.client.post(
+            "/api/credential-sync",
+            json=self.credential_sync_payload(),
+            headers={"X-Credential-Sync-Token": "sync-token"},
+        )
+        self.assertEqual(queued.status_code, 200)
+
+        failed = self.client.post(
+            "/worker/credential-sync/sync-test-1/ack",
+            json={"status": "failed", "detail": "disk busy"},
+            headers={"X-Worker-Token": worker_token},
+        )
+        record = app_module.read_credential_sync_relay()
+        raw = app_module.credential_sync_relay_file().read_text(encoding="utf-8")
+
+        self.assertEqual(failed.status_code, 200)
+        self.assertTrue(failed.get_json()["retained"])
+        self.assertEqual(record["status"], "pending")
+        self.assertEqual(record["attempt_count"], 1)
+        self.assertEqual(record["last_error_code"], "worker_save_failed")
+        self.assertNotIn("disk busy", record["last_error"])
+        self.assertNotIn("disk busy", raw)
+        self.assertIn("sealed_payload", record)
+        self.assertNotIn("pass8", raw)
+        self.assertNotIn("pass9", raw)
+
+    def test_credential_sync_failed_ack_does_not_extend_absolute_ttl(self):
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["WORKER_TOKEN"] = worker_token
+        created_at = datetime.now() - timedelta(seconds=600)
+        app_module.write_credential_sync_relay(
+            {
+                "request_id": "absolute-ttl",
+                "created_at": created_at.isoformat(timespec="seconds"),
+                "status": "pending",
+                "sealed_payload": app_module.seal_credential_payload(
+                    self.credential_sync_payload(),
+                    worker_token,
+                ),
+            }
+        )
+
+        failed = self.client.post(
+            "/worker/credential-sync/absolute-ttl/ack",
+            json={"status": "failed", "detail": "temporary failure"},
+            headers={"X-Worker-Token": worker_token},
+        )
+        self.assertEqual(failed.status_code, 200)
+        self.assertTrue(app_module.credential_sync_relay_file().exists())
+
+        after_absolute_expiry = created_at.timestamp() + app_module.credential_sync_ttl_seconds() + 1
+        with mock.patch.object(app_module.time, "time", return_value=after_absolute_expiry):
+            self.assertEqual(app_module.read_credential_sync_relay(), {})
+
+        self.assertFalse(app_module.credential_sync_relay_file().exists())
+
+    def test_worker_get_migrates_legacy_plaintext_relay_to_sealed_storage(self):
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["WORKER_TOKEN"] = worker_token
+        app_module.write_credential_sync_relay(
+            {
+                "request_id": "legacy-sync",
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "status": "pending",
+                "payload": self.credential_sync_payload(),
+            }
+        )
+
+        response = self.client.get(
+            "/worker/credential-sync",
+            headers={"X-Worker-Token": worker_token},
+        )
+        record = app_module.read_credential_sync_relay()
+        raw = app_module.credential_sync_relay_file().read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("payload", record)
+        self.assertIn("sealed_payload", record)
+        self.assertNotIn("pass8", raw)
+        self.assertNotIn("pass9", raw)
+
+    def test_web_startup_migrates_legacy_plaintext_relay_before_serving(self):
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["WORKER_TOKEN"] = worker_token
+        app_module.write_credential_sync_relay(
+            {
+                "request_id": "legacy-at-startup",
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "status": "pending",
+                "payload": self.credential_sync_payload(),
+            }
+        )
+
+        with mock.patch("waitress.serve") as serve:
+            app_module.run_web_app(host="127.0.0.1", port=18080)
+
+        record = app_module.read_credential_sync_relay()
+        raw = app_module.credential_sync_relay_file().read_text(encoding="utf-8")
+        serve.assert_called_once()
+        self.assertNotIn("payload", record)
+        self.assertIn("sealed_payload", record)
+        self.assertNotIn("pass8", raw)
+
+    def test_credential_sync_legacy_missing_created_at_preserves_original_mtime_on_failed_ack(self):
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["WORKER_TOKEN"] = worker_token
+        path = app_module.credential_sync_relay_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "request_id": "legacy-no-created-at",
+                    "status": "pending",
+                    "sealed_payload": app_module.seal_credential_payload(
+                        self.credential_sync_payload(),
+                        worker_token,
+                    ),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        original_mtime = time.time() - 600
+        os.utime(path, (original_mtime, original_mtime))
+
+        failed = self.client.post(
+            "/worker/credential-sync/legacy-no-created-at/ack",
+            json={"status": "failed", "detail": "temporary"},
+            headers={"X-Worker-Token": worker_token},
+        )
+        retained = app_module.read_credential_sync_relay()
+
+        self.assertEqual(failed.status_code, 200)
+        self.assertAlmostEqual(
+            datetime.fromisoformat(retained["created_at"]).timestamp(),
+            original_mtime,
+            delta=1,
+        )
+        with mock.patch.object(
+            app_module.time,
+            "time",
+            return_value=original_mtime + app_module.credential_sync_ttl_seconds() + 1,
+        ):
+            self.assertEqual(app_module.read_credential_sync_relay(), {})
+
+    def test_credential_sync_ack_does_not_delete_a_newer_pending_request(self):
+        os.environ["WORKER_TOKEN"] = "worker-token"
+        relay_path = app_module.credential_sync_relay_file()
+        app_module.write_credential_sync_relay({"request_id": "request-a", "status": "pending"})
+        original_unlink = Path.unlink
+        ack_at_unlink = threading.Event()
+        release_ack = threading.Event()
+        writer_finished = threading.Event()
+        responses: list[int] = []
+        errors: list[BaseException] = []
+
+        def gated_unlink(path, *args, **kwargs):
+            if Path(path) == relay_path and threading.current_thread().name == "credential-ack":
+                ack_at_unlink.set()
+                if not release_ack.wait(2):
+                    raise TimeoutError("test did not release credential ack")
+            return original_unlink(path, *args, **kwargs)
+
+        def ack_old_request() -> None:
+            try:
+                with app_module.app.test_client() as client:
+                    response = client.post(
+                        "/worker/credential-sync/request-a/ack",
+                        headers={"X-Worker-Token": "worker-token"},
+                    )
+                    responses.append(response.status_code)
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        def write_new_request() -> None:
+            try:
+                app_module.write_credential_sync_relay({"request_id": "request-b", "status": "pending"})
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+            finally:
+                writer_finished.set()
+
+        with mock.patch.object(Path, "unlink", new=gated_unlink):
+            ack_thread = threading.Thread(target=ack_old_request, name="credential-ack")
+            writer_thread = threading.Thread(target=write_new_request, name="credential-writer")
+            ack_thread.start()
+            self.assertTrue(ack_at_unlink.wait(1))
+            writer_thread.start()
+            writer_was_serialized = not writer_finished.wait(0.1)
+            try:
+                release_ack.set()
+                ack_thread.join(2)
+                writer_thread.join(2)
+            finally:
+                release_ack.set()
+
+        self.assertTrue(writer_was_serialized)
+        self.assertFalse(ack_thread.is_alive())
+        self.assertFalse(writer_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(responses, [200])
+        self.assertEqual(app_module.read_credential_sync_relay().get("request_id"), "request-b")
+
+    def test_artifact_route_only_serves_selenium_png_and_html_diagnostics(self):
+        allowed_dir = app_module.artifacts_dir / "selenium"
+        allowed_dir.mkdir(parents=True, exist_ok=True)
+        (allowed_dir / "diagnostic.png").write_bytes(b"png")
+        (allowed_dir / "diagnostic.html").write_text("<html>diagnostic</html>", encoding="utf-8")
+        sensitive_paths = [
+            app_module.artifacts_dir / "credential_sync" / "pending.json",
+            app_module.artifacts_dir / "tasks" / "task-1.json",
+            app_module.artifacts_dir / "public_pc" / "pending_events.jsonl",
+            app_module.artifacts_dir / "settings" / "vehicles.json",
+            app_module.artifacts_dir / "cases" / "latest.json",
+            allowed_dir / "task-summary.txt",
+            allowed_dir / "disinfection_probe" / "controls.json",
+        ]
+        for path in sensitive_paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("DUMMY_SECRET", encoding="utf-8")
+
+        png_response = self.client.get("/artifacts/selenium/diagnostic.png")
+        html_response = self.client.get("/artifacts/selenium/diagnostic.html")
+        self.assertEqual(png_response.status_code, 200)
+        self.assertEqual(html_response.status_code, 200)
+        png_response.close()
+        html_response.close()
+        for path in sensitive_paths:
+            relative = path.relative_to(app_module.artifacts_dir).as_posix()
+            response = self.client.get(f"/artifacts/{relative}")
+            self.assertEqual(response.status_code, 404, relative)
+            self.assertNotIn(b"DUMMY_SECRET", response.data)
 
     def test_app_page_loads(self):
         response = self.client.get("/app")
@@ -649,6 +940,49 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(f'href="/tasks/{task_id}"', body)
         self.assertNotIn(f'action="/tasks/{task_id}/delete"', body)
         self.assertNotIn('aria-label="刪除案件"', body)
+
+    def test_task_delete_route_rejects_windows_path_traversal(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True, exist_ok=True)
+        neighbor = cases_dir / "latest.json"
+        neighbor.write_text('{"secret": true}', encoding="utf-8")
+
+        response = self.client.post(
+            "/tasks/..%5Ccases%5Clatest/delete",
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(neighbor.read_text(encoding="utf-8"), '{"secret": true}')
+
+    def test_task_delete_route_rejects_active_worker_claim(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        self.assertIsNotNone(self.store.claim_next_for_worker("PC-01"))
+
+        response = self.client.post(f"/tasks/{task_id}/delete", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(self.store.path_for(task_id).exists())
+
+    def test_completed_task_direct_run_is_rejected_instead_of_requeued(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        for site_key in ("duty_work_log", "vehicle_mileage", "consumables", "disinfection"):
+            payload["site_statuses"][site_key]["status"] = f"{site_key}_saved"
+        payload["overall_status"] = "desktop_fast_completed"
+        self.store.save_payload(task_id, payload)
+
+        response = self.client.post(
+            f"/tasks/{task_id}/run",
+            base_url="http://100.114.126.58:8080",
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.store.get(task_id)["worker_queue"]["status"], "idle")
 
     def test_edit_page_hides_clear_button(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data(case_address="桃園市觀音區"), follow_redirects=False)
@@ -1624,6 +1958,26 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(app_module.read_remote_update_command()["worker_id"], "PC-01")
         self.assertEqual(app_module.read_remote_update_command()["before_version"], "2026.07.10.1950")
 
+    def test_remote_update_command_is_owned_by_first_worker_that_claims_it(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.post_remote_update()
+        headers = {"X-Worker-Token": "test-token"}
+
+        first = self.client.get("/worker/remote-update?worker_id=PC-01", headers=headers)
+        second = self.client.get("/worker/remote-update?worker_id=PC-02", headers=headers)
+        request_id = first.get_json()["command"]["request_id"]
+        foreign_status = self.client.post(
+            f"/worker/remote-update/{request_id}/status",
+            headers=headers,
+            json={"status": "updating", "worker_id": "PC-02", "detail": "foreign"},
+        )
+
+        self.assertIsNone(second.get_json()["command"])
+        self.assertEqual(foreign_status.status_code, 409)
+        command = app_module.read_remote_update_command()
+        self.assertEqual(command["worker_id"], "PC-01")
+        self.assertEqual(command["status"], "pending")
+
     def test_remote_update_status_requires_token_and_valid_transition(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         self.post_remote_update()
@@ -2100,6 +2454,31 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(remaining[0]["action"], "old-2")
         self.assertEqual(remaining[1]["task_id"], "task-new")
         self.assertEqual(remaining[1]["action"], "建立任務")
+
+    def test_concurrent_offline_public_pc_reports_are_all_retained(self):
+        payloads = [
+            {
+                "task": {"task_id": f"task-{index}", "case_reason": "急病"},
+                "overall_status": "created",
+                "created_at": "2026-07-13T10:00:00",
+                "events": [{"status": "created", "detail": "created"}],
+            }
+            for index in range(20)
+        ]
+
+        def offline(*_args, **_kwargs):
+            __import__("time").sleep(0.02)
+            raise urllib.error.URLError("offline")
+
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True), mock.patch.object(
+            app_module, "public_pc_report_server_url", return_value="http://nas.invalid"
+        ), mock.patch.object(app_module, "_post_public_pc_report", side_effect=offline):
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                list(pool.map(lambda payload: app_module.report_public_pc_task_event(payload, "建立任務"), payloads))
+
+        pending = app_module._load_pending_public_pc_reports()
+        self.assertEqual(len(pending), len(payloads))
+        self.assertEqual({entry["task_id"] for entry in pending}, {f"task-{index}" for index in range(20)})
 
     def test_public_pc_report_removes_acked_entries_when_later_send_fails(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
@@ -2655,6 +3034,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(request_response.status_code, 200)
         request_payload = request_response.get_json()
         self.assertEqual(request_payload["request"]["lookup_range"], "24h")
+        request_id = request_payload["request"]["request_id"]
 
         cases_response = self.client.post(
             "/worker/cases",
@@ -2664,6 +3044,7 @@ class WebAppTests(unittest.TestCase):
                 "detail": "loaded",
                 "lookup_range": "24h",
                 "case_hash": "abc123",
+                "request_id": request_id,
                 "cases": [{"case_id": "1", "address": "addr"}],
             },
         )
@@ -2673,6 +3054,104 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(latest["cases"][0]["case_id"], "1")
         completed = app_module.read_case_lookup_request()
         self.assertEqual(completed["status"], "case_lookup_completed")
+
+    def test_worker_case_lookup_rejects_result_for_different_request(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        app_module.write_case_lookup_request("24h", source="NAS端", mode="worker_queue")
+        current = app_module.read_case_lookup_request()
+
+        response = self.client.post(
+            "/worker/cases",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "request_id": "stale-request",
+                "status": "cases_loaded",
+                "detail": "stale",
+                "cases": [{"case_id": "stale"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(app_module.read_case_lookup_request()["request_id"], current["request_id"])
+        self.assertEqual(app_module.read_case_lookup_request()["status"], "case_lookup_requested")
+        self.assertFalse((app_module.artifacts_dir / "cases" / "latest.json").exists())
+
+    def test_worker_cases_accepts_scheduled_push_without_active_request_or_request_id(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+
+        response = self.client.post(
+            "/worker/cases",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "status": "cases_loaded",
+                "detail": "scheduled refresh",
+                "lookup_range": "24h",
+                "case_hash": "scheduled-abc",
+                "cases": [{"case_id": "scheduled-1", "address": "addr"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        latest = app_module.read_case_lookup()
+        self.assertEqual(latest["request_id"], "")
+        self.assertEqual(latest["case_hash"], "scheduled-abc")
+        self.assertEqual(latest["cases"][0]["case_id"], "scheduled-1")
+
+    def test_worker_cases_rejects_unsolicited_nonempty_request_id(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+
+        response = self.client.post(
+            "/worker/cases",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "request_id": "unknown-request",
+                "status": "cases_loaded",
+                "detail": "must be rejected",
+                "cases": [{"case_id": "unsolicited"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse((app_module.artifacts_dir / "cases" / "latest.json").exists())
+
+    def test_worker_cases_requires_request_id_while_manual_request_is_active(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        app_module.write_case_lookup_request("24h", source="NAS", mode="worker_queue")
+
+        response = self.client.post(
+            "/worker/cases",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "status": "cases_loaded",
+                "detail": "missing request identity",
+                "cases": [{"case_id": "missing-id"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse((app_module.artifacts_dir / "cases" / "latest.json").exists())
+
+    def test_worker_case_lookup_failure_does_not_become_empty_success(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        lookup_request = app_module.write_case_lookup_request("24h", source="NAS端", mode="worker_queue")
+        self.assertIn("request_id", lookup_request)
+
+        response = self.client.post(
+            "/worker/cases",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "request_id": lookup_request["request_id"],
+                "status": "case_lookup_failed",
+                "detail": "登入失敗",
+                "cases": [],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(app_module.read_case_lookup_request()["status"], "case_lookup_failed")
+        prepared = app_module.prepared_case_lookup()
+        self.assertEqual(prepared["detail"], "登入失敗")
+        self.assertNotIn("empty_message", prepared)
 
     def test_worker_api_requires_configured_token(self):
         os.environ["WORKER_TOKEN"] = ""
@@ -2754,7 +3233,8 @@ class WebAppTests(unittest.TestCase):
         self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
         self.assertEqual(app_module.read_selected_case(), {})
 
-    def test_task_detail_run_and_manual_complete(self):
+    def test_task_detail_run_does_not_allow_blind_manual_complete(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
         create_response = self.client.post(
             "/tasks",
             data=self.valid_task_data(
@@ -2781,11 +3261,165 @@ class WebAppTests(unittest.TestCase):
 
         complete_response = self.client.post(
             f"/tasks/{task_id}/sites/vehicle_mileage/complete",
+            data={
+                "confirmation_token": app_module.site_manual_complete_token(
+                    task_id,
+                    "vehicle_mileage",
+                )
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(complete_response.status_code, 409)
+        payload = self.store.get(task_id)
+        self.assertNotEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
+
+    def test_waiting_confirmation_shows_manual_confirmation_without_blind_retry(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_waiting_confirmation",
+                "已按儲存，但未偵測到成功回應。",
+            ),
+        )
+
+        response = self.client.get(
+            f"/tasks/{task_id}",
+            base_url="http://100.114.126.58:8080",
+        )
+        body = html.unescape(response.get_data(as_text=True))
+        mileage_card = body[body.index("<h3>里程</h3>") : body.index("<h3>耗材</h3>")]
+
+        self.assertIn("待人工確認", mileage_card)
+        self.assertIn(f"/tasks/{task_id}/sites/vehicle_mileage/complete", mileage_card)
+        self.assertIn("已在官方頁確認完成", mileage_card)
+        confirmation_token = app_module.site_manual_complete_token(task_id, "vehicle_mileage")
+        self.assertIn(f'value="{confirmation_token}"', mileage_card)
+        self.assertNotIn(f"/tasks/{task_id}/sites/vehicle_mileage/run", mileage_card)
+        self.assertNotIn("四站登打啟動", body)
+        self.assertNotIn(f'href="/tasks/{task_id}/edit"', body)
+
+        edit_response = self.client.get(f"/tasks/{task_id}/edit")
+        self.assertEqual(edit_response.status_code, 409)
+        self.assertIn("待人工確認", edit_response.get_data(as_text=True))
+
+        missing_token_response = self.client.post(
+            f"/tasks/{task_id}/sites/vehicle_mileage/complete",
+            base_url="http://100.114.126.58:8080",
+            follow_redirects=False,
+        )
+        self.assertEqual(missing_token_response.status_code, 403)
+
+        complete_response = self.client.post(
+            f"/tasks/{task_id}/sites/vehicle_mileage/complete",
+            data={"confirmation_token": confirmation_token},
+            base_url="http://100.114.126.58:8080",
             follow_redirects=False,
         )
         self.assertEqual(complete_response.status_code, 302)
-        payload = self.store.get(task_id)
-        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
+        self.assertEqual(
+            self.store.get(task_id)["site_statuses"]["vehicle_mileage"]["status"],
+            "completed_by_user",
+        )
+
+    def test_manual_complete_rejects_site_that_is_not_waiting_for_confirmation(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_failed",
+                "官方頁未儲存",
+            ),
+        )
+
+        response = self.client.post(
+            f"/tasks/{task_id}/sites/vehicle_mileage/complete",
+            data={
+                "confirmation_token": app_module.site_manual_complete_token(
+                    task_id,
+                    "vehicle_mileage",
+                )
+            },
+            base_url="http://100.114.126.58:8080",
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            self.store.get(task_id)["site_statuses"]["vehicle_mileage"]["status"],
+            "vehicle_mileage_failed",
+        )
+
+    def test_multi_vehicle_manual_confirmation_only_confirms_waiting_vehicle(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                two_vehicle="1",
+                two_vehicle_available="1",
+                vehicle="新坡92",
+                vehicle_2="新坡93",
+                driver_2="乙",
+                mileage_2="200",
+                return_date_2="2026-06-07",
+                return_time_2="1130",
+                patient_summary_2="女一名",
+                consumables_2="桃-口罩(片)=2",
+            ),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_waiting_confirmation",
+                "92 儲存回應不明",
+            ),
+            vehicle_key="新坡92",
+            vehicle_label="第一車 新坡92",
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_failed",
+                "93 未儲存",
+            ),
+            vehicle_key="新坡93",
+            vehicle_label="第二車 新坡93",
+        )
+
+        detail = self.client.get(
+            f"/tasks/{task_id}",
+            base_url="http://100.114.126.58:8080",
+        ).get_data(as_text=True)
+        mileage_card = html.unescape(detail[detail.index("<h3>里程</h3>") : detail.index("<h3>耗材</h3>")])
+
+        self.assertIn('name="vehicle_key" value="新坡92"', mileage_card)
+        self.assertNotIn('name="vehicle_key" value="新坡93"', mileage_card)
+        token = app_module.site_manual_complete_token(task_id, "vehicle_mileage", "新坡92")
+        response = self.client.post(
+            f"/tasks/{task_id}/sites/vehicle_mileage/complete",
+            data={"vehicle_key": "新坡92", "confirmation_token": token},
+            base_url="http://100.114.126.58:8080",
+            follow_redirects=False,
+        )
+        site = self.store.get(task_id)["site_statuses"]["vehicle_mileage"]
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(site["status"], "vehicle_mileage_failed")
+        self.assertEqual(site["vehicle_results"]["新坡92"]["status"], "completed_by_user")
+        self.assertEqual(site["vehicle_results"]["新坡93"]["status"], "vehicle_mileage_failed")
 
     def test_single_site_buttons_show_for_failed_and_unfinished_sites(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -2895,8 +3529,8 @@ class WebAppTests(unittest.TestCase):
             task_id,
             app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_running", "running"),
         )
+        set_manual_task_lock(app_module.artifacts_dir, f"desktop_fast:{task_id}")
         lock_path = app_module.artifacts_dir / "manual_task_active.lock"
-        lock_path.write_text('{"owner":"desktop_fast:test"}', encoding="utf-8")
 
         with mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=2, create=True) as cleanup:
             response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
@@ -2908,6 +3542,451 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_failed")
         self.assertFalse(lock_path.exists())
         cleanup.assert_called_once_with()
+
+    def test_abort_desktop_task_does_not_bind_marker_to_an_old_worker_claim(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_task_for_worker(task_id, "old-worker")
+        claim_id = claimed["worker_queue"]["claim_id"]
+        payload = self.store.get(task_id)
+        payload["worker_queue"]["status"] = "completed"
+        payload["overall_status"] = "desktop_fast_running"
+        self.store.save_payload(task_id, payload)
+        owner = f"desktop_fast:{task_id}:current-run"
+        set_manual_task_lock(app_module.artifacts_dir, owner)
+
+        with mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=1):
+            response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            task_cancellation_requested(
+                app_module.artifacts_dir,
+                task_id,
+                execution_owner=owner,
+            )
+        )
+        marker = json.loads(
+            task_cancellation_marker_path(app_module.artifacts_dir, task_id).read_text(encoding="utf-8")
+        )
+        self.assertEqual(marker["claim_id"], "")
+        self.assertNotEqual(claim_id, "")
+
+    def test_abort_keeps_running_task_and_browser_when_cancellation_marker_cannot_be_written(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.set_overall_status(task_id, "desktop_fast_running", "running")
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_running", "running"),
+        )
+        owner = f"desktop_fast:{task_id}:current-run"
+        set_manual_task_lock(app_module.artifacts_dir, owner)
+
+        with mock.patch.object(
+            app_module,
+            "request_task_cancellation",
+            side_effect=OSError("disk unavailable"),
+        ), mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=1) as cleanup:
+            response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+        payload = self.store.get(task_id)
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("無法建立中止訊號", response.data.decode("utf-8"))
+        self.assertEqual(payload["overall_status"], "desktop_fast_running")
+        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_running")
+        self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner)
+        cleanup.assert_not_called()
+
+    def test_abort_commit_keeps_marker_when_desktop_lock_clear_fails(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.set_overall_status(task_id, "desktop_fast_running", "running")
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_running", "running"),
+        )
+        owner = f"desktop_fast:{task_id}:clear-failure"
+        self.assertTrue(set_manual_task_lock(app_module.artifacts_dir, owner))
+        lock_path = manual_task_lock_path(app_module.artifacts_dir)
+        original_unlink = Path.unlink
+
+        def fail_only_manual_lock(path, *args, **kwargs):
+            if Path(path) == lock_path:
+                raise PermissionError("manual lock is busy")
+            return original_unlink(path, *args, **kwargs)
+
+        try:
+            with mock.patch.object(
+                Path,
+                "unlink",
+                autospec=True,
+                side_effect=fail_only_manual_lock,
+            ), mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=1) as cleanup:
+                response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+            payload = self.store.get(task_id)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(payload["overall_status"], "desktop_fast_completed_with_errors")
+            self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_failed")
+            self.assertTrue(
+                task_cancellation_requested(
+                    app_module.artifacts_dir,
+                    task_id,
+                    execution_owner=owner,
+                )
+            )
+            self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner)
+            cleanup.assert_called_once()
+        finally:
+            app_module.clear_task_cancellation(
+                app_module.artifacts_dir,
+                task_id,
+                execution_owner=owner,
+            )
+            clear_manual_task_lock(app_module.artifacts_dir, owner)
+
+    def test_abort_owner_a_cannot_abort_claim_b_after_same_task_lease_is_replaced(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_task_for_worker(task_id, "worker-a")
+        claim_a = claimed["worker_queue"]["claim_id"]
+        payload = self.store.get(task_id)
+        payload["overall_status"] = "desktop_fast_running"
+        payload["site_statuses"]["vehicle_mileage"]["status"] = "vehicle_mileage_running"
+        self.store.save_payload(task_id, payload)
+        owner_a = f"worker-manual:{task_id}:1:1"
+        set_manual_task_lock(app_module.artifacts_dir, owner_a)
+        original_request_cancellation = app_module.request_task_cancellation
+
+        def replace_claim_after_owner_a_marker(*args, **kwargs):
+            marker_path = original_request_cancellation(*args, **kwargs)
+            current = self.store.get(task_id)
+            current["worker_queue"].update(
+                {
+                    "status": "claimed",
+                    "claim_id": "claim-b",
+                    "worker_id": "worker-b",
+                }
+            )
+            current["worker"]["claim_id"] = "claim-b"
+            current["worker"]["id"] = "worker-b"
+            current["overall_status"] = "desktop_fast_running"
+            current["site_statuses"]["vehicle_mileage"]["status"] = "vehicle_mileage_running"
+            self.store.save_payload(task_id, current)
+            return marker_path
+
+        with mock.patch.object(
+            app_module,
+            "request_task_cancellation",
+            side_effect=replace_claim_after_owner_a_marker,
+        ), mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=1) as cleanup:
+            response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+        current = self.store.get(task_id)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(current["worker_queue"]["status"], "claimed")
+        self.assertEqual(current["worker_queue"]["claim_id"], "claim-b")
+        self.assertEqual(current["overall_status"], "desktop_fast_running")
+        self.assertEqual(current["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_running")
+        self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner_a)
+        self.assertFalse(
+            task_cancellation_requested(
+                app_module.artifacts_dir,
+                task_id,
+                execution_owner=owner_a,
+                claim_id=claim_a,
+            )
+        )
+        cleanup.assert_not_called()
+
+    def test_abort_queued_generation_a_cannot_abort_requeued_generation_b(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        queued_a = self.store.queue_for_worker(task_id)
+        queue_a = queued_a["worker_queue"]["queue_id"]
+        original_absent_guard = app_module.run_with_manual_task_lock_absent
+        queue_b = ""
+
+        def requeue_before_guarded_abort(artifacts_dir, action):
+            nonlocal queue_b
+            queued_b = self.store.queue_for_worker(task_id)
+            queue_b = queued_b["worker_queue"]["queue_id"]
+            return original_absent_guard(artifacts_dir, action)
+
+        with mock.patch.object(
+            app_module,
+            "run_with_manual_task_lock_absent",
+            side_effect=requeue_before_guarded_abort,
+        ):
+            response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+        current = self.store.get(task_id)
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(queue_a)
+        self.assertTrue(queue_b)
+        self.assertNotEqual(queue_a, queue_b)
+        self.assertEqual(current["worker_queue"]["status"], "queued")
+        self.assertEqual(current["worker_queue"]["queue_id"], queue_b)
+
+    def test_abort_returns_conflict_when_manual_owner_changes_between_snapshots(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        owner_a = f"desktop_fast:{task_id}:owner-a"
+        owner_b = f"desktop_fast:{task_id}:owner-b"
+        self.assertTrue(set_manual_task_lock(app_module.artifacts_dir, owner_a))
+        payload = self.store.get(task_id)
+        payload["overall_status"] = "desktop_fast_running"
+        self.store.save_payload(task_id, payload)
+        real_snapshot = app_module.manual_task_lock_snapshot
+        snapshot_calls = 0
+
+        def replace_owner_on_second_snapshot(artifacts_dir):
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            if snapshot_calls == 2:
+                self.assertTrue(clear_manual_task_lock(artifacts_dir, owner_a))
+                self.assertTrue(set_manual_task_lock(artifacts_dir, owner_b))
+                current = self.store.get(task_id)
+                current["overall_status"] = "desktop_fast_running"
+                self.store.save_payload(task_id, current)
+            return real_snapshot(artifacts_dir)
+
+        try:
+            with mock.patch.object(
+                app_module,
+                "manual_task_lock_snapshot",
+                side_effect=replace_owner_on_second_snapshot,
+            ), mock.patch.object(app_module, "cleanup_active_worker_browsers") as cleanup:
+                response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(self.store.get(task_id)["overall_status"], "desktop_fast_running")
+            self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner_b)
+            cleanup.assert_not_called()
+        finally:
+            clear_manual_task_lock(app_module.artifacts_dir, owner_b)
+
+    def test_abort_returns_conflict_when_legacy_owner_is_recreated_with_same_text(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        legacy_owner = f"desktop_fast:{task_id}:legacy-fixed-owner"
+        self.assertTrue(set_manual_task_lock(app_module.artifacts_dir, legacy_owner))
+        payload = self.store.get(task_id)
+        payload["overall_status"] = "desktop_fast_running"
+        self.store.save_payload(task_id, payload)
+        real_snapshot = app_module.manual_task_lock_snapshot
+        snapshot_calls = 0
+
+        def recreate_same_owner_on_second_snapshot(artifacts_dir):
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            if snapshot_calls == 2:
+                self.assertTrue(clear_manual_task_lock(artifacts_dir, legacy_owner))
+                time.sleep(0.01)
+                self.assertTrue(set_manual_task_lock(artifacts_dir, legacy_owner))
+                current = self.store.get(task_id)
+                current["overall_status"] = "desktop_fast_running"
+                self.store.save_payload(task_id, current)
+            return real_snapshot(artifacts_dir)
+
+        try:
+            with mock.patch.object(
+                app_module,
+                "manual_task_lock_snapshot",
+                side_effect=recreate_same_owner_on_second_snapshot,
+            ):
+                response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(self.store.get(task_id)["overall_status"], "desktop_fast_running")
+            self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), legacy_owner)
+        finally:
+            clear_manual_task_lock(app_module.artifacts_dir, legacy_owner)
+
+    def test_abort_owner_guard_rejects_same_legacy_owner_recreated_after_snapshots(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        legacy_owner = f"desktop_fast:{task_id}:legacy-fixed-owner"
+        self.assertTrue(set_manual_task_lock(app_module.artifacts_dir, legacy_owner))
+        payload = self.store.get(task_id)
+        payload["overall_status"] = "desktop_fast_running"
+        self.store.save_payload(task_id, payload)
+        original_owner_guard = app_module.run_with_manual_task_lock_owner
+
+        def recreate_before_owner_guard(*args, **kwargs):
+            self.assertTrue(clear_manual_task_lock(app_module.artifacts_dir, legacy_owner))
+            time.sleep(0.01)
+            self.assertTrue(set_manual_task_lock(app_module.artifacts_dir, legacy_owner))
+            current = self.store.get(task_id)
+            current["overall_status"] = "desktop_fast_running"
+            self.store.save_payload(task_id, current)
+            return original_owner_guard(*args, **kwargs)
+
+        try:
+            with mock.patch.object(
+                app_module,
+                "run_with_manual_task_lock_owner",
+                side_effect=recreate_before_owner_guard,
+            ):
+                response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(self.store.get(task_id)["overall_status"], "desktop_fast_running")
+            self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), legacy_owner)
+        finally:
+            clear_manual_task_lock(app_module.artifacts_dir, legacy_owner)
+
+    def test_abort_without_owner_cannot_abort_desktop_owner_started_before_mutation(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        owner_b = f"desktop_fast:{task_id}:owner-b"
+        original_absent_guard = app_module.run_with_manual_task_lock_absent
+
+        def start_owner_b_before_absent_guard(artifacts_dir, action):
+            self.assertTrue(set_manual_task_lock(artifacts_dir, owner_b))
+            current = self.store.get(task_id)
+            current["overall_status"] = "desktop_fast_running"
+            self.store.save_payload(task_id, current)
+            return original_absent_guard(artifacts_dir, action)
+
+        try:
+            with mock.patch.object(
+                app_module,
+                "run_with_manual_task_lock_absent",
+                side_effect=start_owner_b_before_absent_guard,
+            ), mock.patch.object(app_module, "cleanup_active_worker_browsers") as cleanup:
+                response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+            current = self.store.get(task_id)
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(current["overall_status"], "desktop_fast_running")
+            self.assertEqual(current["worker_queue"]["status"], "queued")
+            self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner_b)
+            cleanup.assert_not_called()
+        finally:
+            clear_manual_task_lock(app_module.artifacts_dir, owner_b)
+
+    def test_desktop_run_is_abortable_before_background_thread_executes(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        real_runner = app_module.DesktopFastRunner(app_module.artifacts_dir, store=self.store)
+        app_module.desktop_runner = real_runner
+        try:
+            with mock.patch.object(
+                app_module,
+                "effective_task_execution_mode",
+                return_value="desktop_fast",
+            ), mock.patch(
+                "ambulance_bot.desktop_fast_runner.threading.Thread"
+            ) as thread_mock, mock.patch.object(
+                app_module,
+                "cleanup_active_worker_browsers",
+                return_value=0,
+            ):
+                run_response = self.client.post(f"/tasks/{task_id}/run", follow_redirects=False)
+                abort_response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+            payload = self.store.get(task_id)
+            self.assertEqual(run_response.status_code, 302)
+            self.assertEqual(abort_response.status_code, 302)
+            self.assertEqual(thread_mock.call_count, 1)
+            self.assertEqual(payload["overall_status"], "desktop_fast_completed_with_errors")
+            self.assertFalse(manual_task_lock_active(app_module.artifacts_dir))
+        finally:
+            with real_runner._lock:
+                real_runner._running.clear()
+                real_runner._execution_owners.clear()
+
+    def test_abort_inactive_task_does_not_clear_or_kill_another_task_owner(self):
+        first_response = self.client.post("/tasks", data=self.valid_task_data())
+        inactive_task_id = first_response.headers["Location"].rstrip("/").split("/")[-1]
+        other_task_id = "running-task-b"
+        owner = f"desktop_fast:{other_task_id}"
+        set_manual_task_lock(app_module.artifacts_dir, owner)
+
+        with mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=3) as cleanup:
+            response = self.client.post(f"/tasks/{inactive_task_id}/abort", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner)
+        cleanup.assert_not_called()
+
+    def test_abort_missing_task_does_not_clear_or_kill_current_task_owner(self):
+        owner = "desktop_fast:running-task-b"
+        set_manual_task_lock(app_module.artifacts_dir, owner)
+
+        with mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=3) as cleanup:
+            response = self.client.post("/tasks/missing-task-a/abort", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner)
+        cleanup.assert_not_called()
+
+    def test_abort_worker_manual_task_signals_exact_owner_and_closes_its_browser(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        payload["site_statuses"]["consumables"]["status"] = "manual_captcha_required"
+        self.store.save_payload(task_id, payload)
+        owner = f"worker-manual:{task_id}:123:456"
+        set_manual_task_lock(app_module.artifacts_dir, owner)
+
+        with mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=1) as cleanup:
+            response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        cleanup.assert_called_once_with()
+        self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner)
+        self.assertTrue(
+            task_cancellation_requested(
+                app_module.artifacts_dir,
+                task_id,
+                execution_owner=owner,
+            )
+        )
+
+    def test_abort_does_not_infer_auto_claim_owner_for_a_different_bound_task(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        self.store.claim_task_for_worker(task_id, "worker-a")
+        owner = "worker-manual:__auto_claim__:123:456"
+        set_manual_task_lock(app_module.artifacts_dir, owner, task_id="different-task-b")
+
+        with mock.patch.object(app_module, "cleanup_active_worker_browsers", return_value=2) as cleanup:
+            response = self.client.post(f"/tasks/{task_id}/abort", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(manual_task_lock_owner(app_module.artifacts_dir), owner)
+        self.assertEqual(self.store.get(task_id)["worker_queue"]["status"], "claimed")
+        cleanup.assert_not_called()
+
+    def test_waiting_site_with_live_worker_claim_is_still_active(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        self.store.claim_task_for_worker(task_id, "worker-a")
+        payload = self.store.get(task_id)
+        payload["site_statuses"]["consumables"]["status"] = "manual_captcha_required"
+        self.store.save_payload(task_id, payload)
+
+        refreshed = self.store.get(task_id)
+        self.assertEqual(app_module.status_class(app_module.effective_task_status(refreshed)), "waiting")
+        self.assertTrue(app_module.task_payload_is_active(refreshed))
+
+    def test_waiting_site_with_matching_manual_lease_is_still_active(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        payload["site_statuses"]["consumables"]["status"] = "manual_captcha_required"
+        self.store.save_payload(task_id, payload)
+        set_manual_task_lock(app_module.artifacts_dir, f"desktop_fast:{task_id}")
+
+        self.assertTrue(app_module.task_payload_is_active(self.store.get(task_id)))
 
     def test_task_detail_hides_entry_buttons_while_task_is_active(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -2960,7 +4039,55 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(app_module.desktop_runner.started, [task_id])
         self.assertEqual(self.store.get(task_id)["overall_status"], "desktop_fast_running")
-        cleanup.assert_called_once_with()
+        cleanup.assert_not_called()
+
+    def test_task_detail_does_not_expire_stale_site_while_worker_claim_lease_is_live(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_task_for_worker(task_id, "worker-a")
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("consumables", "一站通耗材", "consumables_running", "running"),
+        )
+        payload = self.store.get(task_id)
+        payload["site_statuses"]["consumables"]["updated_at"] = (
+            datetime.now() - timedelta(minutes=11)
+        ).isoformat(timespec="seconds")
+        payload["worker_queue"]["lease_expires_at"] = claimed["worker_queue"]["lease_expires_at"]
+        self.store.save_payload(task_id, payload)
+
+        response = self.client.get(
+            f"/tasks/{task_id}",
+            base_url="http://100.114.126.58:8080",
+        )
+        refreshed = self.store.get(task_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(refreshed["site_statuses"]["consumables"]["status"], "consumables_running")
+        self.assertEqual(refreshed["worker_queue"]["status"], "claimed")
+
+    def test_task_detail_does_not_expire_stale_site_while_manual_lock_heartbeat_is_live(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("consumables", "一站通耗材", "consumables_running", "running"),
+        )
+        payload = self.store.get(task_id)
+        payload["site_statuses"]["consumables"]["updated_at"] = (
+            datetime.now() - timedelta(minutes=11)
+        ).isoformat(timespec="seconds")
+        self.store.save_payload(task_id, payload)
+        set_manual_task_lock(app_module.artifacts_dir, f"desktop-fast:{task_id}")
+
+        response = self.client.get(f"/tasks/{task_id}", base_url="http://127.0.0.1:8080")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.store.get(task_id)["site_statuses"]["consumables"]["status"],
+            "consumables_running",
+        )
 
     def test_localhost_single_site_run_does_not_start_new_runner_when_task_is_active(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
@@ -3087,7 +4214,7 @@ class WebAppTests(unittest.TestCase):
             f"/tasks/{task_id}/edit",
             data={
                 "case_id": "case-test-001",
-                "vehicle": "\u65b0\u576192",
+                "vehicle": "\u65b0\u576191",
                 "driver": "\u5305\u83ef\u5148",
                 "mileage": "200",
                 "case_date": "2026-06-07",
@@ -3105,7 +4232,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(update_response.status_code, 302)
         self.assertEqual(update_response.headers["Location"], f"/tasks/{task_id}")
-        self.assertEqual(payload["task"]["vehicle"], "\u65b0\u576192")
+        self.assertEqual(payload["task"]["vehicle"], "\u65b0\u576191")
         self.assertEqual(payload["task"]["mileage"], "200")
         self.assertEqual(payload["task"]["consumables"], {"\u624b\u5957": 1})
         self.assertEqual(payload["overall_status"], "task_updated_needs_site_update")
@@ -3114,6 +4241,48 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["update_context"]["current_task"]["mileage"], "200")
         self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "not_started")
         self.assertEqual(payload["site_statuses"]["consumables"]["status"], "not_started")
+
+    def test_queued_task_can_be_opened_and_submitted_for_edit(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data(mileage="100"))
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        remote_base = "http://100.114.126.58:8080"
+
+        detail = html.unescape(self.client.get(f"/tasks/{task_id}", base_url=remote_base).data.decode("utf-8"))
+        edit_get = self.client.get(f"/tasks/{task_id}/edit", base_url=remote_base)
+        edit_post = self.client.post(
+            f"/tasks/{task_id}/edit",
+            base_url=remote_base,
+            data=self.valid_task_data(mileage="999"),
+            follow_redirects=False,
+        )
+
+        payload = self.store.get(task_id)
+        self.assertIn(f'href="/tasks/{task_id}/edit"', detail)
+        self.assertEqual(edit_get.status_code, 200)
+        self.assertEqual(edit_post.status_code, 302)
+        self.assertEqual(payload["task"]["mileage"], "999")
+        self.assertEqual(payload["worker_queue"]["status"], "queued")
+
+    def test_claimed_task_cannot_be_opened_or_submitted_for_edit(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data(mileage="100"))
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        self.assertIsNotNone(self.store.claim_next_for_worker("test-worker"))
+
+        detail = html.unescape(self.client.get(f"/tasks/{task_id}").data.decode("utf-8"))
+        edit_get = self.client.get(f"/tasks/{task_id}/edit")
+        edit_post = self.client.post(
+            f"/tasks/{task_id}/edit",
+            data=self.valid_task_data(mileage="999"),
+            follow_redirects=False,
+        )
+
+        self.assertNotIn(f'href="/tasks/{task_id}/edit"', detail)
+        self.assertEqual(edit_get.status_code, 409)
+        self.assertEqual(edit_post.status_code, 409)
+        self.assertIn("正在執行", edit_get.data.decode("utf-8"))
+        self.assertEqual(self.store.get(task_id)["task"]["mileage"], "100")
 
     def test_task_edit_consumables_only_preserves_other_completed_sites(self):
         create_response = self.client.post(
@@ -3173,6 +4342,53 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_needs_update")
         self.assertIn("\u66f4\u65b0\u5de5\u4f5c", body)
         self.assertIn("\u66f4\u65b0\u91cc\u7a0b", body)
+
+    def test_task_edit_shared_case_time_and_address_marks_every_dependent_site(self):
+        original = self.valid_task_data(
+            two_vehicle="1",
+            vehicle_2="新坡92",
+            driver_2="陳小明",
+            return_time_2="1210",
+            mileage_2="200",
+            patient_summary_2="女一名",
+            consumables_2="手套=2",
+            case_date="2026-06-07",
+            case_time="1024",
+            case_address="桃園市觀音區舊址",
+        )
+        create_response = self.client.post("/tasks", data=original)
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        for site_key, site_name in (
+            ("duty_work_log", "工作"),
+            ("vehicle_mileage", "車輛里程"),
+            ("consumables", "耗材"),
+            ("disinfection", "消毒"),
+        ):
+            self.store.update_site_result(
+                task_id,
+                app_module.SiteAutomationResult(site_key, site_name, f"{site_key}_saved", "done"),
+            )
+
+        update_response = self.client.post(
+            f"/tasks/{task_id}/edit",
+            data={
+                **original,
+                "case_date": "2026-06-08",
+                "case_time": "1030",
+                "case_address": "桃園市觀音區新址",
+                "return_date": "2026-06-08",
+                "return_date_2": "2026-06-08",
+            },
+            follow_redirects=False,
+        )
+        payload = self.store.get(task_id)
+
+        self.assertEqual(update_response.status_code, 302)
+        for site_key in ("duty_work_log", "vehicle_mileage", "consumables", "disinfection"):
+            site = payload["site_statuses"][site_key]
+            self.assertEqual(site["status"], f"{site_key}_needs_update")
+            self.assertEqual(site["update_context"]["previous_task"]["case_time"], "1024")
+            self.assertEqual(site["update_context"]["current_task"]["case_time"], "1030")
 
     def test_two_vehicle_validation_requires_second_vehicle_fields(self):
         task_request = app_module.request_from_form(
@@ -3329,6 +4545,107 @@ class WebAppTests(unittest.TestCase):
         changed = app_module.changed_sites_for_task_edit(previous_request.to_dict(), current_request.to_dict())
 
         self.assertEqual(changed, {"duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"})
+
+    def test_task_edit_second_vehicle_identity_marks_consumables_for_update(self):
+        previous_request = app_module.request_from_form(
+            self.valid_task_data(
+                two_vehicle="1",
+                vehicle_2="\u65b0\u576193",
+                driver_2="\u9673\u5c0f\u660e",
+                consumables_2="\u624b\u5957=2",
+            )
+        )
+        current_request = app_module.request_from_form(
+            self.valid_task_data(
+                two_vehicle="1",
+                vehicle_2="\u65b0\u576194",
+                driver_2="\u9673\u5c0f\u660e",
+                consumables_2="\u624b\u5957=2",
+            )
+        )
+
+        changed = app_module.changed_sites_for_task_edit(previous_request.to_dict(), current_request.to_dict())
+
+        self.assertIn("consumables", changed)
+
+    def test_task_edit_enabling_second_vehicle_fuel_activates_fuel_update(self):
+        original = self.valid_task_data(
+            two_vehicle="1",
+            vehicle_2="新坡93",
+            driver_2="陳小明",
+            mileage_2="220",
+            return_date_2="2026-06-07",
+            return_time_2="1120",
+            patient_summary_2="女一名",
+            consumables_2="手套=2",
+        )
+        create_response = self.client.post("/tasks", data=original)
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        update_response = self.client.post(
+            f"/tasks/{task_id}/edit",
+            data={
+                **original,
+                "fuel_record_2": "1",
+                "fuel_date_2": "2026-06-07",
+                "fuel_time_2": "1125",
+                "fuel_quantity_2": "40",
+                "fuel_unit_price_2": "30",
+            },
+            follow_redirects=False,
+        )
+        payload = self.store.get(task_id)
+
+        self.assertEqual(update_response.status_code, 302)
+        self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_needs_update")
+        self.assertTrue(payload["site_statuses"]["fuel_record"]["update_context"]["current_task"]["vehicle_entries"][1]["fuel_record"]["enabled"])
+
+    def test_task_edit_disabling_saved_fuel_keeps_manual_cleanup_visible(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        original = self.valid_task_data(
+            fuel_record="1",
+            fuel_date="2026-06-07",
+            fuel_time="1125",
+            fuel_quantity="40",
+            fuel_unit_price="30",
+        )
+        create_response = self.client.post("/tasks", data=original)
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult("fuel_record", "加油", "fuel_record_saved", "done"),
+        )
+
+        update_response = self.client.post(
+            f"/tasks/{task_id}/edit",
+            data=self.valid_task_data(),
+            follow_redirects=False,
+        )
+        payload = self.store.get(task_id)
+        body = html.unescape(self.client.get(f"/tasks/{task_id}").data.decode("utf-8"))
+
+        self.assertEqual(update_response.status_code, 302)
+        self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_waiting_confirmation")
+        self.assertIn("人工刪除", payload["site_statuses"]["fuel_record"]["detail"])
+        self.assertIn("里程+加油", body)
+        self.assertIn(f"/tasks/{task_id}/sites/fuel_record/complete", body)
+
+        complete_response = self.client.post(
+            f"/tasks/{task_id}/sites/fuel_record/complete",
+            data={
+                "confirmation_token": app_module.site_manual_complete_token(
+                    task_id,
+                    "fuel_record",
+                )
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(complete_response.status_code, 302)
+        self.assertEqual(
+            self.store.get(task_id)["site_statuses"]["fuel_record"]["status"],
+            "completed_by_user",
+        )
 
     def test_task_detail_combines_mileage_and_fuel_record_when_enabled(self):
         create_response = self.client.post(
@@ -3532,6 +4849,36 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(updated["overall_status"], "claimed_by_worker")
         self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
 
+    def test_worker_queue_retry_preserves_saved_sites_and_prepares_only_unfinished_sites(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        payload["site_statuses"]["vehicle_mileage"].update(
+            status="vehicle_mileage_saved",
+            detail="已完成的里程紀錄",
+        )
+        payload["site_statuses"]["duty_work_log"].update(
+            status="duty_work_log_failed",
+            detail="前次失敗",
+        )
+        payload["site_statuses"]["consumables"].update(
+            status="consumables_waiting_confirmation",
+            detail="請人工確認的現有狀態",
+        )
+        self.store.save_payload(task_id, payload)
+
+        app_module.queue_task_for_worker(task_id)
+
+        queued = self.store.get(task_id)
+        self.assertEqual(queued["worker_queue"]["status"], "queued")
+        self.assertEqual(queued["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
+        self.assertEqual(queued["site_statuses"]["vehicle_mileage"]["detail"], "已完成的里程紀錄")
+        self.assertEqual(queued["site_statuses"]["duty_work_log"]["status"], "local_pc_ready")
+        self.assertEqual(
+            queued["site_statuses"]["consumables"]["status"],
+            "consumables_waiting_confirmation",
+        )
+
     def test_worker_site_status_can_update_overall_when_explicitly_requested(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         worker_headers = {"X-Worker-Token": "test-token"}
@@ -3557,11 +4904,504 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(updated["overall_status"], "desktop_fast_completed")
         self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
 
+    def test_worker_status_rejects_explicit_wrong_claim_owner(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_next_for_worker("worker-a")
+        assert claimed is not None
+
+        wrong_claim = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=headers,
+            json={
+                "status": "worker_running",
+                "detail": "stale worker",
+                "worker_id": "worker-a",
+                "claim_id": "wrong-claim",
+            },
+        )
+        wrong_worker = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=headers,
+            json={
+                "status": "worker_running",
+                "detail": "stale worker",
+                "worker_id": "worker-b",
+                "claim_id": claimed["worker_queue"]["claim_id"],
+            },
+        )
+
+        self.assertEqual(wrong_claim.status_code, 409)
+        self.assertEqual(wrong_claim.get_json()["error"], "worker_claim_conflict")
+        self.assertIn("不符", wrong_claim.get_json()["detail"])
+        self.assertEqual(wrong_worker.status_code, 409)
+        self.assertEqual(wrong_worker.get_json()["error"], "worker_claim_conflict")
+        self.assertEqual(self.store.get(task_id)["overall_status"], "claimed_by_worker")
+
+    def test_worker_can_claim_specific_task_idempotently_but_other_worker_is_fenced(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        url = f"/worker/tasks/{task_id}/claim"
+
+        first = self.client.post(url, headers=headers, json={"worker_id": "worker-a"})
+        second = self.client.post(url, headers=headers, json={"worker_id": "worker-a"})
+        conflict = self.client.post(url, headers=headers, json={"worker_id": "worker-b"})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(conflict.status_code, 409)
+        first_queue = first.get_json()["worker_queue"]
+        self.assertEqual(first_queue["status"], "claimed")
+        self.assertEqual(first_queue["claim_id"], second.get_json()["worker_queue"]["claim_id"])
+        self.assertEqual(first.get_json()["task"]["task_id"], task_id)
+        self.assertEqual(conflict.get_json()["error"], "worker_claim_conflict")
+
+    def test_worker_status_requires_claim_id_after_task_is_reclaimed(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        first = self.store.claim_next_for_worker("worker-a")
+        assert first is not None
+        first["worker_queue"]["lease_expires_at"] = (
+            datetime.now() - timedelta(seconds=1)
+        ).isoformat(timespec="seconds")
+        self.store.save_payload(task_id, first)
+        reclaimed = self.store.claim_next_for_worker("worker-b")
+        assert reclaimed is not None
+
+        missing_claim = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=headers,
+            json={"status": "worker_running", "detail": "legacy stale reply"},
+        )
+        accepted = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=headers,
+            json={
+                "status": "worker_running",
+                "detail": "current worker",
+                "claim_id": reclaimed["worker_queue"]["claim_id"],
+            },
+        )
+
+        self.assertEqual(missing_claim.status_code, 409)
+        self.assertEqual(missing_claim.get_json()["error"], "worker_claim_identity_required")
+        self.assertIn("claim_id", missing_claim.get_json()["detail"])
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(self.store.get(task_id)["overall_status"], "worker_running")
+
+    def test_worker_status_rejects_identityless_stale_reply_after_legacy_claim_is_reclaimed(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        first = self.store.claim_next_for_worker("worker-a")
+        assert first is not None
+        first["worker_queue"].pop("claim_attempt", None)
+        first["worker_queue"]["lease_expires_at"] = (
+            datetime.now() - timedelta(seconds=1)
+        ).isoformat(timespec="seconds")
+        self.store.save_payload(task_id, first)
+        reclaimed = self.store.claim_next_for_worker("worker-b")
+        assert reclaimed is not None
+
+        stale = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=headers,
+            json={"status": "worker_running", "detail": "legacy stale reply"},
+        )
+
+        self.assertEqual(reclaimed["worker_queue"]["claim_attempt"], "2")
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.get_json()["error"], "worker_claim_identity_required")
+        current = self.store.get(task_id)
+        self.assertEqual(current["worker_queue"]["worker_id"], "worker-b")
+        self.assertEqual(current["overall_status"], "claimed_by_worker")
+
+    def test_worker_status_rejects_expired_claim_without_renewing_it(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_next_for_worker("worker-a")
+        assert claimed is not None
+        expired_at = (datetime.now() - timedelta(seconds=1)).isoformat(timespec="seconds")
+        claimed["worker_queue"]["lease_expires_at"] = expired_at
+        self.store.save_payload(task_id, claimed)
+        events_before = len(claimed["events"])
+
+        stale = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=headers,
+            json={
+                "status_event_id": "expired-claim-event",
+                "status": "worker_running",
+                "detail": "late outbox delivery",
+                "worker_id": "worker-a",
+                "claim_id": claimed["worker_queue"]["claim_id"],
+            },
+        )
+
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.get_json()["error"], "worker_claim_inactive")
+        current = self.store.get(task_id)
+        self.assertEqual(current["worker_queue"]["lease_expires_at"], expired_at)
+        self.assertEqual(current["overall_status"], "claimed_by_worker")
+        self.assertEqual(len(current["events"]), events_before)
+
+    def test_identityless_stale_status_is_rejected_after_abort_and_requeue(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        queued_a = self.store.queue_for_worker(task_id)
+        claimed_a = self.store.claim_task_for_worker(task_id, "worker-a")
+        self.store.abort_running_task(
+            task_id,
+            expected_claim_id=claimed_a["worker_queue"]["claim_id"],
+            expected_queue_id=queued_a["worker_queue"]["queue_id"],
+        )
+        self.store.queue_for_worker(task_id)
+        claimed_b = self.store.claim_task_for_worker(task_id, "worker-b")
+
+        stale = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=headers,
+            json={"status": "worker_running", "detail": "legacy stale reply"},
+        )
+
+        self.assertEqual(claimed_b["worker_queue"]["claim_attempt"], "2")
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.get_json()["error"], "worker_claim_identity_required")
+        current = self.store.get(task_id)
+        self.assertEqual(current["worker_queue"]["worker_id"], "worker-b")
+        self.assertEqual(current["worker_queue"]["claim_id"], claimed_b["worker_queue"]["claim_id"])
+        self.assertEqual(current["overall_status"], "claimed_by_worker")
+
+    def test_worker_status_event_id_is_idempotent(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_next_for_worker("worker-a")
+        assert claimed is not None
+        claim_id = claimed["worker_queue"]["claim_id"]
+        status_url = f"/worker/tasks/{task_id}/status"
+
+        first = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "status_event_id": "event-idempotent-1",
+                "status": "duty_work_log_saved",
+                "detail": "saved once",
+                "site_key": "duty_work_log",
+                "site_name": "\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304",
+                "overall_status": "worker_running",
+                "overall_detail": "first delivery",
+                "worker_id": "worker-a",
+                "claim_id": claim_id,
+            },
+        )
+        self.assertEqual(first.status_code, 200)
+        first_payload = self.store.get(task_id)
+        first_file = self.store.path_for(task_id).read_bytes()
+        first_event_count = len(first_payload["events"])
+        first_attempt_count = len(first_payload["site_attempts"]["duty_work_log"])
+
+        duplicate = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "status_event_id": "event-idempotent-1",
+                "status": "duty_work_log_failed",
+                "detail": "must be ignored",
+                "site_key": "duty_work_log",
+                "site_name": "\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304",
+                "overall_status": "worker_failed",
+                "overall_detail": "must be ignored",
+                "worker_id": "worker-a",
+                "claim_id": claim_id,
+            },
+        )
+
+        self.assertEqual(duplicate.status_code, 200)
+        after = self.store.get(task_id)
+        self.assertEqual(self.store.path_for(task_id).read_bytes(), first_file)
+        self.assertEqual(after["overall_status"], "worker_running")
+        self.assertEqual(after["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
+        self.assertEqual(len(after["events"]), first_event_count)
+        self.assertEqual(len(after["site_attempts"]["duty_work_log"]), first_attempt_count)
+        self.assertEqual(after["recent_status_event_ids"], ["event-idempotent-1"])
+        self.assertTrue(duplicate.get_json()["duplicate"])
+
+    def test_worker_status_duplicate_event_still_rejects_different_owner(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_next_for_worker("worker-a")
+        assert claimed is not None
+        claim_id = claimed["worker_queue"]["claim_id"]
+        status_url = f"/worker/tasks/{task_id}/status"
+        accepted = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "status_event_id": "event-owner-1",
+                "status": "worker_running",
+                "detail": "accepted",
+                "worker_id": "worker-a",
+                "claim_id": claim_id,
+            },
+        )
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(self.store.get(task_id)["recent_status_event_ids"], ["event-owner-1"])
+        accepted_file = self.store.path_for(task_id).read_bytes()
+
+        wrong_owner = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "status_event_id": "event-owner-1",
+                "status": "worker_failed",
+                "detail": "must not bypass owner validation",
+                "worker_id": "worker-b",
+                "claim_id": claim_id,
+            },
+        )
+
+        self.assertEqual(wrong_owner.status_code, 409)
+        self.assertEqual(wrong_owner.get_json()["error"], "worker_claim_conflict")
+        self.assertEqual(self.store.path_for(task_id).read_bytes(), accepted_file)
+
+    def test_worker_status_event_id_history_is_bounded(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_next_for_worker("worker-a")
+        assert claimed is not None
+        claim_id = claimed["worker_queue"]["claim_id"]
+        status_url = f"/worker/tasks/{task_id}/status"
+
+        with mock.patch("ambulance_bot.task_store.RECENT_STATUS_EVENT_ID_LIMIT", 3):
+            for index in range(5):
+                response = self.client.post(
+                    status_url,
+                    headers=headers,
+                    json={
+                        "status_event_id": f"bounded-event-{index}",
+                        "status": "worker_running",
+                        "detail": f"heartbeat {index}",
+                        "worker_id": "worker-a",
+                        "claim_id": claim_id,
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+
+        event_ids = self.store.get(task_id)["recent_status_event_ids"]
+        self.assertEqual(len(event_ids), 3)
+        self.assertEqual(event_ids[0], "bounded-event-2")
+        self.assertEqual(event_ids[-1], "bounded-event-4")
+
+    def test_worker_status_rejects_new_event_after_claim_is_aborted(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        claimed = self.store.claim_next_for_worker("worker-a")
+        assert claimed is not None
+        claim_id = claimed["worker_queue"]["claim_id"]
+        status_url = f"/worker/tasks/{task_id}/status"
+        identity = {"worker_id": "worker-a", "claim_id": claim_id}
+        accepted = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                **identity,
+                "status_event_id": "event-before-abort",
+                "status": "worker_running",
+                "detail": "running",
+            },
+        )
+        self.assertEqual(accepted.status_code, 200)
+        self.store.abort_running_task(task_id, "operator aborted")
+        aborted_file = self.store.path_for(task_id).read_bytes()
+
+        stale_new_event = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                **identity,
+                "status_event_id": "event-after-abort",
+                "status": "worker_running",
+                "detail": "must not revive task",
+            },
+        )
+        safe_duplicate = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                **identity,
+                "status_event_id": "event-before-abort",
+                "status": "worker_running",
+                "detail": "duplicate must not mutate",
+            },
+        )
+
+        self.assertEqual(stale_new_event.status_code, 409)
+        self.assertEqual(stale_new_event.get_json()["error"], "worker_claim_inactive")
+        self.assertEqual(safe_duplicate.status_code, 200)
+        self.assertTrue(safe_duplicate.get_json()["duplicate"])
+        self.assertEqual(self.store.path_for(task_id).read_bytes(), aborted_file)
+
+    def test_worker_vehicle_statuses_checkpoint_and_aggregate_all_expected_vehicles(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                two_vehicle="1",
+                two_vehicle_available="1",
+                vehicle="新坡91",
+                vehicle_2="新坡92",
+                driver_2="包華先",
+                mileage_2="54321",
+                return_date_2="2026-06-07",
+                return_time_2="1129",
+                patient_summary_2="男一名",
+                consumables_2="桃-口罩(片)=2",
+            ),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        self.assertIsNotNone(self.store.claim_next_for_worker("test-worker"))
+        status_url = f"/worker/tasks/{task_id}/status"
+
+        first = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "site_key": "consumables",
+                "site_name": "一站通耗材",
+                "vehicle_key": "新坡91",
+                "vehicle_label": "第一車 新坡91",
+                "status": "consumables_saved",
+                "detail": "first saved",
+            },
+        )
+        first_payload = first.get_json()["payload"]
+        self.assertEqual(first_payload["site_statuses"]["consumables"]["status"], "consumables_running")
+        self.assertEqual(
+            first_payload["site_statuses"]["consumables"]["vehicle_results"]["新坡91"]["status"],
+            "consumables_saved",
+        )
+        self.assertEqual(
+            first_payload["site_statuses"]["consumables"]["vehicle_results"]["新坡91"]["vehicle_label"],
+            "第一車 新坡91",
+        )
+
+        second = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "site_key": "consumables",
+                "site_name": "一站通耗材",
+                "vehicle_key": "新坡92",
+                "status": "consumables_failed",
+                "detail": "second failed",
+            },
+        )
+        second_payload = second.get_json()["payload"]
+        self.assertEqual(second_payload["site_statuses"]["consumables"]["status"], "consumables_failed")
+        self.assertEqual(
+            second_payload["site_statuses"]["consumables"]["vehicle_results"]["新坡91"]["status"],
+            "consumables_saved",
+        )
+
+        retried = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "site_key": "consumables",
+                "site_name": "一站通耗材",
+                "vehicle_key": "新坡92",
+                "status": "consumables_saved",
+                "detail": "second saved on retry",
+            },
+        ).get_json()["payload"]
+        self.assertEqual(retried["site_statuses"]["consumables"]["status"], "consumables_saved")
+        self.assertEqual(set(retried["site_statuses"]["consumables"]["vehicle_results"]), {"新坡91", "新坡92"})
+
+    def test_worker_vehicle_parent_does_not_hide_waiting_vehicle_behind_saved_vehicle(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                two_vehicle="1",
+                two_vehicle_available="1",
+                vehicle="新坡91",
+                vehicle_2="新坡92",
+                driver_2="包華先",
+                mileage_2="54321",
+                return_date_2="2026-06-07",
+                return_time_2="1129",
+                patient_summary_2="男一名",
+                consumables_2="桃-口罩(片)=2",
+            ),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        self.assertIsNotNone(self.store.claim_next_for_worker("test-worker"))
+        status_url = f"/worker/tasks/{task_id}/status"
+        self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "site_key": "consumables",
+                "site_name": "一站通耗材",
+                "vehicle_key": "新坡91",
+                "status": "manual_captcha_required",
+                "detail": "waiting",
+            },
+        )
+        payload = self.client.post(
+            status_url,
+            headers=headers,
+            json={
+                "site_key": "consumables",
+                "site_name": "一站通耗材",
+                "vehicle_key": "新坡92",
+                "status": "consumables_saved",
+                "detail": "saved",
+            },
+        ).get_json()["payload"]
+
+        self.assertEqual(payload["site_statuses"]["consumables"]["status"], "manual_captcha_required")
+
     def test_worker_site_status_accepts_failure_diagnostics(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         worker_headers = {"X-Worker-Token": "test-token"}
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.queue_for_worker(task_id)
+        self.assertIsNotNone(self.store.claim_next_for_worker("test-worker"))
 
         status_response = self.client.post(
             f"/worker/tasks/{task_id}/status",

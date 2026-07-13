@@ -10,7 +10,9 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Callable
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -27,6 +29,7 @@ from .chrome_startup import (
     _worker_user_data_paths,
     cleanup_worker_chrome_residue,
     create_webdriver_chrome_with_timeout,
+    mark_driver_operation_active,
     schedule_driver_auto_close,
 )
 from .duty_credentials import (
@@ -38,6 +41,8 @@ from .duty_credentials import (
 )
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
+from .task_cancellation import TaskCancellationError
+from .update_safety import manual_update_reason
 from .window_layout import apply_tile
 
 
@@ -70,6 +75,7 @@ _GENERATED_SELENIUM_PROFILE_PREFIXES = (
 _CHROME_PROFILE_LOCK_NAMES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
 _PPE_OPTION_NAME_FIELDS = ("Text", "Name", "DriverName", "UserName", "EmpName")
 _PPE_OPTION_ID_FIELDS = ("Value", "Id", "UserId", "EmpId", "Code", "Driver")
+WAITING_CONFIRMATION_MARKER = "waiting_confirmation:"
 
 
 def _normalize_ppe_option_name(value: object) -> str:
@@ -207,13 +213,24 @@ def run_local_selenium_task(
     use_session_lock: bool = True,
     tile_name: str = "",
     force_new_driver: bool = False,
+    update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
+    manual_reason = manual_update_reason("duty_work_log", request, update_context)
+    if manual_reason:
+        return SeleniumRunResult(
+            False,
+            "duty_work_log_waiting_confirmation",
+            f"需人工更新：{manual_reason}",
+            summary_path,
+        )
 
     driver = None
+    driver_ready = False
     lock_acquired = False
     keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
         "0",
@@ -234,22 +251,40 @@ def run_local_selenium_task(
             debugger_port=debugger_port,
             attach_existing=not force_new_driver,
         )
+        driver_ready = True
+        mark_driver_operation_active(driver)
         apply_tile(driver, tile_name)
         print(f"[task] selenium driver ready for {request.task_id}", flush=True)
         _set_window_size_if_enabled(driver, "task")
         driver.implicitly_wait(2)
-        result = _prepare_duty_work_log_form(driver, request, output_dir, summary_path)
+        result = _prepare_duty_work_log_form(
+            driver,
+            request,
+            output_dir,
+            summary_path,
+            **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+        )
         return result
+    except TaskCancellationError:
+        raise
     except Exception as exc:
         if driver is not None:
             _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_error")
+        if driver_ready:
+            return SeleniumRunResult(
+                ok=False,
+                status="duty_work_log_failed",
+                detail=f"\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304\u64cd\u4f5c\u5931\u6557\uff1a{exc}",
+                summary_path=summary_path,
+            )
         return SeleniumRunResult(
             ok=False,
             status="chrome_start_failed",
-            detail=f"Selenium \u555f\u52d5\u6216\u64cd\u4f5c\u5931\u6557\uff1a{exc}",
+            detail=f"Selenium \u555f\u52d5\u5931\u6557\uff1a{exc}",
             summary_path=summary_path,
         )
     finally:
+        mark_driver_operation_active(driver, False)
         if not keep_browser_open:
             _quit_driver(driver)
         if lock_acquired:
@@ -266,11 +301,20 @@ def run_vehicle_mileage_task(
     tile_name: str = "",
     force_new_driver: bool = False,
     update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
+    manual_reason = manual_update_reason("vehicle_mileage", request, update_context)
+    if manual_reason:
+        return SeleniumRunResult(
+            False,
+            "vehicle_mileage_waiting_confirmation",
+            f"需人工更新：{manual_reason}",
+            summary_path,
+        )
 
     driver = existing_driver
     lock_acquired = False
@@ -294,17 +338,32 @@ def run_vehicle_mileage_task(
                 debugger_port=debugger_port,
                 attach_existing=not force_new_driver,
             )
+        mark_driver_operation_active(driver)
         apply_tile(driver, tile_name)
         _set_window_size_if_enabled(driver, "vehicle_mileage")
         driver.implicitly_wait(2)
-        detail = _open_vehicle_mileage_page(driver, request, output_dir, update_context=update_context)
-        status = "vehicle_mileage_saved" if _save_vehicle_mileage_enabled() else "vehicle_mileage_prefilled"
+        detail = _open_vehicle_mileage_page(
+            driver,
+            request,
+            output_dir,
+            update_context=update_context,
+            **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+        )
+        status = _confirmation_aware_status(
+            "vehicle_mileage",
+            detail,
+            save_enabled=_save_vehicle_mileage_enabled(),
+            prefilled_status="vehicle_mileage_prefilled",
+        )
         return SeleniumRunResult(True, status, detail, summary_path)
+    except TaskCancellationError:
+        raise
     except Exception as exc:
         if driver is not None:
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_error")
         return SeleniumRunResult(False, "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}", summary_path)
     finally:
+        mark_driver_operation_active(driver, False)
         if owns_driver and not keep_browser_open:
             _quit_driver(driver)
         if lock_acquired:
@@ -320,11 +379,21 @@ def run_fuel_record_task(
     use_session_lock: bool = True,
     tile_name: str = "",
     force_new_driver: bool = False,
+    update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
+    manual_reason = manual_update_reason("fuel_record", request, update_context)
+    if manual_reason:
+        return SeleniumRunResult(
+            False,
+            "fuel_record_waiting_confirmation",
+            f"需人工更新：{manual_reason}",
+            summary_path,
+        )
 
     driver = existing_driver
     lock_acquired = False
@@ -348,17 +417,32 @@ def run_fuel_record_task(
                 debugger_port=debugger_port,
                 attach_existing=not force_new_driver,
             )
+        mark_driver_operation_active(driver)
         apply_tile(driver, tile_name)
         _set_window_size_if_enabled(driver, "fuel_record")
         driver.implicitly_wait(2)
-        detail = _open_fuel_record_page(driver, request, output_dir)
-        status = "fuel_record_saved" if _save_fuel_record_enabled() else "fuel_record_prefilled"
+        detail = _open_fuel_record_page(
+            driver,
+            request,
+            output_dir,
+            update_context=update_context,
+            **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+        )
+        status = _confirmation_aware_status(
+            "fuel_record",
+            detail,
+            save_enabled=_save_fuel_record_enabled(),
+            prefilled_status="fuel_record_prefilled",
+        )
         return SeleniumRunResult(True, status, detail, summary_path)
+    except TaskCancellationError:
+        raise
     except Exception as exc:
         if driver is not None:
             _save_artifacts(driver, output_dir, request.task_id, "fuel_record_error")
         return SeleniumRunResult(False, "fuel_record_failed", f"加油紀錄操作失敗：{exc}", summary_path)
     finally:
+        mark_driver_operation_active(driver, False)
         if owns_driver and not keep_browser_open:
             _quit_driver(driver)
         if lock_acquired:
@@ -374,11 +458,21 @@ def run_disinfection_task(
     use_session_lock: bool = True,
     tile_name: str = "",
     force_new_driver: bool = False,
+    update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
+    manual_reason = manual_update_reason("disinfection", request, update_context)
+    if manual_reason:
+        return SeleniumRunResult(
+            False,
+            "disinfection_waiting_confirmation",
+            f"需人工更新：{manual_reason}",
+            summary_path,
+        )
 
     driver = existing_driver
     lock_acquired = False
@@ -402,17 +496,31 @@ def run_disinfection_task(
                 debugger_port=debugger_port,
                 attach_existing=not force_new_driver,
             )
+        mark_driver_operation_active(driver)
         apply_tile(driver, tile_name)
         _set_window_size_if_enabled(driver, "disinfection")
         driver.implicitly_wait(2)
-        detail = _open_disinfection_page(driver, request, output_dir)
-        status = "disinfection_saved" if _save_disinfection_record_enabled() else "disinfection_session_ready"
+        detail = _open_disinfection_page(
+            driver,
+            request,
+            output_dir,
+            **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+        )
+        status = _confirmation_aware_status(
+            "disinfection",
+            detail,
+            save_enabled=_save_disinfection_record_enabled(),
+            prefilled_status="disinfection_session_ready",
+        )
         return SeleniumRunResult(True, status, detail, summary_path)
+    except TaskCancellationError:
+        raise
     except Exception as exc:
         if driver is not None:
             _save_artifacts(driver, output_dir, request.task_id, "disinfection_error")
         return SeleniumRunResult(False, "disinfection_failed", f"消毒紀錄操作失敗：{exc}", summary_path)
     finally:
+        mark_driver_operation_active(driver, False)
         if owns_driver and not keep_browser_open:
             _quit_driver(driver)
         if lock_acquired:
@@ -997,6 +1105,7 @@ def _prepare_duty_work_log_form(
     request: AmbulanceReturnRequest,
     output_dir: Path,
     summary_path: Path,
+    cancel_check: Callable[[], None] | None = None,
 ) -> SeleniumRunResult:
     if not _ensure_duty_login(driver, request.duty_login_account_candidates):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
@@ -1043,14 +1152,19 @@ def _prepare_duty_work_log_form(
         detail = f"消防勤務工作紀錄已預填但有欄位未確認：{', '.join(fill_result)}。已保存截圖，不會自動儲存。"
         status = "duty_work_log_prefill_partial"
     elif _save_duty_work_log_enabled():
-        save_result = _click_duty_work_log_save(driver)
+        save_result = _click_duty_work_log_save(driver, cancel_check=cancel_check)
         time.sleep(1.5)
         _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_saved")
-        if save_result.get("ok"):
+        confirmation = _save_confirmation_state(str(save_result.get("alert") or ""))
+        if save_result.get("ok") and confirmation == "success":
             detail = "消防勤務工作紀錄已預填勤務項目、事由、處理情形並按下儲存。"
             status = "duty_work_log_saved"
+        elif save_result.get("ok") and confirmation == "unknown":
+            detail = f"{WAITING_CONFIRMATION_MARKER} 已按下儲存，但未收到儲存成功回應；請人工確認。"
+            status = "duty_work_log_waiting_confirmation"
         else:
-            detail = f"消防勤務工作紀錄已預填，但儲存按鈕未成功點擊：{save_result.get('reason', 'unknown')}。"
+            reason = save_result.get("reason") or save_result.get("alert") or "unknown"
+            detail = f"消防勤務工作紀錄已預填，但儲存未成功：{reason}。"
             status = "duty_work_log_save_failed"
     else:
         detail = "消防勤務工作紀錄已預填勤務項目、事由、處理情形，未按儲存。"
@@ -1063,12 +1177,19 @@ def _open_vehicle_mileage_page(
     request: AmbulanceReturnRequest,
     output_dir: Path,
     update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> str:
     try:
         if not _ensure_ppe_vehicle_mileage_session(driver, request):
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_login")
             raise WebDriverException("PPE login did not reach vehicle mileage page")
-        detail = _prepare_vehicle_mileage_form(driver, request, output_dir.parent, update_context=update_context)
+        detail = _prepare_vehicle_mileage_form(
+            driver,
+            request,
+            output_dir.parent,
+            update_context=update_context,
+            cancel_check=cancel_check,
+        )
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
     except WebDriverException:
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_error")
@@ -1191,19 +1312,35 @@ def _click_ppe_login(driver: webdriver.Chrome) -> None:
 def _match_case_for_request(cases: list[dict[str, str]], request: AmbulanceReturnRequest) -> dict[str, str] | None:
     address = clean_case_address(request.case_address)
     case_time = str(request.case_time or "").strip()
-    for case in cases:
-        if case_time and case.get("case_time_hhmm") != case_time:
-            continue
-        if address and address not in clean_case_address(case.get("address", "")):
-            continue
-        return case
-    for case in cases:
-        if case_time and case.get("case_time_hhmm") == case_time:
-            return case
-    for case in cases:
-        if address and address in clean_case_address(case.get("address", "")):
-            return case
-    return None
+    case_id = str(request.case_id or "").strip()
+    case_date = _case_date_key(request.case_date) if request.case_date else ""
+    candidates = [dict(case) for case in cases]
+    if case_id:
+        candidates = [case for case in candidates if str(case.get("case_id") or "").strip() == case_id]
+    if case_date:
+        candidates = [case for case in candidates if _case_date_key(case.get("case_date", "")) == case_date]
+    if case_time:
+        candidates = [case for case in candidates if str(case.get("case_time_hhmm") or "").strip() == case_time]
+    if address:
+        address_matches: list[dict[str, str]] = []
+        for case in candidates:
+            candidate_address = clean_case_address(case.get("address", ""))
+            if candidate_address and (address in candidate_address or candidate_address in address):
+                address_matches.append(case)
+        candidates = address_matches
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _case_date_key(value: object) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(digits) >= 8 and int(digits[:4]) >= 1911:
+        return digits[:8]
+    if len(digits) >= 7:
+        try:
+            return f"{int(digits[:3]) + 1911:04d}{digits[3:7]}"
+        except ValueError:
+            return ""
+    return ""
 
 
 def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
@@ -1388,7 +1525,12 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
     return [str(item) for item in all_missing]
 
 
-def _click_duty_work_log_save(driver: webdriver.Chrome) -> dict[str, object]:
+def _click_duty_work_log_save(
+    driver: webdriver.Chrome,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict[str, object]:
+    if cancel_check is not None:
+        cancel_check()
     result = driver.execute_script(
         """
         const controls = Array.from(document.querySelectorAll('input, button, a'));
@@ -1520,6 +1662,7 @@ def _prepare_vehicle_mileage_form(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path | None = None,
     update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> str:
     driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
     if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
@@ -1527,53 +1670,81 @@ def _prepare_vehicle_mileage_form(
     _click_text_if_present(driver, ["\u8eca\u8f1b\u7ba1\u7406"])
     _click_text_if_present(driver, ["\u8eca\u8f1b\u4f7f\u7528\u7d00\u9304"])
     time.sleep(1)
-    previous_request = _vehicle_mileage_previous_request(update_context)
+    previous_request = _vehicle_mileage_previous_request(update_context, request)
     if previous_request and previous_request.vehicle and previous_request.vehicle != request.vehicle:
-        old_vehicle_label = vehicle_ppe_names(artifacts_dir).get(previous_request.vehicle, previous_request.vehicle)
-        _select_vehicle_record(driver, old_vehicle_label)
-        time.sleep(1)
-        deleted = _delete_vehicle_mileage_row(driver, previous_request)
-        delete_detail = f"已在原車輛 {previous_request.vehicle} 刪除里程列：{deleted}。"
-        if _save_vehicle_mileage_enabled():
-            delete_detail = f"{delete_detail}{_save_vehicle_mileage_form(driver)}"
-        else:
-            delete_detail = f"{delete_detail}未按儲存。"
-        driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
-        if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
-            raise WebDriverException("PPE session returned to login page before new vehicle mileage row")
-        time.sleep(1)
-        new_vehicle_label = vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
-        _select_vehicle_record(driver, new_vehicle_label)
-        time.sleep(1)
-        add_detail = _add_vehicle_mileage_record(driver, request, artifacts_dir)
-        return f"{delete_detail} 已改至新車輛 {request.vehicle} 新增里程列：{add_detail}"
+        raise WebDriverException(
+            "vehicle change requires manual correction: "
+            f"previous={previous_request.vehicle} current={request.vehicle}; "
+            "automatic delete/add is disabled to prevent data loss"
+        )
 
     vehicle_label = vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
     _select_vehicle_record(driver, vehicle_label)
     time.sleep(1)
+    current_matches = _vehicle_mileage_matching_row_indices(driver, request)
+    if len(current_matches) == 1:
+        return f"{request.vehicle} 車輛里程紀錄已存在，略過新增。"
+    if len(current_matches) > 1:
+        raise WebDriverException(
+            f"multiple current mileage rows: vehicle={request.vehicle} matches={current_matches}"
+        )
     if previous_request:
-        row_index = _find_vehicle_mileage_row_index(driver, previous_request)
+        previous_matches = _vehicle_mileage_matching_row_indices(driver, previous_request)
+        if len(previous_matches) != 1:
+            raise WebDriverException(
+                f"previous mileage row must match exactly once: "
+                f"vehicle={previous_request.vehicle} matches={previous_matches}"
+            )
+        row_index = previous_matches[0]
         start_mileage = _vehicle_mileage_row_value(driver, row_index, "StartMileage")
         values = _vehicle_mileage_values(request, start_mileage)
         _fill_vehicle_grid_values(driver, values, row_index=row_index)
         _assert_vehicle_mileage_values_present(driver, values, row_index=row_index)
         if _save_vehicle_mileage_enabled():
-            return f"已修正原車輛里程列。{_save_vehicle_mileage_form(driver)}"
+            return f"已修正原車輛里程列。{_save_vehicle_mileage_form(driver, cancel_check=cancel_check)}"
         return "已修正原車輛里程列，未按儲存。"
 
-    return _add_vehicle_mileage_record(driver, request, artifacts_dir)
+    return _add_vehicle_mileage_record(
+        driver,
+        request,
+        artifacts_dir,
+        cancel_check=cancel_check,
+    )
 
 
-def _open_fuel_record_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
-    fuel_requests = [item for item in request.vehicle_requests() if item.fuel_record.enabled]
+def _open_fuel_record_page(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    output_dir: Path,
+    update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
+) -> str:
+    all_vehicle_requests = request.vehicle_requests()
+    fuel_requests = [
+        (index, item)
+        for index, item in enumerate(all_vehicle_requests, start=1)
+        if item.fuel_record.enabled
+    ]
     if not fuel_requests:
         return "未勾選加油紀錄，已略過。"
     if not _ensure_ppe_fuel_record_session(driver, request):
         _save_artifacts(driver, output_dir, request.task_id, "fuel_record_login")
         raise WebDriverException("PPE login did not reach fuel record page")
     details: list[str] = []
-    for vehicle_request in fuel_requests:
-        details.append(_prepare_fuel_record_form(driver, vehicle_request, output_dir.parent))
+    for vehicle_index, vehicle_request in fuel_requests:
+        details.append(
+            _prepare_fuel_record_form(
+                driver,
+                vehicle_request,
+                output_dir.parent,
+                update_context=_with_vehicle_update_identity(
+                    update_context,
+                    vehicle_request,
+                    vehicle_index,
+                ),
+                cancel_check=cancel_check,
+            )
+        )
     _save_artifacts(driver, output_dir, request.task_id, "fuel_record")
     return " ".join(details)
 
@@ -1582,11 +1753,31 @@ def _prepare_fuel_record_form(
     driver: webdriver.Chrome,
     request: AmbulanceReturnRequest,
     artifacts_dir: Path | None = None,
+    update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> str:
     fuel = request.fuel_record
     driver.get("https://ppe.tyfd.gov.tw/FUC04100/Query")
     if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page before fuel record query")
+    previous_request = _previous_vehicle_request_for_update(
+        update_context,
+        request,
+        site_label="fuel record",
+    )
+    if previous_request is not None and previous_request.fuel_record.enabled:
+        previous_vehicle = str(previous_request.vehicle or "").strip()
+        current_vehicle = str(request.vehicle or "").strip()
+        if previous_vehicle != current_vehicle:
+            raise WebDriverException(
+                f"fuel vehicle change requires manual correction: previous={previous_vehicle} current={current_vehicle}"
+            )
+        previous_period = str(previous_request.fuel_record.date or "")[:6]
+        current_period_key = str(fuel.date or "")[:6]
+        if previous_period != current_period_key:
+            raise WebDriverException(
+                f"fuel period change requires manual correction: previous={previous_period} current={current_period_key}"
+            )
     target_period = f"{fuel.date[:4]}/{fuel.date[4:6]}"
     current_period = _ensure_fuel_query_period(driver, target_period)
     if current_period and current_period != target_period:
@@ -1594,11 +1785,33 @@ def _prepare_fuel_record_form(
     _click_fuel_card_register(driver, _fuel_card_labels(request.vehicle, artifacts_dir))
     if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):
         raise WebDriverException("fuel detail page did not open")
+
+    current_matches = _fuel_grid_matching_row_indices(driver, request)
+    if len(current_matches) == 1:
+        return f"{request.vehicle} 加油紀錄已存在，略過新增。"
+    if len(current_matches) > 1:
+        raise WebDriverException(
+            f"multiple current fuel rows: vehicle={request.vehicle} matches={current_matches}"
+        )
+
+    if previous_request is not None and previous_request.fuel_record.enabled:
+        previous_matches = _fuel_grid_matching_row_indices(driver, previous_request)
+        if len(previous_matches) != 1:
+            raise WebDriverException(
+                f"previous fuel row must match exactly once: "
+                f"vehicle={previous_request.vehicle} matches={previous_matches}"
+            )
+        _fill_fuel_grid_record(driver, request, row_index=previous_matches[0])
+        _assert_fuel_grid_record_present(driver, request)
+        if _save_fuel_record_enabled():
+            return f"{request.vehicle} 已更新原加油紀錄。{_save_fuel_record_form(driver, request, cancel_check=cancel_check)}"
+        return f"{request.vehicle} 已更新原加油紀錄，未按儲存。"
+
     _click_fuel_add_row(driver)
     _fill_fuel_grid_record(driver, request)
     _assert_fuel_grid_record_present(driver, request)
     if _save_fuel_record_enabled():
-        return _save_fuel_record_form(driver, request)
+        return _save_fuel_record_form(driver, request, cancel_check=cancel_check)
     return f"{request.vehicle} 已填寫加油紀錄，未按儲存。"
 
 
@@ -1784,7 +1997,85 @@ def _wait_for_fuel_driver_value(
     raise WebDriverException(f"missing fuel driver: requested={driver_name}; candidates={candidates}")
 
 
-def _fill_fuel_grid_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> None:
+def _normalize_fuel_decimal(value: object) -> str:
+    text = str(value or "").strip().replace(",", "")
+    try:
+        normalized = Decimal(text).normalize()
+    except (InvalidOperation, ValueError):
+        return text
+    return format(normalized, "f")
+
+
+def _normalize_fuel_date(value: object) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[:8]
+
+
+def _fuel_grid_matching_row_indices(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+) -> list[int]:
+    rows = driver.execute_script(
+        """
+        const grid = window.jQuery ? jQuery('#grid').data('kendoGrid') : null;
+        if (!grid) return [];
+        const dateText = value => {
+          if (value instanceof Date && !Number.isNaN(value.getTime())) {
+            const pad = number => String(number).padStart(2, '0');
+            return `${value.getFullYear()}${pad(value.getMonth() + 1)}${pad(value.getDate())}`;
+          }
+          return String(value || '');
+        };
+        return Array.from(grid.dataSource.data()).map((row, rowIndex) => ({
+          row_index: rowIndex,
+          date: dateText(row.FuelDate),
+          time: String(row.FuelTime || ''),
+          driver: String(row.DriverName || ''),
+          product: String(row.FuelTypeName || ''),
+          quantity: String(row.FuelQty ?? ''),
+          unit_price: String(row.FuelPrice ?? '')
+        }));
+        """
+    )
+    if not isinstance(rows, list):
+        raise WebDriverException("fuel grid rows unavailable")
+    fuel = request.fuel_record
+    expected = {
+        "date": _normalize_fuel_date(fuel.date),
+        "time": normalize_hhmm_local(fuel.time),
+        "driver": " ".join(str(fuel.driver or request.driver or "").split()),
+        "product": " ".join(str(fuel.product or "").split()),
+        "quantity": _normalize_fuel_decimal(fuel.quantity),
+        "unit_price": _normalize_fuel_decimal(fuel.unit_price),
+    }
+    matches: list[int] = []
+    for fallback_index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        actual = {
+            "date": _normalize_fuel_date(row.get("date")),
+            "time": normalize_hhmm_local(str(row.get("time") or "")),
+            "driver": " ".join(str(row.get("driver") or "").split()),
+            "product": " ".join(str(row.get("product") or "").split()),
+            "quantity": _normalize_fuel_decimal(row.get("quantity")),
+            "unit_price": _normalize_fuel_decimal(row.get("unit_price")),
+        }
+        if actual != expected:
+            continue
+        try:
+            row_index = int(row.get("row_index", fallback_index))
+        except (TypeError, ValueError):
+            row_index = fallback_index
+        matches.append(row_index)
+    return matches
+
+
+def _fill_fuel_grid_record(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    *,
+    row_index: int | None = None,
+) -> None:
     fuel = request.fuel_record
     driver_name = fuel.driver or request.driver
     driver_value = _wait_for_fuel_driver_value(driver, driver_name)
@@ -1792,9 +2083,16 @@ def _fill_fuel_grid_record(driver: webdriver.Chrome, request: AmbulanceReturnReq
         """
         const fuel = arguments[0];
         const driverValue = arguments[1];
+        const requestedRowIndex = arguments[2];
         const grid = window.jQuery ? jQuery('#grid').data('kendoGrid') : null;
         if (!grid) return {ok: false, reason: 'missing grid'};
-        let item = Array.from(grid.dataSource.data()).find(row => Number(row.FCUseID || 0) === 0);
+        const rows = Array.from(grid.dataSource.data());
+        let item = Number.isInteger(requestedRowIndex)
+          ? rows[requestedRowIndex]
+          : rows.find(row => Number(row.FCUseID || 0) === 0);
+        if (Number.isInteger(requestedRowIndex) && !item) {
+          return {ok: false, reason: 'missing requested row'};
+        }
         if (!item) {
           grid.addRow();
           item = Array.from(grid.dataSource.data()).find(row => Number(row.FCUseID || 0) === 0);
@@ -1836,6 +2134,7 @@ def _fill_fuel_grid_record(driver: webdriver.Chrome, request: AmbulanceReturnReq
             "unit_price": fuel.unit_price,
         },
         driver_value,
+        row_index,
     )
     if not isinstance(result, dict) or not result.get("ok"):
         raise WebDriverException(f"fuel grid fill failed: {result}")
@@ -1865,7 +2164,13 @@ def _assert_fuel_grid_record_present(driver: webdriver.Chrome, request: Ambulanc
         raise WebDriverException("fuel grid values not visible after fill")
 
 
-def _save_fuel_record_form(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
+def _save_fuel_record_form(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    cancel_check: Callable[[], None] | None = None,
+) -> str:
+    if cancel_check is not None:
+        cancel_check()
     called = bool(
         driver.execute_script(
             """
@@ -1883,11 +2188,20 @@ def _save_fuel_record_form(driver: webdriver.Chrome, request: AmbulanceReturnReq
     if _is_ppe_login_page(driver):
         raise WebDriverException("PPE session returned to login page after fuel save")
     confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
-    suffix = f"：{' / '.join(confirmations)}" if confirmations else "。"
-    return f"{request.vehicle} 已填寫加油紀錄並按下儲存{suffix}"
+    confirmation = _save_confirmation_state(*confirmations)
+    if confirmation == "failure":
+        raise WebDriverException(f"fuel save rejected: {' / '.join(confirmations)}")
+    if confirmation == "success":
+        return f"{request.vehicle} 已填寫加油紀錄並確認儲存成功：{' / '.join(confirmations)}"
+    return f"{WAITING_CONFIRMATION_MARKER} {request.vehicle} 已按下加油紀錄儲存，但未偵測到成功回應。"
 
 
-def _add_vehicle_mileage_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest, artifacts_dir: Path | None = None) -> str:
+def _add_vehicle_mileage_record(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path | None = None,
+    cancel_check: Callable[[], None] | None = None,
+) -> str:
     latest_end_mileage = _extract_latest_end_mileage(driver)
     _add_vehicle_mileage_row(driver)
     time.sleep(1)
@@ -1896,18 +2210,28 @@ def _add_vehicle_mileage_record(driver: webdriver.Chrome, request: AmbulanceRetu
     _fill_vehicle_grid_values(driver, values)
     _assert_vehicle_mileage_values_present(driver, values)
     if _save_vehicle_mileage_enabled():
-        return _save_vehicle_mileage_form(driver)
+        return _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
     return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
 
 
-def _open_disinfection_page(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
+def _open_disinfection_page(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    output_dir: Path,
+    cancel_check: Callable[[], None] | None = None,
+) -> str:
     current_url = driver.current_url.lower()
     if "emsdt.tyfd.gov.tw/emmweb" not in current_url:
         driver.get(SITE_DEFINITION_BY_KEY["disinfection"].url)
         time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "disinfection_opened")
     _assert_disinfection_not_login(driver, "opened")
-    detail = _prepare_disinfection_record(driver, request, output_dir)
+    detail = _prepare_disinfection_record(
+        driver,
+        request,
+        output_dir,
+        cancel_check=cancel_check,
+    )
     if _save_disinfection_probe_enabled():
         controls_path = _save_disinfection_probe(driver, output_dir, request.task_id)
         return f"{detail} 已保存頁面控制項：{controls_path}"
@@ -1963,7 +2287,12 @@ def _save_disinfection_probe(driver: webdriver.Chrome, output_dir: Path, task_id
     return controls_path
 
 
-def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceReturnRequest, output_dir: Path) -> str:
+def _prepare_disinfection_record(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    output_dir: Path,
+    cancel_check: Callable[[], None] | None = None,
+) -> str:
     driver.switch_to.default_content()
     driver.get(_ems_ap_url(EMS_DISINFECTION_AP))
     _switch_to_disinfection_content_if_present(driver)
@@ -1986,18 +2315,29 @@ def _prepare_disinfection_record(driver: webdriver.Chrome, request: AmbulanceRet
     selected_items = _effective_disinfection_items(request.disinfection_items)
     if selected_items:
         updated = _set_disinfection_item_statuses(driver, selected_items, "\u5df2\u9078\u53d6\u5340")
-        if updated <= 0:
-            raise WebDriverException(f"missing disinfection item selects: {request.disinfection_items_summary}")
+        if updated != len(selected_items):
+            raise WebDriverException(
+                f"disinfection item update incomplete: updated={updated} expected={len(selected_items)}; "
+                f"items={request.disinfection_items_summary}"
+            )
     else:
         updated = 0
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
 
     if _save_disinfection_record_enabled():
-        if not _click_disinfection_save(driver):
+        if not _click_disinfection_save(driver, cancel_check=cancel_check):
             raise WebDriverException("missing disinfection save button")
         alert_text = _accept_alert_if_present(driver)
+        sweetalert_text = _confirm_sweetalert_if_present(driver)
+        final_alert_text = _accept_alert_if_present(driver, timeout=1)
         _assert_disinfection_not_login(driver, "save")
-        return f"disinfection items updated={updated}; saved. {alert_text}"
+        confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
+        confirmation = _save_confirmation_state(*confirmations)
+        if confirmation == "failure":
+            raise WebDriverException(f"disinfection save rejected: {' / '.join(confirmations)}")
+        if confirmation == "success":
+            return f"disinfection items updated={updated}; saved and confirmed. {' / '.join(confirmations)}"
+        return f"{WAITING_CONFIRMATION_MARKER} disinfection items updated={updated}; save response not confirmed."
     return f"disinfection items updated={updated}; not saved."
 
 def _switch_to_disinfection_content_if_present(driver: webdriver.Chrome) -> None:
@@ -2062,6 +2402,7 @@ def _wait_for_disinfection_query_fields(driver: webdriver.Chrome, timeout: float
         if driver.execute_script("return !!document.getElementById('_txtFromDate') && !!document.getElementById('_txtToDate');"):
             return
         time.sleep(0.2)
+    raise TimeoutException("disinfection query fields did not appear")
 
 
 def _wait_for_disinfection_query_completed(driver: webdriver.Chrome, timeout: float = 3) -> None:
@@ -2071,6 +2412,7 @@ def _wait_for_disinfection_query_completed(driver: webdriver.Chrome, timeout: fl
         if "查詢完成" in str(text):
             return
         time.sleep(0.2)
+    raise TimeoutException("disinfection query did not complete")
 
 
 def _wait_for_disinfection_detail_ready(driver: webdriver.Chrome, timeout: float = 3) -> None:
@@ -2085,6 +2427,7 @@ def _wait_for_disinfection_detail_ready(driver: webdriver.Chrome, timeout: float
         if ready:
             return
         time.sleep(0.2)
+    raise TimeoutException("disinfection detail controls did not become ready")
 
 
 def _save_disinfection_progress_artifacts(driver: webdriver.Chrome, output_dir: Path, task_id: str, site_key: str) -> None:
@@ -2106,9 +2449,10 @@ def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str,
         """
     )
     row_index = _select_disinfection_detail_row(rows, case_time, vehicle)
-    if row_index is not None:
-        return bool(
-            driver.execute_script(
+    if row_index is None:
+        return False
+    return bool(
+        driver.execute_script(
                 """
                 const rows = Array.from(document.querySelectorAll('tr'));
                 const row = rows[arguments[0]];
@@ -2116,37 +2460,13 @@ def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str,
                 const controls = Array.from(row.querySelectorAll('a, button, input[type=button], input[type=submit]'));
                 const detail = controls.find(el => {
                   const text = [el.innerText, el.value, el.title, el.getAttribute('aria-label')].map(x => String(x || '')).join(' ');
-                  return text.includes('?敦');
+                  return text.includes('明細');
                 }) || controls[controls.length - 1];
                 if (!detail) return false;
                 detail.click();
                 return true;
                 """,
                 row_index,
-            )
-        )
-    digits = normalize_hhmm_local(case_time)
-    return bool(
-        driver.execute_script(
-            """
-            const hhmm = arguments[0];
-            const variants = hhmm && hhmm.length === 4 ? [hhmm, `${hhmm.slice(0,2)}:${hhmm.slice(2)}`] : [];
-            const rows = Array.from(document.querySelectorAll('tr'));
-            const row = rows.find(tr => {
-              const text = tr.innerText || '';
-              return variants.length === 0 || variants.some(v => text.includes(v));
-            });
-            if (!row) return false;
-            const controls = Array.from(row.querySelectorAll('a, button, input[type=button], input[type=submit]'));
-            const detail = controls.find(el => {
-              const text = [el.innerText, el.value, el.title, el.getAttribute('aria-label')].map(x => String(x || '')).join(' ');
-              return text.includes('明細');
-            }) || controls[controls.length - 1];
-            if (!detail) return false;
-            detail.click();
-            return true;
-            """,
-            digits,
         )
     )
 
@@ -2156,25 +2476,21 @@ def _select_disinfection_detail_row(rows: object, case_time: str, vehicle: str =
         return None
     digits = normalize_hhmm_local(case_time)
     variants = [digits, f"{digits[:2]}:{digits[2:]}"] if len(digits) == 4 else []
-    best_index: int | None = None
-    best_score = -1
+    matches: list[int] = []
     for fallback_index, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         text = str(row.get("text") or "")
         if variants and not any(variant in text for variant in variants):
             continue
-        score = 1
-        if _disinfection_text_matches_vehicle(text, vehicle):
-            score += 10
+        if vehicle and not _disinfection_text_matches_vehicle(text, vehicle):
+            continue
         try:
             row_index = int(row.get("index"))
         except (TypeError, ValueError):
             row_index = fallback_index
-        if score > best_score:
-            best_score = score
-            best_index = row_index
-    return best_index
+        matches.append(row_index)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _disinfection_text_matches_vehicle(text: str, vehicle: str) -> bool:
@@ -2322,19 +2638,27 @@ def _click_text_if_present(driver: webdriver.Chrome, texts: list[str]) -> bool:
     return bool(driver.execute_script(script, texts))
 
 
-def _click_save_control(driver: webdriver.Chrome) -> bool:
-    if _click_save_control_in_current_frame(driver):
+def _click_save_control(
+    driver: webdriver.Chrome,
+    cancel_check: Callable[[], None] | None = None,
+) -> bool:
+    if _click_save_control_in_current_frame(driver, cancel_check=cancel_check):
         return True
     try:
         driver.switch_to.default_content()
     except Exception:
         return False
-    if _click_save_control_in_current_frame(driver):
+    if _click_save_control_in_current_frame(driver, cancel_check=cancel_check):
         return True
-    return _click_save_control_in_child_frames(driver)
+    return _click_save_control_in_child_frames(driver, cancel_check=cancel_check)
 
 
-def _click_vehicle_mileage_save(driver: webdriver.Chrome) -> bool:
+def _click_vehicle_mileage_save(
+    driver: webdriver.Chrome,
+    cancel_check: Callable[[], None] | None = None,
+) -> bool:
+    if cancel_check is not None:
+        cancel_check()
     clicked = bool(
         driver.execute_script(
             """
@@ -2369,11 +2693,14 @@ def _click_vehicle_mileage_save(driver: webdriver.Chrome) -> bool:
     if clicked:
         time.sleep(1)
         return True
-    return _click_save_control(driver)
+    return _click_save_control(driver, cancel_check=cancel_check)
 
 
-def _save_vehicle_mileage_form(driver: webdriver.Chrome) -> str:
-    if not _click_vehicle_mileage_save(driver):
+def _save_vehicle_mileage_form(
+    driver: webdriver.Chrome,
+    cancel_check: Callable[[], None] | None = None,
+) -> str:
+    if not _click_vehicle_mileage_save(driver, cancel_check=cancel_check):
         raise WebDriverException("missing vehicle mileage save button")
     alert_text = _accept_alert_if_present(driver)
     sweetalert_text = _confirm_sweetalert_if_present(driver)
@@ -2381,12 +2708,40 @@ def _save_vehicle_mileage_form(driver: webdriver.Chrome) -> str:
     if _is_ppe_login_page(driver):
         raise WebDriverException("PPE session returned to login page after vehicle mileage save")
     confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
-    if confirmations:
+    confirmation = _save_confirmation_state(*confirmations)
+    if confirmation == "failure":
+        raise WebDriverException(f"vehicle mileage save rejected: {' / '.join(confirmations)}")
+    if confirmation == "success":
         return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u6309\u4e0b\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
-    return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\uff1b\u672a\u5075\u6e2c\u5230\u78ba\u8a8d\u8996\u7a97\u3002"
+    return f"{WAITING_CONFIRMATION_MARKER} \u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\uff1b\u672a\u5075\u6e2c\u5230\u78ba\u8a8d\u8996\u7a97\uff0c\u5c1a\u672a\u78ba\u8a8d\u4f3a\u670d\u5668\u5df2\u5132\u5b58\u3002"
 
 
-def _click_disinfection_save(driver: webdriver.Chrome) -> bool:
+def _confirmation_aware_status(site_key: str, detail: str, *, save_enabled: bool, prefilled_status: str) -> str:
+    if not save_enabled:
+        return prefilled_status
+    if WAITING_CONFIRMATION_MARKER in str(detail or ""):
+        return f"{site_key}_waiting_confirmation"
+    return f"{site_key}_saved"
+
+
+def _save_confirmation_state(*messages: str) -> str:
+    text = " ".join(str(message or "").strip() for message in messages if str(message or "").strip()).lower()
+    if not text:
+        return "unknown"
+    compact = re.sub(r"\s+", "", text)
+    if any(marker in compact for marker in ("失敗", "錯誤", "未成功", "無法儲存", "error", "failed")):
+        return "failure"
+    if any(marker in compact for marker in ("儲存成功", "存檔成功", "成功儲存", "操作成功", "success")):
+        return "success"
+    return "unknown"
+
+
+def _click_disinfection_save(
+    driver: webdriver.Chrome,
+    cancel_check: Callable[[], None] | None = None,
+) -> bool:
+    if cancel_check is not None:
+        cancel_check()
     clicked = bool(
         driver.execute_script(
             """
@@ -2419,10 +2774,13 @@ def _click_disinfection_save(driver: webdriver.Chrome) -> bool:
     if clicked:
         time.sleep(1)
         return True
-    return _click_save_control(driver)
+    return _click_save_control(driver, cancel_check=cancel_check)
 
 
-def _click_save_control_in_child_frames(driver: webdriver.Chrome) -> bool:
+def _click_save_control_in_child_frames(
+    driver: webdriver.Chrome,
+    cancel_check: Callable[[], None] | None = None,
+) -> bool:
     try:
         driver.switch_to.default_content()
         frame_count = len(driver.find_elements(By.CSS_SELECTOR, "iframe,frame"))
@@ -2433,7 +2791,7 @@ def _click_save_control_in_child_frames(driver: webdriver.Chrome) -> bool:
             driver.switch_to.default_content()
             frame = driver.find_elements(By.CSS_SELECTOR, "iframe,frame")[index]
             driver.switch_to.frame(frame)
-            if _click_save_control_in_current_frame(driver):
+            if _click_save_control_in_current_frame(driver, cancel_check=cancel_check):
                 return True
             nested_count = len(driver.find_elements(By.CSS_SELECTOR, "iframe,frame"))
             for nested_index in range(nested_count):
@@ -2442,14 +2800,19 @@ def _click_save_control_in_child_frames(driver: webdriver.Chrome) -> bool:
                 driver.switch_to.frame(frame)
                 nested_frame = driver.find_elements(By.CSS_SELECTOR, "iframe,frame")[nested_index]
                 driver.switch_to.frame(nested_frame)
-                if _click_save_control_in_current_frame(driver):
+                if _click_save_control_in_current_frame(driver, cancel_check=cancel_check):
                     return True
         except WebDriverException:
             continue
     return False
 
 
-def _click_save_control_in_current_frame(driver: webdriver.Chrome) -> bool:
+def _click_save_control_in_current_frame(
+    driver: webdriver.Chrome,
+    cancel_check: Callable[[], None] | None = None,
+) -> bool:
+    if cancel_check is not None:
+        cancel_check()
     clicked = bool(
         driver.execute_script(
             """
@@ -2556,16 +2919,71 @@ def _select_vehicle_record(driver: webdriver.Chrome, vehicle_label: str) -> None
         raise WebDriverException(f"vehicle not found: {vehicle_label}")
 
 
-def _vehicle_mileage_previous_request(update_context: dict[str, object] | None) -> AmbulanceReturnRequest | None:
+def _with_vehicle_update_identity(
+    update_context: dict[str, object] | None,
+    vehicle_request: AmbulanceReturnRequest,
+    vehicle_index: int,
+) -> dict[str, object] | None:
+    if not isinstance(update_context, dict):
+        return None
+    context = dict(update_context)
+    context.setdefault("vehicle_index", int(vehicle_index))
+    context.setdefault(
+        "vehicle_key",
+        str(vehicle_request.vehicle or "").strip() or f"{vehicle_index}車",
+    )
+    return context
+
+
+def _previous_vehicle_request_for_update(
+    update_context: dict[str, object] | None,
+    current_request: AmbulanceReturnRequest | None,
+    *,
+    site_label: str,
+) -> AmbulanceReturnRequest | None:
     if not isinstance(update_context, dict):
         return None
     previous_task = update_context.get("previous_task")
     if not isinstance(previous_task, dict):
         return None
     try:
-        return AmbulanceReturnRequest.from_dict(previous_task)
-    except Exception:
+        previous_requests = AmbulanceReturnRequest.from_dict(previous_task).vehicle_requests()
+    except (TypeError, ValueError) as exc:
+        raise WebDriverException(f"invalid previous task for {site_label}: {exc}") from exc
+    if not previous_requests:
         return None
+    if len(previous_requests) == 1:
+        return previous_requests[0]
+
+    current_vehicle = str(getattr(current_request, "vehicle", "") or "").strip()
+    if current_vehicle:
+        matches = [item for item in previous_requests if str(item.vehicle or "").strip() == current_vehicle]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise WebDriverException(f"ambiguous previous vehicle for {site_label}: {current_vehicle}")
+
+    try:
+        vehicle_index = int(update_context.get("vehicle_index") or 0)
+    except (TypeError, ValueError):
+        vehicle_index = 0
+    if 1 <= vehicle_index <= len(previous_requests):
+        return previous_requests[vehicle_index - 1]
+    raise WebDriverException(
+        f"missing stable previous vehicle identity for {site_label}: "
+        f"vehicle={current_vehicle or 'empty'} index={vehicle_index or 'empty'}"
+    )
+
+
+def _vehicle_mileage_previous_request(
+    update_context: dict[str, object] | None,
+    current_request: AmbulanceReturnRequest | None = None,
+) -> AmbulanceReturnRequest | None:
+    return _previous_vehicle_request_for_update(
+        update_context,
+        current_request,
+        site_label="vehicle mileage",
+    )
 
 
 def _vehicle_mileage_values(request: AmbulanceReturnRequest, start_mileage: str) -> dict[str, str]:
@@ -2583,15 +3001,20 @@ def _vehicle_mileage_values(request: AmbulanceReturnRequest, start_mileage: str)
     }
 
 
-def _find_vehicle_mileage_row_index(driver: webdriver.Chrome, previous_request: AmbulanceReturnRequest) -> int:
+def _vehicle_mileage_matching_row_indices(
+    driver: webdriver.Chrome,
+    matched_request: AmbulanceReturnRequest,
+) -> list[int]:
+    raw_mileage = str(matched_request.mileage or "").strip()
     expected = {
-        "StartDay": previous_request.service_case_date().strftime("%Y%m%d"),
-        "StartTime": normalize_hhmm_local(previous_request.case_time),
-        "EndDay": previous_request.service_return_date().strftime("%Y%m%d"),
-        "EndTime": normalize_hhmm_local(previous_request.return_time),
-        "EndMileage": "" if str(previous_request.mileage or "").strip().startswith("+") else str(previous_request.mileage or "").strip(),
-        "Destination": clean_case_address(previous_request.case_address),
-        "DriverName": str(previous_request.driver or "").strip(),
+        "StartDay": matched_request.service_case_date().strftime("%Y%m%d"),
+        "StartTime": normalize_hhmm_local(matched_request.case_time),
+        "EndDay": matched_request.service_return_date().strftime("%Y%m%d"),
+        "EndTime": normalize_hhmm_local(matched_request.return_time),
+        "EndMileage": "" if raw_mileage.startswith("+") else raw_mileage,
+        "EndMileageDelta": raw_mileage[1:] if raw_mileage.startswith("+") else "",
+        "Destination": clean_case_address(matched_request.case_address),
+        "DriverName": str(matched_request.driver or "").strip(),
     }
     result = driver.execute_script(
         """
@@ -2600,31 +3023,50 @@ def _find_vehicle_mileage_row_index(driver: webdriver.Chrome, previous_request: 
         if (!grid) return {ok: false, reason: 'grid not found'};
         const rows = grid.dataSource.data();
         const norm = value => String(value ?? '').replace(/\\s+/g, '').trim();
-        const scoreRow = row => {
-          let score = 0;
-          if (expected.StartDay && norm(row.StartDay) === norm(expected.StartDay)) score += 4;
-          if (expected.StartTime && norm(row.StartTime) === norm(expected.StartTime)) score += 5;
-          if (expected.EndDay && norm(row.EndDay) === norm(expected.EndDay)) score += 3;
-          if (expected.EndTime && norm(row.EndTime) === norm(expected.EndTime)) score += 5;
-          if (expected.EndMileage && norm(row.EndMileage) === norm(expected.EndMileage)) score += 4;
-          if (expected.Destination && norm(row.Destination).includes(norm(expected.Destination))) score += 2;
-          if (expected.DriverName && norm(row.DriverName) === norm(expected.DriverName)) score += 1;
-          return score;
+        const exactIfProvided = (actual, wanted) => !norm(wanted) || norm(actual) === norm(wanted);
+        const mileageMatches = row => {
+          if (norm(expected.EndMileageDelta)) {
+            const start = Number(norm(row.StartMileage));
+            const delta = Number(norm(expected.EndMileageDelta));
+            const end = Number(norm(row.EndMileage));
+            return Number.isFinite(start) && Number.isFinite(delta) && Number.isFinite(end)
+              && end === start + delta;
+          }
+          return exactIfProvided(row.EndMileage, expected.EndMileage);
         };
-        const scored = rows.map((row, index) => ({index, score: scoreRow(row)}))
-          .filter(item => item.score >= 10)
-          .sort((a, b) => b.score - a.score);
-        if (!scored.length) return {ok: false, reason: 'matching mileage row not found'};
-        if (scored.length > 1 && scored[0].score === scored[1].score) {
-          return {ok: false, reason: 'matching mileage row is ambiguous', matches: scored.slice(0, 3)};
-        }
-        return {ok: true, index: scored[0].index, score: scored[0].score};
+        const matches = [];
+        rows.forEach((row, index) => {
+          if (
+            exactIfProvided(row.StartDay, expected.StartDay)
+            && exactIfProvided(row.StartTime, expected.StartTime)
+            && exactIfProvided(row.EndDay, expected.EndDay)
+            && exactIfProvided(row.EndTime, expected.EndTime)
+            && mileageMatches(row)
+            && exactIfProvided(row.Destination, expected.Destination)
+            && exactIfProvided(row.DriverName, expected.DriverName)
+          ) matches.push(index);
+        });
+        return {ok: true, matches};
         """,
         expected,
     )
     if not isinstance(result, dict) or not result.get("ok"):
-        raise WebDriverException(f"vehicle mileage row not found safely: {result}")
-    return int(result["index"])
+        raise WebDriverException(f"vehicle mileage grid unavailable: {result}")
+    matches = result.get("matches")
+    if not isinstance(matches, list):
+        raise WebDriverException(f"invalid vehicle mileage match result: {result}")
+    return [int(index) for index in matches]
+
+
+def _find_vehicle_mileage_row_index(driver: webdriver.Chrome, previous_request: AmbulanceReturnRequest) -> int:
+    exact_matches = _vehicle_mileage_matching_row_indices(driver, previous_request)
+    if len(exact_matches) != 1:
+        raise WebDriverException(
+            f"vehicle mileage row must match exactly once: "
+            f"vehicle={previous_request.vehicle} matches={exact_matches}"
+        )
+    return exact_matches[0]
+
 
 
 def _vehicle_mileage_row_value(driver: webdriver.Chrome, row_index: int, field_name: str) -> str:

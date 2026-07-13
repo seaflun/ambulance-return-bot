@@ -117,6 +117,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return ""
     if status.endswith("_saved"):
         return ""
+    if "waiting_confirmation" in status:
+        return "waiting_confirmation"
     if "prefilled" in status or "ready" in status or "captcha" in status or "未按儲存" in raw_detail:
         return "waiting_confirmation"
     if _is_invalid_argument_oserror(exception, text):
@@ -280,7 +282,7 @@ def _next_action_for(site_key: str, category: str) -> str:
     if category == "chrome_session":
         return "關閉殘留 Chrome/ChromeDriver，重啟 worker，再重新登打。"
     if category == "worker_api":
-        return "確認 NAS 網址與 WORKER_TOKEN，重啟 worker 後重試五站登打。"
+        return "確認 NAS 網址與 WORKER_TOKEN，重啟 worker 後重試登打流程。"
     if category == "multi_patient_consumables":
         return "依患者序號查看成功與失敗頁面；修正一站通資料後可單獨重跑耗材。"
     if category == "login":

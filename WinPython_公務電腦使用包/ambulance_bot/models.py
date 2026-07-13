@@ -6,12 +6,14 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 from typing import Any, Iterable
 from uuid import uuid4
 
 
 DEFAULT_CONSUMABLES = {"桃-口罩(片)": 2, "桃-9吋手套-L(雙)": 2, "桃-可拋棄式耳溫槍耳套-福爾TD-1118(個)": 1}
 DEFAULT_FUEL_PRODUCT = "超級柴油"
+_VEHICLE_SETTINGS_LOCK = threading.RLock()
 DISINFECTION_ITEM_OPTIONS = [
     "\u6551\u8b77\u8eca\u9ad4",
     "\u64d4\u67b6\u5e8a",
@@ -123,12 +125,13 @@ def vehicle_settings_path(base_dir: Path | None = None) -> Path:
 
 def read_vehicle_settings(base_dir: Path | None = None) -> dict[str, Any]:
     path = vehicle_settings_path(base_dir)
-    if not path.exists():
-        return {"vehicles": [], "deleted": []}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"vehicles": [], "deleted": []}
+    with _VEHICLE_SETTINGS_LOCK:
+        if not path.exists():
+            return {"vehicles": [], "deleted": []}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {"vehicles": [], "deleted": []}
     if isinstance(payload, list):
         return {"vehicles": payload, "deleted": []}
     if not isinstance(payload, dict):
@@ -157,22 +160,32 @@ def _clean_vehicle_records(records: Any) -> list[dict[str, str]]:
 
 def write_vehicle_settings(settings: dict[str, Any], base_dir: Path | None = None) -> None:
     path = vehicle_settings_path(base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "vehicles": _clean_vehicle_records(settings.get("vehicles")),
-        "deleted": [str(label).strip() for label in settings.get("deleted", []) if str(label).strip()],
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    with _VEHICLE_SETTINGS_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "vehicles": _clean_vehicle_records(settings.get("vehicles")),
+            "deleted": [str(label).strip() for label in settings.get("deleted", []) if str(label).strip()],
+        }
+        tmp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+        finally:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def load_vehicle_records(base_dir: Path | None = None) -> list[dict[str, str]]:
-    settings = read_vehicle_settings(base_dir)
-    deleted = {str(label).strip() for label in settings.get("deleted", []) if str(label).strip()}
-    records = [record for record in DEFAULT_CUSTOM_VEHICLES if record["label"] not in deleted]
-    for record in _clean_vehicle_records(settings.get("vehicles")):
-        records = [existing for existing in records if existing["label"] != record["label"]]
-        records.append(record)
-    return records
+    with _VEHICLE_SETTINGS_LOCK:
+        settings = read_vehicle_settings(base_dir)
+        deleted = {str(label).strip() for label in settings.get("deleted", []) if str(label).strip()}
+        records = [record for record in DEFAULT_CUSTOM_VEHICLES if record["label"] not in deleted]
+        for record in _clean_vehicle_records(settings.get("vehicles")):
+            records = [existing for existing in records if existing["label"] != record["label"]]
+            records.append(record)
+        return records
 
 
 def save_vehicle_record(label: str, ppe_name: str = "", base_dir: Path | None = None) -> None:
@@ -180,32 +193,34 @@ def save_vehicle_record(label: str, ppe_name: str = "", base_dir: Path | None = 
     ppe_name = ppe_name.strip()
     if not label:
         raise ValueError("missing vehicle label")
-    records = load_vehicle_records(base_dir)
-    for record in records:
-        if record["label"] == label:
-            record["ppe_name"] = ppe_name
-            break
-    else:
-        records.append({"label": label, "ppe_name": ppe_name})
-    settings = read_vehicle_settings(base_dir)
-    settings["vehicles"] = records
-    settings["deleted"] = [deleted for deleted in settings.get("deleted", []) if deleted != label]
-    write_vehicle_settings(settings, base_dir)
+    with _VEHICLE_SETTINGS_LOCK:
+        records = load_vehicle_records(base_dir)
+        for record in records:
+            if record["label"] == label:
+                record["ppe_name"] = ppe_name
+                break
+        else:
+            records.append({"label": label, "ppe_name": ppe_name})
+        settings = read_vehicle_settings(base_dir)
+        settings["vehicles"] = records
+        settings["deleted"] = [deleted for deleted in settings.get("deleted", []) if deleted != label]
+        write_vehicle_settings(settings, base_dir)
 
 
 def delete_vehicle_record(label: str, base_dir: Path | None = None) -> bool:
     label = label.strip()
     if not label or label in VEHICLE_OPTIONS:
         return False
-    settings = read_vehicle_settings(base_dir)
-    records = [record for record in _clean_vehicle_records(settings.get("vehicles")) if record["label"] != label]
-    deleted = [str(item).strip() for item in settings.get("deleted", []) if str(item).strip()]
-    if label in {record["label"] for record in DEFAULT_CUSTOM_VEHICLES} and label not in deleted:
-        deleted.append(label)
-    settings["vehicles"] = records
-    settings["deleted"] = deleted
-    write_vehicle_settings(settings, base_dir)
-    return True
+    with _VEHICLE_SETTINGS_LOCK:
+        settings = read_vehicle_settings(base_dir)
+        records = [record for record in _clean_vehicle_records(settings.get("vehicles")) if record["label"] != label]
+        deleted = [str(item).strip() for item in settings.get("deleted", []) if str(item).strip()]
+        if label in {record["label"] for record in DEFAULT_CUSTOM_VEHICLES} and label not in deleted:
+            deleted.append(label)
+        settings["vehicles"] = records
+        settings["deleted"] = deleted
+        write_vehicle_settings(settings, base_dir)
+        return True
 
 
 def vehicle_options(base_dir: Path | None = None) -> list[str]:
