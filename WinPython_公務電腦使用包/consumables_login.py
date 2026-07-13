@@ -287,6 +287,10 @@ def _wait_for_consumable_detail_page(driver: webdriver.Chrome, wait: WebDriverWa
 
 
 def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
+    return _find_consumable_detail_hrefs(driver, request)[0]
+
+
+def _find_consumable_detail_hrefs(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
     wait = WebDriverWait(driver, 15)
     wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "a.btn_t02[href^='/ACS/ACS15002?emmTemsisid=']")) > 0)
     candidates = driver.execute_script(
@@ -337,15 +341,16 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
     vehicle_scored = [item for item in scored if _text_matches_vehicle(item[2], request.vehicle)]
     vehicle_scored.sort(key=lambda item: item[0], reverse=True)
     if vehicle_scored:
-        return vehicle_scored[0][1]
+        return _select_consumable_patient_group(vehicle_scored)
 
     if request.vehicle and scored:
         scored.sort(key=lambda item: item[0], reverse=True)
-        matched = _find_consumable_href_by_vehicle_code(driver, [href for _, href, _ in scored], request.vehicle)
+        matched_hrefs = _find_consumable_hrefs_by_vehicle_code(driver, [href for _, href, _ in scored], request.vehicle)
+        matched = [item for item in scored if item[1] in matched_hrefs]
         if matched:
-            return matched
+            return _select_consumable_patient_group(matched)
         if len(scored) == 1:
-            return scored[0][1]
+            return [scored[0][1]]
         raise RuntimeError(f"耗材內容頁找不到符合車輛的紀錄：車輛={request.vehicle} 候選={len(scored)}")
 
     sid_scored.sort(key=lambda item: item[0], reverse=True)
@@ -354,12 +359,12 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
         if len(tied) > 1 and request.vehicle:
             matched = _find_consumable_href_by_vehicle_code(driver, [href for _, href, _ in tied], request.vehicle)
             if matched:
-                return matched
+                return [matched]
         if len(sid_scored) > 1 and request.vehicle:
             matched = _find_consumable_href_by_vehicle_code(driver, [href for _, href, _ in sid_scored], request.vehicle)
             if matched:
-                return matched
-        return sid_scored[0][1]
+                return [matched]
+        return [sid_scored[0][1]]
 
     scored.sort(key=lambda item: item[0], reverse=True)
     if scored and scored[0][0] > 0:
@@ -367,13 +372,38 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
         if len(tied) > 1 and request.vehicle:
             matched = _find_consumable_href_by_vehicle_code(driver, [href for _, href, _ in tied], request.vehicle)
             if matched:
-                return matched
-        return scored[0][1]
+                return [matched]
+        return [scored[0][1]]
     raise RuntimeError(f"耗材列表找不到符合案件的內容列：時間={case_time or '未填'} 地址={address or '未填'}")
 
 
 def _emm_temsis_id_from_href(href: str) -> str:
     return str(parse_qs(urlparse(str(href or "")).query).get("emmTemsisid", [""])[0])
+
+
+def _patient_sid_parts(sid: str) -> tuple[str, str]:
+    value = str(sid or "").strip()
+    if len(value) < 3 or not value[-2:].isdigit():
+        raise RuntimeError(f"TEMSISID 無法辨識患者序號：{value or '空白'}")
+    return value[:-2], value[-2:]
+
+
+def _select_consumable_patient_group(scored: list[tuple[int, str, str]]) -> list[str]:
+    if len(scored) == 1:
+        return [scored[0][1]]
+    groups: dict[str, list[tuple[int, int, str]]] = {}
+    for score, href, _ in scored:
+        body, suffix = _patient_sid_parts(_emm_temsis_id_from_href(href))
+        groups.setdefault(body, []).append((int(suffix), score, href))
+    best_score = max(max(item[1] for item in items) for items in groups.values())
+    best_groups = [items for items in groups.values() if max(item[1] for item in items) == best_score]
+    if len(best_groups) != 1:
+        raise RuntimeError("同案耗材存在多組無法唯一辨識的 TEMSISID。")
+    selected = best_groups[0]
+    suffixes = [item[0] for item in selected]
+    if len(suffixes) != len(set(suffixes)):
+        raise RuntimeError("同案耗材 TEMSISID 患者序號重複。")
+    return [item[2] for item in sorted(selected, key=lambda item: item[0])]
 
 
 def _consumable_sid_score(case_id: str, sid: str) -> int:
@@ -451,14 +481,35 @@ def _vehicle_match_tokens(vehicle: str) -> list[str]:
 
 
 def _consumable_detail_vehicle_label(driver: webdriver.Chrome) -> str:
-    try:
-        body_text = driver.find_element(By.TAG_NAME, "body").text
-    except Exception:
-        return ""
+    page_text = _consumable_detail_page_text(driver)
     for label in vehicle_ppe_names():
-        if _text_matches_vehicle(body_text, label):
+        if _text_matches_vehicle(page_text, label):
             return label
     return ""
+
+
+def _consumable_detail_page_text(driver: webdriver.Chrome) -> str:
+    parts: list[str] = []
+    try:
+        parts.append(driver.find_element(By.TAG_NAME, "body").text)
+    except Exception:
+        pass
+    try:
+        controls = driver.execute_script(
+            """
+            return Array.from(document.querySelectorAll('input, select, textarea')).flatMap((node) => {
+                const values = [node.value || ''];
+                if (node.tagName === 'SELECT' && node.selectedIndex >= 0) {
+                    values.push(node.options[node.selectedIndex].text || '');
+                }
+                return values;
+            }).join(' ');
+            """
+        )
+        parts.append(str(controls or ""))
+    except Exception:
+        pass
+    return " ".join(part for part in parts if part)
 
 
 def _consumable_vehicle_notice(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
@@ -470,17 +521,23 @@ def _consumable_vehicle_notice(driver: webdriver.Chrome, request: AmbulanceRetur
 
 
 def _find_consumable_href_by_vehicle_code(driver: webdriver.Chrome, hrefs: list[str], vehicle: str) -> str:
+    matched = _find_consumable_hrefs_by_vehicle_code(driver, hrefs, vehicle)
+    return matched[0] if matched else ""
+
+
+def _find_consumable_hrefs_by_vehicle_code(driver: webdriver.Chrome, hrefs: list[str], vehicle: str) -> list[str]:
     vehicle_tokens = _vehicle_match_tokens(vehicle)
     if not vehicle_tokens:
-        return ""
+        return []
+    matched: list[str] = []
     for href in hrefs:
         driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
         WebDriverWait(driver, 10).until(lambda d: d.execute_script("return document.readyState") == "complete")
         time.sleep(0.5)
-        body_text = driver.find_element(By.TAG_NAME, "body").text
-        if _text_matches_any_vehicle_token(body_text, vehicle_tokens):
-            return href
-    return ""
+        page_text = _consumable_detail_page_text(driver)
+        if _text_matches_any_vehicle_token(page_text, vehicle_tokens):
+            matched.append(href)
+    return matched
 
 
 def _text_matches_any_vehicle_token(text: str, vehicle_tokens: list[str]) -> bool:

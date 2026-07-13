@@ -14,7 +14,9 @@ from consumables_login import (
     _consumable_sid_score,
     _emm_temsis_id_from_href,
     _find_consumable_detail_href,
+    _find_consumable_detail_hrefs,
     _load_acs_credentials,
+    _patient_sid_parts,
     _wait_for_consumable_detail_page,
     open_consumable_record_for_task,
     save_consumables_record_enabled,
@@ -22,6 +24,135 @@ from consumables_login import (
 
 
 class ConsumablesLoginTests(unittest.TestCase):
+    def test_patient_sid_parts_uses_last_two_digits(self):
+        self.assertEqual(
+            _patient_sid_parts("2026071310100308031901"),
+            ("20260713101003080319", "01"),
+        )
+        with self.assertRaisesRegex(RuntimeError, "TEMSISID.*患者序號"):
+            _patient_sid_parts("20260713101003080319AA")
+
+    def test_consumable_detail_returns_all_same_vehicle_patient_pages(self):
+        candidates = [
+            {
+                "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031901",
+                "sid": "2026071310100308031901",
+                "text": "2026/07/13 08:05:05 桃園市中壢區月桃路一段和月山路的交叉路口 交通事故",
+            },
+            {
+                "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031902",
+                "sid": "2026071310100308031902",
+                "text": "2026/07/13 08:05:05 桃園市中壢區月桃路一段和月山路的交叉路口 交通事故",
+            },
+        ]
+
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeElement:
+            text = "出勤單位 新坡93 BSL-9230"
+
+        class FakeDriver:
+            current_url = ""
+
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                if "a.btn_t02" in script:
+                    return candidates
+                if "document.readyState" in script:
+                    return "complete"
+                return ""
+
+            def get(self, url):
+                self.current_url = url
+
+            def find_element(self, by, value):
+                return FakeElement()
+
+        request = AmbulanceReturnRequest(
+            task_id="task-multi-patient",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            case_id="20260713080319001",
+            case_time="0805",
+            vehicle="新坡93",
+            case_address="桃園市中壢區月桃路一段和月山路的交叉路口",
+            case_reason="交通事故",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            hrefs = _find_consumable_detail_hrefs(FakeDriver(), request)
+
+        self.assertEqual([_emm_temsis_id_from_href(href)[-2:] for href in hrefs], ["01", "02"])
+
+    def test_consumable_detail_partitions_two_vehicles_before_patients(self):
+        base = "20260713101003080319"
+        candidates = [
+            {
+                "href": f"/ACS/ACS15002?emmTemsisid={base}{suffix}",
+                "sid": f"{base}{suffix}",
+                "text": "2026/07/13 08:05:05 桃園市中壢區月桃路一段和月山路的交叉路口 交通事故",
+            }
+            for suffix in ("01", "02", "03", "04", "05")
+        ]
+
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, predicate):
+                return True
+
+        class FakeElement:
+            def __init__(self, text):
+                self.text = text
+
+        class FakeDriver:
+            current_url = ""
+
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                if "a.btn_t02" in script:
+                    return candidates
+                if "document.readyState" in script:
+                    return "complete"
+                return ""
+
+            def get(self, url):
+                self.current_url = url
+
+            def find_element(self, by, value):
+                suffix = _emm_temsis_id_from_href(self.current_url)[-2:]
+                vehicle_text = "新坡92 BXB-7593" if suffix in {"01", "02"} else "新坡93 BSL-9230"
+                return FakeElement(f"出勤單位 {vehicle_text}")
+
+        def request_for(vehicle):
+            return AmbulanceReturnRequest(
+                task_id=f"task-{vehicle}",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                case_id="20260713080319001",
+                case_time="0805",
+                vehicle=vehicle,
+                case_address="桃園市中壢區月桃路一段和月山路的交叉路口",
+                case_reason="交通事故",
+            )
+
+        driver = FakeDriver()
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            hrefs_92 = _find_consumable_detail_hrefs(driver, request_for("新坡92"))
+            hrefs_93 = _find_consumable_detail_hrefs(driver, request_for("新坡93"))
+
+        self.assertEqual([_emm_temsis_id_from_href(href)[-2:] for href in hrefs_92], ["01", "02"])
+        self.assertEqual([_emm_temsis_id_from_href(href)[-2:] for href in hrefs_93], ["03", "04", "05"])
+
     def test_assert_consumable_rows_match_allows_expected_rows(self):
         class FakeDriver:
             def execute_script(self, script):
