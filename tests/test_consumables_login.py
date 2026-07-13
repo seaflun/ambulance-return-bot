@@ -106,6 +106,49 @@ class ConsumablesLoginTests(unittest.TestCase):
         self.assertIn("02填入2件", detail)
         self.assertIn("兩頁均已儲存確認", detail)
 
+    def test_open_consumable_record_reports_completed_suffix_when_later_page_fails(self):
+        hrefs = [
+            "/ACS/ACS15002?emmTemsisid=2026071310100308031901",
+            "/ACS/ACS15002?emmTemsisid=2026071310100308031902",
+        ]
+
+        class FakeDriver:
+            current_url = ""
+
+            def get(self, url):
+                self.current_url = url
+
+        request = AmbulanceReturnRequest(
+            task_id="task-multi-failure",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            vehicle="新坡93",
+            consumables={"桃-9吋手套-L(雙)": 2, "桃-口罩(片)": 2},
+        )
+        writes = []
+
+        def fake_write(driver, wait, page_request):
+            suffix = _emm_temsis_id_from_href(driver.current_url)[-2:]
+            writes.append(suffix)
+            if suffix == "02":
+                raise RuntimeError("耗材儲存後讀回不一致")
+            return "saved"
+
+        with patch.object(consumables_login_module, "_open_consumable_maintenance_page"), patch.object(
+            consumables_login_module, "_find_consumable_detail_hrefs", return_value=hrefs
+        ), patch.object(consumables_login_module, "_wait_for_consumable_detail_page", return_value=True), patch.object(
+            consumables_login_module, "_consumable_detail_vehicle_label", return_value="新坡93"
+        ), patch.object(
+            consumables_login_module, "_write_current_consumable_page", side_effect=fake_write
+        ), patch.object(consumables_login_module, "save_consumables_record_enabled", return_value=True):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "同案多患者耗材分配／確認失敗：成功=01；失敗=02；原因=耗材儲存後讀回不一致",
+            ):
+                open_consumable_record_for_task(FakeDriver(), request)
+
+        self.assertEqual(writes, ["01", "02"])
+
     def test_patient_sid_parts_uses_last_two_digits(self):
         self.assertEqual(
             _patient_sid_parts("2026071310100308031901"),
