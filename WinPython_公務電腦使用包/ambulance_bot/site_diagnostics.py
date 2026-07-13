@@ -129,6 +129,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return "vehicle_not_found"
     if "fuel period mismatch" in text:
         return "fuel_period"
+    if "同案多患者耗材分配／確認失敗" in raw_detail:
+        return "multi_patient_consumables"
     if (
         "耗材列表找不到符合案件的內容列" in raw_detail
         or "missing disinfection detail" in text
@@ -175,6 +177,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return "啟動 Chrome"
     if category == "worker_api":
         return "讀取任務"
+    if category == "multi_patient_consumables":
+        return "同案多患者耗材確認"
     if category == "login":
         return _login_stage(site_key)
     if category == "case_not_found":
@@ -251,6 +255,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "case_detail": "找到清單後無法開啟該案件的明細頁。",
         "vehicle_not_found": "頁面內找不到任務指定的救護車。",
         "fuel_period": "加油頁月份與任務加油月份不一致，油卡清單尚未切到任務月份。",
+        "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
         "save": "填寫後的儲存動作未完成或未確認成功。",
         "query": "查詢案件時沒有取得可用結果。",
@@ -267,6 +272,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "關閉殘留 Chrome/ChromeDriver，重啟 worker，再重新登打。"
     if category == "worker_api":
         return "確認 NAS 網址與 WORKER_TOKEN，重啟 worker 後重試五站登打。"
+    if category == "multi_patient_consumables":
+        return "依患者序號查看成功與失敗頁面；修正一站通資料後可單獨重跑耗材。"
     if category == "login":
         return f"到公務電腦完成{site_name}登入或驗證碼，再回任務頁按「單獨登打」重試。"
     if category == "case_not_found":

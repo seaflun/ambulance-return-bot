@@ -4,6 +4,19 @@ from ambulance_bot.site_diagnostics import diagnostic_payload, merge_diagnostic_
 
 
 class SiteDiagnosticsTests(unittest.TestCase):
+    def test_multi_patient_consumables_failure_is_not_button_error(self):
+        payload = diagnostic_payload(
+            "consumables",
+            "consumables_failed",
+            "同案多患者耗材分配／確認失敗：成功=01；失敗=02；原因=耗材儲存後讀回不一致",
+        )
+
+        self.assertEqual(payload["failure_stage"], "同案多患者耗材確認")
+        self.assertEqual(payload["exception_type"], "multi_patient_consumables")
+        self.assertIn("多患者", payload["failure_reason"])
+        self.assertIn("患者序號", payload["next_action"])
+        self.assertNotIn("按鈕", payload["failure_reason"])
+
     def test_login_failure_points_to_site_login_stage(self):
         payload = diagnostic_payload("consumables", "consumables_failed", "SSO login failed")
 
