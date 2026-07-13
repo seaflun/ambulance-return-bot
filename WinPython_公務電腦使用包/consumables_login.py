@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -30,12 +31,32 @@ ACS_URL = "https://nfaemsap3.nfa.gov.tw/ACS/ACS15001"
 OUTPUT_DIR = Path(os.getenv("CAPTCHA_OUTPUT_DIR") or Path(os.getenv("LOCALAPPDATA") or Path.home()) / "ambulance_return_bot" / "captcha")
 CAPTCHA_PATH = OUTPUT_DIR / "nfa_acs_captcha.png"
 MAX_LOGIN_ATTEMPTS = 3
+SUPPLEMENTAL_GLOVE_NAME = "桃-9吋手套-L(雙)"
 
 ocr = ddddocr.DdddOcr(show_ad=False)
 
 
 def save_consumables_record_enabled() -> bool:
     return os.getenv("SAVE_CONSUMABLES_RECORD", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _distribute_consumables(consumables: dict[str, int], page_count: int) -> list[dict[str, int]]:
+    if page_count < 1:
+        raise ValueError("page_count must be at least 1")
+    allocations = [dict() for _ in range(page_count)]
+    for name, raw_quantity in consumables.items():
+        quantity = int(raw_quantity or 0)
+        if not name or quantity <= 0:
+            continue
+        base, remainder = divmod(quantity, page_count)
+        for index in range(page_count):
+            assigned = base + (1 if index < remainder else 0)
+            if assigned > 0:
+                allocations[index][name] = assigned
+    for allocation in allocations:
+        if not allocation:
+            allocation[SUPPLEMENTAL_GLOVE_NAME] = 1
+    return allocations
 
 
 def login_acs_and_get_driver(
@@ -85,12 +106,53 @@ def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, ob
     request = task if isinstance(task, AmbulanceReturnRequest) else AmbulanceReturnRequest.from_dict(task)
     wait = WebDriverWait(driver, 15)
     _open_consumable_maintenance_page(driver, wait)
-    href = _find_consumable_detail_href(driver, request)
-    detail_url = urljoin("https://nfaemsap3.nfa.gov.tw", href)
-    driver.get(detail_url)
-    if not _wait_for_consumable_detail_page(driver, wait):
-        raise RuntimeError("consumable detail page did not open; SSO login may be required")
-    vehicle_notice = _consumable_vehicle_notice(driver, request)
+    hrefs = _find_consumable_detail_hrefs(driver, request)
+    if len(hrefs) > 1 and not save_consumables_record_enabled():
+        raise RuntimeError("同案多患者耗材必須啟用自動儲存，否則切換頁面會遺失未送出的資料。")
+    allocations = _distribute_consumables(request.consumables, len(hrefs))
+    completed: list[str] = []
+    summaries: list[str] = []
+    supplements: list[str] = []
+    single_detail = ""
+    for index, (href, allocation) in enumerate(zip(hrefs, allocations)):
+        suffix = _patient_sid_parts(_emm_temsis_id_from_href(href))[1]
+        try:
+            driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
+            if not _wait_for_consumable_detail_page(driver, wait):
+                raise RuntimeError("consumable detail page did not open; SSO login may be required")
+            if len(hrefs) > 1:
+                actual_vehicle = _consumable_detail_vehicle_label(driver)
+                if not actual_vehicle:
+                    raise RuntimeError(f"患者序號 {suffix} 無法讀取耗材頁車輛。")
+                if actual_vehicle != request.vehicle:
+                    raise RuntimeError(f"患者序號 {suffix} 車輛不符：預期={request.vehicle} 實際={actual_vehicle}")
+            page_request = replace(request, consumables=dict(allocation))
+            single_detail = _write_current_consumable_page(driver, wait, page_request)
+        except Exception as exc:
+            if len(hrefs) == 1:
+                raise
+            success_text = ",".join(completed) or "無"
+            raise RuntimeError(
+                f"同案多患者耗材分配／確認失敗：成功={success_text}；失敗={suffix}；原因={exc}"
+            ) from exc
+        completed.append(suffix)
+        summaries.append(f"{suffix}填入{sum(allocation.values())}件")
+        if _allocation_needs_supplement(request.consumables, len(hrefs), index):
+            supplements.append(f"{suffix}原分配為空，已補手套×1以完成確認。")
+    if len(hrefs) == 1:
+        return f"已開啟耗材內容頁：{driver.current_url}{_consumable_vehicle_notice(driver, request)}{single_detail}"
+    page_label = {2: "兩頁", 3: "三頁", 4: "四頁"}.get(len(hrefs), f"{len(hrefs)}頁")
+    detail = f"辨識{request.vehicle}同案{len(hrefs)}位患者；{'、'.join(summaries)}，{page_label}均已儲存確認。"
+    if supplements:
+        detail = f"{detail} {' '.join(supplements)}"
+    return detail
+
+
+def _write_current_consumable_page(
+    driver: webdriver.Chrome,
+    wait: WebDriverWait,
+    request: AmbulanceReturnRequest,
+) -> str:
     added = ""
     if _needs_extra_consumable_row(request):
         item_quantities = _resolve_consumable_item_quantities(driver, request)
@@ -108,7 +170,18 @@ def open_consumable_record_for_task(driver: webdriver.Chrome, task: dict[str, ob
             filled_count = _fill_consumables(driver, wait, request)
             _assert_consumable_rows_match(driver, item_quantities, "耗材預填後")
             added = f" 已清除舊資料、在畫面填入耗材 {filled_count} 筆，未按儲存。"
-    return f"已開啟耗材內容頁：{driver.current_url}{vehicle_notice}{added}"
+    return added
+
+
+def _allocation_needs_supplement(consumables: dict[str, int], page_count: int, index: int) -> bool:
+    for name, raw_quantity in consumables.items():
+        quantity = int(raw_quantity or 0)
+        if not name or quantity <= 0:
+            continue
+        base, remainder = divmod(quantity, page_count)
+        if base + (1 if index < remainder else 0) > 0:
+            return False
+    return True
 
 
 def _load_acs_credentials(task: dict[str, object] | AmbulanceReturnRequest | None = None) -> tuple[str, str]:
@@ -481,21 +554,23 @@ def _vehicle_match_tokens(vehicle: str) -> list[str]:
 
 
 def _consumable_detail_vehicle_label(driver: webdriver.Chrome) -> str:
-    page_text = _consumable_detail_page_text(driver)
-    for label in vehicle_ppe_names():
-        if _text_matches_vehicle(page_text, label):
-            return label
+    for page_text in (_consumable_detail_control_text(driver), _consumable_detail_body_text(driver)):
+        for label in vehicle_ppe_names():
+            if _text_matches_vehicle(page_text, label):
+                return label
     return ""
 
 
-def _consumable_detail_page_text(driver: webdriver.Chrome) -> str:
-    parts: list[str] = []
+def _consumable_detail_body_text(driver: webdriver.Chrome) -> str:
     try:
-        parts.append(driver.find_element(By.TAG_NAME, "body").text)
+        return str(driver.find_element(By.TAG_NAME, "body").text or "")
     except Exception:
-        pass
+        return ""
+
+
+def _consumable_detail_control_text(driver: webdriver.Chrome) -> str:
     try:
-        controls = driver.execute_script(
+        return str(driver.execute_script(
             """
             return Array.from(document.querySelectorAll('input, select, textarea')).flatMap((node) => {
                 const values = [node.value || ''];
@@ -505,11 +580,15 @@ def _consumable_detail_page_text(driver: webdriver.Chrome) -> str:
                 return values;
             }).join(' ');
             """
-        )
-        parts.append(str(controls or ""))
+        ) or "")
     except Exception:
-        pass
-    return " ".join(part for part in parts if part)
+        return ""
+
+
+def _consumable_detail_page_text(driver: webdriver.Chrome) -> str:
+    return " ".join(
+        part for part in (_consumable_detail_control_text(driver), _consumable_detail_body_text(driver)) if part
+    )
 
 
 def _consumable_vehicle_notice(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:

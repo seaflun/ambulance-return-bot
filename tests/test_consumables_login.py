@@ -11,7 +11,9 @@ from ambulance_bot.models import AmbulanceReturnRequest
 from consumables_login import (
     _assert_consumable_rows_match,
     _case_id_sid_fragments,
+    _consumable_detail_vehicle_label,
     _consumable_sid_score,
+    _distribute_consumables,
     _emm_temsis_id_from_href,
     _find_consumable_detail_href,
     _find_consumable_detail_hrefs,
@@ -24,6 +26,86 @@ from consumables_login import (
 
 
 class ConsumablesLoginTests(unittest.TestCase):
+    def test_distribute_consumables_splits_remainder_to_lower_suffix(self):
+        self.assertEqual(
+            _distribute_consumables({"桃-9吋手套-L(雙)": 3, "桃-口罩(片)": 3}, 2),
+            [
+                {"桃-9吋手套-L(雙)": 2, "桃-口罩(片)": 2},
+                {"桃-9吋手套-L(雙)": 1, "桃-口罩(片)": 1},
+            ],
+        )
+
+    def test_distribute_consumables_adds_one_glove_only_to_empty_pages(self):
+        self.assertEqual(
+            _distribute_consumables({"桃-口罩(片)": 2}, 5),
+            [
+                {"桃-口罩(片)": 1},
+                {"桃-口罩(片)": 1},
+                {"桃-9吋手套-L(雙)": 1},
+                {"桃-9吋手套-L(雙)": 1},
+                {"桃-9吋手套-L(雙)": 1},
+            ],
+        )
+
+    def test_detail_vehicle_prefers_selected_control_over_all_body_options(self):
+        class FakeElement:
+            text = "出勤單位 新坡91 BGV-2310 新坡92 BXB-7593 新坡93 BSL-9230"
+
+        class FakeDriver:
+            def find_element(self, by, value):
+                return FakeElement()
+
+            def execute_script(self, script):
+                return "新坡93 BSL-9230"
+
+        self.assertEqual(_consumable_detail_vehicle_label(FakeDriver()), "新坡93")
+
+    def test_open_consumable_record_writes_every_patient_page_in_suffix_order(self):
+        hrefs = [
+            "/ACS/ACS15002?emmTemsisid=2026071310100308031901",
+            "/ACS/ACS15002?emmTemsisid=2026071310100308031902",
+        ]
+        written = []
+
+        class FakeDriver:
+            current_url = ""
+
+            def get(self, url):
+                self.current_url = url
+
+        request = AmbulanceReturnRequest(
+            task_id="task-multi-write",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            vehicle="新坡93",
+            consumables={"桃-9吋手套-L(雙)": 3, "桃-口罩(片)": 3},
+        )
+
+        def fake_write(driver, wait, page_request):
+            written.append((_emm_temsis_id_from_href(driver.current_url)[-2:], dict(page_request.consumables)))
+            return "saved"
+
+        with patch.object(consumables_login_module, "_open_consumable_maintenance_page"), patch.object(
+            consumables_login_module, "_find_consumable_detail_hrefs", return_value=hrefs
+        ), patch.object(consumables_login_module, "_wait_for_consumable_detail_page", return_value=True), patch.object(
+            consumables_login_module, "_consumable_detail_vehicle_label", return_value="新坡93"
+        ), patch.object(
+            consumables_login_module, "_write_current_consumable_page", side_effect=fake_write, create=True
+        ), patch.object(consumables_login_module, "save_consumables_record_enabled", return_value=True):
+            detail = open_consumable_record_for_task(FakeDriver(), request)
+
+        self.assertEqual(
+            written,
+            [
+                ("01", {"桃-9吋手套-L(雙)": 2, "桃-口罩(片)": 2}),
+                ("02", {"桃-9吋手套-L(雙)": 1, "桃-口罩(片)": 1}),
+            ],
+        )
+        self.assertIn("辨識新坡93同案2位患者", detail)
+        self.assertIn("01填入4件", detail)
+        self.assertIn("02填入2件", detail)
+        self.assertIn("兩頁均已儲存確認", detail)
+
     def test_patient_sid_parts_uses_last_two_digits(self):
         self.assertEqual(
             _patient_sid_parts("2026071310100308031901"),
@@ -629,8 +711,8 @@ class ConsumablesLoginTests(unittest.TestCase):
             vehicle="新坡92",
         )
         with patch("consumables_login._open_consumable_maintenance_page"), patch(
-            "consumables_login._find_consumable_detail_href",
-            return_value="/ACS/ACS15002?emmTemsisid=2026070910100321364403",
+            "consumables_login._find_consumable_detail_hrefs",
+            return_value=["/ACS/ACS15002?emmTemsisid=2026070910100321364403"],
         ), patch("consumables_login._wait_for_consumable_detail_page", return_value=True), patch(
             "consumables_login._needs_extra_consumable_row",
             return_value=False,
