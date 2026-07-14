@@ -18,6 +18,35 @@ from ambulance_bot.update_safety import ManualUpdateRequiredError
 
 
 class DesktopFastRunnerTests(unittest.TestCase):
+    def test_disinfection_preflights_manual_update_before_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-disinfection-preflight",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch.object(
+                desktop_fast_runner_module,
+                "require_safe_automated_update",
+                side_effect=ManualUpdateRequiredError("消毒舊資料需人工處理"),
+                create=True,
+            ) as preflight, patch.object(
+                desktop_fast_runner_module, "login_disinfection_and_get_driver"
+            ) as login, patch.object(
+                desktop_fast_runner_module, "run_disinfection_task"
+            ) as run:
+                with self.assertRaises(ManualUpdateRequiredError):
+                    runner._run_disinfection(request, "preflight")
+
+            preflight.assert_called_once()
+            login.assert_not_called()
+            run.assert_not_called()
+
     def test_manual_update_error_becomes_waiting_confirmation_instead_of_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp) / "tasks")

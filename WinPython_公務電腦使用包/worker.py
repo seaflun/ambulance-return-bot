@@ -1936,6 +1936,7 @@ def run_disinfection_worker_task(
         with_login_audit(f"公務電腦 worker 執行消毒紀錄：{worker_id}", login_audit),
     )
     try:
+        require_safe_automated_update("disinfection", request, update_context)
         if len(request.vehicle_requests()) > 1:
             shared_driver = driver or login_disinfection_and_get_driver(
                 profile_name=profile_name,
@@ -1963,21 +1964,35 @@ def run_disinfection_worker_task(
                 login_audit=login_audit,
             )
         else:
+            shared_driver = driver or login_disinfection_and_get_driver(
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                tile_name=tile_name,
+            )
             result = run_disinfection_task(
                 request,
                 artifacts_dir,
-                existing_driver=driver,
+                existing_driver=shared_driver,
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 use_session_lock=use_session_lock,
                 tile_name=tile_name,
-                force_new_driver=force_new_driver,
+                force_new_driver=False,
                 update_context=update_context,
                 cancel_check=cancel_check,
             )
             result = _result_with_login_audit(result, login_audit)
     except TaskCancellationError:
         raise
+    except ManualUpdateRequiredError as exc:
+        result = make_site_result(
+            "disinfection",
+            "緊急救護消毒",
+            "disinfection_waiting_confirmation",
+            f"需人工更新：{exc}",
+            exc,
+        )
+        result = _result_with_login_audit(result, login_audit)
     except Exception as exc:
         result = make_site_result("disinfection", "緊急救護消毒", "disinfection_failed", f"消毒紀錄操作失敗：{exc}", exc)
         result = _result_with_login_audit(result, login_audit)

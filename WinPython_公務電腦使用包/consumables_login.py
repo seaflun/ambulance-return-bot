@@ -133,6 +133,8 @@ def _open_consumable_record_for_task(
     manual_reason = manual_update_reason("consumables", request, update_context)
     if manual_reason:
         raise ManualUpdateRequiredError(f"manual correction required: {manual_reason}")
+    if save_consumables_record_enabled() and not _normalized_consumable_case_id(request.case_id):
+        raise RuntimeError("耗材自動儲存需要有效的官方案件案號，已停止處理。")
     wait = WebDriverWait(driver, 15)
     _open_consumable_maintenance_page(driver, wait)
     hrefs = _find_consumable_detail_hrefs(driver, request)
@@ -149,8 +151,14 @@ def _open_consumable_record_for_task(
             driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
             if not _wait_for_consumable_detail_page(driver, wait):
                 raise RuntimeError("consumable detail page did not open; SSO login may be required")
+            expected_case_id = _normalized_consumable_case_id(request.case_id)
+            actual_case_id = _normalized_consumable_case_id(_consumable_detail_case_id(driver))
+            if expected_case_id and actual_case_id != expected_case_id:
+                raise RuntimeError(
+                    f"耗材內容頁案件案號不符：預期={expected_case_id} 實際={actual_case_id or '空白'}"
+                )
             actual_vehicle = _consumable_detail_vehicle_label(driver)
-            if len(hrefs) > 1 and not actual_vehicle:
+            if request.vehicle and not actual_vehicle:
                 raise RuntimeError(f"患者序號 {suffix} 無法讀取耗材頁車輛。")
             if request.vehicle and actual_vehicle and actual_vehicle != request.vehicle:
                 raise RuntimeError(f"患者序號 {suffix} 車輛不符：預期={request.vehicle} 實際={actual_vehicle}")
@@ -394,10 +402,48 @@ def _is_consumable_detail_page(driver: webdriver.Chrome) -> bool:
 
 def _wait_for_consumable_detail_page(driver: webdriver.Chrome, wait: WebDriverWait) -> bool:
     try:
-        wait.until(lambda d: _is_consumable_detail_page(d) or _is_sso_page(d))
+        wait.until(lambda d: _is_sso_page(d) or _consumable_detail_payload_ready(d))
     except TimeoutException:
         return False
-    return _is_consumable_detail_page(driver)
+    return not _is_sso_page(driver) and _is_consumable_detail_page(driver)
+
+
+def _consumable_detail_payload_ready(driver: webdriver.Chrome) -> bool:
+    if not _is_consumable_detail_page(driver):
+        return False
+    try:
+        state = driver.execute_script(
+            """
+            const sidField = document.querySelector('#emmTemsisid');
+            const caseField = document.querySelector('#csNo');
+            const callNoField = document.querySelector('#callNo');
+            return {
+                hasEmmTemsisidField: !!sidField,
+                emmTemsisid: String(sidField?.value || '').trim(),
+                hasCaseIdField: !!caseField,
+                caseId: String(caseField?.value || '').trim(),
+                hasCallNoField: !!callNoField,
+                callNo: String(callNoField?.value || '').trim()
+            };
+            """
+        )
+    except Exception:
+        return False
+    if not isinstance(state, dict):
+        return False
+    if not all(
+        state.get(key)
+        for key in ("hasEmmTemsisidField", "hasCaseIdField", "hasCallNoField")
+    ):
+        return False
+    actual_sid = str(state.get("emmTemsisid") or "").strip()
+    actual_case_id = str(state.get("caseId") or "").strip()
+    actual_call_no = str(state.get("callNo") or "").strip()
+    expected_sid = _emm_temsis_id_from_href(str(driver.current_url or ""))
+    return (
+        bool(actual_sid and actual_case_id and actual_call_no)
+        and (not expected_sid or actual_sid == expected_sid)
+    )
 
 
 def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
@@ -407,18 +453,7 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
 def _find_consumable_detail_hrefs(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
     wait = WebDriverWait(driver, 15)
     wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "a.btn_t02[href^='/ACS/ACS15002?emmTemsisid=']")) > 0)
-    candidates = driver.execute_script(
-        """
-        return Array.from(document.querySelectorAll("a.btn_t02[href^='/ACS/ACS15002?emmTemsisid=']")).map((link) => {
-            const row = link.closest("tr");
-            return {
-                href: link.getAttribute("href"),
-                sid: new URL(link.href, window.location.href).searchParams.get('emmTemsisid') || '',
-                text: row ? row.innerText : link.innerText
-            };
-        });
-        """
-    )
+    candidates = _stable_consumable_candidates(driver)
     if not candidates:
         raise RuntimeError("耗材列表找不到內容連結。")
 
@@ -452,14 +487,14 @@ def _find_consumable_detail_hrefs(driver: webdriver.Chrome, request: AmbulanceRe
             sid_scored.append((score, href, text))
         scored.append((score, href, text))
 
-    vehicle_scored = [item for item in scored if _text_matches_vehicle(item[2], request.vehicle)]
-    vehicle_scored.sort(key=lambda item: item[0], reverse=True)
-    if vehicle_scored:
-        return _select_consumable_patient_group(vehicle_scored)
-
     if request.vehicle and scored:
         scored.sort(key=lambda item: item[0], reverse=True)
-        matched_hrefs = _find_consumable_hrefs_by_vehicle_code(driver, [href for _, href, _ in scored], request.vehicle)
+        matched_hrefs = _find_consumable_hrefs_by_vehicle_code(
+            driver,
+            [href for _, href, _ in scored],
+            request.vehicle,
+            request.case_id,
+        )
         matched = [item for item in scored if item[1] in matched_hrefs]
         if matched:
             return _select_consumable_patient_group(matched)
@@ -489,6 +524,59 @@ def _find_consumable_detail_hrefs(driver: webdriver.Chrome, request: AmbulanceRe
     raise RuntimeError(f"耗材列表找不到符合案件的內容列：時間={case_time or '未填'} 地址={address or '未填'}")
 
 
+def _read_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]]:
+    raw_candidates = driver.execute_script(
+        """
+        return Array.from(document.querySelectorAll("a.btn_t02[href^='/ACS/ACS15002?emmTemsisid=']")).map((link) => {
+            const row = link.closest("tr");
+            return {
+                href: link.getAttribute("href"),
+                sid: new URL(link.href, window.location.href).searchParams.get('emmTemsisid') || '',
+                text: row ? row.innerText : link.innerText
+            };
+        });
+        """
+    )
+    if not isinstance(raw_candidates, list):
+        return []
+    return [dict(item) for item in raw_candidates if isinstance(item, dict)]
+
+
+def _stable_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]]:
+    candidates = _read_consumable_candidates(driver)
+    signature = tuple(
+        (
+            str(item.get("href") or ""),
+            str(item.get("sid") or ""),
+            str(item.get("text") or ""),
+        )
+        for item in candidates
+    )
+    stable_rounds = 0
+    for _ in range(32):
+        time.sleep(0.25)
+        current = _read_consumable_candidates(driver)
+        current_signature = tuple(
+            (
+                str(item.get("href") or ""),
+                str(item.get("sid") or ""),
+                str(item.get("text") or ""),
+            )
+            for item in current
+        )
+        if current_signature == signature:
+            stable_rounds += 1
+        else:
+            candidates = current
+            signature = current_signature
+            stable_rounds = 0
+    if candidates and stable_rounds >= 8:
+        return candidates
+    if candidates:
+        raise RuntimeError("耗材候選列表完整觀察後仍未穩定，停止辨識。")
+    return []
+
+
 def _emm_temsis_id_from_href(href: str) -> str:
     return str(parse_qs(urlparse(str(href or "")).query).get("emmTemsisid", [""])[0])
 
@@ -507,11 +595,9 @@ def _select_consumable_patient_group(scored: list[tuple[int, str, str]]) -> list
     for score, href, _ in scored:
         body, suffix = _patient_sid_parts(_emm_temsis_id_from_href(href))
         groups.setdefault(body, []).append((int(suffix), score, href))
-    best_score = max(max(item[1] for item in items) for items in groups.values())
-    best_groups = [items for items in groups.values() if max(item[1] for item in items) == best_score]
-    if len(best_groups) != 1:
+    if len(groups) != 1:
         raise RuntimeError("同案耗材存在多組無法唯一辨識的 TEMSISID。")
-    selected = best_groups[0]
+    selected = next(iter(groups.values()))
     suffixes = [item[0] for item in selected]
     if len(suffixes) != len(set(suffixes)):
         raise RuntimeError("同案耗材 TEMSISID 患者序號重複。")
@@ -593,10 +679,44 @@ def _vehicle_match_tokens(vehicle: str) -> list[str]:
 
 
 def _consumable_detail_vehicle_label(driver: webdriver.Chrome) -> str:
-    for page_text in (_consumable_detail_control_text(driver), _consumable_detail_body_text(driver)):
+    try:
+        state = driver.execute_script(
+            """
+            const field = document.querySelector('#callNo');
+            return {hasCallNoField: !!field, callNo: String(field?.value || '').trim()};
+            """
+        )
+    except Exception:
+        state = None
+    if isinstance(state, dict):
+        if not state.get("hasCallNoField"):
+            return ""
+        page_texts = (str(state.get("callNo") or ""),)
+    else:
+        page_texts = (_consumable_detail_control_text(driver), _consumable_detail_body_text(driver))
+    for page_text in page_texts:
         for label in vehicle_ppe_names():
             if _text_matches_vehicle(page_text, label):
                 return label
+    return ""
+
+
+def _consumable_detail_case_id(driver: webdriver.Chrome) -> str:
+    try:
+        return str(
+            driver.execute_script(
+                "return String(document.querySelector('#csNo')?.value || '').trim();"
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _normalized_consumable_case_id(value: object) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(digits) >= 14 and digits[:2] in {"19", "20"}:
+        return digits
     return ""
 
 
@@ -638,22 +758,37 @@ def _consumable_vehicle_notice(driver: webdriver.Chrome, request: AmbulanceRetur
     return ""
 
 
-def _find_consumable_href_by_vehicle_code(driver: webdriver.Chrome, hrefs: list[str], vehicle: str) -> str:
-    matched = _find_consumable_hrefs_by_vehicle_code(driver, hrefs, vehicle)
+def _find_consumable_href_by_vehicle_code(
+    driver: webdriver.Chrome,
+    hrefs: list[str],
+    vehicle: str,
+    case_id: str = "",
+) -> str:
+    matched = _find_consumable_hrefs_by_vehicle_code(driver, hrefs, vehicle, case_id)
     return matched[0] if matched else ""
 
 
-def _find_consumable_hrefs_by_vehicle_code(driver: webdriver.Chrome, hrefs: list[str], vehicle: str) -> list[str]:
-    vehicle_tokens = _vehicle_match_tokens(vehicle)
-    if not vehicle_tokens:
+def _find_consumable_hrefs_by_vehicle_code(
+    driver: webdriver.Chrome,
+    hrefs: list[str],
+    vehicle: str,
+    case_id: str = "",
+) -> list[str]:
+    expected_vehicle = str(vehicle or "").strip()
+    if not expected_vehicle:
         return []
+    expected_case_id = _normalized_consumable_case_id(case_id)
     matched: list[str] = []
     for href in hrefs:
         driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
-        WebDriverWait(driver, 10).until(lambda d: d.execute_script("return document.readyState") == "complete")
-        time.sleep(0.5)
-        page_text = _consumable_detail_page_text(driver)
-        if _text_matches_any_vehicle_token(page_text, vehicle_tokens):
+        wait = WebDriverWait(driver, 15)
+        if not _wait_for_consumable_detail_page(driver, wait):
+            suffix = _patient_sid_parts(_emm_temsis_id_from_href(href))[1]
+            raise RuntimeError(f"耗材內容頁無法載入：患者序號 {suffix}，停止整批辨識。")
+        actual_case_id = _normalized_consumable_case_id(_consumable_detail_case_id(driver))
+        if expected_case_id and actual_case_id != expected_case_id:
+            continue
+        if _consumable_detail_vehicle_label(driver) == expected_vehicle:
             matched.append(href)
     return matched
 
@@ -1118,9 +1253,6 @@ def _save_consumables(
     confirmation = _consumable_save_confirmation_state(alert_text)
     if confirmation == "failure":
         raise RuntimeError(f"耗材儲存失敗：{alert_text}")
-    if confirmation != "success":
-        detail = alert_text or "未出現確認訊息"
-        raise RuntimeError(f"耗材儲存未取得明確成功回應：{detail}")
     return alert_text
 
 

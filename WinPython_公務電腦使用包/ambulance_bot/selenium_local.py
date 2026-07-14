@@ -1155,12 +1155,20 @@ def _prepare_duty_work_log_form(
         save_result = _click_duty_work_log_save(driver, cancel_check=cancel_check)
         time.sleep(1.5)
         _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_saved")
-        confirmation = _save_confirmation_state(str(save_result.get("alert") or ""))
+        confirmation_messages = [
+            str(save_result.get(key) or "").strip()
+            for key in ("alert", "reason")
+            if str(save_result.get(key) or "").strip()
+        ]
+        confirmation = _save_confirmation_state(*confirmation_messages)
         if save_result.get("ok") and confirmation == "success":
-            detail = "消防勤務工作紀錄已預填勤務項目、事由、處理情形並按下儲存。"
+            detail = f"消防勤務工作紀錄已預填並確認儲存成功：{' / '.join(confirmation_messages)}"
             status = "duty_work_log_saved"
-        elif save_result.get("ok") and confirmation == "unknown":
-            detail = f"{WAITING_CONFIRMATION_MARKER} 已按下儲存，但未收到儲存成功回應；請人工確認。"
+        elif save_result.get("ok") and not confirmation_messages:
+            detail = "消防勤務工作紀錄已預填勤務項目、事由、處理情形並按下儲存；網站未回報錯誤。"
+            status = "duty_work_log_saved"
+        elif save_result.get("ok"):
+            detail = f"消防勤務工作紀錄已按下儲存，但網站回報未辨識訊息：{' / '.join(confirmation_messages)}；需人工確認。"
             status = "duty_work_log_waiting_confirmation"
         else:
             reason = save_result.get("reason") or save_result.get("alert") or "unknown"
@@ -1314,20 +1322,34 @@ def _match_case_for_request(cases: list[dict[str, str]], request: AmbulanceRetur
     case_time = str(request.case_time or "").strip()
     case_id = str(request.case_id or "").strip()
     case_date = _case_date_key(request.case_date) if request.case_date else ""
-    candidates = [dict(case) for case in cases]
+    all_candidates = [dict(case) for case in cases]
+
+    def matching_metadata(source: list[dict[str, str]]) -> list[dict[str, str]]:
+        candidates = list(source)
+        if case_date:
+            candidates = [case for case in candidates if _case_date_key(case.get("case_date", "")) == case_date]
+        if case_time:
+            candidates = [case for case in candidates if str(case.get("case_time_hhmm") or "").strip() == case_time]
+        if address:
+            address_matches: list[dict[str, str]] = []
+            for case in candidates:
+                candidate_address = clean_case_address(case.get("address", ""))
+                if candidate_address and candidate_address == address:
+                    address_matches.append(case)
+            candidates = address_matches
+        return candidates
+
     if case_id:
-        candidates = [case for case in candidates if str(case.get("case_id") or "").strip() == case_id]
-    if case_date:
-        candidates = [case for case in candidates if _case_date_key(case.get("case_date", "")) == case_date]
-    if case_time:
-        candidates = [case for case in candidates if str(case.get("case_time_hhmm") or "").strip() == case_time]
-    if address:
-        address_matches: list[dict[str, str]] = []
-        for case in candidates:
-            candidate_address = clean_case_address(case.get("address", ""))
-            if candidate_address and (address in candidate_address or candidate_address in address):
-                address_matches.append(case)
-        candidates = address_matches
+        exact_id_matches = [
+            case for case in all_candidates if str(case.get("case_id") or "").strip() == case_id
+        ]
+        exact_metadata_matches = matching_metadata(exact_id_matches)
+        if len(exact_metadata_matches) == 1:
+            return exact_metadata_matches[0]
+        if len(exact_metadata_matches) > 1 or not (case_date and case_time and address):
+            return None
+
+    candidates = matching_metadata(all_candidates)
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -1556,14 +1578,9 @@ def _click_duty_work_log_save(
         };
         """
     )
-    try:
-        alert = driver.switch_to.alert
-        text = alert.text
-        alert.accept()
-        if isinstance(result, dict):
-            result["alert"] = text
-    except Exception:
-        pass
+    alert_text = _accept_alert_if_present(driver, timeout=2)
+    if alert_text and isinstance(result, dict):
+        result["alert"] = alert_text
     return dict(result or {"ok": False, "reason": "empty save result"})
 
 
@@ -2193,7 +2210,9 @@ def _save_fuel_record_form(
         raise WebDriverException(f"fuel save rejected: {' / '.join(confirmations)}")
     if confirmation == "success":
         return f"{request.vehicle} 已填寫加油紀錄並確認儲存成功：{' / '.join(confirmations)}"
-    return f"{WAITING_CONFIRMATION_MARKER} {request.vehicle} 已按下加油紀錄儲存，但未偵測到成功回應。"
+    if confirmations:
+        return f"{WAITING_CONFIRMATION_MARKER} fuel save response not recognized: {' / '.join(confirmations)}"
+    return f"{request.vehicle} 已填寫加油紀錄並按下儲存；網站未回報錯誤。"
 
 
 def _add_vehicle_mileage_record(
@@ -2337,7 +2356,12 @@ def _prepare_disinfection_record(
             raise WebDriverException(f"disinfection save rejected: {' / '.join(confirmations)}")
         if confirmation == "success":
             return f"disinfection items updated={updated}; saved and confirmed. {' / '.join(confirmations)}"
-        return f"{WAITING_CONFIRMATION_MARKER} disinfection items updated={updated}; save response not confirmed."
+        if confirmations:
+            return (
+                f"{WAITING_CONFIRMATION_MARKER} disinfection save response not recognized: "
+                f"{' / '.join(confirmations)}"
+            )
+        return f"disinfection items updated={updated}; saved; site reported no error."
     return f"disinfection items updated={updated}; not saved."
 
 def _switch_to_disinfection_content_if_present(driver: webdriver.Chrome) -> None:
@@ -2713,7 +2737,9 @@ def _save_vehicle_mileage_form(
         raise WebDriverException(f"vehicle mileage save rejected: {' / '.join(confirmations)}")
     if confirmation == "success":
         return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u6309\u4e0b\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
-    return f"{WAITING_CONFIRMATION_MARKER} \u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\uff1b\u672a\u5075\u6e2c\u5230\u78ba\u8a8d\u8996\u7a97\uff0c\u5c1a\u672a\u78ba\u8a8d\u4f3a\u670d\u5668\u5df2\u5132\u5b58\u3002"
+    if confirmations:
+        return f"{WAITING_CONFIRMATION_MARKER} vehicle mileage save response not recognized: {' / '.join(confirmations)}"
+    return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\uff1b\u7db2\u7ad9\u672a\u56de\u5831\u932f\u8aa4\u3002"
 
 
 def _confirmation_aware_status(site_key: str, detail: str, *, save_enabled: bool, prefilled_status: str) -> str:

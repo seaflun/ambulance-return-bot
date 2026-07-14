@@ -59,6 +59,37 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("人工", result.detail)
         login.assert_not_called()
 
+    def test_disinfection_manual_case_change_does_not_start_chrome(self):
+        previous = AmbulanceReturnRequest(
+            task_id="task-disinfection-manual",
+            created_at=__import__("datetime").datetime(2026, 7, 13, 8, 0),
+            raw_text="",
+            case_date="2026-07-13",
+            case_time="0805",
+            vehicle="新坡92",
+            disinfection_items=["救護車體"],
+        )
+        current = AmbulanceReturnRequest.from_dict(
+            {**previous.to_dict(), "case_time": "0810"}
+        )
+        context = {"previous_task": previous.to_dict(), "current_task": current.to_dict()}
+
+        with mock.patch.object(worker_module, "post_status"), mock.patch.object(
+            worker_module,
+            "login_disinfection_and_get_driver",
+        ) as login:
+            result = worker_module.run_disinfection_worker_task(
+                "http://nas",
+                "worker-a",
+                current.to_dict(),
+                Path("artifacts"),
+                update_context=context,
+            )
+
+        self.assertEqual(result.status, "disinfection_waiting_confirmation")
+        self.assertIn("人工", result.detail)
+        login.assert_not_called()
+
     def setUp(self):
         worker_module.MANUAL_TASK_ACTIVE.clear()
         worker_module._TASK_CLAIM_CONTEXT.clear()
@@ -2095,6 +2126,7 @@ class WorkerTests(unittest.TestCase):
         original_run_vehicle = worker_module.run_vehicle_mileage_task
         original_run_fuel = worker_module.run_fuel_record_task
         original_run_disinfection = worker_module.run_disinfection_task
+        original_login_disinfection = worker_module.login_disinfection_and_get_driver
         original_post_status = worker_module.post_status
         profile_names: dict[str, str] = {}
 
@@ -2110,6 +2142,7 @@ class WorkerTests(unittest.TestCase):
             worker_module.run_vehicle_mileage_task = record_site("vehicle_mileage", "vehicle_mileage_saved", "mileage ok")
             worker_module.run_fuel_record_task = record_site("fuel_record", "fuel_record_saved", "fuel ok")
             worker_module.run_disinfection_task = record_site("disinfection", "disinfection_saved", "disinfection ok")
+            worker_module.login_disinfection_and_get_driver = lambda **kwargs: object()
             worker_module.post_status = lambda *args, **kwargs: None
 
             base_task = {"task_id": "task-default-profile", "created_at": "2026-06-09T00:00:00"}
@@ -2128,6 +2161,7 @@ class WorkerTests(unittest.TestCase):
             worker_module.run_vehicle_mileage_task = original_run_vehicle
             worker_module.run_fuel_record_task = original_run_fuel
             worker_module.run_disinfection_task = original_run_disinfection
+            worker_module.login_disinfection_and_get_driver = original_login_disinfection
             worker_module.post_status = original_post_status
 
         self.assertEqual(
@@ -2320,6 +2354,30 @@ class WorkerTests(unittest.TestCase):
         self.assertIn(("consumables_saved", "新坡92"), posts)
         self.assertIn(("consumables_saved", "新坡93"), posts)
 
+    def test_run_disinfection_single_vehicle_logs_in_before_opening_record(self):
+        task = {
+            "task_id": "task-single-disinfection",
+            "created_at": "2026-07-14T08:00:00",
+            "vehicle": "新坡92",
+            "case_time": "2249",
+        }
+        driver = object()
+        with mock.patch.object(
+            worker_module, "login_disinfection_and_get_driver", return_value=driver
+        ) as login, mock.patch.object(
+            worker_module,
+            "run_disinfection_task",
+            return_value=SimpleNamespace(ok=True, status="disinfection_saved", detail="ok"),
+        ) as run, mock.patch.object(worker_module, "post_status"):
+            result = worker_module.run_disinfection_worker_task(
+                "http://nas", "worker-a", task, Path("artifacts")
+            )
+
+        login.assert_called_once()
+        self.assertIs(run.call_args.kwargs["existing_driver"], driver)
+        self.assertFalse(run.call_args.kwargs["force_new_driver"])
+        self.assertEqual(result.status, "disinfection_saved")
+
     def test_run_disinfection_aggregates_partial_vehicle_failure(self):
         calls: list[str] = []
         posts: list[tuple[str, str]] = []
@@ -2444,8 +2502,10 @@ class WorkerTests(unittest.TestCase):
     def test_run_disinfection_posts_site_failure_when_selenium_raises(self):
         original_run = worker_module.run_disinfection_task
         original_post_status = worker_module.post_status
+        original_login = worker_module.login_disinfection_and_get_driver
         statuses: list[tuple[str, str, str]] = []
         try:
+            worker_module.login_disinfection_and_get_driver = lambda **kwargs: object()
             worker_module.run_disinfection_task = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("query failed"))
             worker_module.post_status = lambda server_url, task_id, status, detail, **kwargs: statuses.append(
                 (status, detail, kwargs.get("site_key", ""))
@@ -2458,6 +2518,7 @@ class WorkerTests(unittest.TestCase):
                 Path("artifacts"),
             )
         finally:
+            worker_module.login_disinfection_and_get_driver = original_login
             worker_module.run_disinfection_task = original_run
             worker_module.post_status = original_post_status
 

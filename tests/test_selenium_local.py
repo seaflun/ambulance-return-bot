@@ -160,7 +160,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIsNotNone(matched)
         self.assertEqual(matched["case_id"], request.case_id)
 
-    def test_work_log_case_match_fails_closed_when_explicit_case_id_is_absent(self):
+    def test_work_log_case_match_falls_back_to_unique_date_time_address_when_explicit_case_id_is_absent(self):
         request = AmbulanceReturnRequest(
             task_id="match-missing",
             created_at=datetime(2026, 7, 13, 9, 0),
@@ -177,6 +177,61 @@ class SeleniumLocalTests(unittest.TestCase):
                 "case_time_hhmm": "0805",
                 "address": "桃園市中壢區月桃路一段270巷52號",
             }
+        ]
+
+        matched = selenium_local_module._match_case_for_request(cases, request)
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["case_id"], "20260713080500001")
+
+    def test_work_log_case_match_ignores_existing_wrong_id_when_full_metadata_identifies_another_case(self):
+        request = AmbulanceReturnRequest(
+            task_id="match-conflicting-id",
+            created_at=datetime(2026, 7, 14, 9, 0),
+            raw_text="",
+            case_id="20260713095447003",
+            case_date="2026-07-13",
+            case_time="2249",
+            case_address="桃園市觀音區福山路三段476號",
+        )
+        cases = [
+            {
+                "case_id": "20260713095447003",
+                "case_date": "1150713",
+                "case_time_hhmm": "0954",
+                "address": "桃園市觀音區福祥路一段333號-創傷拒送",
+            },
+            {
+                "case_id": "20260713224929003",
+                "case_date": "1150713",
+                "case_time_hhmm": "2249",
+                "address": "桃園市觀音區福山路三段476號-車禍拒送",
+            },
+        ]
+
+        matched = selenium_local_module._match_case_for_request(cases, request)
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["case_id"], "20260713224929003")
+
+    def test_work_log_case_match_fails_closed_when_wrong_case_id_fallback_is_ambiguous(self):
+        request = AmbulanceReturnRequest(
+            task_id="match-ambiguous",
+            created_at=datetime(2026, 7, 13, 9, 0),
+            raw_text="",
+            case_id="20260713080599999",
+            case_date="2026-07-13",
+            case_time="0805",
+            case_address="桃園市中壢區月桃路一段270巷52號",
+        )
+        cases = [
+            {
+                "case_id": f"2026071308050000{index}",
+                "case_date": "1150713",
+                "case_time_hhmm": "0805",
+                "address": "桃園市中壢區月桃路一段270巷52號",
+            }
+            for index in (1, 2)
         ]
 
         self.assertIsNone(selenium_local_module._match_case_for_request(cases, request))
@@ -198,6 +253,33 @@ class SeleniumLocalTests(unittest.TestCase):
                 "case_time_hhmm": "0805",
                 "address": "",
             }
+        ]
+
+        self.assertIsNone(selenium_local_module._match_case_for_request(cases, request))
+
+    def test_work_log_case_match_does_not_fallback_to_neighboring_house_number(self):
+        request = AmbulanceReturnRequest(
+            task_id="match-neighbor-address",
+            created_at=datetime(2026, 7, 14, 9, 0),
+            raw_text="",
+            case_id="20260713095447003",
+            case_date="2026-07-13",
+            case_time="2249",
+            case_address="桃園市觀音區福山路三段476號",
+        )
+        cases = [
+            {
+                "case_id": "20260713095447003",
+                "case_date": "1150713",
+                "case_time_hhmm": "0954",
+                "address": "桃園市觀音區福祥路一段333號",
+            },
+            {
+                "case_id": "20260713224929004",
+                "case_date": "1150713",
+                "case_time_hhmm": "2249",
+                "address": "桃園市觀音區福山路三段476號之1",
+            },
         ]
 
         self.assertIsNone(selenium_local_module._match_case_for_request(cases, request))
@@ -264,7 +346,7 @@ class SeleniumLocalTests(unittest.TestCase):
 
         save.assert_not_called()
 
-    def test_click_only_save_helpers_report_waiting_confirmation(self):
+    def test_click_only_save_helpers_treat_silent_submit_as_saved(self):
         class FakeDriver:
             current_url = "https://ppe.tyfd.gov.tw/CarRecord/List"
             page_source = ""
@@ -287,8 +369,139 @@ class SeleniumLocalTests(unittest.TestCase):
             mileage = selenium_local_module._save_vehicle_mileage_form(driver)
             fuel = selenium_local_module._save_fuel_record_form(driver, request)
 
-        self.assertIn("waiting_confirmation", mileage)
-        self.assertIn("waiting_confirmation", fuel)
+        self.assertNotIn("waiting_confirmation", mileage)
+        self.assertNotIn("waiting_confirmation", fuel)
+        self.assertIn("已填寫車輛里程", mileage)
+        self.assertIn("已填寫加油紀錄", fuel)
+        self.assertEqual(
+            selenium_local_module._confirmation_aware_status(
+                "vehicle_mileage", mileage, save_enabled=True, prefilled_status="vehicle_mileage_prefilled"
+            ),
+            "vehicle_mileage_saved",
+        )
+        self.assertEqual(
+            selenium_local_module._confirmation_aware_status(
+                "fuel_record", fuel, save_enabled=True, prefilled_status="fuel_record_prefilled"
+            ),
+            "fuel_record_saved",
+        )
+
+    def test_click_only_save_helpers_keep_unknown_nonempty_confirmation_waiting(self):
+        class FakeDriver:
+            current_url = "https://ppe.tyfd.gov.tw/CarRecord/List"
+            page_source = ""
+
+            def execute_script(self, _script, *_args):
+                return True
+
+        driver = FakeDriver()
+        request = AmbulanceReturnRequest(
+            task_id="save-unknown-confirm",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        with patch.object(
+            selenium_local_module, "_accept_alert_if_present", return_value="權限狀態不明"
+        ), patch.object(
+            selenium_local_module, "_confirm_sweetalert_if_present", return_value=""
+        ), patch.object(
+            selenium_local_module, "_is_ppe_login_page", return_value=False
+        ), patch.object(selenium_local_module.time, "sleep"):
+            mileage = selenium_local_module._save_vehicle_mileage_form(driver)
+            fuel = selenium_local_module._save_fuel_record_form(driver, request)
+
+        self.assertIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, mileage)
+        self.assertIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, fuel)
+
+    def test_disinfection_silent_submit_is_saved_when_no_error_is_reported(self):
+        request = AmbulanceReturnRequest(
+            task_id="silent-disinfection",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+            case_time="0805",
+            disinfection_items=["救護車體"],
+        )
+
+        class SwitchTo:
+            def default_content(self):
+                pass
+
+        class FakeDriver:
+            switch_to = SwitchTo()
+
+            def get(self, _url):
+                pass
+
+        with patch.object(selenium_local_module, "_switch_to_disinfection_content_if_present"), patch.object(
+            selenium_local_module, "_wait_for_disinfection_query_fields"
+        ), patch.object(selenium_local_module, "_set_disinfection_query_date"), patch.object(
+            selenium_local_module, "_click_disinfection_query", return_value=True
+        ), patch.object(selenium_local_module, "_wait_for_disinfection_query_completed"), patch.object(
+            selenium_local_module, "_save_disinfection_progress_artifacts"
+        ), patch.object(selenium_local_module, "_assert_disinfection_not_login"), patch.object(
+            selenium_local_module, "_open_disinfection_detail_for_case", return_value=True
+        ), patch.object(selenium_local_module, "_wait_for_disinfection_detail_ready"), patch.object(
+            selenium_local_module, "_set_disinfection_item_statuses", return_value=1
+        ), patch.object(selenium_local_module, "_save_disinfection_record_enabled", return_value=True), patch.object(
+            selenium_local_module, "_click_disinfection_save", return_value=True
+        ), patch.object(selenium_local_module, "_accept_alert_if_present", return_value=""), patch.object(
+            selenium_local_module, "_confirm_sweetalert_if_present", return_value=""
+        ):
+            detail = selenium_local_module._prepare_disinfection_record(
+                FakeDriver(), request, Path("artifacts")
+            )
+
+        self.assertNotIn("waiting_confirmation", detail)
+        self.assertIn("saved", detail)
+        self.assertEqual(
+            selenium_local_module._confirmation_aware_status(
+                "disinfection", detail, save_enabled=True, prefilled_status="disinfection_prefilled"
+            ),
+            "disinfection_saved",
+        )
+
+    def test_disinfection_unknown_nonempty_confirmation_remains_waiting(self):
+        request = AmbulanceReturnRequest(
+            task_id="unknown-disinfection",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+            case_time="0805",
+            disinfection_items=["救護車體"],
+        )
+
+        class SwitchTo:
+            def default_content(self):
+                pass
+
+        class FakeDriver:
+            switch_to = SwitchTo()
+
+            def get(self, _url):
+                pass
+
+        with patch.object(selenium_local_module, "_switch_to_disinfection_content_if_present"), patch.object(
+            selenium_local_module, "_wait_for_disinfection_query_fields"
+        ), patch.object(selenium_local_module, "_set_disinfection_query_date"), patch.object(
+            selenium_local_module, "_click_disinfection_query", return_value=True
+        ), patch.object(selenium_local_module, "_wait_for_disinfection_query_completed"), patch.object(
+            selenium_local_module, "_save_disinfection_progress_artifacts"
+        ), patch.object(selenium_local_module, "_assert_disinfection_not_login"), patch.object(
+            selenium_local_module, "_open_disinfection_detail_for_case", return_value=True
+        ), patch.object(selenium_local_module, "_wait_for_disinfection_detail_ready"), patch.object(
+            selenium_local_module, "_set_disinfection_item_statuses", return_value=1
+        ), patch.object(selenium_local_module, "_save_disinfection_record_enabled", return_value=True), patch.object(
+            selenium_local_module, "_click_disinfection_save", return_value=True
+        ), patch.object(
+            selenium_local_module, "_accept_alert_if_present", return_value="權限狀態不明"
+        ), patch.object(selenium_local_module, "_confirm_sweetalert_if_present", return_value=""):
+            detail = selenium_local_module._prepare_disinfection_record(
+                FakeDriver(), request, Path("artifacts")
+            )
+
+        self.assertIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, detail)
 
     def test_all_record_submit_helpers_check_cancellation_before_driver_side_effect(self):
         helper_names = (
@@ -483,7 +696,7 @@ class SeleniumLocalTests(unittest.TestCase):
                     )
                 self.assertEqual(result.status, f"{site_key}_waiting_confirmation")
 
-    def test_duty_work_log_click_without_confirmation_is_not_saved(self):
+    def test_duty_work_log_silent_submit_is_saved_when_click_succeeds(self):
         request = AmbulanceReturnRequest(
             task_id="duty-waiting",
             created_at=datetime.now(),
@@ -515,7 +728,59 @@ class SeleniumLocalTests(unittest.TestCase):
                 FakeDriver(), request, Path("artifacts"), Path("summary.txt")
             )
 
+        self.assertEqual(result.status, "duty_work_log_saved")
+
+    def test_duty_work_log_unknown_nonempty_confirmation_remains_waiting(self):
+        request = AmbulanceReturnRequest(
+            task_id="duty-unknown-confirm",
+            created_at=datetime.now(),
+            raw_text="",
+            case_id="20260713080500001",
+            case_time="0805",
+        )
+
+        class FakeDriver:
+            def get(self, _url):
+                pass
+
+        with patch.object(selenium_local_module, "_ensure_duty_login", return_value=True), patch.object(
+            selenium_local_module, "_click_by_text_or_id"
+        ), patch.object(selenium_local_module, "_switch_to_window_containing"), patch.object(
+            selenium_local_module, "_set_case_query_date_range"
+        ), patch.object(selenium_local_module, "_click_query_if_present"), patch.object(
+            selenium_local_module, "_extract_all_emergency_cases", return_value=[{"case_id": request.case_id}]
+        ), patch.object(
+            selenium_local_module, "_match_case_for_request", return_value={"case_id": request.case_id}
+        ), patch.object(selenium_local_module, "_click_case_choose", return_value=True), patch.object(
+            selenium_local_module, "_switch_to_work_log_form_for_case"
+        ), patch.object(selenium_local_module, "_fill_duty_work_log_values", return_value=[]), patch.object(
+            selenium_local_module, "_save_artifacts"
+        ), patch.object(selenium_local_module, "_save_duty_work_log_enabled", return_value=True), patch.object(
+            selenium_local_module,
+            "_click_duty_work_log_save",
+            return_value={"ok": True, "alert": "權限狀態不明"},
+        ), patch.object(selenium_local_module.time, "sleep"):
+            result = selenium_local_module._prepare_duty_work_log_form(
+                FakeDriver(), request, Path("artifacts"), Path("summary.txt")
+            )
+
         self.assertEqual(result.status, "duty_work_log_waiting_confirmation")
+
+    def test_duty_work_log_save_waits_for_delayed_alert(self):
+        class FakeDriver:
+            def execute_script(self, _script, *_args):
+                return {"ok": True}
+
+        driver = FakeDriver()
+        with patch.object(
+            selenium_local_module,
+            "_accept_alert_if_present",
+            return_value="權限不足",
+        ) as accept_alert:
+            result = selenium_local_module._click_duty_work_log_save(driver)
+
+        accept_alert.assert_called_once_with(driver, timeout=2)
+        self.assertEqual(result["alert"], "權限不足")
 
     def test_operation_failure_after_driver_creation_is_not_chrome_start_failed(self):
         request = AmbulanceReturnRequest(
@@ -735,12 +1000,13 @@ class SeleniumLocalTests(unittest.TestCase):
             else:
                 os.environ["SAVE_DISINFECTION_PROBE"] = previous_probe
 
-    def test_vehicle_mileage_message_does_not_use_attempted_confirm_wording(self):
+    def test_vehicle_mileage_message_reports_silent_save_without_false_warning(self):
         source = Path(selenium_local_module.__file__).read_text(encoding="utf-8")
 
         self.assertNotIn("\\u5617\\u8a66\\u78ba\\u8a8d", source)
         self.assertIn("\\u6309\\u4e0b\\u78ba\\u8a8d", source)
-        self.assertIn("\\u672a\\u5075\\u6e2c\\u5230\\u78ba\\u8a8d\\u8996\\u7a97", source)
+        self.assertIn("\\u7db2\\u7ad9\\u672a\\u56de\\u5831\\u932f\\u8aa4", source)
+        self.assertNotIn("\\u5c1a\\u672a\\u78ba\\u8a8d\\u4f3a\\u670d\\u5668\\u5df2\\u5132\\u5b58", source)
 
     def test_vehicle_mileage_runs_even_without_fuel_record(self):
         request = AmbulanceReturnRequest(

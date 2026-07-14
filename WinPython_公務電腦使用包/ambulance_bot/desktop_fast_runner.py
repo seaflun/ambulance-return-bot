@@ -29,7 +29,7 @@ from .task_cancellation import (
     task_cancellation_requested,
 )
 from .task_store import JsonTaskStore, now_text
-from .update_safety import ManualUpdateRequiredError
+from .update_safety import ManualUpdateRequiredError, require_safe_automated_update
 from .window_layout import maximize_worker_site_windows
 
 
@@ -807,6 +807,8 @@ class DesktopFastRunner:
 
     def _run_disinfection(self, request, profile_suffix: str):
         self._raise_if_cancelled(request.task_id)
+        update_context = self._site_update_context(request.task_id, "disinfection")
+        require_safe_automated_update("disinfection", request, update_context)
         driver = login_disinfection_and_get_driver(
             profile_name=f"disinfection_profile_{profile_suffix}",
             tile_name="disinfection",
@@ -821,7 +823,7 @@ class DesktopFastRunner:
                 use_session_lock=False,
                 tile_name="disinfection",
                 force_new_driver=True,
-                update_context=self._site_update_context(request.task_id, "disinfection"),
+                update_context=update_context,
                 cancel_check=self._cancel_check(request.task_id),
             )
         return self._run_per_vehicle_site(
