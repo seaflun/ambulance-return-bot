@@ -15,7 +15,7 @@ from .site_diagnostics import DIAGNOSTIC_FIELDS, result_with_diagnostics
 
 def _legacy_silent_save_pattern(site_label: str, exact_detail_pattern: str) -> re.Pattern[str]:
     return re.compile(
-        rf"(?:登入帳號：{re.escape(site_label)}=[^\r\n]+。)?{exact_detail_pattern}"
+        rf"(?:登入帳號：{re.escape(site_label)}=[^\r\n。]+。)?{exact_detail_pattern}"
     )
 
 
@@ -743,14 +743,15 @@ class JsonTaskStore:
                 return payload, False
 
             corrected_site_names: list[str] = []
+            missing_vehicle_results = object()
             for site_key, (legacy_status, saved_status, detail_pattern) in (
                 LEGACY_SILENT_SAVE_RECONCILIATION_RULES.items()
             ):
                 site = site_statuses.get(site_key)
                 if not isinstance(site, dict):
                     continue
-                vehicle_results = site.get("vehicle_results")
-                if vehicle_results is not None and vehicle_results != {}:
+                vehicle_results = site.get("vehicle_results", missing_vehicle_results)
+                if vehicle_results is not missing_vehicle_results and vehicle_results != {}:
                     continue
                 if str(site.get("status") or "") != legacy_status:
                     continue
@@ -776,6 +777,12 @@ class JsonTaskStore:
                     detail,
                     add_event=False,
                 )
+                queue_state = worker_queue_state(payload)
+                queue_state["status"] = "completed"
+                queue_state["completed_at"] = now_text()
+                queue_state["lease_expires_at"] = ""
+                queue_state["last_error"] = ""
+                payload["worker_queue"] = queue_state
             self.add_event_to_payload(payload, "legacy_silent_save_reconciled", detail)
             self.save_payload(task_id, payload)
             return payload, True

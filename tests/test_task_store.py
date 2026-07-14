@@ -28,6 +28,7 @@ class JsonTaskStoreTests(unittest.TestCase):
         )
         payload = store.create(request)
         payload["overall_status"] = "desktop_fast_completed_with_errors"
+        payload["worker_queue"].update(status="idle", last_error="舊版失敗回報。")
         legacy_results = {
             "duty_work_log": (
                 "duty_work_log_waiting_confirmation",
@@ -95,6 +96,9 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(updated["site_statuses"]["disinfection"]["status"], "disinfection_saved")
             self.assertEqual(updated["site_statuses"]["fuel_record"]["status"], "not_started")
             self.assertEqual(updated["overall_status"], "desktop_fast_completed")
+            self.assertEqual(updated["worker_queue"]["status"], "completed")
+            self.assertEqual(updated["worker_queue"]["last_error"], "")
+            self.assertTrue(updated["worker_queue"]["completed_at"])
             for site_key in ("duty_work_log", "vehicle_mileage", "consumables", "disinfection"):
                 site = updated["site_statuses"][site_key]
                 self.assertNotIn("update_context", site)
@@ -217,6 +221,44 @@ class JsonTaskStoreTests(unittest.TestCase):
                 len([event for event in updated["events"] if event.get("status") == "legacy_silent_save_reconciled"]),
                 1,
             )
+
+    def test_reconcile_legacy_silent_save_results_rejects_unsafe_audit_and_null_vehicle_results(self):
+        duty_detail = "waiting_confirmation: 已按下儲存，但未收到儲存成功回應；請人工確認。"
+        cases = (
+            (
+                "multi-sentence-audit",
+                f"登入帳號：工作=8番測試。找不到任務司機。{duty_detail}",
+                "missing",
+            ),
+            ("explicit-null-vehicle-results", duty_detail, None),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            for index, (label, detail, vehicle_results) in enumerate(cases):
+                with self.subTest(label=label):
+                    task_id = f"legacy-unsafe-{index}"
+                    request = AmbulanceReturnRequest(
+                        task_id=task_id,
+                        created_at=datetime.now(),
+                        raw_text="",
+                        vehicle="新坡92",
+                    )
+                    payload = store.create(request)
+                    site = payload["site_statuses"]["duty_work_log"]
+                    site.update(status="duty_work_log_waiting_confirmation", detail=detail)
+                    if vehicle_results != "missing":
+                        site["vehicle_results"] = vehicle_results
+                    store.save_payload(task_id, payload)
+                    before = store.path_for(task_id).read_text(encoding="utf-8")
+
+                    unchanged, changed = store.reconcile_legacy_silent_save_results(task_id)
+
+                    self.assertFalse(changed)
+                    self.assertEqual(
+                        unchanged["site_statuses"]["duty_work_log"]["status"],
+                        "duty_work_log_waiting_confirmation",
+                    )
+                    self.assertEqual(store.path_for(task_id).read_text(encoding="utf-8"), before)
 
     def test_task_id_cannot_escape_tasks_directory_with_windows_backslashes(self):
         with tempfile.TemporaryDirectory() as tmp:
