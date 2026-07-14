@@ -511,10 +511,12 @@ class JsonTaskStore:
         elif status == "claimed_by_worker":
             queue_state["status"] = "claimed"
             queue_state["claimed_at"] = queue_state.get("claimed_at") or now_text()
-        elif queue_state.get("status") in {"queued", "claimed"} and worker_queue_overall_status_is_terminal(status):
+        terminal_status = worker_queue_overall_status_is_terminal(status)
+        if queue_state.get("status") in {"queued", "claimed"} and terminal_status:
             queue_state["status"] = "completed"
             queue_state["completed_at"] = now_text()
             queue_state["lease_expires_at"] = ""
+        if terminal_status:
             if "failed" in status or "error" in status:
                 queue_state["last_error"] = detail
             else:

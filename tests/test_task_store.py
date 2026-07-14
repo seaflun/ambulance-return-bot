@@ -332,12 +332,6 @@ class JsonTaskStoreTests(unittest.TestCase):
                 vehicle="新坡92",
             )
             payload = store.create(request)
-            payload["overall_status"] = "desktop_fast_completed_with_errors"
-            payload["worker_queue"].update(
-                status="claimed",
-                lease_expires_at=(datetime.now() + timedelta(minutes=5)).isoformat(timespec="seconds"),
-                last_error="舊失敗。",
-            )
             for site_key, status in {
                 "duty_work_log": "duty_work_log_saved",
                 "vehicle_mileage": "vehicle_mileage_waiting_confirmation",
@@ -346,6 +340,16 @@ class JsonTaskStoreTests(unittest.TestCase):
             }.items():
                 payload["site_statuses"][site_key].update(status=status, detail="test")
             store.save_payload(request.task_id, payload)
+            store.queue_for_worker(request.task_id)
+            claimed = store.claim_next_for_worker("worker-a")
+            self.assertIsNotNone(claimed)
+            failed = store.set_overall_status(
+                request.task_id,
+                "desktop_fast_completed_with_errors",
+                "舊失敗。",
+            )
+            self.assertEqual(failed["worker_queue"]["status"], "completed")
+            self.assertEqual(failed["worker_queue"]["last_error"], "舊失敗。")
 
             completed = store.mark_site_completed(request.task_id, "vehicle_mileage")
 
