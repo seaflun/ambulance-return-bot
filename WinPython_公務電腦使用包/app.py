@@ -80,6 +80,7 @@ from ambulance_bot.task_store import (
     SiteCompletionConflictError,
     TaskActiveError,
     WorkerClaimConflictError,
+    pending_legacy_silent_save_report_event_id,
     task_payload_is_active_for_edit,
     worker_claim_lease_is_active,
     worker_queue_state,
@@ -102,6 +103,7 @@ _credential_sync_relay_lock = threading.RLock()
 _case_lookup_start_error = ""
 PUBLIC_PC_REPORT_RETENTION_DAYS = 7
 PUBLIC_PC_LEGACY_RECONCILE_LIMIT = 500
+PUBLIC_PC_PENDING_REPORT_FLUSH_INTERVAL_SECONDS = 30
 PUBLIC_PC_LEGACY_RECONCILE_ERRORS = (
     AttributeError,
     FileNotFoundError,
@@ -1245,6 +1247,10 @@ def public_pc_pending_report_file() -> Path:
     return artifacts_dir / "public_pc" / "pending_events.jsonl"
 
 
+def public_pc_pending_report_spool_dir() -> Path:
+    return artifacts_dir / "public_pc" / "pending_event_spool"
+
+
 def remote_update_command_file() -> Path:
     return artifacts_dir / "public_pc" / "remote_update.json"
 
@@ -1487,20 +1493,84 @@ def _load_pending_public_pc_reports() -> list[dict]:
         if not path.exists():
             return []
         entries: list[dict] = []
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                text = line.strip()
-                if not text:
-                    continue
-                try:
-                    payload = json.loads(text)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload, dict):
-                    entries.append(payload)
-        except (OSError, UnicodeError):
-            return []
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid public-PC outbox JSON at line {line_number}") from exc
+            if not isinstance(payload, dict):
+                raise ValueError(f"invalid public-PC outbox entry at line {line_number}")
+            if not str(payload.get("event_id") or "").strip():
+                raise ValueError(f"missing public-PC outbox event ID at line {line_number}")
+            entries.append(payload)
         return entries
+
+
+def _public_pc_report_spool_digest(event_id: str) -> str:
+    return hashlib.sha256(str(event_id).encode("utf-8")).hexdigest()
+
+
+def _persist_public_pc_report_spool(payload: dict) -> Path:
+    event_id = str(payload.get("event_id") or "").strip()
+    if not event_id:
+        raise ValueError("missing public-PC spool event ID")
+    spool_dir = public_pc_pending_report_spool_dir()
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    digest = _public_pc_report_spool_digest(event_id)
+    existing = sorted(spool_dir.glob(f"*-{digest}.json"))
+    path = existing[0] if existing else spool_dir / f"{time.time_ns():020d}-{digest}.json"
+    write_json_atomic(path, payload)
+    return path
+
+
+def _load_public_pc_report_spool_entry(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid public-PC spool entry: {path.name}")
+    event_id = str(payload.get("event_id") or "").strip()
+    if not event_id:
+        raise ValueError(f"missing public-PC spool event ID: {path.name}")
+    if not path.name.endswith(f"-{_public_pc_report_spool_digest(event_id)}.json"):
+        raise ValueError(f"public-PC spool event ID mismatch: {path.name}")
+    return payload
+
+
+def _deliver_public_pc_report_spool(server_url: str, *, retain_after_ack: bool = False) -> bool:
+    spool_dir = public_pc_pending_report_spool_dir()
+    if not spool_dir.exists():
+        return True
+    for path in sorted(spool_dir.glob("*.json")):
+        try:
+            payload = _load_public_pc_report_spool_entry(path)
+            if retain_after_ack and payload.get("_spool_checkpoint_acked") is True:
+                continue
+            expected_event_id = str(payload["event_id"]).strip()
+            outbound = dict(payload)
+            outbound.pop("_spool_checkpoint_acked", None)
+            ack_payload = _post_public_pc_report(server_url, outbound)
+            ack_id = (
+                str(ack_payload.get("ack_id") or "").strip()
+                if isinstance(ack_payload, dict)
+                else ""
+            )
+            if ack_id != expected_event_id:
+                return False
+            if retain_after_ack:
+                payload["_spool_checkpoint_acked"] = True
+                write_json_atomic(path, payload)
+            else:
+                path.unlink()
+        except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
+            print(
+                f"[public_pc_report] spool delivery deferred file={path.name} "
+                f"error={type(exc).__name__}",
+                flush=True,
+            )
+            return False
+    return True
 
 
 def _write_pending_public_pc_reports(entries: list[dict]) -> None:
@@ -1509,7 +1579,7 @@ def _write_pending_public_pc_reports(entries: list[dict]) -> None:
         if not entries:
             try:
                 path.unlink()
-            except OSError:
+            except FileNotFoundError:
                 pass
             return
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1541,19 +1611,90 @@ def _post_public_pc_report(server_url: str, payload: dict) -> dict:
         return {}
 
 
-def report_public_pc_task_event(payload: dict, action: str) -> None:
+def _deliver_pending_public_pc_reports(
+    server_url: str,
+    pending: list[dict],
+    *,
+    task_id: str = "",
+    action: str = "",
+) -> bool:
+    sent_count = 0
+    try:
+        for index, entry in enumerate(pending, start=1):
+            expected_event_id = str(entry.get("event_id") or "").strip()
+            if not expected_event_id:
+                break
+            ack_payload = _post_public_pc_report(server_url, entry)
+            ack_id = (
+                str(ack_payload.get("ack_id") or "").strip()
+                if isinstance(ack_payload, dict)
+                else ""
+            )
+            if ack_id != expected_event_id:
+                break
+            sent_count = index
+    except (OSError, urllib.error.URLError) as exc:
+        remaining = pending[sent_count:]
+        _write_pending_public_pc_reports(remaining)
+        context = f" task_id={task_id} action={action}" if task_id or action else ""
+        print(f"[public_pc_report] pending{context} server={server_url} error={exc}", flush=True)
+        return not remaining
+
+    remaining = pending[sent_count:]
+    _write_pending_public_pc_reports(remaining)
+    return not remaining
+
+
+def flush_pending_public_pc_reports() -> bool:
     if not public_pc_reporting_enabled():
-        return
+        return False
+    server_url = public_pc_report_server_url()
+    if not server_url:
+        return False
+    main_flushed = False
+    spool_flushed = False
+    spool_delivery_allowed = True
+    main_unreadable = False
+    with _public_pc_pending_report_lock:
+        try:
+            pending = _load_pending_public_pc_reports()
+            main_flushed = not pending or _deliver_pending_public_pc_reports(server_url, pending)
+            spool_delivery_allowed = main_flushed
+        except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
+            main_unreadable = True
+            print(
+                f"[public_pc_report] pending flush deferred server={server_url} "
+                f"error={type(exc).__name__}",
+                flush=True,
+            )
+        if spool_delivery_allowed:
+            try:
+                spool_flushed = _deliver_public_pc_report_spool(
+                    server_url,
+                    retain_after_ack=main_unreadable,
+                )
+            except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
+                print(
+                    f"[public_pc_report] spool flush deferred server={server_url} "
+                    f"error={type(exc).__name__}",
+                    flush=True,
+                )
+    return main_flushed and spool_flushed
+
+
+def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "") -> bool:
+    if not public_pc_reporting_enabled():
+        return False
     task = dict(payload.get("task") or {})
     task_id = str(task.get("task_id") or "").strip()
     if not task_id:
-        return
+        return False
     events = payload.get("events") if isinstance(payload.get("events"), list) else []
     latest_event = events[-1] if events else {}
     operator_label = current_public_pc_user_label()
     site_login_accounts = public_pc_site_login_accounts(task)
     body = {
-        "event_id": str(uuid4()),
+        "event_id": str(event_id or "").strip() or str(uuid4()),
         "task_id": task_id,
         "task": task,
         "title": task_title(task),
@@ -1571,24 +1712,60 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
         "created_at": str(payload.get("created_at") or ""),
     }
     server_url = public_pc_report_server_url()
-    if not server_url:
-        return
     with _public_pc_pending_report_lock:
-        pending = _load_pending_public_pc_reports()
-        pending.append(body)
-        sent_count = 0
         try:
-            for index, entry in enumerate(pending, start=1):
-                ack_payload = _post_public_pc_report(server_url, entry)
-                ack_id = str((ack_payload or {}).get("ack_id") or entry.get("event_id") or "").strip()
-                if ack_id != str(entry.get("event_id") or "").strip():
-                    break
-                sent_count = index
-        except (OSError, urllib.error.URLError) as exc:
-            _write_pending_public_pc_reports(pending[sent_count:])
-            print(f"[public_pc_report] pending task_id={task_id} action={action} server={server_url} error={exc}", flush=True)
-        else:
-            _write_pending_public_pc_reports(pending[sent_count:])
+            spool_path = _persist_public_pc_report_spool(body)
+        except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
+            print(
+                f"[public_pc_report] spool unavailable task_id={task_id} action={action} "
+                f"error={type(exc).__name__}",
+                flush=True,
+            )
+            return False
+
+        if not server_url:
+            return True
+
+        spool_paths = sorted(public_pc_pending_report_spool_dir().glob("*.json"))
+        if spool_paths and spool_paths[0] != spool_path:
+            flush_pending_public_pc_reports()
+            return True
+
+        try:
+            pending = _load_pending_public_pc_reports()
+            body_event_id = str(body["event_id"])
+            if not any(str(entry.get("event_id") or "").strip() == body_event_id for entry in pending):
+                pending.append(body)
+            _write_pending_public_pc_reports(pending)
+            try:
+                spool_path.unlink()
+            except FileNotFoundError:
+                pass
+        except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
+            print(
+                f"[public_pc_report] outbox unavailable task_id={task_id} action={action} "
+                f"error={type(exc).__name__}",
+                flush=True,
+            )
+            return True
+
+        try:
+            pending = _load_pending_public_pc_reports()
+            _deliver_pending_public_pc_reports(
+                server_url,
+                pending,
+                task_id=task_id,
+                action=action,
+            )
+        except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
+            # The complete queue was already persisted before delivery began.
+            # Keep the UI responsive and let the background flusher retry it.
+            print(
+                f"[public_pc_report] delivery deferred task_id={task_id} action={action} "
+                f"server={server_url} error={type(exc).__name__}",
+                flush=True,
+            )
+    return True
 
 
 def public_pc_reporting_enabled() -> bool:
@@ -1599,6 +1776,7 @@ def public_pc_reporting_enabled() -> bool:
 def reconcile_legacy_public_pc_tasks() -> int:
     if not public_pc_reporting_enabled():
         return 0
+    flush_pending_public_pc_reports()
     try:
         recent_tasks = store.list_recent(limit=PUBLIC_PC_LEGACY_RECONCILE_LIMIT)
     except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
@@ -1623,11 +1801,19 @@ def reconcile_legacy_public_pc_tasks() -> int:
                 flush=True,
             )
             continue
-        if not changed:
+        report_event_id = pending_legacy_silent_save_report_event_id(payload)
+        if changed:
+            changed_count += 1
+        if not report_event_id:
             continue
-        changed_count += 1
         try:
-            report_public_pc_task_event(payload, "舊版無提示儲存狀態自動校正")
+            report_enqueued = report_public_pc_task_event(
+                payload,
+                "舊版無提示儲存狀態自動校正",
+                event_id=report_event_id,
+            )
+            if report_enqueued:
+                store.mark_legacy_silent_save_report_enqueued(task_id, report_event_id)
         except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
             print(
                 f"[public_pc_reconcile] report deferred task_id={task_id} error={type(exc).__name__}",
@@ -1644,6 +1830,34 @@ def start_public_pc_legacy_reconciliation() -> threading.Thread | None:
     thread = threading.Thread(
         target=reconcile_legacy_public_pc_tasks,
         name="public-pc-legacy-reconciliation",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def retry_pending_public_pc_reports() -> int:
+    return reconcile_legacy_public_pc_tasks()
+
+
+def _run_public_pc_pending_report_flush_loop() -> None:
+    while public_pc_reporting_enabled():
+        try:
+            retry_pending_public_pc_reports()
+        except Exception as exc:
+            print(
+                f"[public_pc_report] background retry failed error={type(exc).__name__}",
+                flush=True,
+            )
+        time.sleep(PUBLIC_PC_PENDING_REPORT_FLUSH_INTERVAL_SECONDS)
+
+
+def start_public_pc_pending_report_flusher() -> threading.Thread | None:
+    if not public_pc_reporting_enabled():
+        return None
+    thread = threading.Thread(
+        target=_run_public_pc_pending_report_flush_loop,
+        name="public-pc-pending-report-flusher",
         daemon=True,
     )
     thread.start()
@@ -3362,6 +3576,7 @@ def run_web_app(host: str | None = None, port: int | None = None) -> None:
         print(f"[app] credential relay migration deferred: {exc}", flush=True)
     if public_pc_reporting_enabled():
         start_public_pc_legacy_reconciliation()
+        start_public_pc_pending_report_flusher()
     print(f"[app] starting SinpoSmart ambulance worker web app on {host}:{port}", flush=True)
     try:
         from waitress import serve

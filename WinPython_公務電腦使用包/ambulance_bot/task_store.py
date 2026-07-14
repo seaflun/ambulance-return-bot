@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .models import AmbulanceReturnRequest
@@ -56,6 +56,13 @@ LEGACY_SILENT_SAVE_RECONCILIATION_RULES: dict[str, tuple[str, str, re.Pattern[st
         ),
     ),
 }
+
+
+def pending_legacy_silent_save_report_event_id(payload: dict[str, Any]) -> str:
+    marker = payload.get("legacy_silent_save_report")
+    if not isinstance(marker, dict) or marker.get("pending") is not True:
+        return ""
+    return str(marker.get("event_id") or "").strip()
 
 
 SUCCESS_SITE_STATUSES = {
@@ -788,6 +795,39 @@ class JsonTaskStore:
                 queue_state["last_error"] = ""
                 payload["worker_queue"] = queue_state
             self.add_event_to_payload(payload, "legacy_silent_save_reconciled", detail)
+            payload["legacy_silent_save_report"] = {
+                "event_id": str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"ambulance-return:legacy-silent-save:{task_id}",
+                    )
+                ),
+                "pending": True,
+                "created_at": now_text(),
+                "enqueued_at": "",
+            }
+            self.save_payload(task_id, payload)
+            return payload, True
+
+    def mark_legacy_silent_save_report_enqueued(
+        self,
+        task_id: str,
+        event_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        with self._lock:
+            payload = self.get(task_id)
+            marker = payload.get("legacy_silent_save_report")
+            normalized_event_id = str(event_id or "").strip()
+            if (
+                not isinstance(marker, dict)
+                or marker.get("pending") is not True
+                or not normalized_event_id
+                or str(marker.get("event_id") or "").strip() != normalized_event_id
+            ):
+                return payload, False
+
+            marker["pending"] = False
+            marker["enqueued_at"] = now_text()
             self.save_payload(task_id, payload)
             return payload, True
 
@@ -1087,7 +1127,15 @@ class JsonTaskStore:
             payload = self._read_payload_or_quarantine(path)
             if payload is None:
                 continue
-            if self._is_fully_done(payload) and self._is_expired(payload, completed_cutoff):
+            report_marker = payload.get("legacy_silent_save_report")
+            if isinstance(report_marker, dict) and report_marker.get("pending") is True:
+                continue
+            try:
+                fully_done = self._is_fully_done(payload)
+                expired = self._is_expired(payload, completed_cutoff)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                continue
+            if fully_done and expired:
                 try:
                     path.unlink()
                 except OSError:
@@ -1107,9 +1155,12 @@ class JsonTaskStore:
             return False
         try:
             has_fuel_record = AmbulanceReturnRequest.from_dict(dict(payload.get("task") or {})).has_fuel_record()
-        except (TypeError, ValueError):
-            has_fuel_record = True
-        fuel_site = dict(site_statuses.get("fuel_record") or {})
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return False
+        raw_fuel_site = site_statuses.get("fuel_record")
+        if raw_fuel_site is not None and not isinstance(raw_fuel_site, dict):
+            return False
+        fuel_site = raw_fuel_site or {}
         fuel_cleanup_pending = "waiting_confirmation" in str(fuel_site.get("status") or "")
         expected_site_keys = [
             site.key

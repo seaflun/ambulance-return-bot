@@ -507,6 +507,61 @@ class WebAppTests(unittest.TestCase):
             "duty_work_log_waiting_confirmation",
         )
 
+    def test_reconcile_legacy_public_pc_tasks_retries_persisted_report_marker(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        self._create_legacy_public_pc_task("legacy-report-retry")
+
+        with mock.patch.object(
+            app_module,
+            "report_public_pc_task_event",
+            side_effect=OSError("pending path unavailable"),
+        ) as failed_report:
+            with contextlib.redirect_stdout(io.StringIO()):
+                first_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        after_failure = self.store.get("legacy-report-retry")
+        marker = after_failure["legacy_silent_save_report"]
+        self.assertEqual(first_count, 1)
+        self.assertTrue(marker["pending"])
+        self.assertEqual(failed_report.call_args.kwargs["event_id"], marker["event_id"])
+
+        with mock.patch.object(app_module, "report_public_pc_task_event", return_value=True) as retry_report:
+            with contextlib.redirect_stdout(io.StringIO()):
+                retry_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        self.assertEqual(retry_count, 0)
+        retry_report.assert_called_once()
+        self.assertEqual(retry_report.call_args.kwargs["event_id"], marker["event_id"])
+        self.assertFalse(self.store.get("legacy-report-retry")["legacy_silent_save_report"]["pending"])
+
+        with mock.patch.object(app_module, "report_public_pc_task_event") as duplicate_report:
+            with contextlib.redirect_stdout(io.StringIO()):
+                final_count = app_module.reconcile_legacy_public_pc_tasks()
+        self.assertEqual(final_count, 0)
+        duplicate_report.assert_not_called()
+
+    def test_reconcile_legacy_public_pc_tasks_survives_semantically_corrupt_cleanup_task(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        corrupt_request = AmbulanceReturnRequest(
+            task_id="legacy-corrupt-fuel-site",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        corrupt = self.store.create(corrupt_request)
+        corrupt["site_statuses"]["fuel_record"] = 1
+        self.store.save_payload(corrupt_request.task_id, corrupt)
+        self._create_legacy_public_pc_task("legacy-after-corrupt-cleanup")
+
+        with mock.patch.object(app_module, "report_public_pc_task_event", return_value=True) as report:
+            with contextlib.redirect_stdout(io.StringIO()):
+                changed_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        self.assertEqual(changed_count, 1)
+        report.assert_called_once()
+        self.assertEqual(report.call_args.args[0]["task"]["task_id"], "legacy-after-corrupt-cleanup")
+        self.assertEqual(self.store.get(corrupt_request.task_id)["site_statuses"]["fuel_record"], 1)
+
     def test_reconcile_legacy_public_pc_tasks_queues_report_when_nas_is_offline(self):
         self._create_legacy_public_pc_task("legacy-offline")
         with mock.patch.dict(
@@ -531,6 +586,382 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(pending[0]["task_id"], "legacy-offline")
         self.assertEqual(pending[0]["action"], "舊版無提示儲存狀態自動校正")
 
+    def test_reconcile_legacy_public_pc_tasks_flushes_durable_outbox_on_next_startup(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        os.environ["PUBLIC_PC_REPORT_SERVER_URL"] = "http://nas.test"
+        self._create_legacy_public_pc_task("legacy-offline-recovery")
+
+        with mock.patch.object(
+            app_module,
+            "_post_public_pc_report",
+            side_effect=urllib.error.URLError("offline"),
+        ):
+            with contextlib.redirect_stdout(io.StringIO()):
+                first_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        marker = self.store.get("legacy-offline-recovery")["legacy_silent_save_report"]
+        pending = app_module._load_pending_public_pc_reports()
+        self.assertEqual(first_count, 1)
+        self.assertFalse(marker["pending"])
+        self.assertEqual(len(pending), 1)
+
+        sent_event_ids: list[str] = []
+
+        def acknowledge(_server_url: str, payload: dict) -> dict:
+            sent_event_ids.append(payload["event_id"])
+            return {"ack_id": payload["event_id"]}
+
+        with mock.patch.object(app_module, "_post_public_pc_report", side_effect=acknowledge):
+            with contextlib.redirect_stdout(io.StringIO()):
+                retry_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        self.assertEqual(retry_count, 0)
+        self.assertEqual(sent_event_ids, [marker["event_id"]])
+        self.assertFalse(app_module.public_pc_pending_report_file().exists())
+
+    def test_public_pc_report_is_durable_before_non_network_send_failure(self):
+        task_payload = {
+            "task": {"task_id": "durable-report", "case_reason": "急病"},
+            "overall_status": "desktop_fast_completed",
+            "site_statuses": {},
+            "events": [{"status": "legacy_silent_save_reconciled", "detail": "已校正。"}],
+            "created_at": "2026-07-14T12:00:00",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_PC_REPORT_ENABLED": "true",
+                "PUBLIC_PC_REPORT_SERVER_URL": "http://nas.test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(
+                app_module,
+                "_post_public_pc_report",
+                side_effect=UnicodeDecodeError("utf-8", b"x", 0, 1, "bad response"),
+            ):
+                accepted = app_module.report_public_pc_task_event(
+                    task_payload,
+                    "舊版無提示儲存狀態自動校正",
+                    event_id="stable-reconciliation-event",
+                )
+
+        pending = app_module._load_pending_public_pc_reports()
+        self.assertTrue(accepted)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["event_id"], "stable-reconciliation-event")
+        self.assertEqual(pending[0]["task_id"], "durable-report")
+
+    def test_public_pc_report_requires_explicit_matching_ack(self):
+        task_payload = {
+            "task": {"task_id": "explicit-ack", "case_reason": "急病"},
+            "overall_status": "desktop_fast_completed",
+            "site_statuses": {},
+            "events": [{"status": "completed", "detail": "完成"}],
+            "created_at": "2026-07-14T12:00:00",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_PC_REPORT_ENABLED": "true",
+                "PUBLIC_PC_REPORT_SERVER_URL": "http://nas.test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(app_module, "_post_public_pc_report", return_value={}):
+                accepted = app_module.report_public_pc_task_event(
+                    task_payload,
+                    "舊版無提示儲存狀態自動校正",
+                    event_id="explicit-ack-event",
+                )
+
+        pending = app_module._load_pending_public_pc_reports()
+        self.assertTrue(accepted)
+        self.assertEqual([entry["event_id"] for entry in pending], ["explicit-ack-event"])
+
+    def test_public_pc_report_preserves_malformed_pending_file(self):
+        task_payload = {
+            "task": {"task_id": "strict-outbox", "case_reason": "急病"},
+            "overall_status": "created",
+            "site_statuses": {},
+            "events": [{"status": "created", "detail": "建立"}],
+            "created_at": "2026-07-14T12:00:00",
+        }
+        path = app_module.public_pc_pending_report_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        original = b'{"event_id":"old-event"}\nnot-json\n'
+        path.write_bytes(original)
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_PC_REPORT_ENABLED": "true",
+                "PUBLIC_PC_REPORT_SERVER_URL": "http://nas.test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(app_module, "_post_public_pc_report") as post:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    accepted = app_module.report_public_pc_task_event(
+                        task_payload,
+                        "建立任務",
+                        event_id="strict-outbox-new-event",
+                    )
+
+        self.assertTrue(accepted)
+        post.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+        spool_files = list(app_module.public_pc_pending_report_spool_dir().glob("*.json"))
+        self.assertEqual(len(spool_files), 1)
+        self.assertEqual(json.loads(spool_files[0].read_text(encoding="utf-8"))["event_id"], "strict-outbox-new-event")
+
+        sent_event_ids: list[str] = []
+
+        def acknowledge(_server_url: str, payload: dict) -> dict:
+            sent_event_ids.append(payload["event_id"])
+            return {"ack_id": payload["event_id"]}
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_PC_REPORT_ENABLED": "true",
+                "PUBLIC_PC_REPORT_SERVER_URL": "http://nas.test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(app_module, "_post_public_pc_report", side_effect=acknowledge):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    all_queues_flushed = app_module.flush_pending_public_pc_reports()
+
+        self.assertFalse(all_queues_flushed)
+        self.assertEqual(sent_event_ids, ["strict-outbox-new-event"])
+        self.assertEqual(path.read_bytes(), original)
+        retained_spool = list(app_module.public_pc_pending_report_spool_dir().glob("*.json"))
+        self.assertEqual(len(retained_spool), 1)
+        self.assertTrue(json.loads(retained_spool[0].read_text(encoding="utf-8"))["_spool_checkpoint_acked"])
+
+        app_module._write_pending_public_pc_reports(
+            [{"event_id": "repaired-older-event", "task_id": "strict-outbox", "action": "建立任務"}]
+        )
+        sent_event_ids.clear()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_PC_REPORT_ENABLED": "true",
+                "PUBLIC_PC_REPORT_SERVER_URL": "http://nas.test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(app_module, "_post_public_pc_report", side_effect=acknowledge):
+                self.assertTrue(app_module.flush_pending_public_pc_reports())
+
+        self.assertEqual(sent_event_ids, ["repaired-older-event", "strict-outbox-new-event"])
+        self.assertEqual(list(app_module.public_pc_pending_report_spool_dir().glob("*.json")), [])
+
+    def test_public_pc_report_does_not_write_when_pending_read_fails(self):
+        task_payload = {
+            "task": {"task_id": "outbox-read-failure", "case_reason": "急病"},
+            "overall_status": "created",
+            "site_statuses": {},
+            "events": [{"status": "created", "detail": "建立"}],
+            "created_at": "2026-07-14T12:00:00",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_PC_REPORT_ENABLED": "true",
+                "PUBLIC_PC_REPORT_SERVER_URL": "http://nas.test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(
+                app_module,
+                "_load_pending_public_pc_reports",
+                side_effect=OSError("temporarily locked"),
+            ):
+                with mock.patch.object(app_module, "_write_pending_public_pc_reports") as write_pending:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        accepted = app_module.report_public_pc_task_event(
+                            task_payload,
+                            "建立任務",
+                            event_id="outbox-read-failure-event",
+                        )
+
+        self.assertTrue(accepted)
+        write_pending.assert_not_called()
+        spool_files = list(app_module.public_pc_pending_report_spool_dir().glob("*.json"))
+        self.assertEqual(len(spool_files), 1)
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_PC_REPORT_ENABLED": "true",
+                "PUBLIC_PC_REPORT_SERVER_URL": "http://nas.test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(
+                app_module,
+                "_post_public_pc_report",
+                side_effect=lambda _server_url, payload: {"ack_id": payload["event_id"]},
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertTrue(app_module.flush_pending_public_pc_reports())
+
+        self.assertEqual(list(app_module.public_pc_pending_report_spool_dir().glob("*.json")), [])
+
+    def test_public_pc_report_spools_until_server_url_becomes_available(self):
+        task_payload = {
+            "task": {"task_id": "server-url-later", "case_reason": "急病"},
+            "overall_status": "created",
+            "site_statuses": {},
+            "events": [{"status": "created", "detail": "建立"}],
+            "created_at": "2026-07-14T12:00:00",
+        }
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True):
+            with mock.patch.object(app_module, "public_pc_report_server_url", return_value=""):
+                accepted = app_module.report_public_pc_task_event(
+                    task_payload,
+                    "建立任務",
+                    event_id="server-url-later-event",
+                )
+
+        self.assertTrue(accepted)
+        self.assertEqual(len(list(app_module.public_pc_pending_report_spool_dir().glob("*.json"))), 1)
+
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True):
+            with mock.patch.object(app_module, "public_pc_report_server_url", return_value="http://nas.test"):
+                with mock.patch.object(
+                    app_module,
+                    "_post_public_pc_report",
+                    side_effect=lambda _server_url, payload: {"ack_id": payload["event_id"]},
+                ):
+                    self.assertTrue(app_module.flush_pending_public_pc_reports())
+
+        self.assertEqual(list(app_module.public_pc_pending_report_spool_dir().glob("*.json")), [])
+
+    def test_public_pc_spool_waits_for_older_main_outbox_event(self):
+        older = {"event_id": "older-main-event", "task_id": "older", "action": "建立任務"}
+        newer = {"event_id": "newer-spool-event", "task_id": "newer", "action": "修改任務"}
+        app_module._write_pending_public_pc_reports([older])
+        app_module._persist_public_pc_report_spool(newer)
+        attempted: list[str] = []
+
+        def defer_older(_server_url: str, payload: dict) -> dict:
+            attempted.append(payload["event_id"])
+            return {"ack_id": "not-the-expected-event"}
+
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True):
+            with mock.patch.object(app_module, "public_pc_report_server_url", return_value="http://nas.test"):
+                with mock.patch.object(app_module, "_post_public_pc_report", side_effect=defer_older):
+                    self.assertFalse(app_module.flush_pending_public_pc_reports())
+
+        self.assertEqual(attempted, ["older-main-event"])
+        self.assertEqual(len(list(app_module.public_pc_pending_report_spool_dir().glob("*.json"))), 1)
+
+        attempted.clear()
+
+        def acknowledge(_server_url: str, payload: dict) -> dict:
+            attempted.append(payload["event_id"])
+            return {"ack_id": payload["event_id"]}
+
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True):
+            with mock.patch.object(app_module, "public_pc_report_server_url", return_value="http://nas.test"):
+                with mock.patch.object(app_module, "_post_public_pc_report", side_effect=acknowledge):
+                    self.assertTrue(app_module.flush_pending_public_pc_reports())
+
+        self.assertEqual(attempted, ["older-main-event", "newer-spool-event"])
+
+    def test_new_report_does_not_overtake_older_spooled_report(self):
+        older_payload = {
+            "task": {"task_id": "same-task", "case_reason": "急病"},
+            "overall_status": "created",
+            "site_statuses": {},
+            "events": [{"status": "created", "detail": "older"}],
+            "created_at": "2026-07-14T12:00:00",
+        }
+        newer_payload = {
+            **older_payload,
+            "overall_status": "desktop_fast_completed",
+            "events": [{"status": "completed", "detail": "newer"}],
+        }
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True):
+            with mock.patch.object(app_module, "public_pc_report_server_url", return_value=""):
+                self.assertTrue(
+                    app_module.report_public_pc_task_event(
+                        older_payload,
+                        "建立任務",
+                        event_id="older-spooled-event",
+                    )
+                )
+
+        attempted: list[str] = []
+
+        def acknowledge(_server_url: str, payload: dict) -> dict:
+            attempted.append(payload["event_id"])
+            return {"ack_id": payload["event_id"]}
+
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True):
+            with mock.patch.object(app_module, "public_pc_report_server_url", return_value="http://nas.test"):
+                with mock.patch.object(app_module, "_post_public_pc_report", side_effect=acknowledge):
+                    self.assertTrue(
+                        app_module.report_public_pc_task_event(
+                            newer_payload,
+                            "人工確認站別完成",
+                            event_id="newer-spooled-event",
+                        )
+                    )
+
+        self.assertEqual(attempted, ["older-spooled-event", "newer-spooled-event"])
+        self.assertEqual(list(app_module.public_pc_pending_report_spool_dir().glob("*.json")), [])
+
+    def test_main_outbox_unlink_failure_retains_newer_spool_checkpoint(self):
+        main_path = app_module.public_pc_pending_report_file()
+        older = {"event_id": "unlink-older-main", "task_id": "same-task", "action": "建立任務"}
+        newer = {
+            "event_id": "unlink-newer-spool",
+            "task_id": "same-task",
+            "action": "人工確認站別完成",
+            "_spool_checkpoint_acked": True,
+        }
+        app_module._write_pending_public_pc_reports([older])
+        spool_path = app_module._persist_public_pc_report_spool(newer)
+        attempted: list[str] = []
+
+        def acknowledge(_server_url: str, payload: dict) -> dict:
+            attempted.append(payload["event_id"])
+            return {"ack_id": payload["event_id"]}
+
+        original_unlink = Path.unlink
+        failed_once = {"value": False}
+
+        def fail_first_main_unlink(path: Path, *args, **kwargs):
+            if path == main_path and not failed_once["value"]:
+                failed_once["value"] = True
+                raise PermissionError("pending outbox is temporarily locked")
+            return original_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True):
+            with mock.patch.object(app_module, "public_pc_report_server_url", return_value="http://nas.test"):
+                with mock.patch.object(app_module, "_post_public_pc_report", side_effect=acknowledge):
+                    with mock.patch.object(Path, "unlink", new=fail_first_main_unlink):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            self.assertFalse(app_module.flush_pending_public_pc_reports())
+
+        self.assertEqual(attempted, ["unlink-older-main"])
+        self.assertTrue(main_path.exists())
+        self.assertTrue(spool_path.exists())
+
+        attempted.clear()
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True):
+            with mock.patch.object(app_module, "public_pc_report_server_url", return_value="http://nas.test"):
+                with mock.patch.object(app_module, "_post_public_pc_report", side_effect=acknowledge):
+                    self.assertTrue(app_module.flush_pending_public_pc_reports())
+
+        self.assertEqual(attempted, ["unlink-older-main", "unlink-newer-spool"])
+        self.assertFalse(main_path.exists())
+        self.assertFalse(spool_path.exists())
+
     def test_start_public_pc_legacy_reconciliation_is_gated_and_daemon(self):
         with mock.patch.object(app_module.threading, "Thread") as thread_class:
             os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
@@ -547,6 +978,69 @@ class WebAppTests(unittest.TestCase):
             daemon=True,
         )
         thread_class.return_value.start.assert_called_once_with()
+
+    def test_start_public_pc_pending_report_flusher_is_gated_and_daemon(self):
+        with mock.patch.object(app_module.threading, "Thread") as thread_class:
+            os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
+            self.assertIsNone(app_module.start_public_pc_pending_report_flusher())
+            thread_class.assert_not_called()
+
+            os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+            thread = app_module.start_public_pc_pending_report_flusher()
+
+        self.assertIs(thread, thread_class.return_value)
+        thread_class.assert_called_once_with(
+            target=app_module._run_public_pc_pending_report_flush_loop,
+            name="public-pc-pending-report-flusher",
+            daemon=True,
+        )
+        thread_class.return_value.start.assert_called_once_with()
+
+    def test_public_pc_pending_report_flusher_retries_reconciliation_while_enabled(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+
+        def reconcile_once() -> int:
+            os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
+            return 0
+
+        def stop_after_wait(_seconds: float) -> None:
+            os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
+
+        with mock.patch.object(app_module, "reconcile_legacy_public_pc_tasks", side_effect=reconcile_once) as reconcile:
+            with mock.patch.object(app_module.time, "sleep", side_effect=stop_after_wait) as sleep:
+                app_module._run_public_pc_pending_report_flush_loop()
+
+        sleep.assert_called_once_with(app_module.PUBLIC_PC_PENDING_REPORT_FLUSH_INTERVAL_SECONDS)
+        reconcile.assert_called_once_with()
+
+    def test_public_pc_pending_report_flusher_recovers_marker_after_spool_failure(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        os.environ["PUBLIC_PC_REPORT_SERVER_URL"] = "http://nas.test"
+        self._create_legacy_public_pc_task("legacy-marker-background-retry")
+
+        with mock.patch.object(
+            app_module,
+            "_persist_public_pc_report_spool",
+            side_effect=OSError("spool locked"),
+        ):
+            with contextlib.redirect_stdout(io.StringIO()):
+                first_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        first_marker = self.store.get("legacy-marker-background-retry")["legacy_silent_save_report"]
+        self.assertEqual(first_count, 1)
+        self.assertTrue(first_marker["pending"])
+
+        def acknowledge(_server_url: str, payload: dict) -> dict:
+            return {"ack_id": payload["event_id"]}
+
+        with mock.patch.object(app_module, "_post_public_pc_report", side_effect=acknowledge):
+            with contextlib.redirect_stdout(io.StringIO()):
+                retry_count = app_module.retry_pending_public_pc_reports()
+
+        recovered = self.store.get("legacy-marker-background-retry")
+        self.assertEqual(retry_count, 0)
+        self.assertFalse(recovered["legacy_silent_save_report"]["pending"])
+        self.assertFalse(app_module.public_pc_pending_report_file().exists())
 
     def test_start_public_pc_legacy_reconciliation_worker_exception_does_not_escape(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
@@ -569,17 +1063,20 @@ class WebAppTests(unittest.TestCase):
     def test_web_startup_starts_legacy_reconciliation_only_for_public_pc(self):
         with mock.patch.object(app_module, "credential_sync_record_for_worker"):
             with mock.patch.object(app_module, "start_public_pc_legacy_reconciliation") as start:
-                with mock.patch("waitress.serve") as serve:
-                    os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        app_module.run_web_app(host="127.0.0.1", port=18080)
-                    start.assert_not_called()
+                with mock.patch.object(app_module, "start_public_pc_pending_report_flusher") as start_flusher:
+                    with mock.patch("waitress.serve") as serve:
+                        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            app_module.run_web_app(host="127.0.0.1", port=18080)
+                        start.assert_not_called()
+                        start_flusher.assert_not_called()
 
-                    os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        app_module.run_web_app(host="127.0.0.1", port=18081)
+                        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            app_module.run_web_app(host="127.0.0.1", port=18081)
 
         start.assert_called_once_with()
+        start_flusher.assert_called_once_with()
         self.assertEqual(serve.call_count, 2)
 
     def test_credential_sync_legacy_missing_created_at_preserves_original_mtime_on_failed_ack(self):

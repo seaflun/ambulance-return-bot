@@ -260,6 +260,70 @@ class JsonTaskStoreTests(unittest.TestCase):
                     )
                     self.assertEqual(store.path_for(task_id).read_text(encoding="utf-8"), before)
 
+    def test_reconcile_legacy_silent_save_report_marker_is_stable_until_enqueued(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            self._create_legacy_silent_save_task(store, task_id="legacy-report-marker")
+
+            reconciled, changed = store.reconcile_legacy_silent_save_results("legacy-report-marker")
+            marker = reconciled["legacy_silent_save_report"]
+
+            self.assertTrue(changed)
+            self.assertTrue(marker["pending"])
+            self.assertTrue(marker["event_id"])
+            second, second_changed = store.reconcile_legacy_silent_save_results("legacy-report-marker")
+            self.assertFalse(second_changed)
+            self.assertEqual(second["legacy_silent_save_report"], marker)
+
+            acknowledged, acknowledgement_changed = store.mark_legacy_silent_save_report_enqueued(
+                "legacy-report-marker",
+                marker["event_id"],
+            )
+            self.assertTrue(acknowledgement_changed)
+            self.assertFalse(acknowledged["legacy_silent_save_report"]["pending"])
+            self.assertTrue(acknowledged["legacy_silent_save_report"]["enqueued_at"])
+
+            file_after_ack = store.path_for("legacy-report-marker").read_text(encoding="utf-8")
+            duplicate, duplicate_changed = store.mark_legacy_silent_save_report_enqueued(
+                "legacy-report-marker",
+                marker["event_id"],
+            )
+            self.assertFalse(duplicate_changed)
+            self.assertFalse(duplicate["legacy_silent_save_report"]["pending"])
+            self.assertEqual(
+                store.path_for("legacy-report-marker").read_text(encoding="utf-8"),
+                file_after_ack,
+            )
+
+    def test_pending_reconciliation_report_does_not_block_operational_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="pending-report-operational-completion",
+                created_at=datetime.now(),
+                raw_text="",
+            )
+            payload = store.create(request)
+            for site in payload["site_statuses"].values():
+                site["status"] = "completed_by_user"
+            payload["site_statuses"]["duty_work_log"].update(
+                status="duty_work_log_waiting_confirmation",
+                detail="waiting_confirmation",
+            )
+            payload["overall_status"] = "desktop_fast_completed_with_errors"
+            payload["legacy_silent_save_report"] = {
+                "event_id": "pending-operational-event",
+                "pending": True,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "enqueued_at": "",
+            }
+            store.save_payload(request.task_id, payload)
+
+            completed = store.mark_site_completed(request.task_id, "duty_work_log")
+
+            self.assertEqual(completed["overall_status"], "desktop_fast_completed")
+            self.assertTrue(completed["legacy_silent_save_report"]["pending"])
+
     def test_task_id_cannot_escape_tasks_directory_with_windows_backslashes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1420,6 +1484,31 @@ class JsonTaskStoreTests(unittest.TestCase):
 
             self.assertEqual(store.list_recent(), [])
             self.assertFalse((Path(tmp) / "done-expired-task.json").exists())
+
+    def test_cleanup_keeps_expired_completed_task_with_pending_reconciliation_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="done-expired-report-pending",
+                created_at=datetime.now(),
+                raw_text="",
+            )
+            payload = store.create(request)
+            for site in payload["site_statuses"].values():
+                site["status"] = "completed_by_user"
+            payload["legacy_silent_save_report"] = {
+                "event_id": "stable-pending-event",
+                "pending": True,
+                "created_at": (datetime.now() - timedelta(days=15)).isoformat(timespec="seconds"),
+                "enqueued_at": "",
+            }
+            payload["updated_at"] = (datetime.now() - timedelta(days=15)).isoformat(timespec="seconds")
+            store.path_for(request.task_id).write_text(json.dumps(payload), encoding="utf-8")
+
+            recent = store.list_recent()
+
+            self.assertEqual([item["task"]["task_id"] for item in recent], [request.task_id])
+            self.assertTrue(store.path_for(request.task_id).exists())
 
 
 if __name__ == "__main__":
