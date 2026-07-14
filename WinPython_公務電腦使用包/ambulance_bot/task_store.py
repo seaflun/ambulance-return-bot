@@ -766,10 +766,76 @@ class JsonTaskStore:
                 site = site_statuses.get(site_key)
                 if not isinstance(site, dict):
                     continue
+                if str(site.get("status") or "") != legacy_status:
+                    continue
                 vehicle_results = site.get("vehicle_results", missing_vehicle_results)
                 if vehicle_results is not missing_vehicle_results and vehicle_results != {}:
-                    continue
-                if str(site.get("status") or "") != legacy_status:
+                    if site_key != "vehicle_mileage" or not isinstance(vehicle_results, dict):
+                        continue
+                    results = dict(vehicle_results)
+                    expected_keys = expected_vehicle_result_keys(payload, site_key) or [str(key) for key in results]
+                    if any(not isinstance(results.get(key), dict) for key in expected_keys):
+                        continue
+                    corrected_vehicle_labels: list[str] = []
+                    corrected_at = now_text()
+                    for vehicle_key, value in results.items():
+                        if not isinstance(value, dict):
+                            continue
+                        record = dict(value)
+                        if str(record.get("status") or "") != legacy_status:
+                            continue
+                        if detail_pattern.fullmatch(str(record.get("detail") or "")) is None:
+                            continue
+                        record.update(
+                            status=saved_status,
+                            detail="舊版無提示儲存誤判已校正為已儲存。",
+                            updated_at=corrected_at,
+                        )
+                        for field in DIAGNOSTIC_FIELDS:
+                            record[field] = ""
+                        results[vehicle_key] = record
+                        corrected_vehicle_labels.append(
+                            str(record.get("vehicle_label") or vehicle_key).strip() or str(vehicle_key)
+                        )
+                    if not corrected_vehicle_labels:
+                        continue
+
+                    site["vehicle_results"] = results
+                    site["status"] = aggregate_vehicle_site_status(payload, site_key, results)
+                    site["detail"] = vehicle_site_result_detail(payload, site_key, results)
+                    site["updated_at"] = corrected_at
+                    if site["status"] in SUCCESS_SITE_STATUSES or str(site["status"]).endswith("_saved"):
+                        site.pop("update_context", None)
+                    remaining_record: dict[str, Any] = {}
+                    ordered_keys = expected_keys
+                    site_status = str(site["status"])
+                    if "failed" in site_status or "error" in site_status:
+                        remaining_record = next(
+                            (
+                                dict(record)
+                                for key in ordered_keys
+                                if isinstance((record := results.get(key)), dict)
+                                and (
+                                    "failed" in str(record.get("status") or "")
+                                    or "error" in str(record.get("status") or "")
+                                )
+                            ),
+                            {},
+                        )
+                    elif "waiting_confirmation" in site_status:
+                        remaining_record = next(
+                            (
+                                dict(record)
+                                for key in ordered_keys
+                                if isinstance((record := results.get(key)), dict)
+                                and "waiting_confirmation" in str(record.get("status") or "")
+                            ),
+                            {},
+                        )
+                    for field in DIAGNOSTIC_FIELDS:
+                        site[field] = str(remaining_record.get(field) or "")
+                    labels = "、".join(corrected_vehicle_labels)
+                    corrected_site_names.append(f"{site.get('name') or site_key}（{labels}）")
                     continue
                 if detail_pattern.fullmatch(str(site.get("detail") or "")) is None:
                     continue

@@ -155,6 +155,160 @@ class JsonTaskStoreTests(unittest.TestCase):
                 updated["site_statuses"]["vehicle_mileage"]["detail"],
             )
 
+    def test_reconcile_vehicle_mileage_update_prompt_in_vehicle_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="mileage-confirmed-vehicle-result",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡93",
+            )
+            payload = store.create(request)
+            result_detail = (
+                "登入帳號：里程=任務司機 > 出勤人員 > 同步帳號，"
+                "任務司機，13番 葉宗哲 - tyfd02031。"
+                "waiting_confirmation: vehicle mileage save response not recognized: "
+                "目前的里程數：54745 更新後里程數：54773 是否更新？"
+            )
+            site = payload["site_statuses"]["vehicle_mileage"]
+            site.update(
+                status="vehicle_mileage_waiting_confirmation",
+                detail=f"新坡93: {result_detail}",
+                failure_stage="儲存",
+                failure_reason="尚未完成儲存確認",
+                next_action="人工確認",
+                exception_type="WaitingConfirmation",
+            )
+            site["vehicle_results"] = {
+                "新坡93": {
+                    "status": "vehicle_mileage_waiting_confirmation",
+                    "detail": result_detail,
+                    "vehicle_label": "新坡93",
+                    "failure_stage": "儲存",
+                    "failure_reason": "尚未完成儲存確認",
+                    "next_action": "人工確認",
+                    "exception_type": "WaitingConfirmation",
+                }
+            }
+            payload["site_statuses"]["duty_work_log"]["status"] = "duty_work_log_saved"
+            payload["site_statuses"]["consumables"]["status"] = "consumables_saved"
+            payload["site_statuses"]["disinfection"]["status"] = "disinfection_saved"
+            payload["overall_status"] = "desktop_fast_completed_with_errors"
+            payload["worker_queue"].update(status="idle", last_error="里程待確認")
+            store.save_payload(request.task_id, payload)
+
+            updated, changed = store.reconcile_legacy_silent_save_results(request.task_id)
+
+            self.assertTrue(changed)
+            updated_site = updated["site_statuses"]["vehicle_mileage"]
+            self.assertEqual(updated_site["status"], "vehicle_mileage_saved")
+            self.assertEqual(updated_site["vehicle_results"]["新坡93"]["status"], "vehicle_mileage_saved")
+            self.assertNotIn("waiting_confirmation", updated_site["detail"])
+            for field in ("failure_stage", "failure_reason", "next_action", "exception_type"):
+                self.assertEqual(updated_site[field], "")
+                self.assertEqual(updated_site["vehicle_results"]["新坡93"][field], "")
+            self.assertEqual(updated["overall_status"], "desktop_fast_completed")
+            self.assertEqual(updated["worker_queue"]["status"], "completed")
+            self.assertEqual(updated["worker_queue"]["last_error"], "")
+
+    def test_reconcile_vehicle_mileage_prompt_preserves_other_vehicle_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest.from_dict(
+                {
+                    "task_id": "mileage-confirmed-mixed-results",
+                    "created_at": datetime.now().isoformat(),
+                    "two_vehicle": True,
+                    "vehicle_entries": [
+                        {"vehicle": "新坡92"},
+                        {"vehicle": "新坡93"},
+                    ],
+                }
+            )
+            payload = store.create(request)
+            confirmed_detail = (
+                "waiting_confirmation: vehicle mileage save response not recognized: "
+                "目前的里程數：20968 更新後里程數：20998 是否更新？"
+            )
+            site = payload["site_statuses"]["vehicle_mileage"]
+            site.update(
+                status="vehicle_mileage_waiting_confirmation",
+                detail="新坡92: 等待確認 | 新坡93: 登入失敗",
+                failure_stage="儲存",
+                failure_reason="尚未完成儲存確認",
+                next_action="人工確認",
+                exception_type="WaitingConfirmation",
+            )
+            site["vehicle_results"] = {
+                "新坡92": {
+                    "status": "vehicle_mileage_waiting_confirmation",
+                    "detail": confirmed_detail,
+                    "vehicle_label": "新坡92",
+                },
+                "新坡93": {
+                    "status": "vehicle_mileage_failed",
+                    "detail": "PPE session returned to login page",
+                    "vehicle_label": "新坡93",
+                    "failure_stage": "登入",
+                    "failure_reason": "登入頁面",
+                    "next_action": "重新登入",
+                    "exception_type": "WebDriverException",
+                },
+            }
+            store.save_payload(request.task_id, payload)
+
+            updated, changed = store.reconcile_legacy_silent_save_results(request.task_id)
+
+            self.assertTrue(changed)
+            updated_site = updated["site_statuses"]["vehicle_mileage"]
+            self.assertEqual(updated_site["vehicle_results"]["新坡92"]["status"], "vehicle_mileage_saved")
+            self.assertEqual(updated_site["vehicle_results"]["新坡93"]["status"], "vehicle_mileage_failed")
+            self.assertEqual(updated_site["status"], "vehicle_mileage_failed")
+            self.assertEqual(updated_site["failure_stage"], "登入")
+            self.assertEqual(updated_site["failure_reason"], "登入頁面")
+            self.assertEqual(updated_site["next_action"], "重新登入")
+            self.assertEqual(updated_site["exception_type"], "WebDriverException")
+
+    def test_reconcile_vehicle_mileage_prompt_rejects_malformed_expected_vehicle_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest.from_dict(
+                {
+                    "task_id": "mileage-confirmed-malformed-results",
+                    "created_at": datetime.now().isoformat(),
+                    "two_vehicle": True,
+                    "vehicle_entries": [
+                        {"vehicle": "新坡92"},
+                        {"vehicle": "新坡93"},
+                    ],
+                }
+            )
+            payload = store.create(request)
+            site = payload["site_statuses"]["vehicle_mileage"]
+            site.update(status="vehicle_mileage_waiting_confirmation", detail="損壞的舊資料")
+            site["vehicle_results"] = {
+                "新坡92": {
+                    "status": "vehicle_mileage_waiting_confirmation",
+                    "detail": (
+                        "waiting_confirmation: vehicle mileage save response not recognized: "
+                        "目前的里程數：20968 更新後里程數：20998 是否更新？"
+                    ),
+                },
+                "新坡93": [["status", "vehicle_mileage_saved"]],
+            }
+            store.save_payload(request.task_id, payload)
+            before = store.path_for(request.task_id).read_text(encoding="utf-8")
+
+            unchanged, changed = store.reconcile_legacy_silent_save_results(request.task_id)
+
+            self.assertFalse(changed)
+            self.assertEqual(
+                unchanged["site_statuses"]["vehicle_mileage"]["status"],
+                "vehicle_mileage_waiting_confirmation",
+            )
+            self.assertEqual(store.path_for(request.task_id).read_text(encoding="utf-8"), before)
+
     def test_reconcile_legacy_silent_save_results_rejects_near_matches(self):
         duty_detail = "waiting_confirmation: 已按下儲存，但未收到儲存成功回應；請人工確認。"
         cases = (
@@ -204,6 +358,21 @@ class JsonTaskStoreTests(unittest.TestCase):
                 "duty_work_log_waiting_confirmation",
                 duty_detail,
                 {"新坡92": {"status": "duty_work_log_waiting_confirmation", "detail": duty_detail}},
+            ),
+            (
+                "vehicle-result-confirmation-extra-error",
+                "vehicle_mileage",
+                "vehicle_mileage_waiting_confirmation",
+                "新坡93: 待確認",
+                {
+                    "新坡93": {
+                        "status": "vehicle_mileage_waiting_confirmation",
+                        "detail": (
+                            "waiting_confirmation: vehicle mileage save response not recognized: "
+                            "目前的里程數：54745 更新後里程數：54773 是否更新？ 儲存失敗"
+                        ),
+                    }
+                },
             ),
         )
         with tempfile.TemporaryDirectory() as tmp:
