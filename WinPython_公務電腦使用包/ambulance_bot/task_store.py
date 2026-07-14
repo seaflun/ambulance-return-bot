@@ -40,7 +40,7 @@ LEGACY_SILENT_SAVE_RECONCILIATION_RULES: dict[str, tuple[str, str, re.Pattern[st
             )
             + "|"
             + r"waiting_confirmation:\ vehicle\ mileage\ save\ response\ not\ recognized:\ "
-            + r"目前的里程數：[0-9]+\ 更新後里程數：[0-9]+\ 是否更新？"
+            + r"目前的里程數：[0-9]+\s+更新後里程數：[0-9]+\s+是否更新？"
             + ")",
         ),
     ),

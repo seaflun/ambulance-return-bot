@@ -155,6 +155,35 @@ class JsonTaskStoreTests(unittest.TestCase):
                 updated["site_statuses"]["vehicle_mileage"]["detail"],
             )
 
+    def test_reconcile_vehicle_mileage_multiline_prompt_from_nas_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="mileage-confirmed-multiline-prompt",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡93",
+            )
+            payload = store.create(request)
+            payload["site_statuses"]["vehicle_mileage"].update(
+                status="vehicle_mileage_waiting_confirmation",
+                detail=(
+                    "登入帳號：里程=任務司機 > 出勤人員 > 同步帳號，"
+                    "任務司機，13番 葉宗哲 - tyfd02031。"
+                    "waiting_confirmation: vehicle mileage save response not recognized: "
+                    "目前的里程數：54745\n更新後里程數：54773\n是否更新？"
+                ),
+            )
+            store.save_payload(request.task_id, payload)
+
+            updated, changed = store.reconcile_legacy_silent_save_results(request.task_id)
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                updated["site_statuses"]["vehicle_mileage"]["status"],
+                "vehicle_mileage_saved",
+            )
+
     def test_reconcile_vehicle_mileage_update_prompt_in_vehicle_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))

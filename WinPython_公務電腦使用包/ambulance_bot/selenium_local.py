@@ -2763,7 +2763,7 @@ def _save_confirmation_state(*messages: str) -> str:
 
 
 def _is_expected_vehicle_mileage_update_prompt(*messages: str) -> bool:
-    pattern = re.compile(r"目前的里程數：[0-9]+ 更新後里程數：[0-9]+ 是否更新？")
+    pattern = re.compile(r"目前的里程數：[0-9]+\s+更新後里程數：[0-9]+\s+是否更新？")
     normalized = [str(message or "").strip() for message in messages if str(message or "").strip()]
     return bool(normalized) and all(pattern.fullmatch(message) is not None for message in normalized)
 
