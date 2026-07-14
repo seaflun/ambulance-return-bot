@@ -824,6 +824,16 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn("RollbackComplete", source)
         self.assertIn("Recovery files:", source)
 
+    def test_one_version_orchestrator_defers_locked_post_publish_cleanup(self):
+        source = Path("scripts/build_all_packages.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('$cleanupContext = "Package publish succeeded"', source)
+        self.assertIn("but staged cleanup was deferred", source)
+        self.assertRegex(
+            source,
+            r"(?s)finally\s*\{.*try\s*\{\s*Remove-StagedPath.*catch\s*\{.*Write-Warning",
+        )
+
     def test_all_package_build_entrypoints_share_an_exclusive_process_lock(self):
         sources = {
             name: Path(f"scripts/{name}").read_text(encoding="utf-8")

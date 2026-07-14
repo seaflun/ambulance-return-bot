@@ -371,7 +371,18 @@ try {
     if ($publishState.Attempted -and -not $published -and -not $publishState.RollbackComplete) {
         Write-Warning "Package rollback was incomplete; recovery files were preserved at $stageRollbackDir"
     } else {
-        Remove-StagedPath -Path $stageRoot -ExpectedRoot $updateDir
+        try {
+            Remove-StagedPath -Path $stageRoot -ExpectedRoot $updateDir
+        } catch {
+            if ($published) {
+                $cleanupContext = "Package publish succeeded"
+            } elseif ($publishState.RollbackComplete) {
+                $cleanupContext = "Package publish failed and rollback completed"
+            } else {
+                $cleanupContext = "Package build stopped before publish"
+            }
+            Write-Warning "$cleanupContext, but staged cleanup was deferred. Recovery files: $stageRoot. Error: $($_.Exception.Message)"
+        }
     }
 }
 
