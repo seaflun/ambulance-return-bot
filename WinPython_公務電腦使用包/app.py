@@ -102,6 +102,15 @@ _credential_sync_relay_lock = threading.RLock()
 _case_lookup_start_error = ""
 PUBLIC_PC_REPORT_RETENTION_DAYS = 7
 PUBLIC_PC_LEGACY_RECONCILE_LIMIT = 500
+PUBLIC_PC_LEGACY_RECONCILE_ERRORS = (
+    AttributeError,
+    FileNotFoundError,
+    KeyError,
+    TypeError,
+    ValueError,
+    OSError,
+    UnicodeError,
+)
 MAX_CREDENTIAL_RELAY_FILE_BYTES = ((MAX_CREDENTIAL_PAYLOAD_BYTES + 2) // 3) * 4 + (64 * 1024)
 REMOTE_UPDATE_ACTIVE_STATUSES = {"pending", "waiting_busy", "waiting_idle", "updating"}
 REMOTE_UPDATE_TERMINAL_STATUSES = {"completed", "up_to_date", "failed", "timed_out"}
@@ -1592,7 +1601,7 @@ def reconcile_legacy_public_pc_tasks() -> int:
         return 0
     try:
         recent_tasks = store.list_recent(limit=PUBLIC_PC_LEGACY_RECONCILE_LIMIT)
-    except (FileNotFoundError, KeyError, TypeError, ValueError, OSError, UnicodeError) as exc:
+    except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
         print(
             f"[public_pc_reconcile] unable to list local tasks error={type(exc).__name__}",
             flush=True,
@@ -1608,7 +1617,7 @@ def reconcile_legacy_public_pc_tasks() -> int:
             continue
         try:
             payload, changed = store.reconcile_legacy_silent_save_results(task_id)
-        except (FileNotFoundError, KeyError, TypeError, ValueError, OSError, UnicodeError) as exc:
+        except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
             print(
                 f"[public_pc_reconcile] skipped task_id={task_id} error={type(exc).__name__}",
                 flush=True,
@@ -1619,7 +1628,7 @@ def reconcile_legacy_public_pc_tasks() -> int:
         changed_count += 1
         try:
             report_public_pc_task_event(payload, "舊版無提示儲存狀態自動校正")
-        except (KeyError, TypeError, ValueError, OSError, UnicodeError) as exc:
+        except PUBLIC_PC_LEGACY_RECONCILE_ERRORS as exc:
             print(
                 f"[public_pc_reconcile] report deferred task_id={task_id} error={type(exc).__name__}",
                 flush=True,

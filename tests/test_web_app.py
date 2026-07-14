@@ -483,6 +483,30 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(second_count, 0)
         report.assert_called_once()
 
+    def test_reconcile_legacy_public_pc_tasks_skips_corrupt_task_and_continues(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        corrupt = self._create_legacy_public_pc_task("legacy-corrupt-events")
+        corrupt["events"] = {}
+        self.store.save_payload("legacy-corrupt-events", corrupt)
+        eligible = self._create_legacy_public_pc_task("legacy-after-corrupt")
+
+        with mock.patch.object(
+            self.store,
+            "list_recent",
+            return_value=[self.store.get("legacy-corrupt-events"), eligible],
+        ):
+            with mock.patch.object(app_module, "report_public_pc_task_event") as report:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    changed_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        self.assertEqual(changed_count, 1)
+        report.assert_called_once()
+        self.assertEqual(report.call_args.args[0]["task"]["task_id"], "legacy-after-corrupt")
+        self.assertEqual(
+            self.store.get("legacy-corrupt-events")["site_statuses"]["duty_work_log"]["status"],
+            "duty_work_log_waiting_confirmation",
+        )
+
     def test_reconcile_legacy_public_pc_tasks_queues_report_when_nas_is_offline(self):
         self._create_legacy_public_pc_task("legacy-offline")
         with mock.patch.dict(
@@ -523,6 +547,24 @@ class WebAppTests(unittest.TestCase):
             daemon=True,
         )
         thread_class.return_value.start.assert_called_once_with()
+
+    def test_start_public_pc_legacy_reconciliation_worker_exception_does_not_escape(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        target_started = threading.Event()
+
+        def fail_in_worker():
+            target_started.set()
+            raise RuntimeError("worker failed")
+
+        with mock.patch.object(app_module, "reconcile_legacy_public_pc_tasks", side_effect=fail_in_worker):
+            with mock.patch.object(app_module.threading, "excepthook") as excepthook:
+                thread = app_module.start_public_pc_legacy_reconciliation()
+                assert thread is not None
+                thread.join(timeout=1)
+
+        self.assertTrue(target_started.is_set())
+        self.assertFalse(thread.is_alive())
+        excepthook.assert_called_once()
 
     def test_web_startup_starts_legacy_reconciliation_only_for_public_pc(self):
         with mock.patch.object(app_module, "credential_sync_record_for_worker"):
