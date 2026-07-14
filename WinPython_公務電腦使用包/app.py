@@ -422,11 +422,12 @@ def complete_site(task_id: str, site_key: str):
     if not hmac.compare_digest(supplied_token, expected_token):
         abort(403)
     try:
-        store.mark_site_completed(task_id, site_key, vehicle_key=vehicle_key)
+        payload = store.mark_site_completed(task_id, site_key, vehicle_key=vehicle_key)
     except SiteCompletionConflictError as exc:
         return str(exc), 409
     except (FileNotFoundError, KeyError):
         abort(404)
+    report_public_pc_task_event(payload, f"人工確認站別完成：{site_display_name(site_key)}")
     return redirect(url_for("task_detail", task_id=task_id))
 
 

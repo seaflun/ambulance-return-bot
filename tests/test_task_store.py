@@ -322,6 +322,65 @@ class JsonTaskStoreTests(unittest.TestCase):
 
             self.assertEqual(store.get(request.task_id)["site_statuses"]["vehicle_mileage"]["status"], "not_started")
 
+    def test_manual_site_completion_finishes_overall_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="task-manual-finish",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            payload = store.create(request)
+            payload["overall_status"] = "desktop_fast_completed_with_errors"
+            payload["worker_queue"].update(
+                status="claimed",
+                lease_expires_at=(datetime.now() + timedelta(minutes=5)).isoformat(timespec="seconds"),
+                last_error="舊失敗。",
+            )
+            for site_key, status in {
+                "duty_work_log": "duty_work_log_saved",
+                "vehicle_mileage": "vehicle_mileage_waiting_confirmation",
+                "consumables": "consumables_saved",
+                "disinfection": "disinfection_saved",
+            }.items():
+                payload["site_statuses"][site_key].update(status=status, detail="test")
+            store.save_payload(request.task_id, payload)
+
+            completed = store.mark_site_completed(request.task_id, "vehicle_mileage")
+
+            self.assertEqual(completed["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
+            self.assertEqual(completed["overall_status"], "desktop_fast_completed")
+            self.assertEqual(completed["worker_queue"]["status"], "completed")
+            self.assertEqual(completed["worker_queue"]["lease_expires_at"], "")
+            self.assertEqual(completed["worker_queue"]["last_error"], "")
+
+    def test_manual_site_completion_keeps_overall_failure_when_site_still_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="task-manual-mixed",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            payload = store.create(request)
+            payload["overall_status"] = "desktop_fast_completed_with_errors"
+            for site_key, status in {
+                "duty_work_log": "duty_work_log_saved",
+                "vehicle_mileage": "vehicle_mileage_waiting_confirmation",
+                "consumables": "consumables_failed",
+                "disinfection": "disinfection_saved",
+            }.items():
+                payload["site_statuses"][site_key].update(status=status, detail="test")
+            store.save_payload(request.task_id, payload)
+
+            completed = store.mark_site_completed(request.task_id, "vehicle_mileage")
+
+            self.assertEqual(completed["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
+            self.assertEqual(completed["site_statuses"]["consumables"]["status"], "consumables_failed")
+            self.assertEqual(completed["overall_status"], "desktop_fast_completed_with_errors")
+
     def test_worker_queue_state_tracks_queue_claim_and_completion(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))

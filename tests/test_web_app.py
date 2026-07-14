@@ -3358,6 +3358,95 @@ class WebAppTests(unittest.TestCase):
             "vehicle_mileage_failed",
         )
 
+    def test_manual_complete_reports_updated_public_pc_payload(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_waiting_confirmation",
+                "已按儲存，但未偵測到成功回應。",
+            ),
+        )
+
+        with mock.patch.object(app_module, "report_public_pc_task_event") as report:
+            response = self.client.post(
+                f"/tasks/{task_id}/sites/vehicle_mileage/complete",
+                data={
+                    "confirmation_token": app_module.site_manual_complete_token(
+                        task_id,
+                        "vehicle_mileage",
+                    )
+                },
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        report.assert_called_once()
+        reported_payload, action = report.call_args.args
+        self.assertEqual(reported_payload, self.store.get(task_id))
+        self.assertEqual(
+            reported_payload["site_statuses"]["vehicle_mileage"]["status"],
+            "completed_by_user",
+        )
+        self.assertEqual(action, "人工確認站別完成：車輛里程")
+
+    def test_manual_complete_does_not_report_rejected_requests(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_waiting_confirmation",
+                "已按儲存，但未偵測到成功回應。",
+            ),
+        )
+
+        with mock.patch.object(app_module, "report_public_pc_task_event") as report:
+            forbidden = self.client.post(
+                f"/tasks/{task_id}/sites/vehicle_mileage/complete",
+                data={"confirmation_token": "wrong"},
+                follow_redirects=False,
+            )
+            missing_task_id = "missing-task"
+            missing = self.client.post(
+                f"/tasks/{missing_task_id}/sites/vehicle_mileage/complete",
+                data={
+                    "confirmation_token": app_module.site_manual_complete_token(
+                        missing_task_id,
+                        "vehicle_mileage",
+                    )
+                },
+                follow_redirects=False,
+            )
+            payload = self.store.get(task_id)
+            payload["site_statuses"]["vehicle_mileage"].update(
+                status="vehicle_mileage_failed",
+                detail="官方頁未儲存。",
+            )
+            self.store.save_payload(task_id, payload)
+            conflict = self.client.post(
+                f"/tasks/{task_id}/sites/vehicle_mileage/complete",
+                data={
+                    "confirmation_token": app_module.site_manual_complete_token(
+                        task_id,
+                        "vehicle_mileage",
+                    )
+                },
+                follow_redirects=False,
+            )
+
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(conflict.status_code, 409)
+        report.assert_not_called()
+
     def test_multi_vehicle_manual_confirmation_only_confirms_waiting_vehicle(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
         create_response = self.client.post(

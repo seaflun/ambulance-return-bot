@@ -517,6 +517,8 @@ class JsonTaskStore:
             queue_state["lease_expires_at"] = ""
             if "failed" in status or "error" in status:
                 queue_state["last_error"] = detail
+            else:
+                queue_state["last_error"] = ""
         payload["worker_queue"] = queue_state
         self._renew_worker_claim(payload)
         if add_event:
@@ -874,6 +876,12 @@ class JsonTaskStore:
                 "completed_by_user",
                 f"{site['name']}{event_target} 使用者已確認完成。",
             )
+            if self._is_fully_done(payload):
+                self._apply_overall_status_to_payload(
+                    payload,
+                    "desktop_fast_completed",
+                    "各站皆已完成；人工確認後更新任務狀態。",
+                )
             self.save_payload(task_id, payload)
             return payload
 
