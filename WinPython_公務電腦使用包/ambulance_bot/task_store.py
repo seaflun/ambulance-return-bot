@@ -769,11 +769,27 @@ class JsonTaskStore:
                 if str(site.get("status") or "") != legacy_status:
                     continue
                 vehicle_results = site.get("vehicle_results", missing_vehicle_results)
-                if vehicle_results is not missing_vehicle_results and vehicle_results != {}:
+                expected_vehicle_keys = expected_vehicle_result_keys(payload, site_key)
+                single_vehicle_null_mileage = False
+                if site_key == "vehicle_mileage" and vehicle_results is None:
+                    try:
+                        task_request = AmbulanceReturnRequest.from_dict(dict(payload.get("task") or {}))
+                        single_vehicle_null_mileage = (
+                            not task_request.two_vehicle
+                            and len(task_request.vehicle_requests()) == 1
+                            and len(expected_vehicle_keys) == 1
+                        )
+                    except (TypeError, ValueError):
+                        single_vehicle_null_mileage = False
+                if (
+                    vehicle_results is not missing_vehicle_results
+                    and vehicle_results != {}
+                    and not single_vehicle_null_mileage
+                ):
                     if site_key != "vehicle_mileage" or not isinstance(vehicle_results, dict):
                         continue
                     results = dict(vehicle_results)
-                    expected_keys = expected_vehicle_result_keys(payload, site_key) or [str(key) for key in results]
+                    expected_keys = expected_vehicle_keys or [str(key) for key in results]
                     if any(not isinstance(results.get(key), dict) for key in expected_keys):
                         continue
                     corrected_vehicle_labels: list[str] = []
