@@ -122,6 +122,39 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(len(second["events"]), event_count_after_first_run)
             self.assertEqual(path.read_text(encoding="utf-8"), file_after_first_run)
 
+    def test_reconcile_vehicle_mileage_update_prompt_after_confirm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="mileage-confirmed-prompt",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡93",
+            )
+            payload = store.create(request)
+            payload["site_statuses"]["vehicle_mileage"].update(
+                status="vehicle_mileage_waiting_confirmation",
+                detail=(
+                    "登入帳號：里程=任務司機 > 出勤人員 > 同步帳號，"
+                    "任務司機，13番 葉宗哲 - tyfd02031。"
+                    "waiting_confirmation: vehicle mileage save response not recognized: "
+                    "目前的里程數：54745 更新後里程數：54773 是否更新？"
+                ),
+            )
+            store.save_payload(request.task_id, payload)
+
+            updated, changed = store.reconcile_legacy_silent_save_results(request.task_id)
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                updated["site_statuses"]["vehicle_mileage"]["status"],
+                "vehicle_mileage_saved",
+            )
+            self.assertNotIn(
+                "waiting_confirmation",
+                updated["site_statuses"]["vehicle_mileage"]["detail"],
+            )
+
     def test_reconcile_legacy_silent_save_results_rejects_near_matches(self):
         duty_detail = "waiting_confirmation: 已按下儲存，但未收到儲存成功回應；請人工確認。"
         cases = (
@@ -155,6 +188,14 @@ class JsonTaskStoreTests(unittest.TestCase):
                 "vehicle_mileage",
                 "vehicle_mileage_waiting_confirmation",
                 "等待儲存回應逾時。",
+                None,
+            ),
+            (
+                "vehicle-confirmation-extra-error",
+                "vehicle_mileage",
+                "vehicle_mileage_waiting_confirmation",
+                "waiting_confirmation: vehicle mileage save response not recognized: "
+                "目前的里程數：54745 更新後里程數：54773 是否更新？ 儲存失敗",
                 None,
             ),
             (

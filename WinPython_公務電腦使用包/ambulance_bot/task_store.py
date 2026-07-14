@@ -33,10 +33,15 @@ LEGACY_SILENT_SAVE_RECONCILIATION_RULES: dict[str, tuple[str, str, re.Pattern[st
         "vehicle_mileage_saved",
         _legacy_silent_save_pattern(
             "里程",
-            re.escape(
+            "(?:"
+            + re.escape(
                 "waiting_confirmation: 已填寫車輛里程並按下儲存；"
                 "未偵測到確認視窗，尚未確認伺服器已儲存。"
-            ),
+            )
+            + "|"
+            + r"waiting_confirmation:\ vehicle\ mileage\ save\ response\ not\ recognized:\ "
+            + r"目前的里程數：[0-9]+\ 更新後里程數：[0-9]+\ 是否更新？"
+            + ")",
         ),
     ),
     "consumables": (

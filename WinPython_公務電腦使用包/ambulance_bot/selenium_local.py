@@ -2735,7 +2735,7 @@ def _save_vehicle_mileage_form(
     confirmation = _save_confirmation_state(*confirmations)
     if confirmation == "failure":
         raise WebDriverException(f"vehicle mileage save rejected: {' / '.join(confirmations)}")
-    if confirmation == "success":
+    if confirmation == "success" or _is_expected_vehicle_mileage_update_prompt(*confirmations):
         return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u6309\u4e0b\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
     if confirmations:
         return f"{WAITING_CONFIRMATION_MARKER} vehicle mileage save response not recognized: {' / '.join(confirmations)}"
@@ -2760,6 +2760,12 @@ def _save_confirmation_state(*messages: str) -> str:
     if any(marker in compact for marker in ("儲存成功", "存檔成功", "成功儲存", "操作成功", "success")):
         return "success"
     return "unknown"
+
+
+def _is_expected_vehicle_mileage_update_prompt(*messages: str) -> bool:
+    pattern = re.compile(r"目前的里程數：[0-9]+ 更新後里程數：[0-9]+ 是否更新？")
+    normalized = [str(message or "").strip() for message in messages if str(message or "").strip()]
+    return bool(normalized) and all(pattern.fullmatch(message) is not None for message in normalized)
 
 
 def _click_disinfection_save(

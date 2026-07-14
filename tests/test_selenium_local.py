@@ -414,6 +414,60 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, mileage)
         self.assertIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, fuel)
 
+    def test_vehicle_mileage_expected_update_prompt_is_saved_after_confirm(self):
+        class FakeDriver:
+            current_url = "https://ppe.tyfd.gov.tw/CarRecord/List"
+            page_source = ""
+
+            def execute_script(self, _script, *_args):
+                return True
+
+        prompt = "目前的里程數：54745 更新後里程數：54773 是否更新？"
+        with patch.object(
+            selenium_local_module,
+            "_accept_alert_if_present",
+            side_effect=[prompt, ""],
+        ), patch.object(
+            selenium_local_module,
+            "_confirm_sweetalert_if_present",
+            return_value="",
+        ), patch.object(
+            selenium_local_module,
+            "_is_ppe_login_page",
+            return_value=False,
+        ), patch.object(selenium_local_module.time, "sleep"):
+            detail = selenium_local_module._save_vehicle_mileage_form(FakeDriver())
+
+        self.assertNotIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, detail)
+        self.assertIn("按下確認", detail)
+        self.assertIn(prompt, detail)
+
+    def test_vehicle_mileage_expected_prompt_with_unknown_followup_stays_waiting(self):
+        class FakeDriver:
+            current_url = "https://ppe.tyfd.gov.tw/CarRecord/List"
+            page_source = ""
+
+            def execute_script(self, _script, *_args):
+                return True
+
+        prompt = "目前的里程數：54745 更新後里程數：54773 是否更新？"
+        with patch.object(
+            selenium_local_module,
+            "_accept_alert_if_present",
+            side_effect=[prompt, "權限狀態不明"],
+        ), patch.object(
+            selenium_local_module,
+            "_confirm_sweetalert_if_present",
+            return_value="",
+        ), patch.object(
+            selenium_local_module,
+            "_is_ppe_login_page",
+            return_value=False,
+        ), patch.object(selenium_local_module.time, "sleep"):
+            detail = selenium_local_module._save_vehicle_mileage_form(FakeDriver())
+
+        self.assertIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, detail)
+
     def test_disinfection_silent_submit_is_saved_when_no_error_is_reported(self):
         request = AmbulanceReturnRequest(
             task_id="silent-disinfection",
