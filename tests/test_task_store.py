@@ -15,6 +15,209 @@ from ambulance_bot.task_store import (
 
 
 class JsonTaskStoreTests(unittest.TestCase):
+    def _create_legacy_silent_save_task(
+        self,
+        store: JsonTaskStore,
+        task_id: str = "legacy-silent-save",
+    ) -> dict:
+        request = AmbulanceReturnRequest(
+            task_id=task_id,
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        payload = store.create(request)
+        payload["overall_status"] = "desktop_fast_completed_with_errors"
+        legacy_results = {
+            "duty_work_log": (
+                "duty_work_log_waiting_confirmation",
+                "登入帳號：工作=任務司機優先，8番測試。"
+                "waiting_confirmation: 已按下儲存，但未收到儲存成功回應；請人工確認。",
+            ),
+            "vehicle_mileage": (
+                "vehicle_mileage_waiting_confirmation",
+                "waiting_confirmation: 已填寫車輛里程並按下儲存；"
+                "未偵測到確認視窗，尚未確認伺服器已儲存。",
+            ),
+            "consumables": (
+                "consumables_failed",
+                "耗材儲存未取得明確成功回應：未出現確認訊息",
+            ),
+            "disinfection": (
+                "disinfection_waiting_confirmation",
+                "waiting_confirmation: disinfection items updated=1; save response not confirmed.",
+            ),
+        }
+        for site_key, (status, detail) in legacy_results.items():
+            site = payload["site_statuses"][site_key]
+            site.update(
+                status=status,
+                detail=detail,
+                update_context={"legacy": True},
+                failure_stage="儲存",
+                failure_reason="舊版沒有成功提示",
+                next_action="人工確認",
+                exception_type="LegacySilentSave",
+            )
+        payload["site_attempts"]["duty_work_log"] = [
+            {
+                "attempt_id": "legacy-attempt",
+                "time": "2026-07-13T10:18:00",
+                "status": "duty_work_log_waiting_confirmation",
+                "detail": legacy_results["duty_work_log"][1],
+                "site_name": "工作",
+                "vehicle_key": "",
+            }
+        ]
+        payload["events"].append(
+            {
+                "time": "2026-07-13T10:18:01",
+                "status": "desktop_fast_completed_with_errors",
+                "detail": "舊版回報。",
+            }
+        )
+        store.save_payload(task_id, payload)
+        return store.get(task_id)
+
+    def test_reconcile_legacy_silent_save_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            before = self._create_legacy_silent_save_task(store)
+            original_events = list(before["events"])
+            original_attempts = json.loads(json.dumps(before["site_attempts"], ensure_ascii=False))
+
+            updated, changed = store.reconcile_legacy_silent_save_results("legacy-silent-save")
+
+            self.assertTrue(changed)
+            self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
+            self.assertEqual(updated["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
+            self.assertEqual(updated["site_statuses"]["consumables"]["status"], "consumables_saved")
+            self.assertEqual(updated["site_statuses"]["disinfection"]["status"], "disinfection_saved")
+            self.assertEqual(updated["site_statuses"]["fuel_record"]["status"], "not_started")
+            self.assertEqual(updated["overall_status"], "desktop_fast_completed")
+            for site_key in ("duty_work_log", "vehicle_mileage", "consumables", "disinfection"):
+                site = updated["site_statuses"][site_key]
+                self.assertNotIn("update_context", site)
+                for field in ("failure_stage", "failure_reason", "next_action", "exception_type"):
+                    self.assertEqual(site[field], "")
+            self.assertEqual(updated["events"][: len(original_events)], original_events)
+            self.assertEqual(updated["site_attempts"], original_attempts)
+            reconciliation_events = [
+                event for event in updated["events"] if event.get("status") == "legacy_silent_save_reconciled"
+            ]
+            self.assertEqual(len(reconciliation_events), 1)
+            for site_name in ("工作", "里程", "耗材", "消毒"):
+                self.assertIn(site_name, reconciliation_events[0]["detail"])
+
+            path = store.path_for("legacy-silent-save")
+            file_after_first_run = path.read_text(encoding="utf-8")
+            event_count_after_first_run = len(updated["events"])
+            second, second_changed = store.reconcile_legacy_silent_save_results("legacy-silent-save")
+
+            self.assertFalse(second_changed)
+            self.assertEqual(len(second["events"]), event_count_after_first_run)
+            self.assertEqual(path.read_text(encoding="utf-8"), file_after_first_run)
+
+    def test_reconcile_legacy_silent_save_results_rejects_near_matches(self):
+        duty_detail = "waiting_confirmation: 已按下儲存，但未收到儲存成功回應；請人工確認。"
+        cases = (
+            ("status-mismatch", "duty_work_log", "duty_work_log_failed", duty_detail, None),
+            ("detail-mismatch", "duty_work_log", "duty_work_log_waiting_confirmation", duty_detail[:-1], None),
+            (
+                "arbitrary-prefix",
+                "duty_work_log",
+                "duty_work_log_waiting_confirmation",
+                f"任意前綴。{duty_detail}",
+                None,
+            ),
+            (
+                "disinfection-zero",
+                "disinfection",
+                "disinfection_waiting_confirmation",
+                "waiting_confirmation: disinfection items updated=0; save response not confirmed.",
+                None,
+            ),
+            (
+                "disinfection-nonnumeric",
+                "disinfection",
+                "disinfection_waiting_confirmation",
+                "waiting_confirmation: disinfection items updated=many; save response not confirmed.",
+                None,
+            ),
+            ("missing-driver", "duty_work_log", "duty_work_log_failed", "找不到任務司機。", None),
+            ("vehicle-mismatch", "consumables", "consumables_failed", "耗材頁車輛候選不符。", None),
+            (
+                "timeout",
+                "vehicle_mileage",
+                "vehicle_mileage_waiting_confirmation",
+                "等待儲存回應逾時。",
+                None,
+            ),
+            (
+                "vehicle-results",
+                "duty_work_log",
+                "duty_work_log_waiting_confirmation",
+                duty_detail,
+                {"新坡92": {"status": "duty_work_log_waiting_confirmation", "detail": duty_detail}},
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            for index, (label, site_key, status, detail, vehicle_results) in enumerate(cases):
+                with self.subTest(label=label):
+                    task_id = f"legacy-reject-{index}"
+                    request = AmbulanceReturnRequest(
+                        task_id=task_id,
+                        created_at=datetime.now(),
+                        raw_text="",
+                        vehicle="新坡92",
+                    )
+                    payload = store.create(request)
+                    site = payload["site_statuses"][site_key]
+                    site.update(status=status, detail=detail)
+                    if vehicle_results is not None:
+                        site["vehicle_results"] = vehicle_results
+                    store.save_payload(task_id, payload)
+                    before = store.path_for(task_id).read_text(encoding="utf-8")
+
+                    unchanged, changed = store.reconcile_legacy_silent_save_results(task_id)
+
+                    self.assertFalse(changed)
+                    self.assertEqual(unchanged["site_statuses"][site_key]["status"], status)
+                    self.assertEqual(store.path_for(task_id).read_text(encoding="utf-8"), before)
+
+    def test_reconcile_legacy_silent_save_results_keeps_explicit_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="legacy-mixed",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            payload = store.create(request)
+            payload["overall_status"] = "desktop_fast_completed_with_errors"
+            payload["site_statuses"]["duty_work_log"].update(
+                status="duty_work_log_waiting_confirmation",
+                detail="waiting_confirmation: 已按下儲存，但未收到儲存成功回應；請人工確認。",
+            )
+            payload["site_statuses"]["consumables"].update(
+                status="consumables_failed",
+                detail="耗材頁車輛候選不符：新坡92。",
+            )
+            store.save_payload(request.task_id, payload)
+
+            updated, changed = store.reconcile_legacy_silent_save_results(request.task_id)
+
+            self.assertTrue(changed)
+            self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
+            self.assertEqual(updated["site_statuses"]["consumables"]["status"], "consumables_failed")
+            self.assertEqual(updated["overall_status"], "desktop_fast_completed_with_errors")
+            self.assertEqual(
+                len([event for event in updated["events"] if event.get("status") == "legacy_silent_save_reconciled"]),
+                1,
+            )
+
     def test_task_id_cannot_escape_tasks_directory_with_windows_backslashes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

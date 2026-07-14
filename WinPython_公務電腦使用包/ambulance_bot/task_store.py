@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +11,51 @@ from uuid import uuid4
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .models import AmbulanceReturnRequest
 from .site_diagnostics import DIAGNOSTIC_FIELDS, result_with_diagnostics
+
+
+def _legacy_silent_save_pattern(site_label: str, exact_detail_pattern: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?:登入帳號：{re.escape(site_label)}=[^\r\n]+。)?{exact_detail_pattern}"
+    )
+
+
+LEGACY_SILENT_SAVE_RECONCILIATION_RULES: dict[str, tuple[str, str, re.Pattern[str]]] = {
+    "duty_work_log": (
+        "duty_work_log_waiting_confirmation",
+        "duty_work_log_saved",
+        _legacy_silent_save_pattern(
+            "工作",
+            re.escape("waiting_confirmation: 已按下儲存，但未收到儲存成功回應；請人工確認。"),
+        ),
+    ),
+    "vehicle_mileage": (
+        "vehicle_mileage_waiting_confirmation",
+        "vehicle_mileage_saved",
+        _legacy_silent_save_pattern(
+            "里程",
+            re.escape(
+                "waiting_confirmation: 已填寫車輛里程並按下儲存；"
+                "未偵測到確認視窗，尚未確認伺服器已儲存。"
+            ),
+        ),
+    ),
+    "consumables": (
+        "consumables_failed",
+        "consumables_saved",
+        _legacy_silent_save_pattern(
+            "耗材",
+            re.escape("耗材儲存未取得明確成功回應：未出現確認訊息"),
+        ),
+    ),
+    "disinfection": (
+        "disinfection_waiting_confirmation",
+        "disinfection_saved",
+        _legacy_silent_save_pattern(
+            "消毒",
+            r"waiting_confirmation:\ disinfection\ items\ updated=[1-9][0-9]*;\ save\ response\ not\ confirmed\.",
+        ),
+    ),
+}
 
 
 SUCCESS_SITE_STATUSES = {
@@ -449,7 +495,14 @@ class JsonTaskStore:
                 "worker claim_id 或 worker_id 與目前任務租約不符，已拒絕過期回報。",
             )
 
-    def _apply_overall_status_to_payload(self, payload: dict[str, Any], status: str, detail: str) -> None:
+    def _apply_overall_status_to_payload(
+        self,
+        payload: dict[str, Any],
+        status: str,
+        detail: str,
+        *,
+        add_event: bool = True,
+    ) -> None:
         payload["overall_status"] = status
         queue_state = worker_queue_state(payload)
         if status == "queued_for_worker":
@@ -466,7 +519,8 @@ class JsonTaskStore:
                 queue_state["last_error"] = detail
         payload["worker_queue"] = queue_state
         self._renew_worker_claim(payload)
-        self.add_event_to_payload(payload, status, detail)
+        if add_event:
+            self.add_event_to_payload(payload, status, detail)
 
     def set_overall_status(
         self,
@@ -680,6 +734,51 @@ class JsonTaskStore:
             self._renew_worker_claim(payload)
             self.save_payload(task_id, payload)
             return payload
+
+    def reconcile_legacy_silent_save_results(self, task_id: str) -> tuple[dict[str, Any], bool]:
+        with self._lock:
+            payload = self.get(task_id)
+            site_statuses = payload.get("site_statuses")
+            if not isinstance(site_statuses, dict):
+                return payload, False
+
+            corrected_site_names: list[str] = []
+            for site_key, (legacy_status, saved_status, detail_pattern) in (
+                LEGACY_SILENT_SAVE_RECONCILIATION_RULES.items()
+            ):
+                site = site_statuses.get(site_key)
+                if not isinstance(site, dict):
+                    continue
+                vehicle_results = site.get("vehicle_results")
+                if vehicle_results is not None and vehicle_results != {}:
+                    continue
+                if str(site.get("status") or "") != legacy_status:
+                    continue
+                if detail_pattern.fullmatch(str(site.get("detail") or "")) is None:
+                    continue
+
+                site["status"] = saved_status
+                site["detail"] = "舊版無提示儲存誤判已校正為已儲存。"
+                site["updated_at"] = now_text()
+                site.pop("update_context", None)
+                for field in DIAGNOSTIC_FIELDS:
+                    site[field] = ""
+                corrected_site_names.append(str(site.get("name") or site_key))
+
+            if not corrected_site_names:
+                return payload, False
+
+            detail = f"舊版無提示儲存誤判已修正：{'、'.join(corrected_site_names)}。"
+            if self._is_fully_done(payload):
+                self._apply_overall_status_to_payload(
+                    payload,
+                    "desktop_fast_completed",
+                    detail,
+                    add_event=False,
+                )
+            self.add_event_to_payload(payload, "legacy_silent_save_reconciled", detail)
+            self.save_payload(task_id, payload)
+            return payload, True
 
     def mark_site_completed(self, task_id: str, site_key: str, vehicle_key: str = "") -> dict[str, Any]:
         with self._lock:
