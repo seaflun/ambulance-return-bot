@@ -104,6 +104,22 @@ class WebAppTests(unittest.TestCase):
             },
         )
 
+    def _create_legacy_public_pc_task(self, task_id: str) -> dict:
+        request = AmbulanceReturnRequest(
+            task_id=task_id,
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        payload = self.store.create(request)
+        payload["overall_status"] = "desktop_fast_completed_with_errors"
+        payload["site_statuses"]["duty_work_log"].update(
+            status="duty_work_log_waiting_confirmation",
+            detail="waiting_confirmation: 已按下儲存，但未收到儲存成功回應；請人工確認。",
+        )
+        self.store.save_payload(task_id, payload)
+        return self.store.get(task_id)
+
     def tearDown(self):
         app_module.runner.wait_for_idle()
         app_module.desktop_runner.wait_for_idle()
@@ -396,6 +412,133 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("payload", record)
         self.assertIn("sealed_payload", record)
         self.assertNotIn("pass8", raw)
+
+    def test_reconcile_legacy_public_pc_tasks_reports_only_changed_tasks(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        eligible = self._create_legacy_public_pc_task("legacy-eligible")
+        explicit_request = AmbulanceReturnRequest(
+            task_id="legacy-explicit-failure",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        explicit = self.store.create(explicit_request)
+        explicit["overall_status"] = "desktop_fast_completed_with_errors"
+        explicit["site_statuses"]["consumables"].update(
+            status="consumables_failed",
+            detail="耗材頁車輛候選不符：新坡92。",
+        )
+        self.store.save_payload(explicit_request.task_id, explicit)
+        completed_request = AmbulanceReturnRequest(
+            task_id="legacy-already-corrected",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        completed = self.store.create(completed_request)
+        completed["site_statuses"]["duty_work_log"].update(
+            status="duty_work_log_saved",
+            detail="已儲存。",
+        )
+        self.store.save_payload(completed_request.task_id, completed)
+
+        with mock.patch.object(self.store, "list_recent", wraps=self.store.list_recent) as list_recent:
+            with mock.patch.object(app_module, "report_public_pc_task_event") as report:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    changed_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        self.assertEqual(changed_count, 1)
+        list_recent.assert_called_once_with(limit=500)
+        report.assert_called_once()
+        reported_payload, action = report.call_args.args
+        self.assertEqual(reported_payload["task"]["task_id"], eligible["task"]["task_id"])
+        self.assertEqual(
+            reported_payload["site_statuses"]["duty_work_log"]["status"],
+            "duty_work_log_saved",
+        )
+        self.assertEqual(action, "舊版無提示儲存狀態自動校正")
+        self.assertEqual(
+            self.store.get(explicit_request.task_id)["site_statuses"]["consumables"]["status"],
+            "consumables_failed",
+        )
+
+    def test_reconcile_legacy_public_pc_tasks_is_idempotent_and_skips_missing_task(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        eligible = self._create_legacy_public_pc_task("legacy-idempotent")
+
+        with mock.patch.object(
+            self.store,
+            "list_recent",
+            side_effect=[
+                [{"task": {"task_id": "missing-task"}}, eligible],
+                self.store.list_recent(limit=500),
+            ],
+        ):
+            with mock.patch.object(app_module, "report_public_pc_task_event") as report:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    first_count = app_module.reconcile_legacy_public_pc_tasks()
+                    second_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        self.assertEqual(first_count, 1)
+        self.assertEqual(second_count, 0)
+        report.assert_called_once()
+
+    def test_reconcile_legacy_public_pc_tasks_queues_report_when_nas_is_offline(self):
+        self._create_legacy_public_pc_task("legacy-offline")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_PC_REPORT_ENABLED": "true",
+                "PUBLIC_PC_REPORT_SERVER_URL": "http://nas.test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(
+                app_module,
+                "_post_public_pc_report",
+                side_effect=urllib.error.URLError("offline"),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    changed_count = app_module.reconcile_legacy_public_pc_tasks()
+
+        pending = app_module._load_pending_public_pc_reports()
+        self.assertEqual(changed_count, 1)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["task_id"], "legacy-offline")
+        self.assertEqual(pending[0]["action"], "舊版無提示儲存狀態自動校正")
+
+    def test_start_public_pc_legacy_reconciliation_is_gated_and_daemon(self):
+        with mock.patch.object(app_module.threading, "Thread") as thread_class:
+            os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
+            self.assertIsNone(app_module.start_public_pc_legacy_reconciliation())
+            thread_class.assert_not_called()
+
+            os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+            thread = app_module.start_public_pc_legacy_reconciliation()
+
+        self.assertIs(thread, thread_class.return_value)
+        thread_class.assert_called_once_with(
+            target=app_module.reconcile_legacy_public_pc_tasks,
+            name="public-pc-legacy-reconciliation",
+            daemon=True,
+        )
+        thread_class.return_value.start.assert_called_once_with()
+
+    def test_web_startup_starts_legacy_reconciliation_only_for_public_pc(self):
+        with mock.patch.object(app_module, "credential_sync_record_for_worker"):
+            with mock.patch.object(app_module, "start_public_pc_legacy_reconciliation") as start:
+                with mock.patch("waitress.serve") as serve:
+                    os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        app_module.run_web_app(host="127.0.0.1", port=18080)
+                    start.assert_not_called()
+
+                    os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        app_module.run_web_app(host="127.0.0.1", port=18081)
+
+        start.assert_called_once_with()
+        self.assertEqual(serve.call_count, 2)
 
     def test_credential_sync_legacy_missing_created_at_preserves_original_mtime_on_failed_ack(self):
         worker_token = "0123456789abcdef0123456789abcdef"
@@ -1934,6 +2077,72 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertEqual(len(reports[0]["events"]), 1)
         self.assertEqual(reports[0]["events"][0]["event_id"], "evt-dedupe-1")
+
+    def test_admin_public_pc_reconciliation_reclassifies_task_and_preserves_failure_event(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        task = {
+            "task_id": "legacy-reclassified-task",
+            "case_reason": "急病",
+            "case_address": "校正案件地址",
+            "vehicle": "新坡92",
+        }
+        failed = self.client.post(
+            "/worker/public-pc-task-events",
+            headers=headers,
+            json={
+                "event_id": "evt-legacy-failed",
+                "task_id": task["task_id"],
+                "task": task,
+                "action": "四站登打部分失敗",
+                "status": "consumables_failed",
+                "detail": "耗材儲存未取得明確成功回應：未出現確認訊息",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": {
+                    "duty_work_log": {"status": "duty_work_log_saved"},
+                    "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                    "consumables": {"status": "consumables_failed"},
+                    "disinfection": {"status": "disinfection_saved"},
+                },
+            },
+        )
+        corrected = self.client.post(
+            "/worker/public-pc-task-events",
+            headers=headers,
+            json={
+                "event_id": "evt-legacy-corrected",
+                "task_id": task["task_id"],
+                "task": task,
+                "action": "舊版無提示儲存狀態自動校正",
+                "status": "legacy_silent_save_reconciled",
+                "detail": "舊版無提示儲存誤判已修正：耗材。",
+                "overall_status": "desktop_fast_completed",
+                "site_statuses": {
+                    "duty_work_log": {"status": "duty_work_log_saved"},
+                    "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                    "consumables": {"status": "consumables_saved"},
+                    "disinfection": {"status": "disinfection_saved"},
+                },
+            },
+        )
+
+        reports = app_module.public_pc_reports()
+        failed_page = html.unescape(self.client.get("/admin/public-pc?result=failed").get_data(as_text=True))
+        success_page = html.unescape(self.client.get("/admin/public-pc?result=success").get_data(as_text=True))
+
+        self.assertEqual(failed.status_code, 200)
+        self.assertEqual(corrected.status_code, 200)
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["overall_status"], "desktop_fast_completed")
+        self.assertEqual(reports[0]["site_statuses"]["consumables"]["status"], "consumables_saved")
+        self.assertEqual([event["event_id"] for event in reports[0]["events"]], [
+            "evt-legacy-failed",
+            "evt-legacy-corrected",
+        ])
+        self.assertNotIn("校正案件地址", failed_page)
+        self.assertIn("校正案件地址", success_page)
+        self.assertIn("成功案件 1", success_page)
+        self.assertIn("失敗案件 0", success_page)
 
     def test_remote_update_command_is_idempotent_and_worker_authenticated(self):
         os.environ["WORKER_TOKEN"] = "test-token"

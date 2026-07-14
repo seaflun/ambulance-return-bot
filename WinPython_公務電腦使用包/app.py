@@ -101,6 +101,7 @@ _public_pc_pending_report_lock = threading.RLock()
 _credential_sync_relay_lock = threading.RLock()
 _case_lookup_start_error = ""
 PUBLIC_PC_REPORT_RETENTION_DAYS = 7
+PUBLIC_PC_LEGACY_RECONCILE_LIMIT = 500
 MAX_CREDENTIAL_RELAY_FILE_BYTES = ((MAX_CREDENTIAL_PAYLOAD_BYTES + 2) // 3) * 4 + (64 * 1024)
 REMOTE_UPDATE_ACTIVE_STATUSES = {"pending", "waiting_busy", "waiting_idle", "updating"}
 REMOTE_UPDATE_TERMINAL_STATUSES = {"completed", "up_to_date", "failed", "timed_out"}
@@ -1584,6 +1585,60 @@ def report_public_pc_task_event(payload: dict, action: str) -> None:
 def public_pc_reporting_enabled() -> bool:
     value = os.getenv("PUBLIC_PC_REPORT_ENABLED", "false").strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def reconcile_legacy_public_pc_tasks() -> int:
+    if not public_pc_reporting_enabled():
+        return 0
+    try:
+        recent_tasks = store.list_recent(limit=PUBLIC_PC_LEGACY_RECONCILE_LIMIT)
+    except (FileNotFoundError, KeyError, TypeError, ValueError, OSError, UnicodeError) as exc:
+        print(
+            f"[public_pc_reconcile] unable to list local tasks error={type(exc).__name__}",
+            flush=True,
+        )
+        return 0
+
+    changed_count = 0
+    for candidate in recent_tasks:
+        task = candidate.get("task") if isinstance(candidate, dict) else None
+        task_id = str(task.get("task_id") or "").strip() if isinstance(task, dict) else ""
+        if not task_id:
+            print("[public_pc_reconcile] skipped local task without task_id", flush=True)
+            continue
+        try:
+            payload, changed = store.reconcile_legacy_silent_save_results(task_id)
+        except (FileNotFoundError, KeyError, TypeError, ValueError, OSError, UnicodeError) as exc:
+            print(
+                f"[public_pc_reconcile] skipped task_id={task_id} error={type(exc).__name__}",
+                flush=True,
+            )
+            continue
+        if not changed:
+            continue
+        changed_count += 1
+        try:
+            report_public_pc_task_event(payload, "舊版無提示儲存狀態自動校正")
+        except (KeyError, TypeError, ValueError, OSError, UnicodeError) as exc:
+            print(
+                f"[public_pc_reconcile] report deferred task_id={task_id} error={type(exc).__name__}",
+                flush=True,
+            )
+    if changed_count:
+        print(f"[public_pc_reconcile] corrected_tasks={changed_count}", flush=True)
+    return changed_count
+
+
+def start_public_pc_legacy_reconciliation() -> threading.Thread | None:
+    if not public_pc_reporting_enabled():
+        return None
+    thread = threading.Thread(
+        target=reconcile_legacy_public_pc_tasks,
+        name="public-pc-legacy-reconciliation",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def public_pc_action_for_task(task: dict, action: str) -> str:
@@ -3296,6 +3351,8 @@ def run_web_app(host: str | None = None, port: int | None = None) -> None:
         credential_sync_record_for_worker()
     except CredentialEnvelopeError as exc:
         print(f"[app] credential relay migration deferred: {exc}", flush=True)
+    if public_pc_reporting_enabled():
+        start_public_pc_legacy_reconciliation()
     print(f"[app] starting SinpoSmart ambulance worker web app on {host}:{port}", flush=True)
     try:
         from waitress import serve
