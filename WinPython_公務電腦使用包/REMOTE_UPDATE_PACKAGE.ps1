@@ -99,7 +99,12 @@ function Enter-UpdateLock {
 
 function Get-WorkerPackageProcesses {
     $packagePath = [System.IO.Path]::GetFullPath($packageDir).TrimEnd([char]92) + [string][char]92
-    $allProcesses = @(Get-CimInstance Win32_Process)
+    $allProcesses = @(
+        Get-CimInstance Win32_Process `
+            -Property ProcessId,ParentProcessId,Name,CommandLine `
+            -OperationTimeoutSec 5 `
+            -ErrorAction Stop
+    )
     $directProcesses = @(
         $allProcesses | Where-Object {
             $commandLine = [string]$_.CommandLine

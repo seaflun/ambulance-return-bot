@@ -1494,6 +1494,25 @@ class WorkerTests(unittest.TestCase):
             self.assertIn("TrimEnd([char]92) + [string][char]92", function_source)
             self.assertNotIn('ambulance_return_bot|WinPython_', function_source)
 
+    def test_updaters_bound_cim_process_discovery_time(self):
+        package_dir = Path(worker_module.__file__).parent
+        expected_query = (
+            "Get-CimInstance Win32_Process "
+            "-Property ProcessId,ParentProcessId,Name,CommandLine "
+            "-OperationTimeoutSec 5 -ErrorAction Stop"
+        )
+        for name in ("update_package.ps1", "REMOTE_UPDATE_PACKAGE.ps1"):
+            with self.subTest(name=name):
+                source = (package_dir / name).read_text(encoding="utf-8-sig")
+                function_source = source[
+                    source.index("function Get-WorkerPackageProcesses") : source.index(
+                        "function ",
+                        source.index("function Get-WorkerPackageProcesses") + 10,
+                    )
+                ]
+                normalized_source = " ".join(function_source.replace("`", "").split())
+                self.assertIn(expected_query, normalized_source)
+
     def test_updaters_restore_the_exact_preupdate_runtime_modes_and_verify_health(self):
         package_dir = Path(worker_module.__file__).parent
         for name in ("update_package.ps1", "REMOTE_UPDATE_PACKAGE.ps1"):
