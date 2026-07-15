@@ -747,6 +747,22 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn("ambulance-return-public-package.zip", repair_script)
         self.assertIn("Get-LatestRelease", repair_script)
 
+    def test_legacy_worker_launchers_delegate_to_winpython_launcher(self):
+        package_dir = Path("WinPython_公務電腦使用包")
+        batch_launcher = (package_dir / "run_worker_forever.bat").read_text(encoding="ascii")
+        vbs_launcher = (package_dir / "run_worker_forever.vbs").read_text(encoding="ascii")
+
+        for launcher in (batch_launcher, vbs_launcher):
+            self.assertIn("RUN_WORKER_GUI_WINPYTHON", launcher)
+            self.assertNotIn("pyw -3", launcher)
+
+    def test_winpython_finder_honors_explicit_runtime_root_in_source_and_builder(self):
+        finder = Path("WinPython_公務電腦使用包/find_winpython.ps1").read_text(encoding="utf-8")
+        builder = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
+
+        for source in (finder, builder):
+            self.assertIn("$root -eq $env:WINPYTHON_DIR", source)
+
     def test_build_public_package_publishes_standalone_updater(self):
         source = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
 

@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -28,6 +29,8 @@ class UpdatePackageIntegrationTests(unittest.TestCase):
     def _prepare_fixture(self, root: Path):
         source_updater = Path("WinPython_公務電腦使用包/update_package.ps1").resolve()
         source_wrapper = Path("WinPython_公務電腦使用包/REMOTE_UPDATE_PACKAGE.ps1").resolve()
+        source_finder = Path("WinPython_公務電腦使用包/find_winpython.ps1").resolve()
+        source_headless_launcher = Path("WinPython_公務電腦使用包/run_worker_headless.bat").resolve()
         installed = root / "installed"
         release = root / "release"
         payload = root / "payload" / "WinPython_package"
@@ -43,6 +46,8 @@ class UpdatePackageIntegrationTests(unittest.TestCase):
 
         shutil.copy2(source_updater, payload / "update_package.ps1")
         shutil.copy2(source_wrapper, payload / "REMOTE_UPDATE_PACKAGE.ps1")
+        shutil.copy2(source_finder, payload / "find_winpython.ps1")
+        shutil.copy2(source_headless_launcher, payload / "run_worker_headless.bat")
         (payload / "worker_gui.py").write_text("NEW_WORKER = True\n", encoding="utf-8")
         (payload / "worker.py").write_text(
             """import json
@@ -72,16 +77,13 @@ time.sleep(0.5)
 """,
             encoding="utf-8",
         )
-        (payload / "run_worker_headless.bat").write_text(
-            '@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nset WORKER_RUNTIME_MODE=headless\r\npy -u "%~dp0worker.py"\r\n',
-            encoding="ascii",
-        )
         (payload / "VERSION.txt").write_text(self.NEW_VERSION, encoding="utf-8")
         (payload / "payload.bin").write_bytes(os.urandom(4096))
         managed = [
             "REMOTE_UPDATE_PACKAGE.ps1",
             "UPDATE_MANIFEST.json",
             "VERSION.txt",
+            "find_winpython.ps1",
             "payload.bin",
             "run_worker_headless.bat",
             "update_package.ps1",
@@ -116,6 +118,7 @@ time.sleep(0.5)
                 "LOCALAPPDATA": str(state),
                 "TEMP": str(temp_root),
                 "TMP": str(temp_root),
+                "WINPYTHON_DIR": str(Path(sys.executable).resolve().parent),
             }
         )
         for name in (

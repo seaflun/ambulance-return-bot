@@ -1365,7 +1365,7 @@ class JsonTaskStoreTests(unittest.TestCase):
             store = JsonTaskStore(Path(tmp))
             request = AmbulanceReturnRequest(task_id="old-task", created_at=datetime.now(), raw_text="")
             payload = store.create(request)
-            payload["updated_at"] = (datetime.now() - timedelta(hours=25)).isoformat(timespec="seconds")
+            payload["updated_at"] = (datetime.now() - timedelta(days=8)).isoformat(timespec="seconds")
             store.path_for("old-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
 
             recent = store.list_recent()
@@ -1393,7 +1393,7 @@ class JsonTaskStoreTests(unittest.TestCase):
             payload = store.create(request)
             for site in payload["site_statuses"].values():
                 site["status"] = "completed_by_user"
-            payload["updated_at"] = (datetime.now() - timedelta(hours=25)).isoformat(timespec="seconds")
+            payload["updated_at"] = (datetime.now() - timedelta(days=6, hours=23)).isoformat(timespec="seconds")
             store.path_for("done-history-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
 
             self.assertEqual(len(store.list_recent()), 1)
@@ -1825,14 +1825,14 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(site["status"], "fuel_record_saved")
             self.assertNotIn("新坡93: 等待回報", site["detail"])
 
-    def test_cleanup_removes_fully_done_tasks_after_history_window(self):
+    def test_cleanup_removes_fully_done_tasks_after_seven_day_history_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
             request = AmbulanceReturnRequest(task_id="done-expired-task", created_at=datetime.now(), raw_text="")
             payload = store.create(request)
             for site in payload["site_statuses"].values():
                 site["status"] = "completed_by_user"
-            payload["updated_at"] = (datetime.now() - timedelta(days=15)).isoformat(timespec="seconds")
+            payload["updated_at"] = (datetime.now() - timedelta(days=8)).isoformat(timespec="seconds")
             store.path_for("done-expired-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
 
             self.assertEqual(store.list_recent(), [])

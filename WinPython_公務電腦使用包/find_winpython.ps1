@@ -51,7 +51,8 @@ $folderRoots += "G:\"
 
 foreach ($root in $directRoots | Where-Object { $_ } | Select-Object -Unique) {
     $direct = First-PythonInTree -Root $root
-    if ($direct -and $direct.FullName -match "WinPython|python-\d") {
+    $isExplicitWinPythonRoot = $root -eq $env:WINPYTHON_DIR
+    if ($direct -and ($isExplicitWinPythonRoot -or $direct.FullName -match "WinPython|python-\d")) {
         Write-Output $direct.FullName
         exit 0
     }

@@ -1534,6 +1534,9 @@ class WorkerTests(unittest.TestCase):
         launcher = (package_dir / "run_worker_headless.bat").read_text(encoding="ascii")
 
         self.assertIn('"%~dp0worker.py"', launcher)
+        self.assertIn("find_winpython.ps1", launcher)
+        self.assertIn('"%PYTHON_EXE%" -u "%~dp0worker.py"', launcher)
+        self.assertNotIn("py -u ", launcher)
         for name in ("update_package.ps1", "REMOTE_UPDATE_PACKAGE.ps1"):
             with self.subTest(name=name):
                 source = (package_dir / name).read_text(encoding="utf-8-sig")

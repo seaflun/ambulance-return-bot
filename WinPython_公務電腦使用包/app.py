@@ -102,6 +102,9 @@ _public_pc_pending_report_lock = threading.RLock()
 _credential_sync_relay_lock = threading.RLock()
 _case_lookup_start_error = ""
 PUBLIC_PC_REPORT_RETENTION_DAYS = 7
+TASK_FORM_COMPLETED_HISTORY_HOURS = 48
+TASK_FORM_RECENT_TASK_LIMIT = 5
+TASK_FORM_RECENT_TASK_SCAN_LIMIT = 500
 PUBLIC_PC_LEGACY_RECONCILE_LIMIT = 500
 PUBLIC_PC_PENDING_REPORT_FLUSH_INTERVAL_SECONDS = 30
 PUBLIC_PC_LEGACY_RECONCILE_ERRORS = (
@@ -192,7 +195,7 @@ def new_task():
         form_action=url_for("create_task"),
         submit_label="建立任務",
         cancel_url="",
-        recent_tasks=refresh_recent_tasks(store.list_recent(limit=5)),
+        recent_tasks=recent_tasks_for_task_form(),
         case_lookup=prepared_case_lookup(),
         selected_case=selected_case,
         vehicle_options=vehicle_options(artifacts_dir),
@@ -256,7 +259,7 @@ def create_task():
             form_action=url_for("create_task"),
             submit_label="建立任務",
             cancel_url="",
-            recent_tasks=refresh_recent_tasks(store.list_recent(limit=5)),
+            recent_tasks=recent_tasks_for_task_form(),
             case_lookup=prepared_case_lookup(),
             form_errors=errors,
             baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
@@ -2733,6 +2736,32 @@ def refresh_recent_tasks(recent_tasks: list[dict]) -> list[dict]:
     return [refresh_stale_running_task(dict(item or {})) for item in recent_tasks]
 
 
+def task_form_recent_task_timestamp(payload: dict) -> datetime | None:
+    raw_time = str(payload.get("updated_at") or payload.get("created_at") or "").strip()
+    try:
+        timestamp = datetime.fromisoformat(raw_time)
+    except ValueError:
+        return None
+    if timestamp.tzinfo is not None:
+        return timestamp.astimezone().replace(tzinfo=None)
+    return timestamp
+
+
+def recent_tasks_for_task_form() -> list[dict]:
+    cutoff = datetime.now() - timedelta(hours=TASK_FORM_COMPLETED_HISTORY_HOURS)
+    incomplete_tasks: list[dict] = []
+    recent_completed_tasks: list[dict] = []
+    for payload in refresh_recent_tasks(store.list_recent(limit=TASK_FORM_RECENT_TASK_SCAN_LIMIT)):
+        if status_class(effective_task_status(payload)) != "complete":
+            incomplete_tasks.append(payload)
+            continue
+        updated_at = task_form_recent_task_timestamp(payload)
+        if updated_at is None or updated_at >= cutoff:
+            recent_completed_tasks.append(payload)
+    completed_capacity = max(0, TASK_FORM_RECENT_TASK_LIMIT - len(incomplete_tasks))
+    return incomplete_tasks + recent_completed_tasks[:completed_capacity]
+
+
 def recent_tasks_need_refresh(recent_tasks: list[dict]) -> bool:
     return any(task_payload_is_active(dict(item or {})) for item in recent_tasks)
 
@@ -3365,7 +3394,7 @@ def prepared_case_lookup() -> dict:
     ):
         lookup_range = str(case_lookup.get("lookup_range") or lookup_request.get("lookup_range") or "24h")
         range_label = case_lookup_range_label(lookup_range)
-        case_lookup["empty_message"] = f"查詢完成，{range_label}沒有找到案件。可以稍後再查，或直接手動輸入案件資料。"
+        case_lookup["empty_message"] = f"查詢完成，{range_label}沒有找到案件。"
     case_lookup["cases"] = cases
     case_lookup["case_count"] = len(cases)
     case_lookup["debug_artifacts"] = case_lookup_debug_artifacts()

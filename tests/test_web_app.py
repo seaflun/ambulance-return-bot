@@ -1623,6 +1623,40 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn(f'action="/tasks/{task_id}/delete"', body)
         self.assertNotIn('aria-label="刪除案件"', body)
 
+    def test_app_page_recent_tasks_keeps_only_completed_last_48_hours(self):
+        now = datetime.now()
+        for task_id, age_hours, completed in (
+            ("completed-49-hours", 49, True),
+            ("completed-47-hours", 47, True),
+            ("waiting-49-hours", 49, False),
+        ):
+            task_time = now - timedelta(hours=age_hours)
+            payload = self.store.create(
+                AmbulanceReturnRequest(
+                    task_id=task_id,
+                    created_at=task_time,
+                    raw_text="",
+                    vehicle="新坡91",
+                )
+            )
+            payload["created_at"] = task_time.isoformat(timespec="seconds")
+            payload["updated_at"] = task_time.isoformat(timespec="seconds")
+            if completed:
+                for site in payload["site_statuses"].values():
+                    site["status"] = "completed_by_user"
+                payload["overall_status"] = "desktop_fast_completed"
+            else:
+                payload["site_statuses"]["duty_work_log"]["status"] = "duty_work_log_waiting_confirmation"
+                payload["overall_status"] = "desktop_fast_completed_with_errors"
+            self.store.path_for(task_id).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        response = self.client.get("/app")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertNotIn('href="/tasks/completed-49-hours"', body)
+        self.assertIn('href="/tasks/completed-47-hours"', body)
+        self.assertIn('href="/tasks/waiting-49-hours"', body)
+
     def test_task_delete_route_rejects_windows_path_traversal(self):
         cases_dir = app_module.artifacts_dir / "cases"
         cases_dir.mkdir(parents=True, exist_ok=True)
@@ -3422,6 +3456,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn('class="lookup-message is-empty"', body)
         self.assertIn("查詢完成，最近 24 小時沒有找到案件。", body)
+        self.assertNotIn("可以稍後再查，或直接手動輸入案件資料。", body)
         self.assertNotIn("window.location.reload()", body)
 
     def test_app_page_shows_loaded_case_lookup_result_message(self):
