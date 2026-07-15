@@ -20,6 +20,7 @@ import customtkinter as ctk
 from dotenv import load_dotenv
 
 import worker
+from ambulance_bot import worker_routes
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.duty_credentials import (
     DutyCredential,
@@ -628,43 +629,68 @@ class WorkerGui(ctk.CTk):
         self._log(f"NAS URL 已切換：{url}")
 
     def _apply_server_url(self) -> None:
-        os.environ["WORKER_SERVER_URL"] = self.server_url.get().strip().rstrip("/")
+        server_url = self.server_url.get().strip().rstrip("/")
+        previous_url = os.environ.get("WORKER_SERVER_URL", "").strip().rstrip("/")
+        os.environ["WORKER_SERVER_URL"] = server_url
+        if previous_url != server_url:
+            os.environ["WORKER_SERVER_FALLBACK_URL"] = ""
+            os.environ["WORKER_SERVER_INSTANCE_ID"] = ""
+            os.environ["WORKER_SERVER_IDENTITY_STATUS"] = "unverified"
 
     def _start_worker_with_default_server(self) -> None:
         if self.worker_thread is not None and self.worker_thread.is_alive():
             self._log("目前 worker 已在執行；請關閉本程式再完全重啟。")
             return
-        self._log("NAS 連線檢查：優先使用內網。")
-        threading.Thread(target=self._start_worker_with_default_server_background, daemon=True).start()
+        self._log("NAS 身分檢查：優先使用內網。")
+        configured_url = self.server_url.get()
+        threading.Thread(
+            target=self._start_worker_with_default_server_background,
+            args=(configured_url,),
+            daemon=True,
+        ).start()
 
-    def _start_worker_with_default_server_background(self) -> None:
-        selected_url, mode = choose_worker_server(self._server_reachable)
-        self.after(0, lambda: self._apply_server_choice(selected_url, mode, start_worker=True))
+    def _start_worker_with_default_server_background(self, configured_url: str) -> None:
+        choice = choose_worker_server(configured_url, fetch_identity=self._fetch_worker_server_identity)
+        if choice.identity_status == "verified":
+            worker_routes.remember_known_server_identity(choice.instance_id)
+        self.after(0, lambda: self._apply_server_choice(choice, start_worker=True))
 
-    def _apply_server_choice(self, selected_url: str, mode: str, start_worker: bool = False) -> None:
+    def _apply_server_choice(self, choice: worker_routes.RouteChoice, start_worker: bool = False) -> None:
+        selected_url = choice.primary_url or self.server_url.get().strip().rstrip("/")
         self.server_url.set(selected_url)
         self._apply_server_url()
-        if mode == "lan":
+        os.environ["WORKER_SERVER_FALLBACK_URL"] = choice.fallback_url
+        os.environ["WORKER_SERVER_INSTANCE_ID"] = choice.instance_id
+        os.environ["WORKER_SERVER_IDENTITY_STATUS"] = choice.identity_status
+        if choice.route_name == "offline":
+            self.connection_summary.set(f"目前連線：NAS 無法連線 {selected_url}")
+            self.connection_status.set("目前連線：NAS 無法連線；一般勤務與遠端更新皆暫停")
+            self._log(f"NAS 內網與 Tailscale 都無法連線：{selected_url}（{choice.diagnostic}）")
+        elif choice.identity_status != "verified":
+            self.connection_summary.set(f"目前連線：未驗證 {selected_url}")
+            self.connection_status.set("目前連線：未驗證；一般勤務可用，遠端更新已停用")
+            self._log(f"NAS 路徑未驗證：{selected_url}（{choice.diagnostic}）")
+        elif choice.route_name == "lan":
             self.connection_summary.set(f"目前連線：內網 {selected_url}")
             self.connection_status.set("目前連線：內網")
             self._log(f"NAS 內網連線成功：{selected_url}")
-        elif mode == "tailscale":
+        elif choice.route_name == "tailscale":
             self.connection_summary.set(f"目前連線：Tailscale {selected_url}")
             self.connection_status.set("目前連線：Tailscale")
-            self._log(f"NAS 內網無法連線，已切換 Tailscale：{selected_url}")
+            self._log(f"NAS 已切換 Tailscale：{selected_url}（{choice.diagnostic}）")
         else:
             self.connection_summary.set(f"目前連線：未確認，暫留 {selected_url}")
             self.connection_status.set("目前連線：未確認")
-            self._log(f"NAS 內網與 Tailscale 都無法連線，暫留內網：{selected_url}")
+            self._log(f"NAS 路徑未確認：{selected_url}（{choice.diagnostic}）")
+        active_worker = self.__dict__.get("worker_thread")
+        if not start_worker and active_worker is not None and active_worker.is_alive():
+            self.connection_status.set(f"{self.connection_status.get()}；新路徑將於下次 Worker 啟動套用")
+            self._log("目前 Worker 仍在執行；新 NAS 路徑將於下次 Worker 啟動套用。")
         if start_worker:
             self._restart_worker()
 
-    def _server_reachable(self, url: str) -> bool:
-        try:
-            worker.request_json(f"{url.strip().rstrip('/')}/status")
-        except Exception:
-            return False
-        return True
+    def _fetch_worker_server_identity(self, url: str) -> worker_routes.ServerIdentity:
+        return worker_routes.fetch_server_identity(url, worker.request_json)
 
     def _start_local_web_app(self) -> None:
         status = self._local_web_status()
@@ -873,11 +899,18 @@ class WorkerGui(ctk.CTk):
             self.worker_status.set("已停止")
 
     def _test_connection(self) -> None:
-        threading.Thread(target=self._test_connection_background, daemon=True).start()
+        configured_url = self.server_url.get()
+        threading.Thread(
+            target=self._test_connection_background,
+            args=(configured_url,),
+            daemon=True,
+        ).start()
 
-    def _test_connection_background(self) -> None:
-        selected_url, mode = choose_worker_server(self._server_reachable)
-        self.after(0, lambda: self._apply_server_choice(selected_url, mode, start_worker=False))
+    def _test_connection_background(self, configured_url: str) -> None:
+        choice = choose_worker_server(configured_url, fetch_identity=self._fetch_worker_server_identity)
+        if choice.identity_status == "verified":
+            worker_routes.remember_known_server_identity(choice.instance_id)
+        self.after(0, lambda: self._apply_server_choice(choice, start_worker=False))
 
     def hide_to_tray(self) -> None:
         try:
@@ -1594,12 +1627,33 @@ def initial_worker_server_url(configured: str) -> str:
     return NAS_LAN_URL
 
 
-def choose_worker_server(probe) -> tuple[str, str]:
-    if probe(NAS_LAN_URL):
-        return NAS_LAN_URL, "lan"
-    if probe(NAS_TAILSCALE_URL):
-        return NAS_TAILSCALE_URL, "tailscale"
-    return NAS_LAN_URL, "offline"
+def choose_worker_server(
+    configured: str,
+    *,
+    fetch_identity,
+) -> worker_routes.RouteChoice:
+    configured_url = str(configured or "").strip().rstrip("/")
+    if configured_url and configured_url not in {NAS_LAN_URL, NAS_TAILSCALE_URL}:
+        try:
+            identity = fetch_identity(configured_url)
+        except Exception:
+            instance_id = ""
+        else:
+            instance_id = identity.instance_id
+        return worker_routes.RouteChoice(
+            configured_url,
+            "",
+            "manual",
+            "unverified",
+            instance_id,
+            "manual_url_unverified",
+        )
+    return worker_routes.choose_verified_route(
+        NAS_LAN_URL,
+        NAS_TAILSCALE_URL,
+        fetch_identity=fetch_identity,
+        known_instance_id=worker_routes.load_known_server_identity(),
+    )
 
 
 def credential_choice_label(credential: DutyCredential) -> str:

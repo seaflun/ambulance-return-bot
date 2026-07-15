@@ -10,6 +10,7 @@ from unittest import mock
 
 import worker_gui
 from ambulance_bot.duty_credentials import DutyCredential, load_synced_worker_credential
+from ambulance_bot import worker_routes
 
 
 class WorkerGuiEnvTests(unittest.TestCase):
@@ -336,11 +337,135 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(worker_gui.initial_worker_server_url(worker_gui.NAS_TAILSCALE_URL), worker_gui.NAS_LAN_URL)
         self.assertEqual(worker_gui.initial_worker_server_url("http://example.test:8080"), "http://example.test:8080")
 
-    def test_choose_worker_server_falls_back_to_tailscale(self):
-        selected, mode = worker_gui.choose_worker_server(lambda url: url == worker_gui.NAS_TAILSCALE_URL)
+    def test_choose_worker_server_prefers_verified_lan_and_rejects_mismatched_lan(self):
+        def matching_identity(url: str):
+            return worker_routes.ServerIdentity(url, "same", "v", "nas")
 
-        self.assertEqual(selected, worker_gui.NAS_TAILSCALE_URL)
-        self.assertEqual(mode, "tailscale")
+        def mismatched_identity(url: str):
+            instance_id = "old-lan" if url == worker_gui.NAS_LAN_URL else "live-tail"
+            return worker_routes.ServerIdentity(url, instance_id, "v", "nas")
+
+        with mock.patch.object(worker_routes, "load_known_server_identity", return_value=""):
+            matching = worker_gui.choose_worker_server("", fetch_identity=matching_identity)
+            mismatched = worker_gui.choose_worker_server("", fetch_identity=mismatched_identity)
+
+        self.assertEqual(matching.primary_url, worker_gui.NAS_LAN_URL)
+        self.assertEqual(matching.fallback_url, worker_gui.NAS_TAILSCALE_URL)
+        self.assertEqual(matching.identity_status, "verified")
+        self.assertEqual(mismatched.primary_url, worker_gui.NAS_TAILSCALE_URL)
+        self.assertEqual(mismatched.fallback_url, "")
+        self.assertIn("mismatch", mismatched.diagnostic)
+
+    def test_choose_worker_server_keeps_manual_url_unverified(self):
+        manual_url = "http://manual-nas:8080"
+        identity = worker_routes.ServerIdentity(manual_url, "same", "v", "nas")
+
+        with mock.patch.object(worker_routes, "load_known_server_identity", return_value="same"):
+            choice = worker_gui.choose_worker_server(manual_url, fetch_identity=lambda _url: identity)
+
+        self.assertEqual(choice.primary_url, manual_url)
+        self.assertEqual(choice.fallback_url, "")
+        self.assertEqual(choice.route_name, "manual")
+        self.assertEqual(choice.identity_status, "unverified")
+
+    def test_apply_server_choice_replaces_all_route_environment_values(self):
+        class FakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        gui = object.__new__(worker_gui.WorkerGui)
+        gui.server_url = FakeVar()
+        gui.connection_summary = FakeVar()
+        gui.connection_status = FakeVar()
+        gui._log = lambda _message: None
+        choice = worker_routes.RouteChoice(
+            worker_gui.NAS_TAILSCALE_URL,
+            "",
+            "tailscale",
+            "verified",
+            "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc",
+            "lan_instance_mismatch_tailscale_selected",
+        )
+        stale_values = {
+            "WORKER_SERVER_URL": worker_gui.NAS_LAN_URL,
+            "WORKER_SERVER_FALLBACK_URL": worker_gui.NAS_TAILSCALE_URL,
+            "WORKER_SERVER_INSTANCE_ID": "stale-instance",
+            "WORKER_SERVER_IDENTITY_STATUS": "unverified",
+        }
+
+        with mock.patch.dict(os.environ, stale_values, clear=False):
+            gui._apply_server_choice(choice)
+
+            self.assertEqual(os.environ["WORKER_SERVER_URL"], worker_gui.NAS_TAILSCALE_URL)
+            self.assertEqual(os.environ["WORKER_SERVER_FALLBACK_URL"], "")
+            self.assertEqual(os.environ["WORKER_SERVER_INSTANCE_ID"], choice.instance_id)
+            self.assertEqual(os.environ["WORKER_SERVER_IDENTITY_STATUS"], "verified")
+
+    def test_apply_server_choice_explains_running_worker_uses_next_start(self):
+        class FakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        gui = object.__new__(worker_gui.WorkerGui)
+        gui.server_url = FakeVar()
+        gui.connection_summary = FakeVar()
+        gui.connection_status = FakeVar()
+        gui.worker_thread = SimpleNamespace(is_alive=lambda: True)
+        gui._log = lambda _message: None
+        choice = worker_routes.RouteChoice(
+            worker_gui.NAS_TAILSCALE_URL,
+            "",
+            "tailscale",
+            "verified",
+            "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc",
+            "lan_instance_mismatch_tailscale_selected",
+        )
+
+        gui._apply_server_choice(choice)
+
+        self.assertIn("下次 Worker 啟動", gui.connection_status.get())
+
+    def test_apply_server_choice_marks_offline_route_as_unavailable(self):
+        class FakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        gui = object.__new__(worker_gui.WorkerGui)
+        gui.server_url = FakeVar()
+        gui.connection_summary = FakeVar()
+        gui.connection_status = FakeVar()
+        gui._log = lambda _message: None
+        choice = worker_routes.RouteChoice(
+            worker_gui.NAS_LAN_URL,
+            "",
+            "offline",
+            "unverified",
+            "",
+            "identity_unreachable",
+        )
+
+        gui._apply_server_choice(choice)
+
+        self.assertIn("無法連線", gui.connection_status.get())
+        self.assertNotIn("一般勤務可用", gui.connection_status.get())
 
     def test_local_web_url_uses_desktop_port(self):
         old_host = os.environ.get("DESKTOP_WEB_HOST")
