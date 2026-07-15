@@ -217,21 +217,35 @@ def worker_control_route_choice(server_url: str) -> worker_routes.RouteChoice:
     fallback_url = os.getenv("WORKER_SERVER_FALLBACK_URL", "").strip().rstrip("/")
     identity_status = os.getenv("WORKER_SERVER_IDENTITY_STATUS", "unverified").strip()
     instance_id = os.getenv("WORKER_SERVER_INSTANCE_ID", "").strip()
-    if identity_status != "verified" or not instance_id:
+    provenance = os.getenv("WORKER_SERVER_ROUTE_PROVENANCE", "").strip().lower()
+    diagnostic = os.getenv("WORKER_SERVER_ROUTE_DIAGNOSTIC", "").strip()
+    if provenance != "builtin":
+        provenance = "manual"
+    if diagnostic not in {"single_route_unverified", "single_route_known_instance_mismatch"}:
+        diagnostic = "worker_environment"
+    if diagnostic == "single_route_known_instance_mismatch":
+        fallback_url = ""
         identity_status = "unverified"
-    if primary_url == WORKER_NAS_LAN_URL:
-        route_name = "lan"
-    elif primary_url == WORKER_NAS_TAILSCALE_URL:
-        route_name = "tailscale"
-    else:
+    elif identity_status != "verified" or not instance_id:
+        identity_status = "unverified"
+    if provenance != "builtin" or primary_url not in {WORKER_NAS_LAN_URL, WORKER_NAS_TAILSCALE_URL}:
+        provenance = "manual"
+        fallback_url = ""
+        identity_status = "unverified"
         route_name = "manual"
+        diagnostic = "worker_environment"
+    elif primary_url == WORKER_NAS_LAN_URL:
+        route_name = "lan"
+    else:
+        route_name = "tailscale"
     return worker_routes.RouteChoice(
         primary_url,
         fallback_url,
         route_name,
         identity_status,
         instance_id,
-        "worker_environment",
+        diagnostic,
+        provenance,
     )
 
 
@@ -241,10 +255,24 @@ def build_worker_control_loop(
     artifacts_dir: Path,
     runtime_state: worker_control.WorkerRuntimeState,
 ) -> worker_control.WorkerControlLoop:
+    choice = worker_control_route_choice(server_url)
+    client_options: dict[str, object] = {
+        "request_json": request_json,
+        "post_json": post_json,
+    }
+    if (
+        choice.provenance == "builtin"
+        and choice.primary_url in {WORKER_NAS_LAN_URL, WORKER_NAS_TAILSCALE_URL}
+        and choice.route_name in {"lan", "tailscale"}
+        and choice.identity_status == "unverified"
+        and not choice.fallback_url
+        and choice.diagnostic == "single_route_unverified"
+    ):
+        client_options["bootstrap_url"] = choice.primary_url
+        client_options["bootstrap_route_name"] = choice.route_name
     client = worker_routes.WorkerControlClient(
-        worker_control_route_choice(server_url),
-        request_json=request_json,
-        post_json=post_json,
+        choice,
+        **client_options,
     )
     return worker_control.WorkerControlLoop(
         client=client,

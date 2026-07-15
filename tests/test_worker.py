@@ -1342,6 +1342,8 @@ class WorkerTests(unittest.TestCase):
                 "WORKER_SERVER_FALLBACK_URL": worker_module.WORKER_NAS_TAILSCALE_URL,
                 "WORKER_SERVER_IDENTITY_STATUS": "verified",
                 "WORKER_SERVER_INSTANCE_ID": "nas-a",
+                "WORKER_SERVER_ROUTE_PROVENANCE": "builtin",
+                "WORKER_SERVER_ROUTE_DIAGNOSTIC": "worker_environment",
             },
             clear=False,
         ), mock.patch.object(worker_module, "post_json", side_effect=post):
@@ -1375,6 +1377,7 @@ class WorkerTests(unittest.TestCase):
                 "WORKER_SERVER_FALLBACK_URL": "",
                 "WORKER_SERVER_IDENTITY_STATUS": "unverified",
                 "WORKER_SERVER_INSTANCE_ID": "",
+                "WORKER_SERVER_ROUTE_PROVENANCE": "manual",
             },
             clear=False,
         ), mock.patch.object(worker_module, "post_json", side_effect=post):
@@ -1391,6 +1394,123 @@ class WorkerTests(unittest.TestCase):
             captured[0]["route"],
             {"name": "manual", "identity_status": "unverified", "instance_id": ""},
         )
+
+    def test_build_worker_control_loop_passes_bootstrap_only_for_selected_builtin_route(self):
+        instance_id = "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {
+                "LOCALAPPDATA": tmp,
+                "WORKER_SERVER_FALLBACK_URL": "",
+                "WORKER_SERVER_IDENTITY_STATUS": "unverified",
+                "WORKER_SERVER_INSTANCE_ID": instance_id,
+                "WORKER_SERVER_ROUTE_PROVENANCE": "builtin",
+                "WORKER_SERVER_ROUTE_DIAGNOSTIC": "single_route_unverified",
+            },
+            clear=False,
+        ):
+            loop = worker_module.build_worker_control_loop(
+                worker_module.WORKER_NAS_LAN_URL,
+                "PC-01",
+                Path(tmp),
+                worker_module.worker_control.WorkerRuntimeState(),
+            )
+
+        client = loop._client
+        self.assertEqual(client.choice.route_name, "lan")
+        self.assertEqual(client.choice.identity_status, "unverified")
+        self.assertEqual(client.choice.provenance, "builtin")
+        self.assertEqual(client.choice.diagnostic, "single_route_unverified")
+        self.assertEqual(client._bootstrap_url, worker_module.WORKER_NAS_LAN_URL)
+        self.assertEqual(client._bootstrap_route_name, "lan")
+
+    def test_build_worker_control_loop_keeps_manual_builtin_looking_route_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {
+                "LOCALAPPDATA": tmp,
+                "WORKER_SERVER_FALLBACK_URL": worker_module.WORKER_NAS_TAILSCALE_URL,
+                "WORKER_SERVER_IDENTITY_STATUS": "verified",
+                "WORKER_SERVER_INSTANCE_ID": "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc",
+                "WORKER_SERVER_ROUTE_PROVENANCE": "manual",
+                "WORKER_SERVER_ROUTE_DIAGNOSTIC": "single_route_unverified",
+            },
+            clear=False,
+        ):
+            loop = worker_module.build_worker_control_loop(
+                worker_module.WORKER_NAS_LAN_URL,
+                "PC-01",
+                Path(tmp),
+                worker_module.worker_control.WorkerRuntimeState(),
+            )
+
+        client = loop._client
+        self.assertEqual(client.choice.route_name, "manual")
+        self.assertEqual(client.choice.identity_status, "unverified")
+        self.assertEqual(client.choice.provenance, "manual")
+        self.assertEqual(client._bootstrap_url, "")
+        self.assertEqual(client._bootstrap_route_name, "")
+
+    def test_build_worker_control_loop_missing_provenance_is_manual_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {
+                "LOCALAPPDATA": tmp,
+                "WORKER_SERVER_FALLBACK_URL": "",
+                "WORKER_SERVER_IDENTITY_STATUS": "verified",
+                "WORKER_SERVER_INSTANCE_ID": "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc",
+                "WORKER_SERVER_ROUTE_DIAGNOSTIC": "single_route_unverified",
+            },
+            clear=True,
+        ):
+            loop = worker_module.build_worker_control_loop(
+                worker_module.WORKER_NAS_LAN_URL,
+                "PC-01",
+                Path(tmp),
+                worker_module.worker_control.WorkerRuntimeState(),
+            )
+
+        client = loop._client
+        self.assertEqual(client.choice.route_name, "manual")
+        self.assertEqual(client.choice.identity_status, "unverified")
+        self.assertEqual(client.choice.provenance, "manual")
+        self.assertEqual(client._bootstrap_url, "")
+
+    def test_build_worker_control_loop_preserves_known_mismatch_without_bootstrap(self):
+        instance_id = "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc"
+        command = {"request_id": "mismatch-update", "status": "pending"}
+
+        def post(_url: str, _payload: dict[str, object]) -> dict[str, object]:
+            return {"ok": True, "server": {"instance_id": instance_id}, "command": command}
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {
+                "LOCALAPPDATA": tmp,
+                "WORKER_SERVER_FALLBACK_URL": worker_module.WORKER_NAS_TAILSCALE_URL,
+                "WORKER_SERVER_IDENTITY_STATUS": "verified",
+                "WORKER_SERVER_INSTANCE_ID": instance_id,
+                "WORKER_SERVER_ROUTE_PROVENANCE": "builtin",
+                "WORKER_SERVER_ROUTE_DIAGNOSTIC": "single_route_known_instance_mismatch",
+            },
+            clear=False,
+        ), mock.patch.object(worker_module, "post_json", side_effect=post):
+            loop = worker_module.build_worker_control_loop(
+                worker_module.WORKER_NAS_LAN_URL,
+                "PC-01",
+                Path(tmp),
+                worker_module.worker_control.WorkerRuntimeState(),
+            )
+            response = loop.run_once()
+
+        client = loop._client
+        self.assertTrue(response["ok"])
+        self.assertEqual(client.choice.diagnostic, "single_route_known_instance_mismatch")
+        self.assertEqual(client.choice.identity_status, "unverified")
+        self.assertEqual(client.choice.fallback_url, "")
+        self.assertEqual(client._bootstrap_url, "")
+        self.assertEqual(client._bootstrap_route_name, "")
+        self.assertIsNone(loop.pending_command())
 
     def test_worker_control_snapshot_marks_cross_process_manual_lock_busy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1886,6 +2006,11 @@ class WorkerTests(unittest.TestCase):
 
         self.assertIn("CHROME_PROFILE_EMAIL=", env_source)
         self.assertNotRegex(env_source, r"(?m)^CHROME_PROFILE_EMAIL=.+$")
+
+    def test_public_env_template_marks_builtin_worker_route_explicitly(self):
+        env_source = Path(worker_module.__file__).with_name(".env.example").read_text(encoding="utf-8")
+
+        self.assertRegex(env_source, r"(?m)^WORKER_SERVER_ROUTE_PROVENANCE=builtin$")
 
     def test_existing_updater_can_skip_restart_only_for_remote_wrapper(self):
         package_dir = Path(worker_module.__file__).parent

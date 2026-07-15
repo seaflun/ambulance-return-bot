@@ -530,6 +530,13 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(worker_gui.initial_worker_server_url(worker_gui.NAS_TAILSCALE_URL), worker_gui.NAS_LAN_URL)
         self.assertEqual(worker_gui.initial_worker_server_url("http://example.test:8080"), "http://example.test:8080")
 
+    def test_initial_worker_server_provenance_requires_explicit_builtin_marker(self):
+        self.assertEqual(worker_gui.initial_worker_server_provenance("", ""), "manual")
+        self.assertEqual(worker_gui.initial_worker_server_provenance(worker_gui.NAS_LAN_URL, ""), "manual")
+        self.assertEqual(worker_gui.initial_worker_server_provenance(worker_gui.NAS_TAILSCALE_URL, "manual"), "manual")
+        self.assertEqual(worker_gui.initial_worker_server_provenance(worker_gui.NAS_LAN_URL, "builtin"), "builtin")
+        self.assertEqual(worker_gui.initial_worker_server_provenance("http://example.test:8080", "builtin"), "manual")
+
     def test_choose_worker_server_prefers_verified_lan_and_rejects_mismatched_lan(self):
         def matching_identity(url: str):
             return worker_routes.ServerIdentity(url, "same", "v", "nas")
@@ -539,15 +546,17 @@ class WorkerGuiEnvTests(unittest.TestCase):
             return worker_routes.ServerIdentity(url, instance_id, "v", "nas")
 
         with mock.patch.object(worker_routes, "load_known_server_identity", return_value=""):
-            matching = worker_gui.choose_worker_server("", fetch_identity=matching_identity)
-            mismatched = worker_gui.choose_worker_server("", fetch_identity=mismatched_identity)
+            matching = worker_gui.choose_worker_server("", fetch_identity=matching_identity, builtin_origin=True)
+            mismatched = worker_gui.choose_worker_server("", fetch_identity=mismatched_identity, builtin_origin=True)
 
         self.assertEqual(matching.primary_url, worker_gui.NAS_LAN_URL)
         self.assertEqual(matching.fallback_url, worker_gui.NAS_TAILSCALE_URL)
         self.assertEqual(matching.identity_status, "verified")
+        self.assertEqual(matching.provenance, "builtin")
         self.assertEqual(mismatched.primary_url, worker_gui.NAS_TAILSCALE_URL)
         self.assertEqual(mismatched.fallback_url, "")
         self.assertIn("mismatch", mismatched.diagnostic)
+        self.assertEqual(mismatched.provenance, "builtin")
 
     def test_choose_worker_server_keeps_manual_url_unverified(self):
         manual_url = "http://manual-nas:8080"
@@ -560,6 +569,213 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertEqual(choice.fallback_url, "")
         self.assertEqual(choice.route_name, "manual")
         self.assertEqual(choice.identity_status, "unverified")
+        self.assertEqual(choice.provenance, "manual")
+
+    def test_choose_worker_server_keeps_manual_builtin_looking_url_unverified(self):
+        identity = worker_routes.ServerIdentity(worker_gui.NAS_LAN_URL, "same", "v", "nas")
+
+        choice = worker_gui.choose_worker_server(
+            worker_gui.NAS_LAN_URL,
+            fetch_identity=lambda _url: identity,
+            builtin_origin=False,
+        )
+
+        self.assertEqual(choice.primary_url, worker_gui.NAS_LAN_URL)
+        self.assertEqual(choice.fallback_url, "")
+        self.assertEqual(choice.route_name, "manual")
+        self.assertEqual(choice.identity_status, "unverified")
+        self.assertEqual(choice.provenance, "manual")
+
+    def test_set_server_marks_builtin_looking_manual_input_as_manual(self):
+        class FakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+
+        gui = object.__new__(worker_gui.WorkerGui)
+        gui.server_url = FakeVar(worker_gui.NAS_LAN_URL)
+        gui.connection_summary = FakeVar()
+        gui.connection_status = FakeVar()
+        gui._server_url_provenance = "builtin"
+        gui._log = lambda _message: None
+        stale_values = {
+            "WORKER_SERVER_URL": worker_gui.NAS_LAN_URL,
+            "WORKER_SERVER_FALLBACK_URL": worker_gui.NAS_TAILSCALE_URL,
+            "WORKER_SERVER_INSTANCE_ID": "stale-instance",
+            "WORKER_SERVER_IDENTITY_STATUS": "verified",
+            "WORKER_SERVER_ROUTE_PROVENANCE": "builtin",
+            "WORKER_SERVER_ROUTE_DIAGNOSTIC": "single_route_unverified",
+        }
+
+        with mock.patch.dict(os.environ, stale_values, clear=False):
+            gui._set_server(worker_gui.NAS_LAN_URL)
+            choice = worker_gui.choose_worker_server(
+                gui.server_url.get(),
+                fetch_identity=lambda url: worker_routes.ServerIdentity(url, "same", "v", "nas"),
+                builtin_origin=gui._server_url_provenance == "builtin",
+            )
+
+            self.assertEqual(os.environ["WORKER_SERVER_ROUTE_PROVENANCE"], "manual")
+            self.assertEqual(os.environ["WORKER_SERVER_FALLBACK_URL"], "")
+            self.assertEqual(os.environ["WORKER_SERVER_INSTANCE_ID"], "")
+            self.assertEqual(os.environ["WORKER_SERVER_IDENTITY_STATUS"], "unverified")
+            self.assertEqual(os.environ["WORKER_SERVER_ROUTE_DIAGNOSTIC"], "")
+        self.assertEqual(choice.route_name, "manual")
+        self.assertEqual(choice.identity_status, "unverified")
+        self.assertEqual(choice.provenance, "manual")
+
+    def test_direct_server_url_write_marks_builtin_looking_input_manual_through_worker(self):
+        class TracedFakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+                self.callback = None
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+                if self.callback is not None:
+                    self.callback("server_url", "", "write")
+
+            def trace_add(self, _mode: str, callback) -> None:
+                self.callback = callback
+
+        gui = object.__new__(worker_gui.WorkerGui)
+        gui._server_url_provenance = "builtin"
+        gui._server_url_write_guard = False
+        gui.server_url = TracedFakeVar(worker_gui.NAS_LAN_URL)
+        callback_method = getattr(worker_gui.WorkerGui, "_mark_server_url_manual", None)
+        self.assertTrue(callable(callback_method))
+        if not callable(callback_method):
+            return
+        callback = callback_method.__get__(gui, worker_gui.WorkerGui)
+        gui.server_url.trace_add("write", callback)
+        stale_values = {
+            "WORKER_SERVER_URL": worker_gui.NAS_LAN_URL,
+            "WORKER_SERVER_FALLBACK_URL": worker_gui.NAS_TAILSCALE_URL,
+            "WORKER_SERVER_INSTANCE_ID": "stale-instance",
+            "WORKER_SERVER_IDENTITY_STATUS": "verified",
+            "WORKER_SERVER_ROUTE_PROVENANCE": "builtin",
+            "WORKER_SERVER_ROUTE_DIAGNOSTIC": "single_route_unverified",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": tmp, **stale_values},
+            clear=False,
+        ):
+            gui.server_url.set(worker_gui.NAS_LAN_URL)
+            gui._apply_server_url()
+            route = worker_gui.worker.worker_control_route_choice(gui.server_url.get())
+            loop = worker_gui.worker.build_worker_control_loop(
+                gui.server_url.get(),
+                "PC-01",
+                Path(tmp),
+                worker_gui.worker.worker_control.WorkerRuntimeState(),
+            )
+
+            self.assertEqual(os.environ["WORKER_SERVER_ROUTE_PROVENANCE"], "manual")
+            self.assertEqual(route.route_name, "manual")
+            self.assertEqual(route.identity_status, "unverified")
+            self.assertEqual(route.provenance, "manual")
+            self.assertEqual(loop._client._bootstrap_url, "")
+            self.assertEqual(loop._client._bootstrap_route_name, "")
+
+    def test_apply_server_choice_preserves_builtin_provenance_through_write_trace(self):
+        class TracedFakeVar:
+            def __init__(self, value: str = ""):
+                self.value = value
+                self.callback = None
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: str) -> None:
+                self.value = value
+                if self.callback is not None:
+                    self.callback("server_url", "", "write")
+
+            def trace_add(self, _mode: str, callback) -> None:
+                self.callback = callback
+
+        gui = object.__new__(worker_gui.WorkerGui)
+        gui._server_url_provenance = "manual"
+        gui._server_url_write_guard = False
+        gui.server_url = TracedFakeVar("http://manual-nas:8080")
+        callback_method = worker_gui.WorkerGui._mark_server_url_manual
+        gui.server_url.trace_add("write", callback_method.__get__(gui, worker_gui.WorkerGui))
+        gui.connection_summary = SimpleNamespace(set=lambda _value: None, get=lambda: "")
+        gui.connection_status = SimpleNamespace(set=lambda _value: None, get=lambda: "")
+        gui._log = lambda _message: None
+        choice = worker_routes.RouteChoice(
+            worker_gui.NAS_LAN_URL,
+            "",
+            "lan",
+            "unverified",
+            "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc",
+            "single_route_unverified",
+            "builtin",
+        )
+
+        with mock.patch.dict(os.environ, {"WORKER_SERVER_URL": "http://manual-nas:8080"}, clear=False):
+            gui._apply_server_choice(choice)
+
+            self.assertEqual(os.environ["WORKER_SERVER_ROUTE_PROVENANCE"], "builtin")
+            self.assertEqual(gui._server_url_provenance, "builtin")
+
+    def test_startup_identity_probe_does_not_persist_known_server_identity(self):
+        choice = worker_routes.RouteChoice(
+            worker_gui.NAS_LAN_URL,
+            worker_gui.NAS_TAILSCALE_URL,
+            "lan",
+            "verified",
+            "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc",
+            "both_paths_match",
+            "builtin",
+        )
+        gui = SimpleNamespace(after=mock.Mock(), _fetch_worker_server_identity=mock.Mock())
+
+        with mock.patch.object(worker_gui, "choose_worker_server", return_value=choice), mock.patch.object(
+            worker_routes,
+            "remember_known_server_identity",
+        ) as remember:
+            worker_gui.WorkerGui._start_worker_with_default_server_background(
+                gui,
+                worker_gui.NAS_LAN_URL,
+                True,
+            )
+
+        remember.assert_not_called()
+
+    def test_connection_probe_does_not_persist_known_server_identity(self):
+        choice = worker_routes.RouteChoice(
+            worker_gui.NAS_LAN_URL,
+            worker_gui.NAS_TAILSCALE_URL,
+            "lan",
+            "verified",
+            "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc",
+            "both_paths_match",
+            "builtin",
+        )
+        gui = SimpleNamespace(after=mock.Mock(), _fetch_worker_server_identity=mock.Mock())
+
+        with mock.patch.object(worker_gui, "choose_worker_server", return_value=choice), mock.patch.object(
+            worker_routes,
+            "remember_known_server_identity",
+        ) as remember:
+            worker_gui.WorkerGui._test_connection_background(
+                gui,
+                worker_gui.NAS_LAN_URL,
+                True,
+            )
+
+        remember.assert_not_called()
 
     def test_apply_server_choice_replaces_all_route_environment_values(self):
         class FakeVar:
@@ -584,12 +800,15 @@ class WorkerGuiEnvTests(unittest.TestCase):
             "verified",
             "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc",
             "lan_instance_mismatch_tailscale_selected",
+            "builtin",
         )
         stale_values = {
             "WORKER_SERVER_URL": worker_gui.NAS_LAN_URL,
             "WORKER_SERVER_FALLBACK_URL": worker_gui.NAS_TAILSCALE_URL,
             "WORKER_SERVER_INSTANCE_ID": "stale-instance",
             "WORKER_SERVER_IDENTITY_STATUS": "unverified",
+            "WORKER_SERVER_ROUTE_PROVENANCE": "manual",
+            "WORKER_SERVER_ROUTE_DIAGNOSTIC": "single_route_unverified",
         }
 
         with mock.patch.dict(os.environ, stale_values, clear=False):
@@ -599,6 +818,8 @@ class WorkerGuiEnvTests(unittest.TestCase):
             self.assertEqual(os.environ["WORKER_SERVER_FALLBACK_URL"], "")
             self.assertEqual(os.environ["WORKER_SERVER_INSTANCE_ID"], choice.instance_id)
             self.assertEqual(os.environ["WORKER_SERVER_IDENTITY_STATUS"], "verified")
+            self.assertEqual(os.environ["WORKER_SERVER_ROUTE_PROVENANCE"], "builtin")
+            self.assertEqual(os.environ["WORKER_SERVER_ROUTE_DIAGNOSTIC"], "")
 
     def test_apply_server_choice_explains_running_worker_uses_next_start(self):
         class FakeVar:

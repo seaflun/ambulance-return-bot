@@ -371,8 +371,16 @@ class WorkerGui(ctk.CTk):
         self.worker_exit_error = ""
         self.worker_restart_times: list[float] = []
         self._worker_restart_rate_limited_reported = False
+        self._server_url_write_guard = False
 
-        self.server_url = tk.StringVar(value=initial_worker_server_url(os.getenv("WORKER_SERVER_URL", "")))
+        configured_server_url = os.getenv("WORKER_SERVER_URL", "")
+        configured_server_provenance = os.getenv("WORKER_SERVER_ROUTE_PROVENANCE", "")
+        self._server_url_provenance = initial_worker_server_provenance(
+            configured_server_url,
+            configured_server_provenance,
+        )
+        self.server_url = tk.StringVar(value=initial_worker_server_url(configured_server_url))
+        self.server_url.trace_add("write", self._mark_server_url_manual)
         self.local_web_url = tk.StringVar(value=local_web_url())
         self.local_web_status = tk.StringVar(value="服務狀態：尚未檢查")
         self.worker_status = tk.StringVar(value="啟動中")
@@ -627,20 +635,36 @@ class WorkerGui(ctk.CTk):
         )
 
     def _set_server(self, url: str) -> None:
-        self.server_url.set(url)
+        self._set_server_url(url, "manual")
         self._apply_server_url()
         self.connection_summary.set(f"目前連線：{url}")
         self.connection_status.set("目前連線：手動指定")
         self._log(f"NAS URL 已切換：{url}")
 
+    def _mark_server_url_manual(self, *_args: object) -> None:
+        if not getattr(self, "_server_url_write_guard", False):
+            self._server_url_provenance = "manual"
+
+    def _set_server_url(self, url: str, provenance: str) -> None:
+        self._server_url_write_guard = True
+        try:
+            self._server_url_provenance = "builtin" if provenance == "builtin" else "manual"
+            self.server_url.set(url)
+        finally:
+            self._server_url_write_guard = False
+
     def _apply_server_url(self) -> None:
         server_url = self.server_url.get().strip().rstrip("/")
+        provenance = "builtin" if getattr(self, "_server_url_provenance", "") == "builtin" else "manual"
         previous_url = os.environ.get("WORKER_SERVER_URL", "").strip().rstrip("/")
+        previous_provenance = os.environ.get("WORKER_SERVER_ROUTE_PROVENANCE", "").strip().lower()
         os.environ["WORKER_SERVER_URL"] = server_url
-        if previous_url != server_url:
+        os.environ["WORKER_SERVER_ROUTE_PROVENANCE"] = provenance
+        if previous_url != server_url or previous_provenance != provenance:
             os.environ["WORKER_SERVER_FALLBACK_URL"] = ""
             os.environ["WORKER_SERVER_INSTANCE_ID"] = ""
             os.environ["WORKER_SERVER_IDENTITY_STATUS"] = "unverified"
+            os.environ["WORKER_SERVER_ROUTE_DIAGNOSTIC"] = ""
 
     def _start_worker_with_default_server(self) -> None:
         if self.worker_thread is not None and self.worker_thread.is_alive():
@@ -648,25 +672,33 @@ class WorkerGui(ctk.CTk):
             return
         self._log("NAS 身分檢查：優先使用內網。")
         configured_url = self.server_url.get()
+        configured_builtin_origin = self._server_url_provenance == "builtin"
         threading.Thread(
             target=self._start_worker_with_default_server_background,
-            args=(configured_url,),
+            args=(configured_url, configured_builtin_origin),
             daemon=True,
         ).start()
 
-    def _start_worker_with_default_server_background(self, configured_url: str) -> None:
-        choice = choose_worker_server(configured_url, fetch_identity=self._fetch_worker_server_identity)
-        if choice.identity_status == "verified":
-            worker_routes.remember_known_server_identity(choice.instance_id)
+    def _start_worker_with_default_server_background(self, configured_url: str, builtin_origin: bool) -> None:
+        choice = choose_worker_server(
+            configured_url,
+            fetch_identity=self._fetch_worker_server_identity,
+            builtin_origin=builtin_origin,
+        )
         self.after(0, lambda: self._apply_server_choice(choice, start_worker=True))
 
     def _apply_server_choice(self, choice: worker_routes.RouteChoice, start_worker: bool = False) -> None:
         selected_url = choice.primary_url or self.server_url.get().strip().rstrip("/")
-        self.server_url.set(selected_url)
+        self._set_server_url(selected_url, choice.provenance)
         self._apply_server_url()
         os.environ["WORKER_SERVER_FALLBACK_URL"] = choice.fallback_url
         os.environ["WORKER_SERVER_INSTANCE_ID"] = choice.instance_id
         os.environ["WORKER_SERVER_IDENTITY_STATUS"] = choice.identity_status
+        os.environ["WORKER_SERVER_ROUTE_DIAGNOSTIC"] = (
+            choice.diagnostic
+            if choice.diagnostic in {"single_route_unverified", "single_route_known_instance_mismatch"}
+            else ""
+        )
         if choice.route_name == "offline":
             self.connection_summary.set(f"目前連線：NAS 無法連線 {selected_url}")
             self.connection_status.set("目前連線：NAS 無法連線；一般勤務與遠端更新皆暫停")
@@ -982,16 +1014,19 @@ class WorkerGui(ctk.CTk):
 
     def _test_connection(self) -> None:
         configured_url = self.server_url.get()
+        configured_builtin_origin = self._server_url_provenance == "builtin"
         threading.Thread(
             target=self._test_connection_background,
-            args=(configured_url,),
+            args=(configured_url, configured_builtin_origin),
             daemon=True,
         ).start()
 
-    def _test_connection_background(self, configured_url: str) -> None:
-        choice = choose_worker_server(configured_url, fetch_identity=self._fetch_worker_server_identity)
-        if choice.identity_status == "verified":
-            worker_routes.remember_known_server_identity(choice.instance_id)
+    def _test_connection_background(self, configured_url: str, builtin_origin: bool) -> None:
+        choice = choose_worker_server(
+            configured_url,
+            fetch_identity=self._fetch_worker_server_identity,
+            builtin_origin=builtin_origin,
+        )
         self.after(0, lambda: self._apply_server_choice(choice, start_worker=False))
 
     def hide_to_tray(self) -> None:
@@ -1709,32 +1744,51 @@ def initial_worker_server_url(configured: str) -> str:
     return NAS_LAN_URL
 
 
+def initial_worker_server_provenance(configured: str, configured_provenance: str) -> str:
+    configured_url = str(configured or "").strip().rstrip("/")
+    provenance = str(configured_provenance or "").strip().lower()
+    if configured_url in {NAS_LAN_URL, NAS_TAILSCALE_URL} and provenance == "builtin":
+        return "builtin"
+    return "manual"
+
+
 def choose_worker_server(
     configured: str,
     *,
     fetch_identity,
+    builtin_origin: bool = False,
 ) -> worker_routes.RouteChoice:
-    configured_url = str(configured or "").strip().rstrip("/")
-    if configured_url and configured_url not in {NAS_LAN_URL, NAS_TAILSCALE_URL}:
-        try:
-            identity = fetch_identity(configured_url)
-        except Exception:
-            instance_id = ""
-        else:
-            instance_id = identity.instance_id
-        return worker_routes.RouteChoice(
-            configured_url,
-            "",
-            "manual",
-            "unverified",
-            instance_id,
-            "manual_url_unverified",
+    configured_url = initial_worker_server_url(configured)
+    if builtin_origin is True and configured_url in {NAS_LAN_URL, NAS_TAILSCALE_URL}:
+        choice = worker_routes.choose_verified_route(
+            NAS_LAN_URL,
+            NAS_TAILSCALE_URL,
+            fetch_identity=fetch_identity,
+            known_instance_id=worker_routes.load_known_server_identity(),
         )
-    return worker_routes.choose_verified_route(
-        NAS_LAN_URL,
-        NAS_TAILSCALE_URL,
-        fetch_identity=fetch_identity,
-        known_instance_id=worker_routes.load_known_server_identity(),
+        return worker_routes.RouteChoice(
+            choice.primary_url,
+            choice.fallback_url,
+            choice.route_name,
+            choice.identity_status,
+            choice.instance_id,
+            choice.diagnostic,
+            "builtin",
+        )
+    try:
+        identity = fetch_identity(configured_url)
+    except Exception:
+        instance_id = ""
+    else:
+        instance_id = identity.instance_id
+    return worker_routes.RouteChoice(
+        configured_url,
+        "",
+        "manual",
+        "unverified",
+        instance_id,
+        "manual_url_unverified",
+        "manual",
     )
 
 
