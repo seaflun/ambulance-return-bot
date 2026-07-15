@@ -387,13 +387,18 @@ def run_task(task_id: str):
             "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
         )
         return redirect(url_for("task_detail", task_id=task_id))
+    if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
+        return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
         report_public_pc_task_event(payload, f"按下{task_site_count_label(payload.get('task') or {})}登打")
         desktop_runner.start_existing(task_id)
         return redirect(url_for("task_detail", task_id=task_id))
     if mode == "worker_queue":
-        queue_task_for_worker(task_id)
+        try:
+            queue_task_for_worker(task_id)
+        except WorkerClaimConflictError as exc:
+            return exc.detail, 409
         return redirect(url_for("task_detail", task_id=task_id))
     runner.start_existing(task_id)
     return redirect(url_for("task_detail", task_id=task_id))
@@ -418,6 +423,8 @@ def run_task_site(task_id: str, site_key: str):
             "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
         )
         return redirect(url_for("task_detail", task_id=task_id))
+    if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
+        return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
         report_public_pc_task_event(payload, f"按下單站登打：{site_display_name(site_key)}")

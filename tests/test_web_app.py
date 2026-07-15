@@ -4297,6 +4297,31 @@ class WebAppTests(unittest.TestCase):
             "completed_by_user",
         )
 
+    def test_waiting_confirmation_rejects_direct_full_and_single_site_restart(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_waiting_confirmation",
+                "已按儲存，但未偵測到成功回應。",
+            ),
+        )
+
+        full_response = self.client.post(f"/tasks/{task_id}/run", follow_redirects=False)
+        site_response = self.client.post(
+            f"/tasks/{task_id}/sites/vehicle_mileage/run",
+            follow_redirects=False,
+        )
+
+        self.assertEqual(full_response.status_code, 409)
+        self.assertEqual(site_response.status_code, 409)
+        self.assertEqual(app_module.desktop_runner.started, [])
+        self.assertEqual(app_module.desktop_runner.started_sites, [])
+
     def test_manual_complete_rejects_site_that_is_not_waiting_for_confirmation(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -5926,6 +5951,11 @@ class WebAppTests(unittest.TestCase):
             detail="請人工確認的現有狀態",
         )
         self.store.save_payload(task_id, payload)
+        confirmed = self.store.mark_site_completed(task_id, "consumables")
+        self.assertEqual(
+            confirmed["site_statuses"]["consumables"]["status"],
+            "completed_by_user",
+        )
 
         app_module.queue_task_for_worker(task_id)
 
@@ -5936,7 +5966,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(queued["site_statuses"]["duty_work_log"]["status"], "local_pc_ready")
         self.assertEqual(
             queued["site_statuses"]["consumables"]["status"],
-            "consumables_waiting_confirmation",
+            "completed_by_user",
         )
 
     def test_worker_site_status_can_update_overall_when_explicitly_requested(self):

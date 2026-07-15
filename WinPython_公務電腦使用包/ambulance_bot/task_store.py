@@ -82,6 +82,15 @@ WORKER_CLAIM_LEASE_SECONDS = 15 * 60
 RECENT_STATUS_EVENT_ID_LIMIT = 256
 
 
+def task_has_waiting_confirmation(payload: dict[str, Any]) -> bool:
+    site_statuses = payload.get("site_statuses")
+    return isinstance(site_statuses, dict) and any(
+        "waiting_confirmation" in str(site.get("status") or "")
+        for site in site_statuses.values()
+        if isinstance(site, dict)
+    )
+
+
 def now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -284,6 +293,11 @@ class JsonTaskStore:
     def queue_for_worker(self, task_id: str) -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)
+            if task_has_waiting_confirmation(payload):
+                raise WorkerClaimConflictError(
+                    "manual_confirmation_required",
+                    "任務尚有待人工確認的站別，請先到官方網頁核對並按「已確認」。",
+                )
             if worker_claim_lease_is_active(payload):
                 raise WorkerClaimConflictError(
                     "worker_claim_conflict",
@@ -324,6 +338,8 @@ class JsonTaskStore:
             for path in paths:
                 payload = self._read_payload_or_quarantine(path)
                 if payload is None:
+                    continue
+                if task_has_waiting_confirmation(payload):
                     continue
                 queue_state = worker_queue_state(payload)
                 queue_status = queue_state.get("status")
@@ -389,6 +405,11 @@ class JsonTaskStore:
         normalized_worker_id = str(worker_id or "").strip() or "public-duty-pc"
         with self._lock:
             payload = self.get(task_id)
+            if task_has_waiting_confirmation(payload):
+                raise WorkerClaimConflictError(
+                    "manual_confirmation_required",
+                    "任務尚有待人工確認的站別，請先到官方網頁核對並按「已確認」。",
+                )
             if self._is_fully_done(payload):
                 raise WorkerClaimConflictError(
                     "task_already_completed",

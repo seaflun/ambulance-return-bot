@@ -751,7 +751,7 @@ class JsonTaskStoreTests(unittest.TestCase):
             payload = store.create(request)
             for site_key, status in {
                 "duty_work_log": "duty_work_log_saved",
-                "vehicle_mileage": "vehicle_mileage_waiting_confirmation",
+                "vehicle_mileage": "local_pc_ready",
                 "consumables": "consumables_saved",
                 "disinfection": "disinfection_saved",
             }.items():
@@ -760,6 +760,12 @@ class JsonTaskStoreTests(unittest.TestCase):
             store.queue_for_worker(request.task_id)
             claimed = store.claim_next_for_worker("worker-a")
             self.assertIsNotNone(claimed)
+            payload = store.get(request.task_id)
+            payload["site_statuses"]["vehicle_mileage"].update(
+                status="vehicle_mileage_waiting_confirmation",
+                detail="test",
+            )
+            store.save_payload(request.task_id, payload)
             failed = store.set_overall_status(
                 request.task_id,
                 "desktop_fast_completed_with_errors",
@@ -906,6 +912,90 @@ class JsonTaskStoreTests(unittest.TestCase):
                 claimed = store.claim_task_for_worker(request.task_id, "worker-a")
 
                 self.assertEqual(claimed["worker_queue"]["status"], "claimed")
+
+    def test_waiting_confirmation_blocks_queue_and_manual_claim_for_every_site(self):
+        waiting_statuses = (
+            ("duty_work_log", "duty_work_log_waiting_confirmation"),
+            ("vehicle_mileage", "vehicle_mileage_waiting_confirmation"),
+            ("fuel_record", "fuel_record_waiting_confirmation"),
+            ("consumables", "consumables_waiting_confirmation"),
+            ("disinfection", "disinfection_waiting_confirmation"),
+        )
+        for action in ("queue", "manual_claim"):
+            for site_key, status in waiting_statuses:
+                with self.subTest(action=action, site_key=site_key), tempfile.TemporaryDirectory() as tmp:
+                    store = JsonTaskStore(Path(tmp))
+                    request = AmbulanceReturnRequest(
+                        task_id=f"task-waiting-{action}-{site_key}",
+                        created_at=datetime.now(),
+                        raw_text="",
+                    )
+                    payload = store.create(request)
+                    payload["site_statuses"][site_key]["status"] = status
+                    store.save_payload(request.task_id, payload)
+
+                    with self.assertRaises(WorkerClaimConflictError) as raised:
+                        if action == "queue":
+                            store.queue_for_worker(request.task_id)
+                        else:
+                            store.claim_task_for_worker(request.task_id, "worker-a")
+
+                    self.assertEqual(raised.exception.code, "manual_confirmation_required")
+                    self.assertEqual(store.get(request.task_id)["worker_queue"]["status"], "idle")
+
+    def test_auto_claim_skips_legacy_waiting_confirmation_for_every_site(self):
+        waiting_statuses = (
+            ("duty_work_log", "duty_work_log_waiting_confirmation"),
+            ("vehicle_mileage", "vehicle_mileage_waiting_confirmation"),
+            ("fuel_record", "fuel_record_waiting_confirmation"),
+            ("consumables", "consumables_waiting_confirmation"),
+            ("disinfection", "disinfection_waiting_confirmation"),
+        )
+        for site_key, status in waiting_statuses:
+            with self.subTest(site_key=site_key), tempfile.TemporaryDirectory() as tmp:
+                store = JsonTaskStore(Path(tmp))
+                waiting_request = AmbulanceReturnRequest(
+                    task_id=f"task-legacy-waiting-{site_key}",
+                    created_at=datetime.now(),
+                    raw_text="",
+                )
+                waiting_payload = store.create(waiting_request)
+                waiting_payload["site_statuses"][site_key]["status"] = status
+                waiting_payload["overall_status"] = "queued_for_worker"
+                waiting_payload["worker_queue"].update(status="queued", queue_id="legacy-waiting")
+                store.save_payload(waiting_request.task_id, waiting_payload)
+
+                runnable_request = AmbulanceReturnRequest(
+                    task_id=f"task-runnable-after-{site_key}",
+                    created_at=datetime.now(),
+                    raw_text="",
+                )
+                store.create(runnable_request)
+                store.queue_for_worker(runnable_request.task_id)
+
+                claimed = store.claim_next_for_worker("worker-a")
+
+                self.assertIsNotNone(claimed)
+                assert claimed is not None
+                self.assertEqual(claimed["task"]["task_id"], runnable_request.task_id)
+                self.assertEqual(store.get(waiting_request.task_id)["worker_queue"]["status"], "queued")
+
+    def test_manual_confirmation_allows_queueing_remaining_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="task-confirm-then-queue", created_at=datetime.now(), raw_text="")
+            payload = store.create(request)
+            payload["site_statuses"]["vehicle_mileage"].update(
+                status="vehicle_mileage_waiting_confirmation",
+                detail="請先在官方頁確認。",
+            )
+            store.save_payload(request.task_id, payload)
+
+            confirmed = store.mark_site_completed(request.task_id, "vehicle_mileage")
+            queued = store.queue_for_worker(request.task_id)
+
+            self.assertEqual(confirmed["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
+            self.assertEqual(queued["worker_queue"]["status"], "queued")
 
     def test_claim_specific_task_rejects_active_other_worker_but_reclaims_expired_lease(self):
         with tempfile.TemporaryDirectory() as tmp:
