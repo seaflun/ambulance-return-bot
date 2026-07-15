@@ -252,14 +252,16 @@ class WorkerGuiEnvTests(unittest.TestCase):
     def test_startup_installer_and_public_package_template_define_watchdog(self):
         installer = Path("WinPython_公務電腦使用包/install_startup_shortcut.ps1").read_text(encoding="utf-8")
         builder = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
+        watchdog_arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File"
 
-        self.assertIn('$watchdogTaskName = "AmbulanceReturnWorkerWatchdog"', installer)
+        for source in (installer, builder):
+            self.assertIn('$watchdogTaskName = "AmbulanceReturnWorkerWatchdog"', source)
+            self.assertIn(watchdog_arguments, source)
+            self.assertIn("-MultipleInstances IgnoreNew", source)
+
         self.assertIn("WORKER_SELF_RECOVERY.ps1", installer)
-        self.assertIn("-NoProfile -NonInteractive -ExecutionPolicy Bypass -File", installer)
-        self.assertIn("-MultipleInstances IgnoreNew", installer)
         self.assertIn("@($taskName, $watchdogTaskName)", installer)
         self.assertIn('"WORKER_SELF_RECOVERY.ps1"', builder)
-        self.assertIn('AmbulanceReturnWorkerWatchdog', builder)
 
     def test_setup_script_warns_about_incomplete_startup_and_watchdog_setup(self):
         setup = Path("WinPython_公務電腦使用包/SETUP_WINPYTHON.bat").read_text(encoding="utf-8")

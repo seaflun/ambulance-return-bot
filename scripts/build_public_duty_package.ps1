@@ -459,7 +459,7 @@ $watchdogPowerShell = if ([string]::IsNullOrWhiteSpace($env:WINDIR)) {
 if ($watchdogPowerShell -ne "powershell.exe" -and -not (Test-Path -LiteralPath $watchdogPowerShell -PathType Leaf)) {
     $watchdogPowerShell = "powershell.exe"
 }
-$watchdogArguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$watchdogScript`""
+$watchdogArguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdogScript`""
 $startupDisabledValues = @("0", "false", "no", "off")
 
 function Get-PackageEnvValue {
