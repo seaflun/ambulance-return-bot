@@ -28,6 +28,8 @@ $backedUpFiles = @()
 $stoppedProcessIds = @()
 $updateOwnerPid = 0
 $updateOwnerNonce = ""
+$watchdogInstallWarning = ""
+Remove-Item Env:AMBULANCE_WATCHDOG_INSTALL_WARNING -ErrorAction SilentlyContinue
 
 function Enter-UpdateLock {
     $lockBase = if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { $env:TEMP } else { $env:LOCALAPPDATA }
@@ -1131,14 +1133,39 @@ function Restart-WorkerRuntimes {
 function Install-StartupLaunchers {
     $installer = Join-Path $packageDir "install_startup_shortcut.ps1"
     if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-        Write-Warning "Cannot refresh startup launcher because installer is missing: $installer"
-        return
+        $message = "Cannot refresh startup launcher because installer is missing: $installer"
+        Write-Warning $message
+        return $message
     }
-    Write-Host "Refreshing startup launcher..."
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -SkipScheduledTask
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Startup launcher refresh exited with code $LASTEXITCODE"
+    Write-Host "Refreshing startup launcher and watchdog..."
+    $installerExitCode = $null
+    $installerException = $null
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -SkipScheduledTask 2>&1 | Out-Host
+        $installerExitCode = $LASTEXITCODE
+    } catch {
+        $installerException = $_.Exception
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
+    if ($null -ne $installerException) {
+        $message = "Startup launcher and watchdog refresh could not start: $($installerException.Message)"
+        Write-Warning $message
+        return $message
+    }
+    if ($null -eq $installerExitCode) {
+        $message = "Startup launcher and watchdog refresh could not report an exit code."
+        Write-Warning $message
+        return $message
+    }
+    if ($installerExitCode -ne 0) {
+        $message = "Startup launcher and watchdog refresh exited with code $installerExitCode"
+        Write-Warning $message
+        return $message
+    }
+    return ""
 }
 
 $updateLockStream = $null
@@ -1285,12 +1312,17 @@ try {
         if ($installedVersion -ne $packageVersion) {
             throw "Installed VERSION.txt mismatch. Expected $packageVersion but got $installedVersion."
         }
-        Install-StartupLaunchers
         Assert-InstalledUpdateTree `
             -SourceDir $sourceDir `
             -DestDir $packageDir `
             -NewManagedPaths $newManagedPaths `
             -ObsoleteManagedPaths $obsoleteManagedPaths
+        $watchdogInstallWarning = Install-StartupLaunchers
+        if (-not [string]::IsNullOrWhiteSpace([string]$watchdogInstallWarning)) {
+            $env:AMBULANCE_WATCHDOG_INSTALL_WARNING = [string]$watchdogInstallWarning
+        } else {
+            Remove-Item Env:AMBULANCE_WATCHDOG_INSTALL_WARNING -ErrorAction SilentlyContinue
+        }
         $updateCommitted = $true
     } catch {
         $replacementError = $_.Exception

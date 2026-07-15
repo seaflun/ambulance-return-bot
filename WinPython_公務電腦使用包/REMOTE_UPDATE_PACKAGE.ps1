@@ -381,6 +381,9 @@ function Write-RemoteUpdateResult {
         exit_code = $exitCode
         completed_at = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
     }
+    if (-not [string]::IsNullOrWhiteSpace($watchdogInstallWarning)) {
+        $payload["watchdog_install_warning"] = $watchdogInstallWarning
+    }
     $json = $payload | ConvertTo-Json -Depth 4
     [System.IO.File]::WriteAllText($tempResultPath, $json, $utf8NoBom)
     Move-Item -LiteralPath $tempResultPath -Destination $resultPath -Force
@@ -591,6 +594,7 @@ function Clear-UpdateEnvironment {
     Remove-Item Env:AMBULANCE_RESTART_HEADLESS_INTENT -ErrorAction SilentlyContinue
     Remove-Item Env:AMBULANCE_UPDATE_OWNER_PID -ErrorAction SilentlyContinue
     Remove-Item Env:AMBULANCE_UPDATE_OWNER_NONCE -ErrorAction SilentlyContinue
+    Remove-Item Env:AMBULANCE_WATCHDOG_INSTALL_WARNING -ErrorAction SilentlyContinue
 }
 
 function Suspend-UpdateControlEnvironmentForProbe {
@@ -651,6 +655,7 @@ $runtimePackageSafe = $false
 $updateLockStream = $null
 $ownsUpdateLock = $false
 $activeMarkerWritten = $false
+$watchdogInstallWarning = ""
 
 try {
     $updateLockStream = Enter-UpdateLock
@@ -675,6 +680,7 @@ try {
     $env:AMBULANCE_UPDATE_REQUEST_ID = $RequestId
     $env:AMBULANCE_UPDATE_OWNER_PID = [string]$PID
     $env:AMBULANCE_UPDATE_OWNER_NONCE = $runId
+    Remove-Item Env:AMBULANCE_WATCHDOG_INSTALL_WARNING -ErrorAction SilentlyContinue
 
     if (-not [string]::IsNullOrWhiteSpace($RecoverTransactionPath)) {
         $transactionPath = Resolve-TransactionPath -Path $RecoverTransactionPath
@@ -707,6 +713,7 @@ try {
         $env:AMBULANCE_RESTART_HEADLESS_INTENT = if ($workerHeadlessWasRunning) { "true" } else { "false" }
 
         & $updaterPath
+        $watchdogInstallWarning = [string]$env:AMBULANCE_WATCHDOG_INSTALL_WARNING
         $installedVersion = Get-PackageVersion
         if ($installedVersion -eq $beforeVersion) {
             $runtimePackageSafe = $true

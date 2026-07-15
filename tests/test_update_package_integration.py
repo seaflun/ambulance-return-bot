@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from functools import partial
@@ -87,16 +88,41 @@ while transaction.exists():
     time.sleep(0.05)
 ready.unlink(missing_ok=True)
 time.sleep(0.5)
+Path(__file__).with_name("fixture_worker_exited.marker").write_text("ok", encoding="utf-8")
 """,
             encoding="utf-8",
         )
         (payload / "VERSION.txt").write_text(self.NEW_VERSION, encoding="utf-8")
         (payload / "payload.bin").write_bytes(os.urandom(4096))
+        (payload / "WORKER_SELF_RECOVERY.ps1").write_text(
+            "param()\nWrite-Output 'fixture watchdog script'\n",
+            encoding="utf-8",
+        )
+        (payload / "install_startup_shortcut.ps1").write_text(
+            """param(
+    [switch]$WhatIf,
+    [switch]$SkipScheduledTask
+)
+
+@{
+    skipped_scheduled_task = [bool]$SkipScheduledTask
+    invoked_from = $PSScriptRoot
+} | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot "watchdog_install_signal.json") -Encoding UTF8
+if ($env:FIXTURE_WATCHDOG_INSTALLER_FAIL -eq "true") {
+    Write-Error "fixture watchdog registration failed"
+    exit 2
+}
+exit 0
+""",
+            encoding="utf-8",
+        )
         managed = [
             "REMOTE_UPDATE_PACKAGE.ps1",
             "UPDATE_MANIFEST.json",
             "VERSION.txt",
+            "WORKER_SELF_RECOVERY.ps1",
             "find_winpython.ps1",
+            "install_startup_shortcut.ps1",
             "payload.bin",
             "run_worker_headless.bat",
             "update_package.ps1",
@@ -196,6 +222,15 @@ time.sleep(0.5)
             check=False,
         )
 
+    def _wait_for_fixture_worker_exit(self, installed: Path) -> None:
+        if not (installed / "probe_env.json").is_file():
+            return
+        marker = installed / "fixture_worker_exited.marker"
+        deadline = time.monotonic() + 5
+        while not marker.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(marker.is_file(), "Fixture worker did not exit before temporary directory cleanup.")
+
     def test_deferred_rollback_preflights_every_backup_before_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:
             installed, state, env, server, thread = self._prepare_fixture(Path(tmp))
@@ -284,13 +319,21 @@ time.sleep(0.5)
         with tempfile.TemporaryDirectory() as tmp:
             installed, state, env, server, thread = self._prepare_fixture(Path(tmp))
             try:
+                with zipfile.ZipFile(Path(tmp) / "release" / "ambulance-return-public-package.zip") as archive:
+                    self.assertIn("WinPython_package/WORKER_SELF_RECOVERY.ps1", archive.namelist())
                 result = self._run_wrapper(installed, env)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((installed / "VERSION.txt").read_text(encoding="utf-8-sig").strip(), self.NEW_VERSION)
+                watchdog_install = json.loads(
+                    (installed / "watchdog_install_signal.json").read_text(encoding="utf-8-sig")
+                )
+                self.assertTrue(watchdog_install["skipped_scheduled_task"])
+                self.assertEqual(Path(watchdog_install["invoked_from"]).resolve(), installed.resolve())
                 report = json.loads(
                     (state / "AmbulanceReturnBot" / "remote_update_result.json").read_text(encoding="utf-8-sig")
                 )
                 self.assertEqual(report["status"], "completed")
+                self.assertNotIn("watchdog_install_warning", report)
                 probe = json.loads((installed / "probe_env.json").read_text(encoding="utf-8"))
                 self.assertEqual(
                     probe["inherited_update_controls"],
@@ -306,6 +349,41 @@ time.sleep(0.5)
                 transaction_dir = state / "AmbulanceReturnBot" / "update_transactions"
                 self.assertEqual(list(transaction_dir.glob("*.json")), [])
             finally:
+                self._wait_for_fixture_worker_exit(installed)
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_updater_refreshes_watchdog_only_after_installed_tree_validation(self):
+        updater = Path("WinPython_公務電腦使用包/update_package.ps1").read_text(encoding="utf-8")
+
+        validation = updater.rindex("Assert-InstalledUpdateTree")
+        launcher_refresh = updater.rindex("Install-StartupLaunchers")
+        self.assertLess(validation, launcher_refresh)
+        self.assertIn("-File $installer -SkipScheduledTask", updater)
+
+    def test_remote_wrapper_records_nonfatal_watchdog_install_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            installed, state, env, server, thread = self._prepare_fixture(Path(tmp))
+            try:
+                result = self._run_wrapper(
+                    installed,
+                    {
+                        **env,
+                        "FIXTURE_WATCHDOG_INSTALLER_FAIL": "true",
+                    },
+                )
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((installed / "VERSION.txt").read_text(encoding="utf-8-sig").strip(), self.NEW_VERSION)
+                report = json.loads(
+                    (state / "AmbulanceReturnBot" / "remote_update_result.json").read_text(encoding="utf-8-sig")
+                )
+                self.assertEqual(report["status"], "completed")
+                self.assertIn("watchdog_install_warning", report)
+                self.assertIn("exited with code 2", report["watchdog_install_warning"])
+            finally:
+                self._wait_for_fixture_worker_exit(installed)
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5)

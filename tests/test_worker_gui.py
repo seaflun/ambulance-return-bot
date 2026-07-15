@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import subprocess
 import tempfile
 import time
 import unittest
@@ -15,6 +16,34 @@ from ambulance_bot.duty_credentials import DutyCredential, load_synced_worker_cr
 
 
 class WorkerGuiEnvTests(unittest.TestCase):
+    @staticmethod
+    def _startup_installer_command(*args: str) -> list[str]:
+        installer = Path("WinPython_公務電腦使用包/install_startup_shortcut.ps1").resolve()
+        return [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(installer),
+            *args,
+        ]
+
+    def _run_startup_installer_whatif(self, *args: str) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env["WORKER_STARTUP_LAUNCHER_ENABLED"] = "true"
+        return subprocess.run(
+            self._startup_installer_command("-WhatIf", *args),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+
     @staticmethod
     def _manual_gui_stub(**overrides):
         values = {
@@ -219,6 +248,48 @@ class WorkerGuiEnvTests(unittest.TestCase):
                 os.environ.pop("WORKER_STARTUP_LAUNCHER_ENABLED", None)
             else:
                 os.environ["WORKER_STARTUP_LAUNCHER_ENABLED"] = previous
+
+    def test_startup_installer_and_public_package_template_define_watchdog(self):
+        installer = Path("WinPython_公務電腦使用包/install_startup_shortcut.ps1").read_text(encoding="utf-8")
+        builder = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('$watchdogTaskName = "AmbulanceReturnWorkerWatchdog"', installer)
+        self.assertIn("WORKER_SELF_RECOVERY.ps1", installer)
+        self.assertIn("-NoProfile -NonInteractive -ExecutionPolicy Bypass -File", installer)
+        self.assertIn("-MultipleInstances IgnoreNew", installer)
+        self.assertIn("@($taskName, $watchdogTaskName)", installer)
+        self.assertIn('"WORKER_SELF_RECOVERY.ps1"', builder)
+        self.assertIn('AmbulanceReturnWorkerWatchdog', builder)
+
+    def test_setup_script_warns_about_incomplete_startup_and_watchdog_setup(self):
+        setup = Path("WinPython_公務電腦使用包/SETUP_WINPYTHON.bat").read_text(encoding="utf-8")
+        builder = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
+        expected_warning = "Startup/watchdog setup is incomplete. You can still start with RUN_WORKER_GUI_WINPYTHON.vbs."
+
+        self.assertIn(expected_warning, setup)
+        self.assertIn(expected_warning, builder)
+        self.assertNotIn("Could not install startup scheduled task.", setup)
+        self.assertNotIn("Could not install startup scheduled task.", builder)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Task Scheduler dry-run only")
+    def test_startup_installer_whatif_describes_main_and_watchdog_without_installing(self):
+        result = self._run_startup_installer_whatif()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Would install scheduled task: AmbulanceReturnWorker", result.stdout)
+        self.assertIn("Would install watchdog task: AmbulanceReturnWorkerWatchdog", result.stdout)
+        self.assertIn("User:", result.stdout)
+        self.assertIn("Action:", result.stdout)
+        self.assertNotIn("Installed watchdog task:", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Task Scheduler dry-run only")
+    def test_skip_scheduled_task_keeps_watchdog_refresh_enabled(self):
+        result = self._run_startup_installer_whatif("-SkipScheduledTask")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Would skip scheduled task refresh: AmbulanceReturnWorker", result.stdout)
+        self.assertIn("Would install watchdog task: AmbulanceReturnWorkerWatchdog", result.stdout)
+        self.assertNotIn("Would skip watchdog task refresh", result.stdout)
 
     def test_worker_gui_start_minimized_defaults_on_and_can_be_disabled(self):
         previous = os.environ.get("WORKER_GUI_START_MINIMIZED")

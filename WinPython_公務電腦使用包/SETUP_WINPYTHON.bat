@@ -20,6 +20,6 @@ if not defined PYTHON_EXE (
 "%PYTHON_EXE%" "%~dp0check_environment.py"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_startup_shortcut.ps1"
 if errorlevel 1 (
-  echo [WARN] Could not install startup scheduled task. You can still start with RUN_WORKER_GUI_WINPYTHON.vbs.
+  echo [WARN] Startup/watchdog setup is incomplete. You can still start with RUN_WORKER_GUI_WINPYTHON.vbs.
 )
 pause
