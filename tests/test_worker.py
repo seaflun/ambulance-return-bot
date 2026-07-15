@@ -1,9 +1,11 @@
+import contextlib
 import json
 import os
 import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -41,6 +43,29 @@ class WorkerTests(unittest.TestCase):
             clear_command=lambda _request_id: record("clear_command") or True,
             set_remote_update_waiting=lambda *_args: None,
         )
+
+    @contextlib.contextmanager
+    def _active_update_marker(self, overrides: dict[str, object] | None = None):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"LOCALAPPDATA": tmp}, clear=False):
+            package_root = Path(worker_module.__file__).resolve().parent
+            now = datetime.now(timezone.utc).isoformat()
+            marker = {
+                "request_id": "update-live",
+                "owner_pid": os.getpid(),
+                "owner_nonce": "wrapper-run",
+                "owner_started_unix_ms": worker_module.process_start_unix_ms(os.getpid()),
+                "script_path": str((package_root / "REMOTE_UPDATE_PACKAGE.ps1").resolve()),
+                "package_path": str(package_root),
+                "transaction_path": "",
+                "phase": "validating",
+                "phase_started_at": now,
+                "phase_updated_at": now,
+            }
+            marker.update(overrides or {})
+            path = worker_module.remote_update_active_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(marker), encoding="utf-8")
+            yield path
 
     def test_consumables_manual_case_identity_change_does_not_start_chrome(self):
         previous = AmbulanceReturnRequest(
@@ -1020,29 +1045,68 @@ class WorkerTests(unittest.TestCase):
                 )
                 self.assertFalse(worker_module.remote_update_wrapper_is_active("update-live"))
 
-    def test_remote_update_marker_health_uses_legacy_owner_identity(self):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
-            os.environ,
-            {"LOCALAPPDATA": tmp},
-            clear=False,
-        ):
-            path = worker_module.remote_update_active_path()
-            path.parent.mkdir(parents=True)
-            path.write_text(
-                json.dumps(
-                    {
-                        "request_id": "update-live",
-                        "owner_pid": os.getpid(),
-                        "owner_nonce": "wrapper-run",
-                        "owner_started_unix_ms": worker_module.process_start_unix_ms(os.getpid()),
-                    }
-                ),
-                encoding="utf-8",
-            )
+    def test_remote_update_marker_health_requires_exact_identity_and_phase(self):
+        source = Path("WinPython_公務電腦使用包/REMOTE_UPDATE_PACKAGE.ps1").read_text(encoding="utf-8")
+        for key in ("script_path", "package_path", "phase", "phase_started_at", "phase_updated_at"):
+            self.assertIn(key, source)
+        for phase in ("discovering_runtime", "installing", "validating", "committing", "rolling_back", "restarting"):
+            self.assertIn(phase, source)
 
+        with self._active_update_marker():
             self.assertTrue(worker_module.remote_update_marker_is_healthy("update-live"))
             self.assertTrue(worker_module.remote_update_marker_is_healthy())
             self.assertFalse(worker_module.remote_update_marker_is_healthy("update-other"))
+        with self._active_update_marker({"script_path": "C:/other/REMOTE_UPDATE_PACKAGE.ps1"}):
+            self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
+        with self._active_update_marker({"package_path": "C:/other/package"}):
+            self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
+        with self._active_update_marker({"phase": "unknown"}):
+            self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
+        with self._active_update_marker({"owner_nonce": 1}):
+            self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
+
+    def test_remote_update_marker_health_rejects_relative_paths_even_from_package_directory(self):
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(Path(worker_module.__file__).resolve().parent)
+            with self._active_update_marker({"script_path": "REMOTE_UPDATE_PACKAGE.ps1"}):
+                self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
+            with self._active_update_marker({"package_path": "."}):
+                self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
+        finally:
+            os.chdir(original_cwd)
+
+    def test_remote_update_marker_health_rejects_malformed_identity_fields(self):
+        invalid_markers = (
+            {"request_id": 1},
+            {"owner_pid": True},
+            {"owner_started_unix_ms": "not-an-integer"},
+            {"owner_nonce": 1},
+            {"transaction_path": "relative-transaction.json"},
+            {"transaction_path": " "},
+            {"phase": " validating "},
+            {"phase_started_at": "2026-07-15T12:00:00"},
+        )
+        for overrides in invalid_markers:
+            with self.subTest(overrides=overrides), self._active_update_marker(overrides):
+                self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
+
+    def test_remote_update_marker_health_uses_phase_updated_at_not_file_mtime(self):
+        with self._active_update_marker(
+            {"phase_updated_at": (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()}
+        ) as path:
+            os.utime(path, None)
+            self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
+
+        with self._active_update_marker() as path:
+            stale_time = time.time() - 3601
+            os.utime(path, (stale_time, stale_time))
+            self.assertTrue(worker_module.remote_update_marker_is_healthy("update-live"))
+
+        with self._active_update_marker(
+            {"phase_updated_at": (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()}
+        ):
+            self.assertFalse(worker_module.remote_update_marker_is_healthy("update-live"))
 
     def test_remote_update_active_marker_rejects_valid_json_list(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
@@ -1630,6 +1694,19 @@ class WorkerTests(unittest.TestCase):
         self.assertLess(
             wrapper_source.index("Remove-Item Env:AMBULANCE_SKIP_WORKER_RESTART"),
             restart_call,
+        )
+
+    def test_remote_update_marker_keeps_committing_phase_until_finalize(self):
+        wrapper_source = Path(worker_module.__file__).with_name("REMOTE_UPDATE_PACKAGE.ps1").read_text(encoding="utf-8")
+        completed_section = wrapper_source[wrapper_source.index('$status = "completed"') :]
+
+        self.assertLess(
+            completed_section.index('Set-RemoteUpdatePhase -Phase "committing"'),
+            completed_section.index("Invoke-UpdateTransactionAction -Action \"finalize\""),
+        )
+        self.assertLess(
+            completed_section.index("Invoke-UpdateTransactionAction -Action \"finalize\""),
+            completed_section.index("Remove-RemoteUpdateActiveMarker"),
         )
 
     def test_updaters_detect_headless_worker_only_inside_current_package(self):

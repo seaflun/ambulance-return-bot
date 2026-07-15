@@ -8,7 +8,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$packageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptPath = [System.IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
+$packageDir = Split-Path -Parent $scriptPath
 $updaterPath = Join-Path $packageDir "update_package.ps1"
 $versionPath = Join-Path $packageDir "VERSION.txt"
 $stateBase = if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { $env:TEMP } else { $env:LOCALAPPDATA }
@@ -30,6 +31,7 @@ $compatibilityTempPath = Join-Path $resultDir ".remote_update_result.$runId.tmp"
 $activeMarkerPath = Join-Path $resultDir "remote_update_active.json"
 $activeMarkerTempPath = Join-Path $resultDir ".remote_update_active.$runId.tmp"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$remoteUpdatePhases = @("discovering_runtime", "installing", "validating", "committing", "rolling_back", "restarting")
 
 function Get-PackageIdentity {
     $normalized = [System.IO.Path]::GetFullPath($packageDir).TrimEnd([char]92).ToLowerInvariant()
@@ -267,6 +269,7 @@ function Wait-WorkerRuntime {
     do {
         if (-not [string]::IsNullOrWhiteSpace($ProbeTransactionPath)) {
             Write-UpdateOwnerHeartbeat -TransactionPath $ProbeTransactionPath
+            Set-RemoteUpdatePhase -Phase "validating" -TransactionPath $ProbeTransactionPath
         }
         $state = Get-WorkerRuntimeState
         $guiCandidates = @($state.GuiProcesses | Where-Object { $ExcludedProcessIds -notcontains [int]$_.ProcessId })
@@ -406,23 +409,119 @@ function Protect-WorkerFromStaleSuccessResult {
     }
 }
 
-function Write-RemoteUpdateActiveMarker {
-    New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
+function Get-RemoteUpdateOwnerStartedUnixMs {
     $ownerProcess = [System.Diagnostics.Process]::GetCurrentProcess()
     $unixEpoch = [DateTime]::SpecifyKind([DateTime]"1970-01-01", [DateTimeKind]::Utc)
+    return [long](($ownerProcess.StartTime.ToUniversalTime() - $unixEpoch).TotalMilliseconds)
+}
+
+function Test-RemoteUpdateMarkerIdentity {
+    param([object]$Payload)
+
+    try {
+        $markerScriptValue = $Payload.script_path
+        $markerPackageValue = $Payload.package_path
+        if ($markerScriptValue -isnot [string] -or
+            $markerPackageValue -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($markerScriptValue) -or
+            [string]::IsNullOrWhiteSpace($markerPackageValue) -or
+            -not [System.IO.Path]::IsPathRooted($markerScriptValue) -or
+            -not [System.IO.Path]::IsPathRooted($markerPackageValue)) {
+            return $false
+        }
+        $markerScriptPath = [System.IO.Path]::GetFullPath($markerScriptValue).TrimEnd([char]92)
+        $markerPackagePath = [System.IO.Path]::GetFullPath($markerPackageValue).TrimEnd([char]92)
+        $expectedScriptPath = $scriptPath.TrimEnd([char]92)
+        $expectedPackagePath = [System.IO.Path]::GetFullPath($packageDir).TrimEnd([char]92)
+        return (
+            [string]$Payload.request_id -eq $RequestId -and
+            [int]$Payload.owner_pid -eq $PID -and
+            [long]$Payload.owner_started_unix_ms -eq (Get-RemoteUpdateOwnerStartedUnixMs) -and
+            [string]$Payload.owner_nonce -eq $runId -and
+            $markerScriptPath.Equals($expectedScriptPath, [System.StringComparison]::OrdinalIgnoreCase) -and
+            $markerPackagePath.Equals($expectedPackagePath, [System.StringComparison]::OrdinalIgnoreCase)
+        )
+    } catch {
+        return $false
+    }
+}
+
+function Write-RemoteUpdateMarkerPayload {
+    param([System.Collections.IDictionary]$Payload)
+
+    New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
+    $markerTempPath = $activeMarkerPath + "." + [guid]::NewGuid().ToString("N") + ".tmp"
+    try {
+        [System.IO.File]::WriteAllText($markerTempPath, ($Payload | ConvertTo-Json -Compress), $utf8NoBom)
+        Move-Item -LiteralPath $markerTempPath -Destination $activeMarkerPath -Force
+    } finally {
+        Remove-Item -LiteralPath $markerTempPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Write-RemoteUpdateActiveMarker {
+    $now = [DateTime]::UtcNow.ToString("o")
     $payload = [ordered]@{
         request_id = $RequestId
         owner_pid = $PID
         owner_nonce = $runId
-        owner_started_unix_ms = [long](($ownerProcess.StartTime.ToUniversalTime() - $unixEpoch).TotalMilliseconds)
-        started_at_utc = [DateTime]::UtcNow.ToString("o")
+        owner_started_unix_ms = Get-RemoteUpdateOwnerStartedUnixMs
+        script_path = $scriptPath
+        package_path = [System.IO.Path]::GetFullPath($packageDir)
+        transaction_path = ""
+        phase = "discovering_runtime"
+        phase_started_at = $now
+        phase_updated_at = $now
+        started_at_utc = $now
+    }
+    Write-RemoteUpdateMarkerPayload -Payload $payload
+}
+
+function Set-RemoteUpdatePhase {
+    param(
+        [ValidateSet("discovering_runtime", "installing", "validating", "committing", "rolling_back", "restarting")]
+        [string]$Phase,
+        [string]$TransactionPath = ""
+    )
+
+    if (-not ($remoteUpdatePhases -contains $Phase)) {
+        throw "Unsupported remote update phase: $Phase"
+    }
+    if (-not (Test-Path -LiteralPath $activeMarkerPath -PathType Leaf)) {
+        throw "Remote update active marker is missing."
     }
     try {
-        [System.IO.File]::WriteAllText($activeMarkerTempPath, ($payload | ConvertTo-Json -Compress), $utf8NoBom)
-        Move-Item -LiteralPath $activeMarkerTempPath -Destination $activeMarkerPath -Force
-    } finally {
-        Remove-Item -LiteralPath $activeMarkerTempPath -Force -ErrorAction SilentlyContinue
+        $existing = Get-Content -LiteralPath $activeMarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        throw "Remote update active marker is unreadable: $($_.Exception.Message)"
     }
+    if (-not (Test-RemoteUpdateMarkerIdentity -Payload $existing)) {
+        throw "Remote update active marker does not belong to this update run."
+    }
+    $safeTransactionPath = ""
+    if (-not [string]::IsNullOrWhiteSpace($TransactionPath)) {
+        $safeTransactionPath = Resolve-TransactionPath -Path $TransactionPath
+    }
+    $now = [DateTime]::UtcNow.ToString("o")
+    $phaseStartedAt = if ([string]$existing.phase -eq $Phase -and -not [string]::IsNullOrWhiteSpace([string]$existing.phase_started_at)) {
+        [string]$existing.phase_started_at
+    } else {
+        $now
+    }
+    $payload = [ordered]@{
+        request_id = $RequestId
+        owner_pid = $PID
+        owner_nonce = $runId
+        owner_started_unix_ms = Get-RemoteUpdateOwnerStartedUnixMs
+        script_path = $scriptPath
+        package_path = [System.IO.Path]::GetFullPath($packageDir)
+        transaction_path = $safeTransactionPath
+        phase = $Phase
+        phase_started_at = $phaseStartedAt
+        phase_updated_at = $now
+        started_at_utc = [string]$existing.started_at_utc
+    }
+    Write-RemoteUpdateMarkerPayload -Payload $payload
 }
 
 function Remove-RemoteUpdateActiveMarker {
@@ -432,7 +531,7 @@ function Remove-RemoteUpdateActiveMarker {
     }
     try {
         $payload = Get-Content -LiteralPath $activeMarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ([string]$payload.owner_nonce -eq $runId -and [int]$payload.owner_pid -eq $PID) {
+        if (Test-RemoteUpdateMarkerIdentity -Payload $payload) {
             Remove-Item -LiteralPath $activeMarkerPath -Force
         }
         return -not (Test-Path -LiteralPath $activeMarkerPath)
@@ -582,6 +681,7 @@ try {
         $intent = Get-TransactionRuntimeIntent -TransactionPath $transactionPath
         $workerGuiWasRunning = $workerGuiWasRunning -or $intent.Gui
         $workerHeadlessWasRunning = $workerHeadlessWasRunning -or $intent.Headless
+        Set-RemoteUpdatePhase -Phase "rolling_back" -TransactionPath $transactionPath
         Invoke-UpdateTransactionAction -Action "rollback" -TransactionPath $transactionPath
         $runtimePackageSafe = $true
         $installedVersion = Get-PackageVersion
@@ -589,6 +689,7 @@ try {
         $detail = "Interrupted remote update was rolled back safely: $beforeVersion -> $installedVersion."
         $exitCode = 1
         Write-RemoteUpdateResult
+        Set-RemoteUpdatePhase -Phase "restarting" -TransactionPath $transactionPath
         if (-not (Remove-RemoteUpdateActiveMarker)) {
             throw "Could not retire the remote update active marker before restarting the worker."
         }
@@ -600,6 +701,7 @@ try {
             -ExcludedProcessIds $initialProcessIds)
     } else {
         $transactionPath = New-TransactionPath
+        Set-RemoteUpdatePhase -Phase "installing" -TransactionPath $transactionPath
         $env:AMBULANCE_UPDATE_TRANSACTION_PATH = $transactionPath
         $env:AMBULANCE_RESTART_GUI_INTENT = if ($workerGuiWasRunning) { "true" } else { "false" }
         $env:AMBULANCE_RESTART_HEADLESS_INTENT = if ($workerHeadlessWasRunning) { "true" } else { "false" }
@@ -611,7 +713,9 @@ try {
             $status = "up_to_date"
             $detail = "Public PC is already up to date: $installedVersion."
             $exitCode = 0
+            Set-RemoteUpdatePhase -Phase "committing" -TransactionPath $transactionPath
             Write-RemoteUpdateResult
+            Set-RemoteUpdatePhase -Phase "restarting" -TransactionPath $transactionPath
             if (-not (Remove-RemoteUpdateActiveMarker)) {
                 throw "Could not retire the remote update active marker before restarting the worker."
             }
@@ -628,11 +732,13 @@ try {
             $status = "validating"
             $detail = "Remote update installed; validating the new worker runtime before commit."
             $exitCode = 0
+            Set-RemoteUpdatePhase -Phase "validating" -TransactionPath $transactionPath
             Write-RemoteUpdateResult
 
             Write-UpdateOwnerHeartbeat -TransactionPath $transactionPath
             $probeEnvironment = Suspend-UpdateControlEnvironmentForProbe -ProbeTransactionPath $transactionPath
             try {
+                Set-RemoteUpdatePhase -Phase "restarting" -TransactionPath $transactionPath
                 [void](Restart-WorkerRuntimes -StartGui $workerGuiWasRunning -StartHeadless $workerHeadlessWasRunning -ExcludedProcessIds $initialProcessIds -ProbeTransactionPath $transactionPath)
             } finally {
                 Restore-UpdateControlEnvironment -Snapshot $probeEnvironment
@@ -641,14 +747,15 @@ try {
             $status = "completed"
             $detail = "Remote update completed: $beforeVersion -> $installedVersion."
             $exitCode = 0
+            Set-RemoteUpdatePhase -Phase "committing" -TransactionPath $transactionPath
             Write-RemoteUpdateResult
+            Invoke-UpdateTransactionAction -Action "finalize" -TransactionPath $transactionPath
+            $transactionFinalized = $true
+            $runtimePackageSafe = $true
             if (-not (Remove-RemoteUpdateActiveMarker)) {
                 throw "Could not retire the remote update active marker before committing the worker."
             }
             $activeMarkerWritten = $false
-            Invoke-UpdateTransactionAction -Action "finalize" -TransactionPath $transactionPath
-            $transactionFinalized = $true
-            $runtimePackageSafe = $true
         }
     }
 } catch {
@@ -659,6 +766,7 @@ try {
         -not [string]::IsNullOrWhiteSpace($transactionPath) -and
         (Test-Path -LiteralPath $transactionPath -PathType Leaf)) {
         try {
+            Set-RemoteUpdatePhase -Phase "rolling_back" -TransactionPath $transactionPath
             Invoke-UpdateTransactionAction -Action "rollback" -TransactionPath $transactionPath
             $rollbackSucceeded = $true
             $runtimePackageSafe = $true
@@ -704,6 +812,7 @@ try {
     )
     $activeMarkerRetired = -not $activeMarkerWritten
     if ($runtimeRestartAllowed -and $resultSafeForWorker -and $failureResultDurable -and $activeMarkerWritten) {
+        Set-RemoteUpdatePhase -Phase "restarting" -TransactionPath $transactionPath
         $activeMarkerRetired = Remove-RemoteUpdateActiveMarker
         if ($activeMarkerRetired) {
             $activeMarkerWritten = $false

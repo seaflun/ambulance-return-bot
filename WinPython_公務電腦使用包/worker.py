@@ -694,23 +694,26 @@ def remote_update_active_path() -> Path:
     return update_state_root() / "AmbulanceReturnBot" / "remote_update_active.json"
 
 
+REMOTE_UPDATE_MARKER_PHASES = frozenset(
+    {
+        "discovering_runtime",
+        "installing",
+        "validating",
+        "committing",
+        "rolling_back",
+        "restarting",
+    }
+)
+
+
 def remote_update_wrapper_is_active(request_id: str, *, max_age_seconds: float = 3600.0) -> bool:
     path = remote_update_active_path()
     if not path.is_file():
         return False
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
-        if not isinstance(payload, dict):
-            return False
-        owner_pid = int(payload.get("owner_pid") or 0)
-        expected_start = int(payload.get("owner_started_unix_ms") or 0)
-        actual_start = process_start_unix_ms(owner_pid)
         return (
-            str(payload.get("request_id") or "") == request_id
-            and process_id_is_running(owner_pid)
-            and bool(str(payload.get("owner_nonce") or "").strip())
-            and actual_start is not None
-            and abs(actual_start - expected_start) <= 10
+            _remote_update_marker_owner_is_active(payload, request_id)
             and 0 <= time.time() - path.stat().st_mtime <= max(0.0, float(max_age_seconds))
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -729,10 +732,108 @@ def remote_update_marker_is_healthy(
         return False
     if not isinstance(payload, dict):
         return False
-    expected_request_id = str(request_id or payload.get("request_id") or "").strip()
+    marker_request_id = payload.get("request_id")
+    if not isinstance(marker_request_id, str) or not marker_request_id.strip():
+        return False
+    expected_request_id = str(request_id or marker_request_id).strip()
     if not expected_request_id:
         return False
-    return remote_update_wrapper_is_active(expected_request_id, max_age_seconds=max_age_seconds)
+    if not _remote_update_marker_owner_is_active(payload, expected_request_id):
+        return False
+    if not _remote_update_marker_path_matches(payload.get("script_path"), Path(__file__).with_name("REMOTE_UPDATE_PACKAGE.ps1")):
+        return False
+    if not _remote_update_marker_path_matches(payload.get("package_path"), Path(__file__).parent):
+        return False
+    if not _remote_update_marker_transaction_path_is_safe(payload.get("transaction_path")):
+        return False
+    phase_value = payload.get("phase")
+    if not isinstance(phase_value, str) or phase_value not in REMOTE_UPDATE_MARKER_PHASES:
+        return False
+    phase_started_at = _parse_remote_update_marker_time(payload.get("phase_started_at"))
+    phase_updated_at = _parse_remote_update_marker_time(payload.get("phase_updated_at"))
+    if phase_started_at is None or phase_updated_at is None or phase_started_at > phase_updated_at:
+        return False
+    age_seconds = (datetime.now(timezone.utc) - phase_updated_at).total_seconds()
+    return 0 <= age_seconds <= max(0.0, float(max_age_seconds))
+
+
+def _remote_update_marker_owner_is_active(payload: object, request_id: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    try:
+        marker_request_id = payload.get("request_id")
+        owner_pid = payload.get("owner_pid")
+        expected_start = payload.get("owner_started_unix_ms")
+        owner_nonce = payload.get("owner_nonce")
+        if (
+            not isinstance(marker_request_id, str)
+            or not marker_request_id.strip()
+            or not isinstance(owner_pid, int)
+            or isinstance(owner_pid, bool)
+            or owner_pid <= 0
+            or not isinstance(expected_start, int)
+            or isinstance(expected_start, bool)
+            or expected_start <= 0
+            or not isinstance(owner_nonce, str)
+            or not owner_nonce.strip()
+        ):
+            return False
+        actual_start = process_start_unix_ms(owner_pid)
+        return (
+            marker_request_id == str(request_id or "")
+            and process_id_is_running(owner_pid)
+            and actual_start is not None
+            and abs(actual_start - expected_start) <= 10
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _remote_update_marker_path_matches(value: object, expected_path: Path) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        actual_candidate = Path(value)
+        if not actual_candidate.is_absolute():
+            return False
+        actual = actual_candidate.resolve()
+        expected = Path(expected_path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return os.path.normcase(str(actual)) == os.path.normcase(str(expected))
+
+
+def _remote_update_marker_transaction_path_is_safe(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value == "":
+        return True
+    try:
+        transaction_candidate = Path(value)
+        if not transaction_candidate.is_absolute():
+            return False
+        transaction_path = transaction_candidate.resolve()
+        transaction_dir = (update_state_root() / "AmbulanceReturnBot" / "update_transactions").resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    prefix = package_update_identity(Path(__file__).parent) + "-"
+    return (
+        transaction_path.parent == transaction_dir
+        and transaction_path.suffix == ".json"
+        and transaction_path.name.startswith(prefix)
+    )
+
+
+def _parse_remote_update_marker_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 def process_start_unix_ms(pid: int) -> int | None:

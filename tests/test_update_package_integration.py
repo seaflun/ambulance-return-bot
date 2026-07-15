@@ -58,6 +58,8 @@ from pathlib import Path
 transaction = Path(os.environ["AMBULANCE_UPDATE_PROBE_TRANSACTION_PATH"])
 ready = Path(f"{transaction}.probe-{os.getpid()}.ready")
 version = Path(__file__).with_name("VERSION.txt").read_text(encoding="utf-8-sig").strip()
+marker_path = Path(os.environ["LOCALAPPDATA"]) / "AmbulanceReturnBot" / "remote_update_active.json"
+phase_history_path = Path(__file__).with_name("phase_history.json")
 controls = sorted(name for name in os.environ if name.startswith("AMBULANCE_") and "UPDATE" in name)
 payload = {
     "pid": os.getpid(),
@@ -70,7 +72,18 @@ temp = Path(f"{ready}.tmp")
 temp.write_text(json.dumps(payload), encoding="utf-8")
 os.replace(temp, ready)
 Path(__file__).with_name("probe_env.json").write_text(json.dumps(payload), encoding="utf-8")
+phase_history = []
 while transaction.exists():
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        entry = {"phase": marker.get("phase"), "phase_updated_at": marker.get("phase_updated_at")}
+        if not phase_history or entry != phase_history[-1]:
+            phase_history.append(entry)
+            temporary_history = Path(f"{phase_history_path}.tmp")
+            temporary_history.write_text(json.dumps(phase_history), encoding="utf-8")
+            os.replace(temporary_history, phase_history_path)
+    except (OSError, json.JSONDecodeError):
+        pass
     time.sleep(0.05)
 ready.unlink(missing_ok=True)
 time.sleep(0.5)
@@ -283,6 +296,13 @@ time.sleep(0.5)
                     probe["inherited_update_controls"],
                     ["AMBULANCE_UPDATE_PROBE_TRANSACTION_PATH"],
                 )
+                phase_history = json.loads((installed / "phase_history.json").read_text(encoding="utf-8"))
+                validation_heartbeats = {
+                    entry["phase_updated_at"]
+                    for entry in phase_history
+                    if entry.get("phase") == "validating" and entry.get("phase_updated_at")
+                }
+                self.assertGreaterEqual(len(validation_heartbeats), 2)
                 transaction_dir = state / "AmbulanceReturnBot" / "update_transactions"
                 self.assertEqual(list(transaction_dir.glob("*.json")), [])
             finally:
