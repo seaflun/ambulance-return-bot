@@ -57,4 +57,3 @@
   git add -- WinPython_公務電腦使用包/install_startup_shortcut.ps1 scripts/build_public_duty_package.ps1 tests/test_worker_gui.py docs/superpowers/specs/2026-07-15-watchdog-hidden-launch-design.md docs/superpowers/plans/2026-07-15-watchdog-hidden-launch.md
   git commit -m "fix: hide public-duty watchdog console"
   ```
-
