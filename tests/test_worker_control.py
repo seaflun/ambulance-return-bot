@@ -62,6 +62,13 @@ class WorkerControlTests(unittest.TestCase):
 
             def control(payload: dict[str, object]) -> dict[str, object]:
                 self.assertTrue(worker_health.worker_heartbeat_path().exists())
+                local_heartbeat = json.loads(
+                    worker_health.worker_heartbeat_path().read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    local_heartbeat["process_started_at"],
+                    payload["process_started_at"],
+                )
                 payloads.append(payload)
                 return {
                     "ok": True,

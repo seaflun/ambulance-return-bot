@@ -881,8 +881,8 @@ def process_start_unix_ms(pid: int) -> int | None:
 def worker_process_started_at() -> str:
     started_unix_ms = process_start_unix_ms(os.getpid())
     if started_unix_ms is not None:
-        return datetime.fromtimestamp(started_unix_ms / 1000, timezone.utc).isoformat(timespec="seconds")
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return datetime.fromtimestamp(started_unix_ms / 1000, timezone.utc).isoformat(timespec="milliseconds")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def maybe_run_case_lookup(

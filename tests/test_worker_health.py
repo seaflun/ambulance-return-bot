@@ -23,6 +23,7 @@ class WorkerHealthTests(unittest.TestCase):
                     state="online",
                     execution_mode="gui",
                     package_path="C:/package",
+                    process_started_at="2026-07-15T12:00:00.000+00:00",
                 )
 
             payload = worker_health.build_heartbeat(
@@ -32,6 +33,7 @@ class WorkerHealthTests(unittest.TestCase):
                 state="idle",
                 execution_mode="gui",
                 package_path="C:/package",
+                process_started_at="2026-07-15T12:00:00.000+00:00",
             )
 
         self.assertEqual(payload["state"], "idle")
@@ -45,6 +47,7 @@ class WorkerHealthTests(unittest.TestCase):
                 "state",
                 "execution_mode",
                 "package_path",
+                "process_started_at",
                 "activity",
                 "busy_reason",
                 "request_id",

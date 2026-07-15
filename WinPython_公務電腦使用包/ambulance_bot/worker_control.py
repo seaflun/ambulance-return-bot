@@ -180,6 +180,7 @@ class WorkerControlLoop:
             state=current.state,
             execution_mode=str(self._execution_mode() or "").strip(),
             package_path=str(self._package_path() or "").strip(),
+            process_started_at=self._process_started_at,
             activity=current.activity,
             busy_reason=current.busy_reason,
             request_id=current.request_id,
@@ -333,4 +334,4 @@ def _read_json_object(path: Path) -> dict[str, object]:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
