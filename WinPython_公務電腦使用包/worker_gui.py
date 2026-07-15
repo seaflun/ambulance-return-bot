@@ -20,7 +20,7 @@ import customtkinter as ctk
 from dotenv import load_dotenv
 
 import worker
-from ambulance_bot import worker_routes
+from ambulance_bot import worker_health, worker_routes
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.duty_credentials import (
     DutyCredential,
@@ -367,6 +367,10 @@ class WorkerGui(ctk.CTk):
         self.worker_thread: threading.Thread | None = None
         self.local_web_process: subprocess.Popen | None = None
         self.worker_started_at = ""
+        self.worker_stopped_at: float | None = None
+        self.worker_exit_error = ""
+        self.worker_restart_times: list[float] = []
+        self._worker_restart_rate_limited_reported = False
 
         self.server_url = tk.StringVar(value=initial_worker_server_url(os.getenv("WORKER_SERVER_URL", "")))
         self.local_web_url = tk.StringVar(value=local_web_url())
@@ -395,6 +399,7 @@ class WorkerGui(ctk.CTk):
         self.after(1200, self._refresh_startup_launcher)
         self.after(250, self._drain_log)
         self.after(1500, self._auto_hide_after_startup)
+        self._schedule_worker_supervisor()
 
     def _configure_styles(self) -> None:
         theme = GUI_THEME
@@ -883,20 +888,97 @@ class WorkerGui(ctk.CTk):
         os.environ["WORKER_RUN_ONCE"] = "false"
         os.environ["WORKER_AUTO_CLAIM_TASKS"] = "true"
         self.worker_started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.worker_stopped_at = None
+        self.worker_exit_error = ""
+        self._worker_restart_rate_limited_reported = False
         self.worker_status.set(f"執行中，啟動於 {self.worker_started_at}")
         self.worker_thread = threading.Thread(target=self._run_worker, name="ambulance-worker", daemon=True)
         self.worker_thread.start()
         self._log("worker 已啟動。")
 
     def _run_worker(self) -> None:
+        error: BaseException | None = None
         try:
             os.environ["WORKER_RUNTIME_MODE"] = "gui"
             writer = QueueTextWriter(self.log_queue)
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 worker.main()
+        except BaseException as exc:
+            error = exc
+        finally:
+            try:
+                self.after(0, lambda: WorkerGui._record_worker_thread_exit(self, error))
+            except (tk.TclError, RuntimeError):
+                pass
+
+    def _record_worker_thread_exit(self, error: BaseException | None = None) -> None:
+        self.worker_stopped_at = time.monotonic()
+        error_detail = str(error).strip() if error is not None else ""
+        self.worker_exit_error = ""
+        if error is not None:
+            self.worker_exit_error = type(error).__name__
+            if error_detail:
+                self.worker_exit_error = f"{self.worker_exit_error}: {error_detail}"
+        self.worker_status.set("已停止")
+        if error is None:
+            self._log("worker 已停止。")
+        else:
+            self._log(f"worker 異常結束：{self.worker_exit_error}")
+
+    def _schedule_worker_supervisor(self) -> None:
+        try:
+            self.after(5000, self._supervise_worker_thread)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _supervise_worker_thread(self) -> None:
+        try:
+            now_monotonic = time.monotonic()
+            worker_thread = self.worker_thread
+            thread_alive = worker_thread is not None and worker_thread.is_alive()
+            activity_active = False
+            update_active = False
+            if not thread_alive and self.worker_stopped_at is not None:
+                activity_active = self._worker_supervisor_activity_active()
+                update_active = self._worker_supervisor_update_active()
+            decision = worker_health.decide_gui_restart(
+                now_monotonic=now_monotonic,
+                thread_alive=thread_alive,
+                stopped_at=self.worker_stopped_at,
+                activity_active=activity_active,
+                update_active=update_active,
+                restart_times=self.worker_restart_times,
+            )
+            self.worker_restart_times = list(decision.retained_restart_times)
+            if decision.should_restart:
+                self.worker_restart_times.append(now_monotonic)
+                self._worker_restart_rate_limited_reported = False
+                self._log("worker 已停止，安全條件確認後重新啟動。")
+                self._restart_worker()
+            elif decision.reason == "restart_rate_limited" and not self._worker_restart_rate_limited_reported:
+                self.log_queue.put("worker 自動重啟次數過多，已暫停自動重啟。")
+                self._worker_restart_rate_limited_reported = True
         except Exception as exc:
-            self.log_queue.put(f"worker 結束：{exc}")
-            self.worker_status.set("已停止")
+            self._log(f"worker 監督器延後處理：{type(exc).__name__}")
+        finally:
+            self._schedule_worker_supervisor()
+
+    def _worker_supervisor_activity_active(self) -> bool:
+        artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
+        try:
+            busy_active = bool(worker.remote_update_busy_reason(artifacts_dir))
+            fresh_activity = worker_health.activity_is_fresh(120.0)
+            return busy_active or fresh_activity
+        except Exception as exc:
+            self._log(f"worker 活動狀態無法確認：{type(exc).__name__}")
+            return True
+
+    def _worker_supervisor_update_active(self) -> bool:
+        try:
+            return worker.remote_update_marker_is_healthy()
+        except Exception as exc:
+            self._log(f"worker 更新狀態無法確認：{type(exc).__name__}")
+            return True
 
     def _test_connection(self) -> None:
         configured_url = self.server_url.get()

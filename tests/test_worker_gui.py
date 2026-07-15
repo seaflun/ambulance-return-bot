@@ -2,6 +2,7 @@ import json
 import os
 import queue
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -9,8 +10,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import worker_gui
+from ambulance_bot import worker_health, worker_routes
 from ambulance_bot.duty_credentials import DutyCredential, load_synced_worker_credential
-from ambulance_bot import worker_routes
 
 
 class WorkerGuiEnvTests(unittest.TestCase):
@@ -24,6 +25,125 @@ class WorkerGuiEnvTests(unittest.TestCase):
         }
         values.update(overrides)
         return SimpleNamespace(**values)
+
+    @staticmethod
+    def _supervisor_stub(**overrides):
+        values = {
+            "worker_thread": SimpleNamespace(is_alive=lambda: False),
+            "worker_stopped_at": None,
+            "worker_exit_error": "",
+            "worker_restart_times": [],
+            "_worker_restart_rate_limited_reported": False,
+            "worker_status": mock.Mock(),
+            "log_queue": queue.Queue(),
+            "after": mock.Mock(),
+            "_restart_worker": mock.Mock(),
+            "_log": mock.Mock(),
+            "_worker_supervisor_activity_active": mock.Mock(return_value=False),
+            "_worker_supervisor_update_active": mock.Mock(return_value=False),
+            "_schedule_worker_supervisor": mock.Mock(),
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def test_run_worker_records_normal_return_on_gui_thread(self):
+        gui = self._supervisor_stub()
+        with mock.patch.object(worker_gui.worker, "main", return_value=None):
+            worker_gui.WorkerGui._run_worker(gui)
+
+        gui.worker_status.set.assert_not_called()
+        callback = gui.after.call_args.args[1]
+        callback()
+
+        self.assertIsNotNone(gui.worker_stopped_at)
+        self.assertEqual(gui.worker_status.set.call_args.args[0], "已停止")
+        self.assertEqual(gui.worker_exit_error, "")
+
+    def test_run_worker_records_exception_on_gui_thread(self):
+        gui = self._supervisor_stub()
+        with mock.patch.object(worker_gui.worker, "main", side_effect=RuntimeError("worker crashed")):
+            worker_gui.WorkerGui._run_worker(gui)
+
+        gui.worker_status.set.assert_not_called()
+        gui.after.call_args.args[1]()
+
+        self.assertEqual(gui.worker_status.set.call_args.args[0], "已停止")
+        self.assertEqual(gui.worker_exit_error, "RuntimeError: worker crashed")
+
+    def test_run_worker_tolerates_a_closed_gui_when_queueing_exit_callback(self):
+        gui = self._supervisor_stub(after=mock.Mock(side_effect=RuntimeError("main thread is not in main loop")))
+        with mock.patch.object(worker_gui.worker, "main", return_value=None):
+            worker_gui.WorkerGui._run_worker(gui)
+
+        gui.worker_status.set.assert_not_called()
+
+    def test_supervisor_restarts_only_after_safe_grace(self):
+        gui = self._supervisor_stub()
+        gui.worker_stopped_at = time.monotonic() - 16
+
+        worker_gui.WorkerGui._supervise_worker_thread(gui)
+
+        gui._restart_worker.assert_called_once()
+        self.assertEqual(len(gui.worker_restart_times), 1)
+        gui._schedule_worker_supervisor.assert_called_once()
+
+    def test_supervisor_does_not_restart_during_activity_or_update(self):
+        for activity, update in ((True, False), (False, True)):
+            with self.subTest(activity=activity, update=update):
+                gui = self._supervisor_stub()
+                gui.worker_stopped_at = time.monotonic() - 16
+                gui._worker_supervisor_activity_active.return_value = activity
+                gui._worker_supervisor_update_active.return_value = update
+
+                worker_gui.WorkerGui._supervise_worker_thread(gui)
+
+                gui._restart_worker.assert_not_called()
+                gui._schedule_worker_supervisor.assert_called_once()
+
+    def test_supervisor_rate_limits_fourth_restart_in_ten_minutes(self):
+        now = time.monotonic()
+        gui = self._supervisor_stub()
+        gui.worker_stopped_at = now - 16
+        gui.worker_restart_times = [now - 100, now - 50, now - 10]
+
+        worker_gui.WorkerGui._supervise_worker_thread(gui)
+
+        gui._restart_worker.assert_not_called()
+        self.assertIn("過多", gui.log_queue.get_nowait())
+
+    def test_supervisor_activity_guard_uses_busy_reason_and_fresh_activity(self):
+        gui = self._supervisor_stub()
+        with mock.patch.object(worker_gui.worker, "remote_update_busy_reason", return_value="") as busy_reason, mock.patch.object(
+            worker_health,
+            "activity_is_fresh",
+            return_value=True,
+        ) as activity_fresh:
+            active = worker_gui.WorkerGui._worker_supervisor_activity_active(gui)
+
+        self.assertTrue(active)
+        busy_reason.assert_called_once()
+        activity_fresh.assert_called_once_with(120.0)
+
+    def test_supervisor_activity_guard_checks_fresh_activity_even_with_busy_reason(self):
+        gui = self._supervisor_stub()
+        with mock.patch.object(worker_gui.worker, "remote_update_busy_reason", return_value="manual task active") as busy_reason, mock.patch.object(
+            worker_health,
+            "activity_is_fresh",
+            return_value=False,
+        ) as activity_fresh:
+            active = worker_gui.WorkerGui._worker_supervisor_activity_active(gui)
+
+        self.assertTrue(active)
+        busy_reason.assert_called_once()
+        activity_fresh.assert_called_once_with(120.0)
+
+    def test_supervisor_update_guard_uses_exact_marker_health(self):
+        gui = self._supervisor_stub()
+        with mock.patch.object(worker_gui.worker, "remote_update_marker_is_healthy", return_value=True) as marker_health:
+            active = worker_gui.WorkerGui._worker_supervisor_update_active(gui)
+
+        self.assertTrue(active)
+        marker_health.assert_called_once_with()
 
     def test_gui_theme_uses_pastel_orange_white_and_deep_navy(self):
         self.assertEqual(worker_gui.GUI_THEME["bg"], "#fff7ef")
