@@ -95,6 +95,22 @@
     }
     .version-label { color: var(--muted); font-size: var(--text-sm); }
     .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
+    .worker-health-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: start;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .worker-health-card.online { border-color: #b8d7c1; }
+    .worker-health-card.offline { border-color: #ecc7c2; }
+    .worker-health-title { font-size: 18px; font-weight: 820; }
+    .worker-health-meta { display: grid; gap: 4px; margin-top: 9px; color: var(--muted); font-size: var(--text-sm); }
     .remote-update-card {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -233,6 +249,7 @@
       header { align-items: stretch; flex-direction: column; }
       .button { width: 100%; }
       .card-head { grid-template-columns: 1fr; }
+      .worker-health-card { grid-template-columns: 1fr; }
       .remote-update-card { grid-template-columns: 1fr; }
       .remote-update-card form, .remote-update-card button { width: 100%; }
       .site-grid { grid-template-columns: 1fr 1fr; }
@@ -262,6 +279,22 @@
       </section>
     {% endif %}
 
+    {% if worker_health_enabled %}
+      <section class="worker-health-card {{ 'online' if worker_health.online else 'offline' }}" aria-label="公務電腦心跳">
+        <div>
+          <div class="worker-health-title">公務電腦心跳</div>
+          <div class="worker-health-meta">
+            <div>公務電腦：{{ worker_health.worker_id or '尚未辨識' }}</div>
+            <div>最後心跳：{{ worker_health.last_seen_at or '尚未收到' }}</div>
+            <div>心跳版本：{{ worker_health.package_version or '未標示' }}</div>
+            <div>最後任務回報：{{ worker_health.last_task_report_version or '尚未回報' }}</div>
+            <div>路徑：{{ worker_health.route_label }}</div>
+          </div>
+        </div>
+        <span class="status {{ worker_health.status_class }}">{{ worker_health.status_label }}</span>
+      </section>
+    {% endif %}
+
     {% if remote_update_enabled %}
       <section class="remote-update-card" aria-label="遠端更新公務電腦">
         <div>
@@ -276,7 +309,11 @@
             <p class="remote-update-detail">{{ remote_update.detail }}</p>
           {% endif %}
           <div class="remote-update-meta">
-            <span>目前版本：{{ remote_update.installed_version or remote_update.before_version or version_info.version }}</span>
+            {% if worker_health.package_version %}
+              <span>目前版本：{% if worker_health.online %}{{ worker_health.package_version }}{% else %}最後心跳版本 {{ worker_health.package_version }}{% endif %}</span>
+            {% else %}
+              <span>目前版本：尚未收到心跳</span>
+            {% endif %}
             {% if remote_update.worker_id %}<span>公務電腦：{{ remote_update.worker_id }}</span>{% endif %}
             {% if remote_update.requested_at %}<span>下達：{{ remote_update.requested_at }}</span>{% endif %}
             {% if remote_update.updated_at %}<span>更新：{{ remote_update.updated_at }}</span>{% endif %}

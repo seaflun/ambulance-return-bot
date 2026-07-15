@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -105,6 +106,9 @@ PUBLIC_PC_REPORT_RETENTION_DAYS = 7
 TASK_FORM_COMPLETED_HISTORY_HOURS = 48
 TASK_FORM_RECENT_TASK_LIMIT = 5
 TASK_FORM_RECENT_TASK_SCAN_LIMIT = 500
+WORKER_HEARTBEAT_ONLINE_SECONDS = 45
+WORKER_HEARTBEAT_STATES = frozenset({"starting", "idle", "busy", "update_handoff", "recovering", "stopping"})
+WORKER_ROUTE_IDENTITY_STATUSES = frozenset({"verified", "unverified"})
 PUBLIC_PC_LEGACY_RECONCILE_LIMIT = 500
 PUBLIC_PC_PENDING_REPORT_FLUSH_INTERVAL_SECONDS = 30
 PUBLIC_PC_LEGACY_RECONCILE_ERRORS = (
@@ -627,7 +631,8 @@ def admin_public_pc():
     reports = public_pc_reports()
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()
-    remote_update_enabled = not public_pc_reporting_enabled() and bool(csrf_token) and bool(admin_token)
+    worker_health_enabled = not public_pc_reporting_enabled()
+    remote_update_enabled = worker_health_enabled and bool(csrf_token) and bool(admin_token)
     result_filter = str(request.args.get("result") or "all").strip().lower()
     if result_filter not in {"all", "success", "failed"}:
         result_filter = "all"
@@ -647,6 +652,8 @@ def admin_public_pc():
         report_counts=report_counts,
         result_filter=result_filter,
         version_info=worker_admin_version_info(reports),
+        worker_health=worker_heartbeat_admin_view(reports),
+        worker_health_enabled=worker_health_enabled,
         remote_update=remote_update_admin_view() if remote_update_enabled else {},
         remote_update_enabled=remote_update_enabled,
         remote_update_csrf_token=csrf_token if remote_update_enabled else "",
@@ -722,6 +729,60 @@ def delete_vehicle_option():
         errors=[],
         message=f"已刪除 {label}",
     )
+
+
+@app.get("/worker/identity")
+def worker_identity():
+    if not worker_authorized():
+        abort(403)
+    with _public_pc_report_lock:
+        server = _worker_server_identity_unlocked()
+    return jsonify({"ok": True, "server": server})
+
+
+@app.post("/worker/control")
+def worker_control():
+    if not worker_authorized():
+        abort(403)
+    payload = _normalize_worker_control_payload(request.get_json(silent=True))
+    received_at = datetime.now()
+    with _public_pc_report_lock:
+        server = _worker_server_identity_unlocked()
+        heartbeat = _upsert_worker_heartbeat_unlocked(payload, received_at)
+        route = payload["route"]
+        route_is_verified = (
+            isinstance(route, Mapping)
+            and route["identity_status"] == "verified"
+            and route["instance_id"] == server["instance_id"]
+        )
+        command, command_delivery = _claim_remote_update_command_unlocked(
+            str(payload["worker_id"]),
+            str(payload["package_version"]),
+            allow_claim=route_is_verified,
+        )
+        remote_update_delivery = ""
+        remote_update = payload.get("remote_update")
+        if isinstance(remote_update, Mapping):
+            if route_is_verified:
+                status_payload = {**remote_update, "worker_id": payload["worker_id"]}
+                status_command, remote_update_delivery = _apply_remote_update_status_unlocked(
+                    str(remote_update["request_id"]), status_payload
+                )
+                if status_command is not None:
+                    command = status_command
+            else:
+                remote_update_delivery = "unverified_route"
+    response = {
+        "ok": True,
+        "received_at": received_at.isoformat(timespec="seconds"),
+        "server": server,
+        "heartbeat": heartbeat,
+        "command": command,
+        "command_delivery": command_delivery,
+    }
+    if remote_update_delivery:
+        response["remote_update_delivery"] = remote_update_delivery
+    return jsonify(response)
 
 
 @app.get("/worker/next-task")
@@ -867,18 +928,11 @@ def worker_remote_update():
     worker_id = str(request.args.get("worker_id") or "public-duty-pc").strip()
     package_version = str(request.args.get("package_version") or "").strip()
     with _public_pc_report_lock:
-        command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
-        if str(command.get("status") or "") not in REMOTE_UPDATE_ACTIVE_STATUSES:
-            return jsonify({"ok": True, "command": None})
-        owner = str(command.get("worker_id") or "").strip()
-        if owner and owner != worker_id:
-            return jsonify({"ok": True, "command": None})
-        if not owner:
-            command["worker_id"] = worker_id
-        if package_version and not str(command.get("before_version") or "").strip():
-            command["before_version"] = package_version
-        command["last_seen_at"] = datetime.now().isoformat(timespec="seconds")
-        write_json_atomic(remote_update_command_file(), command)
+        command, _delivery = _claim_remote_update_command_unlocked(
+            worker_id,
+            package_version,
+            allow_claim=True,
+        )
     return jsonify({"ok": True, "command": command})
 
 
@@ -887,41 +941,17 @@ def worker_remote_update_status(request_id: str):
     if not worker_authorized():
         abort(403)
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        abort(400)
     status = str(data.get("status") or "").strip()
     if status not in REMOTE_UPDATE_STATUSES:
         abort(400)
     with _public_pc_report_lock:
-        command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
-        if str(command.get("request_id") or "") != request_id:
-            abort(404)
-        current_status = str(command.get("status") or "").strip()
-        owner = str(command.get("worker_id") or "").strip()
-        supplied_worker_id = str(data.get("worker_id") or "").strip()
-        if owner:
-            idempotent_terminal_retry = current_status in REMOTE_UPDATE_TERMINAL_STATUSES and status == current_status
-            if supplied_worker_id != owner and not (idempotent_terminal_retry and not supplied_worker_id):
-                abort(409)
-        else:
-            if not supplied_worker_id:
-                abort(409)
-            command["worker_id"] = supplied_worker_id
-        if current_status in REMOTE_UPDATE_TERMINAL_STATUSES:
-            if status == current_status:
-                return jsonify({"ok": True, "command": command, "ack_id": request_id})
-            abort(409)
-        if status not in REMOTE_UPDATE_TRANSITIONS.get(current_status, set()):
-            abort(409)
-        now = datetime.now().isoformat(timespec="seconds")
-        command["status"] = status
-        command["updated_at"] = now
-        for key in ("detail", "before_version", "installed_version", "exit_code"):
-            if key in data:
-                command[key] = data[key]
-        if status == "updating":
-            command["started_at"] = now
-        if status in REMOTE_UPDATE_TERMINAL_STATUSES:
-            command["completed_at"] = now
-        write_json_atomic(remote_update_command_file(), command)
+        command, outcome = _apply_remote_update_status_unlocked(request_id, data)
+    if outcome == "not_found":
+        abort(404)
+    if outcome in {"owner_conflict", "terminal_conflict", "transition_conflict"}:
+        abort(409)
     return jsonify({"ok": True, "command": command, "ack_id": request_id})
 
 
@@ -1066,14 +1096,6 @@ def sinposmart_admin_version_info(selected_day: dict | None = None) -> dict[str,
 
 def worker_admin_version_info(reports: list[dict] | None = None) -> dict[str, str]:
     backend_version = package_version() or "未標示"
-    for report in reports or []:
-        version = str(report.get("package_version") or "").strip()
-        if version:
-            return {
-                "label": "SinpoSmart - 救護Worker",
-                "version": backend_version,
-                "detail": f"NAS 後台；公務電腦最後回報：{version}",
-            }
     return {"label": "SinpoSmart - 救護Worker", "version": backend_version, "detail": "NAS 後台"}
 
 
@@ -1254,6 +1276,156 @@ def public_pc_pending_report_spool_dir() -> Path:
     return artifacts_dir / "public_pc" / "pending_event_spool"
 
 
+def worker_server_identity_file() -> Path:
+    return artifacts_dir / "public_pc" / "worker_server_identity.json"
+
+
+def worker_heartbeat_file() -> Path:
+    return artifacts_dir / "public_pc" / "worker_heartbeat.json"
+
+
+def _worker_server_identity_unlocked() -> dict[str, str]:
+    path = worker_server_identity_file()
+    payload: dict[str, object] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = {}
+        if isinstance(loaded, dict):
+            payload = loaded
+    instance_id = str(payload.get("instance_id") or "").strip()
+    if not instance_id:
+        instance_id = str(uuid4())
+        write_json_atomic(path, {"instance_id": instance_id})
+    return {
+        "instance_id": instance_id,
+        "version": package_version(),
+        "deployment": "ambulance_return_bot_nas",
+    }
+
+
+def worker_server_identity() -> dict[str, str]:
+    with _public_pc_report_lock:
+        return _worker_server_identity_unlocked()
+
+
+def _worker_control_text(
+    data: Mapping[str, object],
+    key: str,
+    limit: int,
+    *,
+    required: bool = False,
+) -> str:
+    value = data.get(key, "")
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        abort(400)
+    text = value.strip()
+    if len(text) > limit or (required and not text):
+        abort(400)
+    return text
+
+
+def _normalize_worker_control_remote_update(data: object) -> dict[str, object] | None:
+    if data is None:
+        return None
+    if not isinstance(data, Mapping):
+        abort(400)
+    request_id = _worker_control_text(data, "request_id", 128, required=True)
+    status = _worker_control_text(data, "status", 64, required=True)
+    if status not in {"waiting_busy", "waiting_idle"}:
+        abort(400)
+    return {
+        "request_id": request_id,
+        "status": status,
+        "detail": _worker_control_text(data, "detail", 512),
+    }
+
+
+def _normalize_worker_control_payload(data: object) -> dict[str, object]:
+    if not isinstance(data, Mapping):
+        abort(400)
+    route_data = data.get("route")
+    if not isinstance(route_data, Mapping):
+        abort(400)
+    pid = data.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        abort(400)
+    state = _worker_control_text(data, "state", 64, required=True)
+    if state not in WORKER_HEARTBEAT_STATES:
+        abort(400)
+    identity_status = _worker_control_text(route_data, "identity_status", 32, required=True)
+    if identity_status not in WORKER_ROUTE_IDENTITY_STATUSES:
+        abort(400)
+    return {
+        "worker_id": _worker_control_text(data, "worker_id", 128, required=True),
+        "package_version": _worker_control_text(data, "package_version", 128, required=True),
+        "pid": pid,
+        "process_started_at": _worker_control_text(data, "process_started_at", 64, required=True),
+        "execution_mode": _worker_control_text(data, "execution_mode", 64, required=True),
+        "package_path": _worker_control_text(data, "package_path", 512, required=True),
+        "state": state,
+        "activity": _worker_control_text(data, "activity", 128),
+        "busy_reason": _worker_control_text(data, "busy_reason", 512),
+        "request_id": _worker_control_text(data, "request_id", 128),
+        "route": {
+            "name": _worker_control_text(route_data, "name", 64, required=True),
+            "identity_status": identity_status,
+            "instance_id": _worker_control_text(route_data, "instance_id", 128),
+        },
+        "remote_update": _normalize_worker_control_remote_update(data.get("remote_update")),
+    }
+
+
+def _read_worker_heartbeats_unlocked() -> dict[str, dict[str, object]]:
+    path = worker_heartbeat_file()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    workers = payload.get("workers") if isinstance(payload, dict) else None
+    if not isinstance(workers, Mapping):
+        return {}
+    heartbeats: dict[str, dict[str, object]] = {}
+    for worker_id, record in workers.items():
+        normalized_worker_id = str(worker_id or "").strip()
+        if normalized_worker_id and isinstance(record, Mapping):
+            heartbeats[normalized_worker_id] = dict(record)
+    return heartbeats
+
+
+def _upsert_worker_heartbeat_unlocked(data: Mapping[str, object], received_at: datetime) -> dict[str, object]:
+    route = data.get("route")
+    normalized_route = route if isinstance(route, Mapping) else {}
+    worker_id = str(data.get("worker_id") or "").strip()
+    heartbeat = {
+        "worker_id": worker_id,
+        "package_version": str(data.get("package_version") or "").strip(),
+        "pid": int(data.get("pid") or 0),
+        "process_started_at": str(data.get("process_started_at") or "").strip(),
+        "execution_mode": str(data.get("execution_mode") or "").strip(),
+        "package_path": str(data.get("package_path") or "").strip(),
+        "state": str(data.get("state") or "").strip(),
+        "activity": str(data.get("activity") or "").strip(),
+        "busy_reason": str(data.get("busy_reason") or "").strip(),
+        "request_id": str(data.get("request_id") or "").strip(),
+        "route": {
+            "name": str(normalized_route.get("name") or "").strip(),
+            "identity_status": str(normalized_route.get("identity_status") or "").strip(),
+            "instance_id": str(normalized_route.get("instance_id") or "").strip(),
+        },
+        "received_at": received_at.isoformat(timespec="seconds"),
+    }
+    heartbeats = _read_worker_heartbeats_unlocked()
+    heartbeats[worker_id] = heartbeat
+    write_json_atomic(worker_heartbeat_file(), {"workers": heartbeats})
+    return heartbeat
+
+
 def remote_update_command_file() -> Path:
     return artifacts_dir / "public_pc" / "remote_update.json"
 
@@ -1320,6 +1492,70 @@ def _expire_remote_update_command_unlocked(command: dict) -> dict:
     }
     write_json_atomic(remote_update_command_file(), expired)
     return expired
+
+
+def _claim_remote_update_command_unlocked(
+    worker_id: str,
+    package_version: str,
+    *,
+    allow_claim: bool,
+) -> tuple[dict[str, object] | None, str]:
+    command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+    if str(command.get("status") or "") not in REMOTE_UPDATE_ACTIVE_STATUSES:
+        return None, "no_active_command"
+    if not allow_claim:
+        return None, "unverified_route"
+    owner = str(command.get("worker_id") or "").strip()
+    if owner and owner != worker_id:
+        return None, "owned_by_other_worker"
+    if not owner:
+        command["worker_id"] = worker_id
+    if package_version and not str(command.get("before_version") or "").strip():
+        command["before_version"] = package_version
+    command["last_seen_at"] = datetime.now().isoformat(timespec="seconds")
+    write_json_atomic(remote_update_command_file(), command)
+    return command, "claimed"
+
+
+def _apply_remote_update_status_unlocked(
+    request_id: str,
+    data: Mapping[str, object],
+) -> tuple[dict[str, object] | None, str]:
+    command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+    if str(command.get("request_id") or "") != request_id:
+        return None, "not_found"
+    status = str(data.get("status") or "").strip()
+    if status not in REMOTE_UPDATE_STATUSES:
+        return command, "invalid_status"
+    current_status = str(command.get("status") or "").strip()
+    owner = str(command.get("worker_id") or "").strip()
+    supplied_worker_id = str(data.get("worker_id") or "").strip()
+    if owner:
+        idempotent_terminal_retry = current_status in REMOTE_UPDATE_TERMINAL_STATUSES and status == current_status
+        if supplied_worker_id != owner and not (idempotent_terminal_retry and not supplied_worker_id):
+            return command, "owner_conflict"
+    else:
+        if not supplied_worker_id:
+            return command, "owner_conflict"
+        command["worker_id"] = supplied_worker_id
+    if current_status in REMOTE_UPDATE_TERMINAL_STATUSES:
+        if status == current_status:
+            return command, "idempotent"
+        return command, "terminal_conflict"
+    if status not in REMOTE_UPDATE_TRANSITIONS.get(current_status, set()):
+        return command, "transition_conflict"
+    now = datetime.now().isoformat(timespec="seconds")
+    command["status"] = status
+    command["updated_at"] = now
+    for key in ("detail", "before_version", "installed_version", "exit_code"):
+        if key in data:
+            command[key] = data[key]
+    if status == "updating":
+        command["started_at"] = now
+    if status in REMOTE_UPDATE_TERMINAL_STATUSES:
+        command["completed_at"] = now
+    write_json_atomic(remote_update_command_file(), command)
+    return command, "updated"
 
 
 def read_remote_update_command() -> dict:
@@ -1407,6 +1643,83 @@ def _public_pc_reports_unlocked(now: datetime) -> list[dict]:
 def public_pc_reports(now: datetime | None = None) -> list[dict]:
     with _public_pc_report_lock:
         return _public_pc_reports_unlocked(now or datetime.now())
+
+
+def _latest_task_report_version(reports: Sequence[Mapping[str, object]]) -> tuple[str, str]:
+    latest_version = ""
+    latest_at = ""
+    for report in reports:
+        version = str(report.get("package_version") or "").strip()
+        if not version:
+            continue
+        report_at = str(
+            report.get("updated_at") or report.get("time") or report.get("created_at") or ""
+        ).strip()
+        if not latest_version or report_at >= latest_at:
+            latest_version = version
+            latest_at = report_at
+    return latest_version, latest_at
+
+
+def _worker_route_label(route: object) -> str:
+    if not isinstance(route, Mapping):
+        return "尚未確認"
+    name = str(route.get("name") or "").strip()
+    identity_status = str(route.get("identity_status") or "").strip()
+    if not name:
+        return "尚未確認"
+    name_label = {"lan": "區網", "tailscale": "Tailscale"}.get(name, name)
+    status_label = "已驗證" if identity_status == "verified" else "未驗證"
+    return f"{name_label}（{status_label}）"
+
+
+def worker_heartbeat_admin_view(
+    reports: Sequence[Mapping[str, object]],
+    now: datetime | None = None,
+) -> dict[str, object]:
+    now_value = now or datetime.now()
+    with _public_pc_report_lock:
+        heartbeats = _read_worker_heartbeats_unlocked()
+    latest_heartbeat = max(
+        heartbeats.values(),
+        key=lambda item: str(item.get("received_at") or ""),
+        default={},
+    )
+    received_at = str(latest_heartbeat.get("received_at") or "").strip()
+    received_datetime: datetime | None = None
+    if received_at:
+        try:
+            received_datetime = datetime.fromisoformat(received_at)
+        except ValueError:
+            received_datetime = None
+    seconds_since_received = (
+        (now_value - received_datetime).total_seconds() if received_datetime is not None else None
+    )
+    online = (
+        seconds_since_received is not None
+        and 0 <= seconds_since_received <= WORKER_HEARTBEAT_ONLINE_SECONDS
+    )
+    last_task_report_version, last_task_report_at = _latest_task_report_version(reports)
+    if not latest_heartbeat:
+        status_label = "尚未收到心跳"
+    elif online:
+        status_label = "在線"
+    else:
+        status_label = "離線"
+    return {
+        "online": online,
+        "status_class": "complete" if online else "failed",
+        "status_label": status_label,
+        "worker_id": str(latest_heartbeat.get("worker_id") or "").strip(),
+        "last_seen_at": received_at,
+        "package_version": str(latest_heartbeat.get("package_version") or "").strip(),
+        "state": str(latest_heartbeat.get("state") or "").strip(),
+        "activity": str(latest_heartbeat.get("activity") or "").strip(),
+        "busy_reason": str(latest_heartbeat.get("busy_reason") or "").strip(),
+        "route_label": _worker_route_label(latest_heartbeat.get("route")),
+        "last_task_report_version": last_task_report_version,
+        "last_task_report_at": last_task_report_at,
+    }
 
 
 def public_pc_report_result(report: dict) -> str:

@@ -104,6 +104,27 @@ class WebAppTests(unittest.TestCase):
             },
         )
 
+    def post_worker_control(self, payload: dict, token: str = "test-token"):
+        return self.client.post(
+            "/worker/control",
+            headers={"X-Worker-Token": token},
+            json=payload,
+        )
+
+    def _valid_control_payload(self, *, route: dict | None = None) -> dict:
+        return {
+            "worker_id": "PC-01",
+            "package_version": "2026.07.15.1326",
+            "pid": 321,
+            "process_started_at": "2026-07-15T15:00:00",
+            "execution_mode": "gui",
+            "package_path": "C:/Ambulance/WinPython_公務電腦使用包",
+            "state": "idle",
+            "activity": "",
+            "busy_reason": "",
+            "route": route or {"name": "lan", "identity_status": "unverified", "instance_id": ""},
+        }
+
     def _create_legacy_public_pc_task(self, task_id: str) -> dict:
         request = AmbulanceReturnRequest(
             task_id=task_id,
@@ -2847,6 +2868,170 @@ class WebAppTests(unittest.TestCase):
         self.assertIsNone(response.get_json()["command"])
         self.assertEqual(app_module.read_remote_update_command()["status"], "timed_out")
 
+    def test_worker_identity_requires_token_and_is_stable(self):
+        self.assertEqual(self.client.get("/worker/identity").status_code, 403)
+        os.environ["WORKER_TOKEN"] = "test-token"
+
+        first = self.client.get("/worker/identity", headers={"X-Worker-Token": "test-token"}).get_json()
+        second = self.client.get("/worker/identity", headers={"X-Worker-Token": "test-token"}).get_json()
+
+        self.assertEqual(first["server"]["instance_id"], second["server"]["instance_id"])
+        self.assertNotEqual(first["server"]["instance_id"], "")
+
+    def test_worker_control_requires_token_and_valid_schema(self):
+        self.assertEqual(self.post_worker_control({}).status_code, 403)
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.assertEqual(self.post_worker_control({"state": "online"}).status_code, 400)
+        self.assertEqual(self.post_worker_control([]).status_code, 400)
+        empty_worker = self._valid_control_payload()
+        empty_worker["worker_id"] = ""
+        self.assertEqual(self.post_worker_control(empty_worker).status_code, 400)
+        invalid_route = self._valid_control_payload()
+        invalid_route["route"] = []
+        self.assertEqual(self.post_worker_control(invalid_route).status_code, 400)
+
+        response = self.post_worker_control(
+            self._valid_control_payload(
+                route={"name": "lan", "identity_status": "verified", "instance_id": "will-be-replaced"}
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(response.get_json()["server"]["instance_id"], "will-be-replaced")
+
+    def test_worker_control_claims_only_verified_current_instance(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.post_remote_update()
+        server = self.client.get("/worker/identity", headers={"X-Worker-Token": "test-token"}).get_json()["server"]
+        payload = self._valid_control_payload(
+            route={
+                "name": "tailscale",
+                "identity_status": "verified",
+                "instance_id": server["instance_id"],
+            }
+        )
+
+        response = self.post_worker_control(payload)
+
+        self.assertEqual(response.get_json()["command_delivery"], "claimed")
+        self.assertEqual(response.get_json()["command"]["worker_id"], "PC-01")
+
+    def test_worker_control_keeps_heartbeat_but_refuses_unverified_command_claim(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.post_remote_update()
+
+        response = self.post_worker_control(
+            self._valid_control_payload(
+                route={"name": "lan", "identity_status": "unverified", "instance_id": ""}
+            )
+        )
+
+        self.assertIsNone(response.get_json()["command"])
+        self.assertEqual(response.get_json()["command_delivery"], "unverified_route")
+        self.assertEqual(app_module.worker_heartbeat_admin_view([])["worker_id"], "PC-01")
+
+    def test_worker_control_applies_safe_embedded_remote_update_status(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.post_remote_update()
+        request_id = app_module.read_remote_update_command()["request_id"]
+        server = self.client.get("/worker/identity", headers={"X-Worker-Token": "test-token"}).get_json()["server"]
+        payload = self._valid_control_payload(
+            route={
+                "name": "tailscale",
+                "identity_status": "verified",
+                "instance_id": server["instance_id"],
+            }
+        )
+        payload["remote_update"] = {
+            "request_id": request_id,
+            "status": "waiting_busy",
+            "detail": "勤務登打仍在執行。",
+        }
+
+        response = self.post_worker_control(payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["remote_update_delivery"], "updated")
+        self.assertEqual(response.get_json()["command"]["status"], "waiting_busy")
+        self.assertEqual(app_module.worker_heartbeat_admin_view([])["worker_id"], "PC-01")
+
+    def test_worker_control_unverified_embedded_status_does_not_claim_command(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.post_remote_update()
+        request_id = app_module.read_remote_update_command()["request_id"]
+        payload = self._valid_control_payload()
+        payload["remote_update"] = {
+            "request_id": request_id,
+            "status": "waiting_busy",
+            "detail": "不應領取命令。",
+        }
+
+        response = self.post_worker_control(payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["command_delivery"], "unverified_route")
+        self.assertEqual(response.get_json()["remote_update_delivery"], "unverified_route")
+        self.assertIsNone(response.get_json()["command"])
+        command = app_module.read_remote_update_command()
+        self.assertEqual(command["worker_id"], "")
+        self.assertEqual(command["status"], "pending")
+        self.assertEqual(app_module.worker_heartbeat_admin_view([])["worker_id"], "PC-01")
+
+    def test_worker_control_keeps_heartbeat_when_embedded_status_is_stale(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        server = self.client.get("/worker/identity", headers={"X-Worker-Token": "test-token"}).get_json()["server"]
+        payload = self._valid_control_payload(
+            route={
+                "name": "tailscale",
+                "identity_status": "verified",
+                "instance_id": server["instance_id"],
+            }
+        )
+        payload["remote_update"] = {
+            "request_id": "not-current",
+            "status": "waiting_idle",
+            "detail": "過期通知。",
+        }
+
+        response = self.post_worker_control(payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["remote_update_delivery"], "not_found")
+        self.assertEqual(app_module.worker_heartbeat_admin_view([])["worker_id"], "PC-01")
+
+    def test_worker_heartbeat_admin_view_uses_server_received_45_second_threshold(self):
+        now = datetime(2026, 7, 15, 16, 0, 0)
+        app_module._upsert_worker_heartbeat_unlocked(self._valid_control_payload(), now - timedelta(seconds=44))
+
+        self.assertTrue(app_module.worker_heartbeat_admin_view([], now=now)["online"])
+        self.assertFalse(app_module.worker_heartbeat_admin_view([], now=now + timedelta(seconds=2))["online"])
+
+    def test_admin_public_pc_separates_nas_heartbeat_and_task_report_versions(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        with mock.patch.object(app_module, "package_version", return_value="NAS-2026.07.15"):
+            self.post_remote_update()
+            self.post_worker_control(self._valid_control_payload())
+            response = self.client.post(
+                "/worker/public-pc-task-events",
+                headers={"X-Worker-Token": "test-token"},
+                json={
+                    "event_id": "evt-task-report-version",
+                    "task_id": "task-report-version",
+                    "task": {"task_id": "task-report-version", "case_reason": "急病"},
+                    "worker_id": "PC-01",
+                    "package_version": "TASK-2026.07.14",
+                    "action": "建立任務",
+                    "status": "created",
+                },
+            )
+            body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("NAS-2026.07.15", body)
+        self.assertIn("心跳版本：2026.07.15.1326", body)
+        self.assertIn("最後任務回報：TASK-2026.07.14", body)
+        self.assertIn("目前版本：2026.07.15.1326", body)
+
     def test_public_pc_reports_keep_all_statuses_for_seven_days(self):
         now = datetime(2026, 7, 10, 18, 0, 0)
         path = app_module.public_pc_report_file()
@@ -2980,12 +3165,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('action="/admin/public-pc/remote-update"', nas_body)
         self.assertIn("等待公務電腦接收", nas_body)
         self.assertIn("勤務完成並閒置 120 秒後", nas_body)
+        self.assertIn("公務電腦心跳", nas_body)
 
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
         local_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
 
         self.assertNotIn("遠端更新公務電腦", local_body)
         self.assertNotIn('action="/admin/public-pc/remote-update"', local_body)
+        self.assertNotIn("公務電腦心跳", local_body)
 
     def test_admin_public_pc_remote_update_post_requires_csrf_token(self):
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -3109,7 +3296,7 @@ class WebAppTests(unittest.TestCase):
             else:
                 app_module.worker_admin_version_info = original_version_info
 
-    def test_admin_public_pc_prefers_reported_installed_worker_version(self):
+    def test_admin_public_pc_shows_task_report_version_separately_from_nas(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         response = self.client.post(
             "/worker/public-pc-task-events",
@@ -3132,7 +3319,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertIn("2026.06.19.0801-installed", body)
         self.assertIn("NAS 後台", body)
-        self.assertIn("公務電腦最後回報：2026.06.19.0801-installed", body)
+        self.assertIn("心跳版本：未標示", body)
+        self.assertIn("最後任務回報：2026.06.19.0801-installed", body)
 
     def test_public_pc_report_is_queued_on_failure_and_flushed_on_next_success(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
