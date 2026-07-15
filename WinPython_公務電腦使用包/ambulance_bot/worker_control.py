@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ambulance_bot import worker_health
+from ambulance_bot.worker_routes import RequestRouteSnapshot
 
 if TYPE_CHECKING:
     from ambulance_bot.worker_routes import WorkerControlClient
@@ -163,10 +164,11 @@ class WorkerControlLoop:
         if not isinstance(response, Mapping):
             print("[worker-control] invalid control response", flush=True)
             return None
+        request_route = getattr(response, "request_route", None)
         command = response.get("command")
         if isinstance(command, Mapping):
             try:
-                self._write_mailbox(command)
+                self._write_mailbox(command, request_route)
             except Exception as exc:
                 print(f"[worker-control] mailbox write deferred: {exc}", flush=True)
         return dict(response)
@@ -259,20 +261,19 @@ class WorkerControlLoop:
             self._last_waiting_status = key
             self._last_waiting_sent_at = time.monotonic()
 
-    def _write_mailbox(self, command: Mapping[str, object]) -> bool:
+    def _write_mailbox(self, command: Mapping[str, object], request_route: object) -> bool:
         normalized = _normalize_command(command)
-        if normalized is None:
+        if normalized is None or not _request_route_is_verified(request_route):
             return False
         request_id = str(normalized["request_id"])
         with self._mailbox_lock:
             if str(normalized["status"]) in TERMINAL_REMOTE_UPDATE_STATUSES:
                 self.clear_command(request_id)
                 return False
-            choice = getattr(self._client, "choice", None)
             route = {
-                "name": str(getattr(choice, "route_name", "") or "").strip(),
-                "identity_status": str(getattr(choice, "identity_status", "") or "").strip(),
-                "instance_id": str(getattr(choice, "instance_id", "") or "").strip(),
+                "name": request_route.route_name,
+                "identity_status": request_route.identity_status,
+                "instance_id": request_route.instance_id,
             }
             worker_health.write_json_atomic(
                 self._mailbox_path,
@@ -322,6 +323,18 @@ def _route_is_verified(value: object, expected_instance_id: str) -> bool:
         str(value.get("identity_status") or "").strip() == "verified"
         and bool(instance_id)
         and instance_id == str(expected_instance_id or "").strip()
+    )
+
+
+def _request_route_is_verified(value: object) -> bool:
+    if not isinstance(value, RequestRouteSnapshot):
+        return False
+    return bool(
+        value.url
+        and value.route_name
+        and value.instance_id
+        and value.identity_status == "verified"
+        and value.provenance in {"builtin", "manual"}
     )
 
 

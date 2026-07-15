@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import msvcrt
 import re
+import threading
+import time
 import urllib.error
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ambulance_bot import worker_health
@@ -24,6 +27,8 @@ TRANSPORT_FAILURE_TEXT = (
     "network is unreachable",
     "name or service not known",
 )
+KNOWN_SERVER_IDENTITY_LOCK_TIMEOUT_SECONDS = 0.5
+_known_server_identity_thread_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,28 @@ class RouteChoice:
     identity_status: str
     instance_id: str
     diagnostic: str
+    provenance: str = "manual"
+
+    def __post_init__(self) -> None:
+        if self.provenance not in {"builtin", "manual"}:
+            object.__setattr__(self, "provenance", "manual")
+
+
+@dataclass(frozen=True)
+class RequestRouteSnapshot:
+    url: str
+    route_name: str
+    identity_status: str
+    instance_id: str
+    provenance: str
+    fallback_url: str = ""
+    diagnostic: str = ""
+
+
+class ControlResponse(dict[str, object]):
+    def __init__(self, payload: Mapping[str, object], request_route: RequestRouteSnapshot) -> None:
+        super().__init__(payload)
+        self.request_route = request_route
 
 
 class WorkerControlClient:
@@ -51,45 +78,90 @@ class WorkerControlClient:
         *,
         request_json: Callable[..., dict[str, object]],
         post_json: Callable[..., dict[str, object]],
+        bootstrap_url: str = "",
+        bootstrap_route_name: str = "",
     ) -> None:
-        self.choice = choice
+        self._choice_lock = threading.RLock()
+        self._choice = choice
         self._request_json = request_json
         self._post_json = post_json
+        self._bootstrap_url = _normalized_url(bootstrap_url)
+        self._bootstrap_route_name = (
+            bootstrap_route_name if bootstrap_route_name in {"lan", "tailscale"} else ""
+        )
 
-    def control(self, payload: Mapping[str, object]) -> dict[str, object]:
-        if not self.choice.primary_url:
+    @property
+    def choice(self) -> RouteChoice:
+        with self._choice_lock:
+            return self._choice
+
+    @choice.setter
+    def choice(self, value: RouteChoice) -> None:
+        with self._choice_lock:
+            self._choice = value
+
+    def control(self, payload: Mapping[str, object]) -> ControlResponse:
+        with self._choice_lock:
+            choice = self._choice
+        if not choice.primary_url:
             raise RuntimeError("NAS route is unavailable")
+        request_route = self._request_route_snapshot(choice, choice.primary_url, choice.route_name)
         try:
             response = self._post_json(
-                _control_url(self.choice.primary_url),
-                self._payload_for_route(payload, self.choice.route_name),
+                _control_url(request_route.url),
+                self._payload_for_route(payload, request_route),
             )
         except Exception as exc:
-            if not self._can_use_fallback(exc):
+            if not self._can_use_fallback(exc, request_route):
                 raise
+            request_route = self._request_route_snapshot(choice, request_route.fallback_url, "tailscale")
             response = self._post_json(
-                _control_url(self.choice.fallback_url),
-                self._payload_for_route(payload, "tailscale"),
+                _control_url(request_route.url),
+                self._payload_for_route(payload, request_route),
             )
-        return self._validate_control_response(response)
+        return self._validate_control_response(response, request_route)
 
-    def _can_use_fallback(self, exc: BaseException) -> bool:
+    def _can_use_fallback(self, exc: BaseException, request_route: RequestRouteSnapshot) -> bool:
         return bool(
-            self.choice.identity_status == "verified"
-            and self.choice.fallback_url
+            request_route.identity_status == "verified"
+            and request_route.fallback_url
             and is_transport_failure(exc)
         )
 
-    def _payload_for_route(self, payload: Mapping[str, object], route_name: str) -> dict[str, object]:
+    def _request_route_snapshot(
+        self,
+        choice: RouteChoice,
+        url: str,
+        route_name: str,
+    ) -> RequestRouteSnapshot:
+        return RequestRouteSnapshot(
+            _normalized_url(url),
+            str(route_name or "").strip(),
+            choice.identity_status,
+            choice.instance_id,
+            choice.provenance,
+            _normalized_url(choice.fallback_url),
+            choice.diagnostic,
+        )
+
+    def _payload_for_route(
+        self,
+        payload: Mapping[str, object],
+        request_route: RequestRouteSnapshot,
+    ) -> dict[str, object]:
         normalized = dict(payload)
         normalized["route"] = {
-            "name": route_name,
-            "identity_status": self.choice.identity_status,
-            "instance_id": self.choice.instance_id,
+            "name": request_route.route_name,
+            "identity_status": request_route.identity_status,
+            "instance_id": request_route.instance_id,
         }
         return normalized
 
-    def _validate_control_response(self, response: object) -> dict[str, object]:
+    def _validate_control_response(
+        self,
+        response: object,
+        request_route: RequestRouteSnapshot,
+    ) -> ControlResponse:
         if not isinstance(response, dict) or response.get("ok") is not True:
             raise RuntimeError("NAS control response schema invalid")
         server = response.get("server")
@@ -98,9 +170,45 @@ class WorkerControlClient:
         instance_id = str(server.get("instance_id") or "").strip()
         if not instance_id:
             raise RuntimeError("NAS control response schema invalid")
-        if self.choice.identity_status == "verified" and instance_id != self.choice.instance_id:
+        expected_instance_id = str(request_route.instance_id or "").strip()
+        if expected_instance_id and instance_id != expected_instance_id:
             raise RuntimeError("NAS instance identity mismatch")
-        return response
+        validated = ControlResponse(response, request_route)
+        if self._is_bootstrap_candidate(request_route):
+            with self._choice_lock:
+                choice = self._choice
+                if self._choice_matches_request_route(choice, request_route):
+                    if try_promote_known_server_identity(instance_id) and self._choice == choice:
+                        self._choice = replace(choice, identity_status="verified")
+        return validated
+
+    def _is_bootstrap_candidate(self, request_route: RequestRouteSnapshot) -> bool:
+        return bool(
+            self._bootstrap_url
+            and self._bootstrap_route_name
+            and request_route.url == self._bootstrap_url
+            and not request_route.fallback_url
+            and request_route.diagnostic == "single_route_unverified"
+            and request_route.route_name == self._bootstrap_route_name
+            and request_route.identity_status == "unverified"
+            and request_route.provenance == "builtin"
+            and UUID_LIKE_PATTERN.fullmatch(request_route.instance_id)
+        )
+
+    def _choice_matches_request_route(
+        self,
+        choice: RouteChoice,
+        request_route: RequestRouteSnapshot,
+    ) -> bool:
+        return bool(
+            _normalized_url(choice.primary_url) == request_route.url
+            and _normalized_url(choice.fallback_url) == request_route.fallback_url
+            and choice.route_name == request_route.route_name
+            and choice.identity_status == request_route.identity_status
+            and choice.instance_id == request_route.instance_id
+            and choice.diagnostic == request_route.diagnostic
+            and choice.provenance == request_route.provenance
+        )
 
 
 def fetch_server_identity(
@@ -143,6 +251,37 @@ def remember_known_server_identity(instance_id: str) -> bool:
         return False
     worker_health.write_json_atomic(known_server_identity_path(), {"instance_id": normalized_id})
     return True
+
+
+def known_server_identity_lock_path() -> Path:
+    return known_server_identity_path().with_suffix(".lock")
+
+
+def try_promote_known_server_identity(instance_id: str) -> bool:
+    normalized_id = str(instance_id or "").strip()
+    if not UUID_LIKE_PATTERN.fullmatch(normalized_id):
+        return False
+    with _known_server_identity_thread_lock:
+        try:
+            lock_path = known_server_identity_lock_path()
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+b") as lock_file:
+                if not _acquire_sidecar_byte_lock(lock_file):
+                    return False
+                try:
+                    existing_id = _load_known_server_identity_strict()
+                    if existing_id is None or (existing_id and existing_id != normalized_id):
+                        return False
+                    if existing_id == normalized_id:
+                        return True
+                    worker_health.write_json_atomic(known_server_identity_path(), {"instance_id": normalized_id})
+                    return _load_known_server_identity_strict() == normalized_id
+                except Exception:
+                    return False
+                finally:
+                    _release_sidecar_byte_lock(lock_file)
+        except OSError:
+            return False
 
 
 def choose_verified_route(
@@ -232,6 +371,50 @@ def _required_identity_field(server: Mapping[str, object], key: str) -> str:
     return value.strip()
 
 
+def _load_known_server_identity_strict() -> str | None:
+    try:
+        payload = json.loads(known_server_identity_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ""
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    instance_id = payload.get("instance_id")
+    if not isinstance(instance_id, str):
+        return None
+    normalized_id = instance_id.strip()
+    return normalized_id if UUID_LIKE_PATTERN.fullmatch(normalized_id) else None
+
+
+def _acquire_sidecar_byte_lock(lock_file) -> bool:
+    try:
+        lock_file.seek(0, 2)
+        if lock_file.tell() < 1:
+            lock_file.write(b"\0")
+            lock_file.flush()
+    except OSError:
+        return False
+    deadline = time.monotonic() + KNOWN_SERVER_IDENTITY_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+
+def _release_sidecar_byte_lock(lock_file) -> None:
+    try:
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
 def _try_fetch_identity(
     url: str,
     fetch_identity: Callable[[str], ServerIdentity],
@@ -253,6 +436,14 @@ def _single_route_choice(
     identity: ServerIdentity,
     known_instance_id: str,
 ) -> RouteChoice:
-    status = "verified" if known_instance_id and known_instance_id == identity.instance_id else "unverified"
-    diagnostic = "single_route_matches_known_identity" if status == "verified" else "single_route_unverified"
+    if known_instance_id:
+        status = "verified" if known_instance_id == identity.instance_id else "unverified"
+        diagnostic = (
+            "single_route_matches_known_identity"
+            if status == "verified"
+            else "single_route_known_instance_mismatch"
+        )
+    else:
+        status = "unverified"
+        diagnostic = "single_route_unverified"
     return RouteChoice(url, "", route_name, status, identity.instance_id, diagnostic)

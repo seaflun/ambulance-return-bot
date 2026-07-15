@@ -10,6 +10,23 @@ from unittest import mock
 from ambulance_bot import worker_control, worker_health, worker_routes
 
 
+def _verified_request_route() -> worker_routes.RequestRouteSnapshot:
+    return worker_routes.RequestRouteSnapshot(
+        "http://lan",
+        "lan",
+        "verified",
+        "nas-a",
+        "manual",
+    )
+
+
+def _verified_control_response(command: dict[str, object] | None = None) -> worker_routes.ControlResponse:
+    payload: dict[str, object] = {"ok": True, "server": {"instance_id": "nas-a"}}
+    if command is not None:
+        payload["command"] = command
+    return worker_routes.ControlResponse(payload, _verified_request_route())
+
+
 class WorkerControlTests(unittest.TestCase):
     def _loop(
         self,
@@ -70,11 +87,9 @@ class WorkerControlTests(unittest.TestCase):
                     payload["process_started_at"],
                 )
                 payloads.append(payload)
-                return {
-                    "ok": True,
-                    "server": {"instance_id": "nas-a"},
-                    "command": {"request_id": "update-1", "status": "pending", "token": "must-not-persist"},
-                }
+                return _verified_control_response(
+                    {"request_id": "update-1", "status": "pending", "token": "must-not-persist"}
+                )
 
             client.control.side_effect = control
             loop = self._loop(tmp, client=client)
@@ -89,10 +104,70 @@ class WorkerControlTests(unittest.TestCase):
             self.assertEqual(payloads[0]["process_started_at"], payloads[1]["process_started_at"])
             self.assertEqual(payloads[0]["state"], "idle")
 
+    def test_control_loop_discards_command_without_request_route_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = mock.Mock()
+            client.control.return_value = {
+                "ok": True,
+                "server": {"instance_id": "nas-a"},
+                "command": {"request_id": "update-1", "status": "pending"},
+            }
+            loop = self._loop(tmp, client=client)
+
+            result = loop.run_once()
+
+            self.assertEqual(result["command"]["request_id"], "update-1")
+            self.assertFalse(worker_health.worker_control_mailbox_path().exists())
+            self.assertIsNone(loop.pending_command())
+
+    def test_control_loop_discards_first_command_from_unverified_bootstrap_snapshot(self):
+        instance_id = "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": tmp},
+            clear=False,
+        ):
+            choice = worker_routes.RouteChoice(
+                "http://lan",
+                "",
+                "lan",
+                "unverified",
+                instance_id,
+                "single_route_unverified",
+                "builtin",
+            )
+            client = worker_routes.WorkerControlClient(
+                choice,
+                request_json=mock.Mock(),
+                post_json=lambda _url, _payload: {
+                    "ok": True,
+                    "server": {"instance_id": instance_id},
+                    "command": {"request_id": "update-1", "status": "pending"},
+                },
+                bootstrap_url="http://lan",
+                bootstrap_route_name="lan",
+            )
+            loop = worker_control.WorkerControlLoop(
+                client=client,
+                worker_id="PC-01",
+                package_version=lambda: "2026.07.15.1326",
+                package_path=lambda: "C:/Ambulance/WinPython",
+                execution_mode=lambda: "gui",
+                snapshot=lambda: worker_control.RuntimeSnapshot("idle", "", "", ""),
+                mailbox_path=worker_health.worker_control_mailbox_path(),
+            )
+
+            result = loop.run_once()
+
+            self.assertEqual(result["command"]["request_id"], "update-1")
+            self.assertEqual(client.choice.identity_status, "verified")
+            self.assertFalse(worker_health.worker_control_mailbox_path().exists())
+            self.assertIsNone(loop.pending_command())
+
     def test_control_loop_sends_waiting_status_once_until_refresh_and_clears_matching_mailbox(self):
         with tempfile.TemporaryDirectory() as tmp:
             client = mock.Mock()
-            client.control.return_value = {"ok": True, "server": {"instance_id": "nas-a"}}
+            client.control.return_value = _verified_control_response()
             loop = self._loop(tmp, client=client, status_refresh_seconds=3600.0)
 
             loop.set_remote_update_waiting("update-1", "waiting_idle", "waiting for user idle")
@@ -105,7 +180,7 @@ class WorkerControlTests(unittest.TestCase):
             self.assertNotIn("remote_update", second_payload)
             self.assertFalse(loop.clear_command("other-request"))
 
-            loop._write_mailbox({"request_id": "update-1", "status": "pending"})
+            loop._write_mailbox({"request_id": "update-1", "status": "pending"}, _verified_request_route())
             self.assertTrue(loop.clear_command("update-1"))
             self.assertIsNone(loop.pending_command())
 
@@ -205,7 +280,7 @@ class WorkerControlTests(unittest.TestCase):
                 with loop._mailbox_lock:
                     writer = threading.Thread(
                         target=loop._write_mailbox,
-                        args=({"request_id": "update-1", "status": "pending"},),
+                        args=({"request_id": "update-1", "status": "pending"}, _verified_request_route()),
                     )
                     writer.start()
                     write_was_blocked = not wrote_mailbox.wait(0.1)
