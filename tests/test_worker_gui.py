@@ -252,16 +252,36 @@ class WorkerGuiEnvTests(unittest.TestCase):
     def test_startup_installer_and_public_package_template_define_watchdog(self):
         installer = Path("WinPython_公務電腦使用包/install_startup_shortcut.ps1").read_text(encoding="utf-8")
         builder = Path("scripts/build_public_duty_package.ps1").read_text(encoding="utf-8")
-        watchdog_arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File"
+        watchdog_launcher_path = Path("WinPython_公務電腦使用包/RUN_WORKER_WATCHDOG.vbs")
+
+        self.assertTrue(
+            watchdog_launcher_path.is_file(),
+            "watchdog must use a package-local VBS launcher",
+        )
+        watchdog_launcher = watchdog_launcher_path.read_text(encoding="ascii")
 
         for source in (installer, builder):
             self.assertIn('$watchdogTaskName = "AmbulanceReturnWorkerWatchdog"', source)
-            self.assertIn(watchdog_arguments, source)
+            self.assertIn('$watchdogLauncher = Join-Path $packageDir "RUN_WORKER_WATCHDOG.vbs"', source)
+            self.assertIn(
+                '$action = New-ScheduledTaskAction -Execute $wscript -Argument "`"$watchdogLauncher`""',
+                source,
+            )
             self.assertIn("-MultipleInstances IgnoreNew", source)
+            self.assertNotIn("New-ScheduledTaskAction -Execute $watchdogPowerShell", source)
 
-        self.assertIn("WORKER_SELF_RECOVERY.ps1", installer)
+        self.assertIn("WORKER_SELF_RECOVERY.ps1", watchdog_launcher)
+        self.assertIn(
+            "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File",
+            watchdog_launcher,
+        )
+        self.assertIn("shell.Run command, 0, False", watchdog_launcher)
         self.assertIn("@($taskName, $watchdogTaskName)", installer)
-        self.assertIn('"WORKER_SELF_RECOVERY.ps1"', builder)
+        self.assertIn('"RUN_WORKER_WATCHDOG.vbs"', builder)
+        self.assertIn(
+            'Write-PackageText -RelativePath "RUN_WORKER_WATCHDOG.vbs" -Encoding "ASCII"',
+            builder,
+        )
 
     def test_setup_script_warns_about_incomplete_startup_and_watchdog_setup(self):
         setup = Path("WinPython_公務電腦使用包/SETUP_WINPYTHON.bat").read_text(encoding="utf-8")

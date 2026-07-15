@@ -297,7 +297,8 @@ foreach ($file in @(
     "repair_update_package.ps1",
     "UPDATE_PACKAGE.ps1",
     "REMOTE_UPDATE_PACKAGE.ps1",
-    "WORKER_SELF_RECOVERY.ps1"
+    "WORKER_SELF_RECOVERY.ps1",
+    "RUN_WORKER_WATCHDOG.vbs"
 )) {
     Assert-PackageFile -RelativePath $file
 }
@@ -451,15 +452,7 @@ $shortcutName = "AmbulanceReturnWorker.lnk"
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $wscript = Join-Path $env:WINDIR "System32\wscript.exe"
 $watchdogScript = Join-Path $packageDir "WORKER_SELF_RECOVERY.ps1"
-$watchdogPowerShell = if ([string]::IsNullOrWhiteSpace($env:WINDIR)) {
-    "powershell.exe"
-} else {
-    Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-}
-if ($watchdogPowerShell -ne "powershell.exe" -and -not (Test-Path -LiteralPath $watchdogPowerShell -PathType Leaf)) {
-    $watchdogPowerShell = "powershell.exe"
-}
-$watchdogArguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdogScript`""
+$watchdogLauncher = Join-Path $packageDir "RUN_WORKER_WATCHDOG.vbs"
 $startupDisabledValues = @("0", "false", "no", "off")
 
 function Get-PackageEnvValue {
@@ -563,7 +556,7 @@ if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
 }
 
 function New-WatchdogTask {
-    $action = New-ScheduledTaskAction -Execute $watchdogPowerShell -Argument $watchdogArguments
+    $action = New-ScheduledTaskAction -Execute $wscript -Argument "`"$watchdogLauncher`""
     $trigger = New-ScheduledTaskTrigger `
         -Once `
         -At (Get-Date).AddMinutes(1) `
@@ -584,6 +577,11 @@ function Install-WatchdogTask {
 
     if (-not (Test-Path -LiteralPath $watchdogScript -PathType Leaf)) {
         $message = "Could not install watchdog task because its script is missing: $watchdogScript"
+        Write-Warning $message
+        return $message
+    }
+    if (-not (Test-Path -LiteralPath $watchdogLauncher -PathType Leaf)) {
+        $message = "Could not install watchdog task because its launcher is missing: $watchdogLauncher"
         Write-Warning $message
         return $message
     }
@@ -629,7 +627,7 @@ if ($WhatIf) {
     Write-Host "Target: $target"
     Write-Host "Would install watchdog task: $watchdogTaskName"
     Write-Host "User: $currentUser"
-    Write-Host "Action: $watchdogPowerShell $watchdogArguments"
+    Write-Host "Action: $wscript `"$watchdogLauncher`""
     Install-StartupFolderShortcut
     exit 0
 }
@@ -648,7 +646,7 @@ if ($SkipScheduledTask) {
 $watchdogInstallWarning = Install-WatchdogTask -Task $watchdogTask
 Write-Host "User: $currentUser"
 Write-Host "Target: $target"
-Write-Host "Watchdog action: $watchdogPowerShell $watchdogArguments"
+Write-Host "Watchdog action: $wscript `"$watchdogLauncher`""
 if (-not [string]::IsNullOrWhiteSpace([string]$watchdogInstallWarning)) {
     Write-Warning "watchdog_install_warning: $watchdogInstallWarning"
     exit 2
@@ -684,6 +682,17 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 shell.CurrentDirectory = scriptDir
 shell.Run """" & scriptDir & "\RUN_WORKER_GUI_WINPYTHON.bat""", 0, False
+'@
+
+Write-PackageText -RelativePath "RUN_WORKER_WATCHDOG.vbs" -Encoding "ASCII" -Text @'
+Set shell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
+shell.CurrentDirectory = scriptDir
+powerShell = shell.ExpandEnvironmentStrings("%SystemRoot%") & "\System32\WindowsPowerShell\v1.0\powershell.exe"
+watchdogScript = scriptDir & "\WORKER_SELF_RECOVERY.ps1"
+command = """" & powerShell & """ -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File """ & watchdogScript & """"
+shell.Run command, 0, False
 '@
 
 Write-PackageText -RelativePath "UPDATE_PACKAGE.bat" -Encoding "ASCII" -Text @'
