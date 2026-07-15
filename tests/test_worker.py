@@ -25,9 +25,23 @@ from ambulance_bot.manual_task_lock import (
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import DutyCaseLookupResult
 from ambulance_bot.task_cancellation import request_task_cancellation
+from ambulance_bot import worker_health
 
 
 class WorkerTests(unittest.TestCase):
+    def _control_stub(self, *, command: dict[str, object] | None = None, calls: list[str] | None = None):
+        def record(name: str) -> None:
+            if calls is not None:
+                calls.append(name)
+
+        return SimpleNamespace(
+            start=lambda: record("control_start"),
+            stop=lambda **_kwargs: record("control_stop"),
+            pending_command=lambda: command,
+            clear_command=lambda _request_id: record("clear_command") or True,
+            set_remote_update_waiting=lambda *_args: None,
+        )
+
     def test_consumables_manual_case_identity_change_does_not_start_chrome(self):
         previous = AmbulanceReturnRequest(
             task_id="task-consumables-manual",
@@ -1006,6 +1020,30 @@ class WorkerTests(unittest.TestCase):
                 )
                 self.assertFalse(worker_module.remote_update_wrapper_is_active("update-live"))
 
+    def test_remote_update_marker_health_uses_legacy_owner_identity(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": tmp},
+            clear=False,
+        ):
+            path = worker_module.remote_update_active_path()
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "request_id": "update-live",
+                        "owner_pid": os.getpid(),
+                        "owner_nonce": "wrapper-run",
+                        "owner_started_unix_ms": worker_module.process_start_unix_ms(os.getpid()),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(worker_module.remote_update_marker_is_healthy("update-live"))
+            self.assertTrue(worker_module.remote_update_marker_is_healthy())
+            self.assertFalse(worker_module.remote_update_marker_is_healthy("update-other"))
+
     def test_remote_update_active_marker_rejects_valid_json_list(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ,
@@ -1185,6 +1223,123 @@ class WorkerTests(unittest.TestCase):
                 "exit_code": 0,
             },
         )
+
+    def test_post_json_uses_worker_auth_and_preserves_http_error_cause(self):
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["payload"] = json.loads(req.data.decode("utf-8"))
+            captured["token"] = req.get_header("X-worker-token")
+            captured["content_type"] = req.get_header("Content-type")
+            return FakeResponse()
+
+        with mock.patch.dict(os.environ, {"WORKER_TOKEN": "test-token"}, clear=False), mock.patch.object(
+            worker_module.urllib.request,
+            "urlopen",
+            side_effect=fake_urlopen,
+        ):
+            response = worker_module.post_json("http://nas/worker/control", {"state": "idle"})
+
+        self.assertEqual(response, {"ok": True})
+        self.assertEqual(captured["url"], "http://nas/worker/control")
+        self.assertEqual(captured["payload"], {"state": "idle"})
+        self.assertEqual(captured["token"], "test-token")
+        self.assertEqual(captured["content_type"], "application/json")
+
+        error = worker_module.urllib.error.HTTPError("http://nas/worker/control", 403, "Forbidden", None, None)
+        with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaises(RuntimeError) as raised:
+                worker_module.post_json("http://nas/worker/control", {"state": "idle"})
+
+        self.assertIs(raised.exception.__cause__, error)
+
+    def test_build_worker_control_loop_sends_verified_route_metadata(self):
+        captured: list[tuple[str, dict[str, object]]] = []
+
+        def post(url: str, payload: dict[str, object]) -> dict[str, object]:
+            captured.append((url, payload))
+            return {"ok": True, "server": {"instance_id": "nas-a"}}
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {
+                "LOCALAPPDATA": tmp,
+                "WORKER_SERVER_FALLBACK_URL": worker_module.WORKER_NAS_TAILSCALE_URL,
+                "WORKER_SERVER_IDENTITY_STATUS": "verified",
+                "WORKER_SERVER_INSTANCE_ID": "nas-a",
+            },
+            clear=False,
+        ), mock.patch.object(worker_module, "post_json", side_effect=post):
+            state = worker_module.worker_control.WorkerRuntimeState()
+            loop = worker_module.build_worker_control_loop(
+                worker_module.WORKER_NAS_LAN_URL,
+                "PC-01",
+                Path(tmp),
+                state,
+            )
+            loop.run_once()
+
+        self.assertTrue(captured[0][0].endswith("/worker/control"))
+        self.assertEqual(
+            captured[0][1]["route"],
+            {"name": "lan", "identity_status": "verified", "instance_id": "nas-a"},
+        )
+        self.assertTrue(str(captured[0][1]["process_started_at"]))
+
+    def test_build_worker_control_loop_keeps_unverified_manual_worker_online(self):
+        captured: list[dict[str, object]] = []
+
+        def post(_url: str, payload: dict[str, object]) -> dict[str, object]:
+            captured.append(payload)
+            return {"ok": True, "server": {"instance_id": "nas-a"}}
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {
+                "LOCALAPPDATA": tmp,
+                "WORKER_SERVER_FALLBACK_URL": "",
+                "WORKER_SERVER_IDENTITY_STATUS": "unverified",
+                "WORKER_SERVER_INSTANCE_ID": "",
+            },
+            clear=False,
+        ), mock.patch.object(worker_module, "post_json", side_effect=post):
+            loop = worker_module.build_worker_control_loop(
+                "http://manual-nas:8080",
+                "PC-01",
+                Path(tmp),
+                worker_module.worker_control.WorkerRuntimeState(),
+            )
+            response = loop.run_once()
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(
+            captured[0]["route"],
+            {"name": "manual", "identity_status": "unverified", "instance_id": ""},
+        )
+
+    def test_worker_control_snapshot_marks_cross_process_manual_lock_busy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts_dir = Path(tmp)
+            set_manual_task_lock(artifacts_dir, "manual-owner")
+            state = worker_module.worker_control.WorkerRuntimeState()
+            state.set("idle")
+
+            snapshot = worker_module.worker_control_runtime_snapshot(state, artifacts_dir)
+
+        self.assertEqual(snapshot.state, "busy")
+        self.assertEqual(snapshot.activity, "manual_task")
+        self.assertTrue(snapshot.busy_reason)
 
     def test_launch_remote_update_uses_hidden_powershell_wrapper(self):
         calls: list[tuple[list[str], dict[str, object]]] = []
@@ -1669,11 +1824,81 @@ class WorkerTests(unittest.TestCase):
 
         self.assertIn("REMOTE_UPDATE_IDLE_SECONDS=120", env_example)
 
+    def test_main_starts_control_before_case_lookup_and_uses_mailbox_after_work_is_safe(self):
+        calls: list[str] = []
+        fake_control = SimpleNamespace(
+            start=lambda: calls.append("control_start"),
+            stop=lambda **_kwargs: calls.append("control_stop"),
+            pending_command=lambda: {"request_id": "update-1", "status": "pending"},
+            clear_command=lambda _request_id: calls.append("clear_command") or True,
+            set_remote_update_waiting=lambda *_args: None,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"WORKER_RUN_ONCE": "true", "WORKER_AUTO_CLAIM_TASKS": "false"},
+            clear=False,
+        ), mock.patch.object(
+            worker_module,
+            "wait_for_update_probe_gate",
+            return_value="none",
+        ), mock.patch.object(
+            worker_module,
+            "maybe_recover_interrupted_update",
+            return_value=False,
+        ), mock.patch.object(
+            worker_module,
+            "build_worker_control_loop",
+            return_value=fake_control,
+        ), mock.patch.object(
+            worker_module,
+            "flush_status_outbox",
+        ), mock.patch.object(
+            worker_module,
+            "report_remote_update_result",
+            return_value=False,
+        ), mock.patch.object(
+            worker_module,
+            "maybe_run_credential_sync",
+        ), mock.patch.object(
+            worker_module,
+            "maybe_run_case_lookup",
+            side_effect=lambda *_args: calls.append("lookup") or _args[2:4],
+        ), mock.patch.object(
+            worker_module,
+            "maybe_start_remote_update",
+            side_effect=lambda *_args, **_kwargs: calls.append("start_update") or False,
+        ):
+            worker_module.main()
+
+        self.assertLess(calls.index("control_start"), calls.index("lookup"))
+        self.assertGreater(calls.index("start_update"), calls.index("lookup"))
+        self.assertIn("control_stop", calls)
+
+    def test_maybe_start_remote_update_waits_when_activity_is_busy(self):
+        launches: list[str] = []
+        statuses: list[tuple[str, str, str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"LOCALAPPDATA": tmp}, clear=False):
+            worker_health.write_activity(activity="case_lookup", owner="lookup-owner")
+            started = worker_module.maybe_start_remote_update(
+                "http://nas",
+                "PC-01",
+                Path(tmp),
+                {"request_id": "update-1", "status": "pending"},
+                idle_seconds=lambda: 999.0,
+                launch_update=launches.append,
+                post_command_status=lambda *args, **_kwargs: statuses.append(args),
+            )
+
+        self.assertFalse(started)
+        self.assertEqual(launches, [])
+        self.assertEqual(statuses[-1][2], "waiting_busy")
+
     def test_main_checks_remote_update_after_confirming_no_pending_work(self):
         env_keys = ["WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
         previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
         original_report = worker_module.report_remote_update_result
-        original_remote = worker_module.maybe_run_remote_update
+        original_control = worker_module.build_worker_control_loop
+        original_remote = worker_module.maybe_start_remote_update
         original_sync = worker_module.maybe_run_credential_sync
         original_lookup = worker_module.maybe_run_case_lookup
         calls: list[str] = []
@@ -1681,7 +1906,11 @@ class WorkerTests(unittest.TestCase):
             worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
             worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "false"
             worker_module.report_remote_update_result = lambda *_args, **_kwargs: calls.append("result") or False
-            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: calls.append("remote") or True
+            worker_module.build_worker_control_loop = lambda *_args: self._control_stub(
+                command={"request_id": "update-1", "status": "pending"},
+                calls=calls,
+            )
+            worker_module.maybe_start_remote_update = lambda *_args, **_kwargs: calls.append("remote") or True
             worker_module.maybe_run_credential_sync = lambda *_args, **_kwargs: calls.append("credential")
             worker_module.maybe_run_case_lookup = (
                 lambda _server_url, _artifacts_dir, last_lookup_at, last_case_hash, _interval_seconds:
@@ -1691,7 +1920,8 @@ class WorkerTests(unittest.TestCase):
             worker_module.main()
         finally:
             worker_module.report_remote_update_result = original_report
-            worker_module.maybe_run_remote_update = original_remote
+            worker_module.build_worker_control_loop = original_control
+            worker_module.maybe_start_remote_update = original_remote
             worker_module.maybe_run_credential_sync = original_sync
             worker_module.maybe_run_case_lookup = original_lookup
             for key, value in previous_env.items():
@@ -1700,14 +1930,15 @@ class WorkerTests(unittest.TestCase):
                 else:
                     worker_module.os.environ[key] = value
 
-        self.assertEqual(calls, ["result", "credential", "lookup", "remote"])
+        self.assertEqual(calls, ["control_start", "result", "credential", "lookup", "remote", "clear_command", "control_stop"])
 
     def test_main_runs_pending_nas_work_before_remote_update(self):
         env_keys = ["WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
         previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
         originals = {
             "report": worker_module.report_remote_update_result,
-            "remote": worker_module.maybe_run_remote_update,
+            "control": worker_module.build_worker_control_loop,
+            "remote": worker_module.maybe_start_remote_update,
             "sync": worker_module.maybe_run_credential_sync,
             "lookup": worker_module.maybe_run_case_lookup,
             "fetch": worker_module.fetch_next_task,
@@ -1718,7 +1949,8 @@ class WorkerTests(unittest.TestCase):
             worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
             worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "true"
             worker_module.report_remote_update_result = lambda *_args, **_kwargs: calls.append("result") or False
-            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: calls.append("remote") or True
+            worker_module.build_worker_control_loop = lambda *_args: self._control_stub(calls=calls)
+            worker_module.maybe_start_remote_update = lambda *_args, **_kwargs: calls.append("remote") or True
             worker_module.maybe_run_credential_sync = lambda *_args, **_kwargs: calls.append("credential")
             worker_module.maybe_run_case_lookup = (
                 lambda _server_url, _artifacts_dir, last_lookup_at, last_case_hash, _interval_seconds:
@@ -1730,7 +1962,8 @@ class WorkerTests(unittest.TestCase):
             worker_module.main()
         finally:
             worker_module.report_remote_update_result = originals["report"]
-            worker_module.maybe_run_remote_update = originals["remote"]
+            worker_module.build_worker_control_loop = originals["control"]
+            worker_module.maybe_start_remote_update = originals["remote"]
             worker_module.maybe_run_credential_sync = originals["sync"]
             worker_module.maybe_run_case_lookup = originals["lookup"]
             worker_module.fetch_next_task = originals["fetch"]
@@ -1741,7 +1974,7 @@ class WorkerTests(unittest.TestCase):
                 else:
                     worker_module.os.environ[key] = value
 
-        self.assertEqual(calls, ["result", "credential", "lookup", "claim", "run"])
+        self.assertEqual(calls, ["control_start", "result", "credential", "lookup", "claim", "run", "control_stop"])
 
     def test_main_does_not_claim_auto_task_while_manual_execution_is_active(self):
         env_keys = ["WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
@@ -1758,9 +1991,13 @@ class WorkerTests(unittest.TestCase):
                 worker_module,
                 "maybe_run_case_lookup",
                 side_effect=lambda _server, _artifacts, last_at, last_hash, _interval: (last_at, last_hash),
+            ), mock.patch.object(
+                worker_module,
+                "build_worker_control_loop",
+                return_value=self._control_stub(),
             ), mock.patch.object(worker_module, "fetch_next_task") as fetch, mock.patch.object(
                 worker_module,
-                "maybe_run_remote_update",
+                "maybe_start_remote_update",
                 return_value=False,
             ):
                 worker_module.main()
@@ -1779,7 +2016,8 @@ class WorkerTests(unittest.TestCase):
         previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
         originals = {
             "report": worker_module.report_remote_update_result,
-            "remote": worker_module.maybe_run_remote_update,
+            "control": worker_module.build_worker_control_loop,
+            "remote": worker_module.maybe_start_remote_update,
             "sync": worker_module.maybe_run_credential_sync,
             "lookup": worker_module.maybe_run_case_lookup,
         }
@@ -1790,7 +2028,8 @@ class WorkerTests(unittest.TestCase):
             worker_module.report_remote_update_result = lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 OSError("NAS offline")
             )
-            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: calls.append("remote") or False
+            worker_module.build_worker_control_loop = lambda *_args: self._control_stub()
+            worker_module.maybe_start_remote_update = lambda *_args, **_kwargs: calls.append("remote") or False
             worker_module.maybe_run_credential_sync = lambda *_args, **_kwargs: calls.append("credential")
             worker_module.maybe_run_case_lookup = (
                 lambda _server_url, _artifacts_dir, last_lookup_at, last_case_hash, _interval_seconds:
@@ -1800,7 +2039,8 @@ class WorkerTests(unittest.TestCase):
             worker_module.main()
         finally:
             worker_module.report_remote_update_result = originals["report"]
-            worker_module.maybe_run_remote_update = originals["remote"]
+            worker_module.build_worker_control_loop = originals["control"]
+            worker_module.maybe_start_remote_update = originals["remote"]
             worker_module.maybe_run_credential_sync = originals["sync"]
             worker_module.maybe_run_case_lookup = originals["lookup"]
             for key, value in previous_env.items():
@@ -1809,13 +2049,13 @@ class WorkerTests(unittest.TestCase):
                 else:
                     worker_module.os.environ[key] = value
 
-        self.assertEqual(calls, ["credential", "lookup", "remote"])
+        self.assertEqual(calls, ["credential", "lookup"])
 
     def test_main_defaults_scheduled_case_lookup_to_thirty_minutes(self):
         env_keys = ["CASE_LOOKUP_INTERVAL_SECONDS", "WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
         previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
         original_report = worker_module.report_remote_update_result
-        original_remote = worker_module.maybe_run_remote_update
+        original_control = worker_module.build_worker_control_loop
         original_sync = worker_module.maybe_run_credential_sync
         original_lookup = worker_module.maybe_run_case_lookup
         intervals: list[int] = []
@@ -1824,7 +2064,7 @@ class WorkerTests(unittest.TestCase):
             worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
             worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "false"
             worker_module.report_remote_update_result = lambda *_args, **_kwargs: False
-            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: False
+            worker_module.build_worker_control_loop = lambda *_args: self._control_stub()
             worker_module.maybe_run_credential_sync = lambda server_url: None
             worker_module.maybe_run_case_lookup = (
                 lambda server_url, artifacts_dir, last_lookup_at, last_case_hash, interval_seconds:
@@ -1834,7 +2074,7 @@ class WorkerTests(unittest.TestCase):
             worker_module.main()
         finally:
             worker_module.report_remote_update_result = original_report
-            worker_module.maybe_run_remote_update = original_remote
+            worker_module.build_worker_control_loop = original_control
             worker_module.maybe_run_credential_sync = original_sync
             worker_module.maybe_run_case_lookup = original_lookup
             for key, value in previous_env.items():
@@ -1849,7 +2089,7 @@ class WorkerTests(unittest.TestCase):
         env_keys = ["CASE_LOOKUP_INTERVAL_SECONDS", "WORKER_RUN_ONCE", "WORKER_AUTO_CLAIM_TASKS"]
         previous_env = {key: worker_module.os.environ.get(key) for key in env_keys}
         original_report = worker_module.report_remote_update_result
-        original_remote = worker_module.maybe_run_remote_update
+        original_control = worker_module.build_worker_control_loop
         original_sync = worker_module.maybe_run_credential_sync
         original_lookup = worker_module.maybe_run_case_lookup
         intervals: list[int] = []
@@ -1858,7 +2098,7 @@ class WorkerTests(unittest.TestCase):
             worker_module.os.environ["WORKER_RUN_ONCE"] = "true"
             worker_module.os.environ["WORKER_AUTO_CLAIM_TASKS"] = "false"
             worker_module.report_remote_update_result = lambda *_args, **_kwargs: False
-            worker_module.maybe_run_remote_update = lambda *_args, **_kwargs: False
+            worker_module.build_worker_control_loop = lambda *_args: self._control_stub()
             worker_module.maybe_run_credential_sync = lambda server_url: None
             worker_module.maybe_run_case_lookup = (
                 lambda server_url, artifacts_dir, last_lookup_at, last_case_hash, interval_seconds:
@@ -1868,7 +2108,7 @@ class WorkerTests(unittest.TestCase):
             worker_module.main()
         finally:
             worker_module.report_remote_update_result = original_report
-            worker_module.maybe_run_remote_update = original_remote
+            worker_module.build_worker_control_loop = original_control
             worker_module.maybe_run_credential_sync = original_sync
             worker_module.maybe_run_case_lookup = original_lookup
             for key, value in previous_env.items():
@@ -1995,6 +2235,34 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(calls["posts"], 1)
         self.assertEqual(calls["lookup_range"], "24h")
         self.assertEqual(calls["request_id"], "lookup-request-123")
+
+    def test_case_lookup_writes_and_clears_worker_activity_marker(self):
+        original_fetch = worker_module.fetch_case_lookup_request
+        original_query = worker_module.query_duty_emergency_cases
+        original_post = worker_module.post_cases
+        try:
+            worker_module.fetch_case_lookup_request = lambda _server_url: {"request_id": "lookup-activity"}
+
+            def fake_query(artifacts_dir, lookup_range="24h"):
+                self.assertTrue(worker_health.worker_activity_path().exists())
+                self.assertTrue(worker_health.activity_is_fresh(60.0))
+                return DutyCaseLookupResult(
+                    True,
+                    "cases_loaded",
+                    "loaded",
+                    [],
+                    artifacts_dir / "cases" / "latest.json",
+                )
+
+            worker_module.query_duty_emergency_cases = fake_query
+            worker_module.post_cases = lambda *_args, **_kwargs: None
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"LOCALAPPDATA": tmp}, clear=False):
+                worker_module.maybe_run_case_lookup("http://nas", Path(tmp), 0, "", 300)
+                self.assertFalse(worker_health.worker_activity_path().exists())
+        finally:
+            worker_module.fetch_case_lookup_request = original_fetch
+            worker_module.query_duty_emergency_cases = original_query
+            worker_module.post_cases = original_post
 
     def test_maybe_run_credential_sync_saves_payload_and_acks(self):
         payload = {

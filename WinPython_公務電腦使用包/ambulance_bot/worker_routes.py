@@ -96,7 +96,9 @@ class WorkerControlClient:
         if not isinstance(server, Mapping):
             raise RuntimeError("NAS control response schema invalid")
         instance_id = str(server.get("instance_id") or "").strip()
-        if instance_id != self.choice.instance_id:
+        if not instance_id:
+            raise RuntimeError("NAS control response schema invalid")
+        if self.choice.identity_status == "verified" and instance_id != self.choice.instance_id:
             raise RuntimeError("NAS instance identity mismatch")
         return response
 

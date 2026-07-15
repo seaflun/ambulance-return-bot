@@ -193,6 +193,16 @@ class WorkerRouteTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "identity mismatch"):
             client.control({"state": "idle"})
 
+    def test_control_client_allows_unverified_heartbeat_without_claiming_identity(self):
+        choice = worker_routes.RouteChoice("http://manual", "", "manual", "unverified", "", "manual_url")
+        client = worker_routes.WorkerControlClient(
+            choice,
+            request_json=mock.Mock(),
+            post_json=lambda _url, _payload: {"ok": True, "server": {"instance_id": "nas-a"}},
+        )
+
+        self.assertTrue(client.control({"state": "idle"})["ok"])
+
     def test_known_identity_storage_accepts_only_uuid_like_values(self):
         instance_id = "6a04200e-e1d6-4a31-9ba5-eaf4f8d2d0dc"
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(

@@ -12,8 +12,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -22,6 +24,7 @@ from dotenv import load_dotenv
 
 from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task, save_consumables_record_enabled
 from disinfect import login_and_get_driver as login_disinfection_and_get_driver
+from ambulance_bot import worker_control, worker_health, worker_routes
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult
 from ambulance_bot.credential_envelope import open_credential_payload
 from ambulance_bot.duty_credentials import save_credential_sync_payload
@@ -59,6 +62,8 @@ MANUAL_TASK_ACTIVE = threading.Event()
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
 MAX_PARALLEL_SITE_GROUPS = 2
 MAX_EXECUTION_LEASE_HEARTBEAT_ERRORS = 3
+WORKER_NAS_LAN_URL = "http://10.30.65.30:8080"
+WORKER_NAS_TAILSCALE_URL = "http://100.114.126.58:8080"
 _TASK_CLAIM_CONTEXT: dict[str, dict[str, str]] = {}
 _TASK_CLAIM_CONTEXT_LOCK = threading.Lock()
 _STATUS_DELIVERY_LOCK = threading.RLock()
@@ -110,53 +115,87 @@ def main() -> None:
         print("[worker] interrupted update recovery launched; stopping worker loop", flush=True)
         return
 
+    runtime_state = worker_control.WorkerRuntimeState()
+    control = build_worker_control_loop(server_url, worker_id, artifacts_dir, runtime_state)
     print(f"[worker] starting worker_id={worker_id} server={server_url}", flush=True)
-    while True:
-        try:
-            flush_status_outbox(server_url)
+    try:
+        runtime_state.set("starting")
+        control.start()
+        while True:
             try:
-                report_remote_update_result(server_url, worker_id)
+                runtime_state.set("idle")
+                flush_status_outbox(server_url)
+                try:
+                    report_remote_update_result(server_url, worker_id)
+                except Exception as exc:
+                    print(f"[worker] remote update result report deferred: {exc}", flush=True)
+                maybe_run_credential_sync(server_url)
+                runtime_state.set("busy", activity="case_lookup", busy_reason="checking case lookup")
+                try:
+                    last_case_lookup_at, last_case_hash = maybe_run_case_lookup(
+                        server_url,
+                        artifacts_dir,
+                        last_case_lookup_at,
+                        last_case_hash,
+                        lookup_interval_seconds,
+                    )
+                finally:
+                    runtime_state.set("idle")
+                if auto_claim_tasks:
+                    execution_key = "__auto_claim__"
+                    execution_event = begin_manual_task_execution(execution_key, artifacts_dir)
+                    if execution_event is not None:
+                        try:
+                            runtime_state.set("busy", activity="task_execution", busy_reason="checking queued task")
+                            task = fetch_next_task(server_url, worker_id)
+                            if task is not None:
+                                task_id = str(task.get("task_id") or "").strip()
+                                if task_id:
+                                    _rebind_task_execution(execution_key, task_id, execution_event)
+                                    execution_key = task_id
+                                runtime_state.set(
+                                    "busy",
+                                    activity="task_execution",
+                                    busy_reason="running assigned task",
+                                    request_id=task_id,
+                                )
+                                run_all_sites_task(server_url, worker_id, task, artifacts_dir)
+                                if run_once:
+                                    return
+                                continue
+                        finally:
+                            runtime_state.set("idle")
+                            end_manual_task_execution(execution_key, execution_event, artifacts_dir)
+                command = control.pending_command()
+                if command is not None:
+                    request_id = str(command.get("request_id") or "").strip()
+                    runtime_state.set("idle", request_id=request_id)
+                    if maybe_start_remote_update(
+                        server_url,
+                        worker_id,
+                        artifacts_dir,
+                        command,
+                        waiting_status=control.set_remote_update_waiting,
+                    ):
+                        runtime_state.set("update_handoff", request_id=request_id)
+                        control.clear_command(request_id)
+                        print("[worker] remote update active; stopping worker loop", flush=True)
+                        return
+                if run_once:
+                    print("[worker] no queued task", flush=True)
+                    return
+                time.sleep(poll_seconds)
+            except KeyboardInterrupt:
+                raise
             except Exception as exc:
-                print(f"[worker] remote update result report deferred: {exc}", flush=True)
-            maybe_run_credential_sync(server_url)
-            last_case_lookup_at, last_case_hash = maybe_run_case_lookup(
-                server_url,
-                artifacts_dir,
-                last_case_lookup_at,
-                last_case_hash,
-                lookup_interval_seconds,
-            )
-            if auto_claim_tasks:
-                execution_key = "__auto_claim__"
-                execution_event = begin_manual_task_execution(execution_key, artifacts_dir)
-                if execution_event is not None:
-                    try:
-                        task = fetch_next_task(server_url, worker_id)
-                        if task is not None:
-                            task_id = str(task.get("task_id") or "").strip()
-                            if task_id:
-                                _rebind_task_execution(execution_key, task_id, execution_event)
-                                execution_key = task_id
-                            run_all_sites_task(server_url, worker_id, task, artifacts_dir)
-                            if run_once:
-                                return
-                            continue
-                    finally:
-                        end_manual_task_execution(execution_key, execution_event, artifacts_dir)
-            if maybe_run_remote_update(server_url, worker_id, artifacts_dir):
-                print("[worker] remote update active; stopping worker loop", flush=True)
-                return
-            if run_once:
-                print("[worker] no queued task", flush=True)
-                return
-            time.sleep(poll_seconds)
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:
-            print(f"[worker] loop error: {exc}", flush=True)
-            if run_once:
-                return
-            time.sleep(poll_seconds)
+                runtime_state.set("idle")
+                print(f"[worker] loop error: {exc}", flush=True)
+                if run_once:
+                    return
+                time.sleep(poll_seconds)
+    finally:
+        runtime_state.set("stopping")
+        control.stop(timeout_seconds=2.0)
 
 
 def remote_update_idle_seconds() -> int:
@@ -166,9 +205,81 @@ def remote_update_idle_seconds() -> int:
         return 120
 
 
+def worker_control_interval_seconds() -> float:
+    try:
+        return max(1.0, float(os.getenv("WORKER_CONTROL_INTERVAL_SECONDS", "10")))
+    except ValueError:
+        return 10.0
+
+
+def worker_control_route_choice(server_url: str) -> worker_routes.RouteChoice:
+    primary_url = str(server_url or "").strip().rstrip("/")
+    fallback_url = os.getenv("WORKER_SERVER_FALLBACK_URL", "").strip().rstrip("/")
+    identity_status = os.getenv("WORKER_SERVER_IDENTITY_STATUS", "unverified").strip()
+    instance_id = os.getenv("WORKER_SERVER_INSTANCE_ID", "").strip()
+    if identity_status != "verified" or not instance_id:
+        identity_status = "unverified"
+    if primary_url == WORKER_NAS_LAN_URL:
+        route_name = "lan"
+    elif primary_url == WORKER_NAS_TAILSCALE_URL:
+        route_name = "tailscale"
+    else:
+        route_name = "manual"
+    return worker_routes.RouteChoice(
+        primary_url,
+        fallback_url,
+        route_name,
+        identity_status,
+        instance_id,
+        "worker_environment",
+    )
+
+
+def build_worker_control_loop(
+    server_url: str,
+    worker_id: str,
+    artifacts_dir: Path,
+    runtime_state: worker_control.WorkerRuntimeState,
+) -> worker_control.WorkerControlLoop:
+    client = worker_routes.WorkerControlClient(
+        worker_control_route_choice(server_url),
+        request_json=request_json,
+        post_json=post_json,
+    )
+    return worker_control.WorkerControlLoop(
+        client=client,
+        worker_id=worker_id,
+        package_version=current_package_version,
+        package_path=lambda: str(Path(__file__).resolve().parent),
+        execution_mode=current_worker_runtime_kind,
+        snapshot=lambda: worker_control_runtime_snapshot(runtime_state, artifacts_dir),
+        mailbox_path=worker_health.worker_control_mailbox_path(),
+        interval_seconds=worker_control_interval_seconds(),
+        process_started_at=worker_process_started_at(),
+    )
+
+
+def worker_control_runtime_snapshot(
+    runtime_state: worker_control.WorkerRuntimeState,
+    artifacts_dir: Path,
+) -> worker_control.RuntimeSnapshot:
+    snapshot = runtime_state.snapshot()
+    if snapshot.state in {"busy", "update_handoff", "recovering", "stopping"}:
+        return snapshot
+    busy_reason = remote_update_busy_reason(artifacts_dir)
+    if not busy_reason:
+        return snapshot
+    activity = snapshot.activity or "manual_task"
+    return worker_control.RuntimeSnapshot("busy", activity, busy_reason, snapshot.request_id)
+
+
 def remote_update_busy_reason(artifacts_dir: Path) -> str:
     if MANUAL_TASK_ACTIVE.is_set() or manual_task_lock_active(artifacts_dir):
         return "勤務登打仍在執行。"
+    if worker_health.activity_is_fresh(90.0):
+        return "Worker 仍在執行案件查詢或勤務"
+    if remote_update_marker_is_healthy():
+        return "既有遠端更新程序仍在執行"
     request_path = artifacts_dir / "cases" / "request.json"
     if not request_path.exists():
         return ""
@@ -490,29 +601,33 @@ def report_remote_update_result(
     return True
 
 
-def maybe_run_remote_update(
+def maybe_start_remote_update(
     server_url: str,
     worker_id: str,
     artifacts_dir: Path,
+    command: Mapping[str, object],
     *,
-    fetch_command: Callable[[str, str], dict[str, object] | None] | None = None,
     post_command_status: Callable[..., None] | None = None,
     idle_seconds: Callable[[], float] | None = None,
     launch_update: Callable[[str], None] | None = None,
     active_update_check: Callable[[str], bool] | None = None,
+    waiting_status: Callable[[str, str, str], None] | None = None,
+    route_verified: bool = True,
 ) -> bool:
-    fetch = fetch_command or fetch_remote_update_command
+    if not route_verified:
+        print("[worker] remote update command ignored: route is not verified", flush=True)
+        return False
     post = post_command_status or post_remote_update_status
     idle = idle_seconds or windows_user_idle_seconds
     launch = launch_update or launch_remote_update
-    command = fetch(server_url, worker_id)
-    if not command:
-        return False
     request_id = str(command.get("request_id") or "").strip()
     if not request_id:
         return False
-    if str(command.get("status") or "").strip() == "updating":
-        is_active = (active_update_check or remote_update_wrapper_is_active)(request_id)
+    status = str(command.get("status") or "").strip()
+    if status in {"completed", "up_to_date", "failed", "timed_out"}:
+        return False
+    if status == "updating":
+        is_active = (active_update_check or remote_update_marker_is_healthy)(request_id)
         if is_active:
             return True
         post(
@@ -525,13 +640,19 @@ def maybe_run_remote_update(
         return False
     busy_reason = remote_update_busy_reason(artifacts_dir)
     if busy_reason:
-        post(server_url, request_id, "waiting_busy", busy_reason, worker_id=worker_id)
+        if waiting_status is not None:
+            waiting_status(request_id, "waiting_busy", busy_reason)
+        else:
+            post(server_url, request_id, "waiting_busy", busy_reason, worker_id=worker_id)
         return False
     minimum_idle = remote_update_idle_seconds()
     actual_idle = max(0.0, float(idle()))
     if actual_idle < minimum_idle:
-        detail = f"等待電腦停止操作滿 {minimum_idle} 秒，目前已閒置 {int(actual_idle)} 秒。"
-        post(server_url, request_id, "waiting_idle", detail, worker_id=worker_id)
+        detail = f"等待電腦停止操作滿 {minimum_idle} 秒。"
+        if waiting_status is not None:
+            waiting_status(request_id, "waiting_idle", detail)
+        else:
+            post(server_url, request_id, "waiting_idle", detail, worker_id=worker_id)
         return False
     post(server_url, request_id, "updating", "安全條件已符合，開始背景更新。", worker_id=worker_id)
     try:
@@ -542,11 +663,38 @@ def maybe_run_remote_update(
     return True
 
 
+def maybe_run_remote_update(
+    server_url: str,
+    worker_id: str,
+    artifacts_dir: Path,
+    *,
+    fetch_command: Callable[[str, str], dict[str, object] | None] | None = None,
+    post_command_status: Callable[..., None] | None = None,
+    idle_seconds: Callable[[], float] | None = None,
+    launch_update: Callable[[str], None] | None = None,
+    active_update_check: Callable[[str], bool] | None = None,
+) -> bool:
+    fetch = fetch_command or fetch_remote_update_command
+    command = fetch(server_url, worker_id)
+    if not isinstance(command, Mapping):
+        return False
+    return maybe_start_remote_update(
+        server_url,
+        worker_id,
+        artifacts_dir,
+        command,
+        post_command_status=post_command_status,
+        idle_seconds=idle_seconds,
+        launch_update=launch_update,
+        active_update_check=active_update_check,
+    )
+
+
 def remote_update_active_path() -> Path:
     return update_state_root() / "AmbulanceReturnBot" / "remote_update_active.json"
 
 
-def remote_update_wrapper_is_active(request_id: str) -> bool:
+def remote_update_wrapper_is_active(request_id: str, *, max_age_seconds: float = 3600.0) -> bool:
     path = remote_update_active_path()
     if not path.is_file():
         return False
@@ -563,10 +711,28 @@ def remote_update_wrapper_is_active(request_id: str) -> bool:
             and bool(str(payload.get("owner_nonce") or "").strip())
             and actual_start is not None
             and abs(actual_start - expected_start) <= 10
-            and 0 <= time.time() - path.stat().st_mtime <= 3600
+            and 0 <= time.time() - path.stat().st_mtime <= max(0.0, float(max_age_seconds))
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
+
+
+def remote_update_marker_is_healthy(
+    request_id: str | None = None,
+    *,
+    max_age_seconds: float = 600.0,
+) -> bool:
+    path = remote_update_active_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    expected_request_id = str(request_id or payload.get("request_id") or "").strip()
+    if not expected_request_id:
+        return False
+    return remote_update_wrapper_is_active(expected_request_id, max_age_seconds=max_age_seconds)
 
 
 def process_start_unix_ms(pid: int) -> int | None:
@@ -611,6 +777,13 @@ def process_start_unix_ms(pid: int) -> int | None:
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
+def worker_process_started_at() -> str:
+    started_unix_ms = process_start_unix_ms(os.getpid())
+    if started_unix_ms is not None:
+        return datetime.fromtimestamp(started_unix_ms / 1000, timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def maybe_run_case_lookup(
     server_url: str,
     artifacts_dir: Path,
@@ -640,23 +813,28 @@ def maybe_run_case_lookup(
     else:
         return last_lookup_at, last_case_hash
 
-    result = query_duty_emergency_cases(artifacts_dir, lookup_range=lookup_range)
-    print(f"[worker] case lookup result status={result.status} count={len(result.cases)} detail={result.detail}", flush=True)
-    case_hash = hash_cases(result.cases)
-    if not manual_lookup and case_hash == last_case_hash:
-        print("[worker] case lookup unchanged; skip posting", flush=True)
-        return now, last_case_hash
-    post_cases(
-        server_url,
-        result.status,
-        result.detail,
-        lookup_range,
-        result.cases,
-        case_hash,
-        request_id=request_id,
-    )
-    print(f"[worker] case lookup posted count={len(result.cases)}", flush=True)
-    return now, case_hash
+    activity_owner = f"case_lookup:{os.getpid()}:{request_id or int(now)}"
+    worker_health.write_activity(activity="case_lookup", owner=activity_owner)
+    try:
+        result = query_duty_emergency_cases(artifacts_dir, lookup_range=lookup_range)
+        print(f"[worker] case lookup result status={result.status} count={len(result.cases)} detail={result.detail}", flush=True)
+        case_hash = hash_cases(result.cases)
+        if not manual_lookup and case_hash == last_case_hash:
+            print("[worker] case lookup unchanged; skip posting", flush=True)
+            return now, last_case_hash
+        post_cases(
+            server_url,
+            result.status,
+            result.detail,
+            lookup_range,
+            result.cases,
+            case_hash,
+            request_id=request_id,
+        )
+        print(f"[worker] case lookup posted count={len(result.cases)}", flush=True)
+        return now, case_hash
+    finally:
+        worker_health.clear_activity(activity_owner)
 
 
 def fetch_next_task(server_url: str, worker_id: str) -> dict[str, object] | None:
@@ -2136,6 +2314,26 @@ def request_json(url: str) -> dict[str, object]:
         message = worker_api_error_message(exc)
         exc.close()
         raise RuntimeError(message) from exc
+
+
+def post_json(url: str, payload: Mapping[str, object]) -> dict[str, object]:
+    body = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        str(url),
+        data=body,
+        headers={**worker_headers(), "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        message = worker_api_error_message(exc)
+        exc.close()
+        raise RuntimeError(message) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("NAS worker API JSON response must be an object")
+    return data
 
 
 def post_status(
