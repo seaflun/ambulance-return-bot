@@ -1180,7 +1180,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
             worker_gui.worker, "end_manual_task_execution"
         ), mock.patch.object(worker_gui.worker, "_start_worker_claim_heartbeat", return_value=lambda: None), mock.patch.object(
             worker_gui.worker, "claim_task", return_value=task
-        ), mock.patch.object(worker_gui.worker, "fetch_task_payload", side_effect=[before, after]), mock.patch.object(
+        ), mock.patch.object(worker_gui.worker, "fetch_task_payload", side_effect=[before, after, after]), mock.patch.object(
             worker_gui.worker,
             "post_status",
             side_effect=lambda _server, _task, status, _detail, **_kwargs: posts.append(status),
@@ -1189,6 +1189,165 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
         self.assertEqual(posts[-1], "desktop_fast_completed_with_errors")
         self.assertNotIn("desktop_fast_completed", posts)
+
+    def test_manual_all_sites_logs_four_site_completion_from_fetched_payload(self):
+        task = {
+            "task_id": "gui-complete",
+            "created_at": "2026-07-17T12:00:00",
+            "vehicle": "新坡92",
+        }
+        complete_payload = {
+            "task": task,
+            "worker_queue": {
+                "status": "claimed",
+                "claim_id": "claim-complete",
+                "worker_id": "PC-01",
+            },
+            "site_statuses": {
+                "duty_work_log": {"status": "duty_work_log_saved"},
+                "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                "fuel_record": {"status": "not_started"},
+                "consumables": {"status": "consumables_saved"},
+                "disinfection": {"status": "disinfection_saved"},
+            },
+        }
+        gui = self._manual_gui_stub(
+            _run_selected_task_background=mock.Mock(),
+            _run_selected_vehicle_mileage_background=mock.Mock(),
+            _run_selected_fuel_record_background=mock.Mock(),
+            _run_selected_consumables_background=mock.Mock(),
+            _run_selected_disinfection_background=mock.Mock(),
+        )
+        event = __import__("threading").Event()
+        posts: list[str] = []
+        with mock.patch.object(
+            worker_gui.worker,
+            "begin_manual_task_execution",
+            return_value=event,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "end_manual_task_execution",
+        ), mock.patch.object(
+            worker_gui.worker,
+            "_start_worker_claim_heartbeat",
+            return_value=lambda: None,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "claim_task",
+            return_value=task,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "fetch_task_payload",
+            return_value=complete_payload,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "post_status",
+            side_effect=lambda _server, _task, status, _detail, **_kwargs: posts.append(
+                status
+            ),
+        ):
+            worker_gui.WorkerGui._run_selected_all_sites_background(
+                gui,
+                task["task_id"],
+            )
+
+        logs: list[str] = []
+        while True:
+            try:
+                logs.append(gui.log_queue.get_nowait())
+            except queue.Empty:
+                break
+        self.assertEqual(posts[-1], "desktop_fast_completed")
+        self.assertIn("四站｜完成｜gui-complete", logs)
+
+    def test_manual_all_sites_does_not_log_completion_for_partial_payload(self):
+        partial_payload = {
+            "task": {"task_id": "gui-partial", "vehicle": "新坡92"},
+            "site_statuses": {
+                "duty_work_log": {"status": "duty_work_log_saved"},
+                "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                "fuel_record": {"status": "not_started"},
+                "consumables": {"status": "consumables_failed"},
+                "disinfection": {"status": "not_started"},
+            },
+        }
+
+        line = worker_gui.worker.worker_completion_log_line(
+            partial_payload,
+            "gui-partial",
+        )
+
+        self.assertEqual(line, "")
+
+    def test_manual_all_sites_completion_fetch_failure_does_not_overwrite_success(self):
+        task = {
+            "task_id": "gui-completion-fetch-offline",
+            "created_at": "2026-07-17T12:00:00",
+            "vehicle": "新坡92",
+        }
+        complete_payload = {
+            "task": task,
+            "worker_queue": {
+                "status": "claimed",
+                "claim_id": "claim-completion-fetch-offline",
+                "worker_id": "PC-01",
+            },
+            "site_statuses": {
+                "duty_work_log": {"status": "duty_work_log_saved"},
+                "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                "fuel_record": {"status": "not_started"},
+                "consumables": {"status": "consumables_saved"},
+                "disinfection": {"status": "disinfection_saved"},
+            },
+        }
+        gui = self._manual_gui_stub(
+            _run_selected_task_background=mock.Mock(),
+            _run_selected_vehicle_mileage_background=mock.Mock(),
+            _run_selected_fuel_record_background=mock.Mock(),
+            _run_selected_consumables_background=mock.Mock(),
+            _run_selected_disinfection_background=mock.Mock(),
+        )
+        event = __import__("threading").Event()
+        posts: list[str] = []
+        with mock.patch.object(
+            worker_gui.worker,
+            "begin_manual_task_execution",
+            return_value=event,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "end_manual_task_execution",
+        ), mock.patch.object(
+            worker_gui.worker,
+            "_start_worker_claim_heartbeat",
+            return_value=lambda: None,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "claim_task",
+            return_value=task,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "fetch_task_payload",
+            side_effect=[
+                complete_payload,
+                complete_payload,
+                complete_payload,
+                complete_payload,
+                OSError("NAS temporarily unavailable"),
+            ],
+        ), mock.patch.object(
+            worker_gui.worker,
+            "post_status",
+            side_effect=lambda _server, _task, status, _detail, **_kwargs: posts.append(
+                status
+            ),
+        ):
+            worker_gui.WorkerGui._run_selected_all_sites_background(
+                gui,
+                task["task_id"],
+            )
+
+        self.assertEqual(posts[-1], "desktop_fast_completed")
+        self.assertNotIn("desktop_fast_completed_with_errors", posts)
 
     def test_manual_site_backgrounds_claim_selected_task_instead_of_read_only_fetch(self):
         gui = self._manual_gui_stub()

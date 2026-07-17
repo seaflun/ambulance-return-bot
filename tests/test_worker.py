@@ -2613,6 +2613,120 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("WORKER_TOKEN", message)
         self.assertIn("同步 NAS 與公務電腦 .env", message)
 
+    def test_worker_completion_log_line_requires_all_sites(self):
+        payload = {
+            "task": {"task_id": "worker-partial", "vehicle": "新坡92"},
+            "site_statuses": {
+                "duty_work_log": {"status": "not_started"},
+                "vehicle_mileage": {"status": "not_started"},
+                "fuel_record": {"status": "not_started"},
+                "consumables": {"status": "not_started"},
+                "disinfection": {"status": "disinfection_saved"},
+            },
+        }
+
+        line = worker_module.worker_completion_log_line(
+            payload,
+            "worker-partial",
+        )
+
+        self.assertEqual(line, "")
+
+    def test_worker_completion_log_line_uses_four_site_label(self):
+        payload = {
+            "task": {"task_id": "worker-complete", "vehicle": "新坡92"},
+            "site_statuses": {
+                "duty_work_log": {"status": "duty_work_log_saved"},
+                "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                "fuel_record": {"status": "not_started"},
+                "consumables": {"status": "consumables_saved"},
+                "disinfection": {"status": "disinfection_saved"},
+            },
+        }
+
+        line = worker_module.worker_completion_log_line(
+            payload,
+            "worker-complete",
+        )
+
+        self.assertEqual(line, "四站｜完成｜worker-complete")
+
+    def test_worker_completion_log_line_uses_five_site_label_when_fuel_is_enabled(self):
+        payload = {
+            "task": {
+                "task_id": "worker-five-sites",
+                "vehicle": "新坡92",
+                "fuel_record": {"enabled": True},
+            },
+            "site_statuses": {
+                "duty_work_log": {"status": "duty_work_log_saved"},
+                "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                "fuel_record": {"status": "fuel_record_saved"},
+                "consumables": {"status": "consumables_saved"},
+                "disinfection": {"status": "disinfection_saved"},
+            },
+        }
+
+        line = worker_module.worker_completion_log_line(
+            payload,
+            "worker-five-sites",
+        )
+
+        self.assertEqual(line, "五站｜完成｜worker-five-sites")
+
+    def test_worker_completion_log_fetch_failure_does_not_fail_completed_site(self):
+        with mock.patch.object(
+            worker_module,
+            "fetch_task_payload",
+            side_effect=OSError("NAS temporarily unavailable"),
+        ):
+            line = worker_module.print_worker_completion_if_reached(
+                "http://nas",
+                "worker-offline",
+            )
+
+        self.assertEqual(line, "")
+
+    def test_successful_single_site_worker_posts_site_run_completed(self):
+        task = AmbulanceReturnRequest(
+            task_id="worker-single-site",
+            created_at=__import__("datetime").datetime(2026, 7, 17, 12, 0),
+            raw_text="",
+            vehicle="新坡92",
+        ).to_dict()
+        result = SimpleNamespace(
+            status="duty_work_log_saved",
+            detail="saved",
+            key="duty_work_log",
+            name="工作",
+        )
+        posts: list[str] = []
+        with mock.patch.object(
+            worker_module,
+            "run_local_selenium_task",
+            return_value=result,
+        ), mock.patch.object(
+            worker_module,
+            "post_status",
+            side_effect=lambda _url, _task_id, status, _detail, **_kwargs: posts.append(
+                status
+            ),
+        ), mock.patch.object(
+            worker_module,
+            "print_worker_completion_if_reached",
+            return_value="",
+            create=True,
+        ):
+            worker_module.run_task(
+                "http://nas",
+                "worker-a",
+                task,
+                Path("artifacts"),
+            )
+
+        self.assertEqual(posts[-1], "site_run_completed")
+        self.assertNotIn("desktop_fast_completed", posts)
+
     def test_single_site_workers_use_site_profile_defaults(self):
         original_run_duty = worker_module.run_local_selenium_task
         original_run_vehicle = worker_module.run_vehicle_mileage_task
@@ -2743,7 +2857,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result.status, "vehicle_mileage_saved")
         self.assertIn(("vehicle_mileage_saved", "新坡93"), posts)
         self.assertIn(("vehicle_mileage_saved", ""), posts)
-        self.assertEqual(posts[-1], ("desktop_fast_completed", ""))
+        self.assertEqual(posts[-1], ("site_run_completed", ""))
 
     def test_run_fuel_retries_only_failed_enabled_vehicle_and_posts_vehicle_checkpoint(self):
         task = self._two_vehicle_fuel_task()

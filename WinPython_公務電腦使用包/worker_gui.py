@@ -1644,7 +1644,16 @@ class WorkerGui(ctk.CTk):
                 worker.post_status(server_url, task_id, "desktop_fast_completed_with_errors", f"{blocked_site} 未完成，已停止後續站別。")
             else:
                 worker.post_status(server_url, task_id, "desktop_fast_completed", f"{site_count_label}登打完成。")
-            self.log_queue.put(f"{site_count_label}登打流程結束：{task_id}")
+            try:
+                payload = worker.fetch_task_payload(server_url, task_id) or {}
+            except Exception as exc:
+                payload = {}
+                self.log_queue.put(f"NAS 完成狀態暫時無法讀取：{task_id} {exc}")
+            completion_line = worker.worker_completion_log_line(payload, task_id)
+            if completion_line:
+                self.log_queue.put(completion_line)
+            else:
+                self.log_queue.put(f"{site_count_label}登打流程結束：{task_id}")
             self._refresh_tasks()
         except worker.TaskCancellationError as exc:
             self.log_queue.put(f"任務已中止或 claim 已失效：{task_id} {exc}")

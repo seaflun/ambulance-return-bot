@@ -52,6 +52,7 @@ from ambulance_bot.task_cancellation import (
     clear_task_cancellation,
     task_cancellation_requested,
 )
+from ambulance_bot.task_store import task_completion_snapshot
 from ambulance_bot.update_safety import ManualUpdateRequiredError, require_safe_automated_update
 from ambulance_bot.window_layout import maximize_worker_site_windows
 
@@ -1449,6 +1450,55 @@ def fetch_task_payload(server_url: str, task_id: str) -> dict[str, object] | Non
     return payload if isinstance(payload, dict) else None
 
 
+def worker_completion_log_line(
+    payload: dict[str, object],
+    task_id: str,
+) -> str:
+    snapshot = task_completion_snapshot(dict(payload or {}))
+    if not snapshot["all_complete"]:
+        return ""
+    return f"{snapshot['site_count_label']}｜完成｜{task_id}"
+
+
+def print_worker_completion_if_reached(
+    server_url: str,
+    task_id: str,
+) -> str:
+    try:
+        payload = fetch_task_payload(server_url, task_id)
+    except Exception as exc:
+        print(
+            f"[worker] completion status unavailable task={task_id}: {exc}",
+            flush=True,
+        )
+        return ""
+    line = worker_completion_log_line(payload or {}, task_id)
+    if line:
+        print(line, flush=True)
+    return line
+
+
+def post_site_terminal_status(
+    server_url: str,
+    task_id: str,
+    result_status: str,
+    detail: str,
+) -> None:
+    blocked = _status_blocks_progress(result_status)
+    post_status(
+        server_url,
+        task_id,
+        (
+            "desktop_fast_completed_with_errors"
+            if blocked
+            else "site_run_completed"
+        ),
+        detail,
+    )
+    if not blocked:
+        print_worker_completion_if_reached(server_url, task_id)
+
+
 def fetch_recent_tasks(server_url: str, limit: int = 20) -> list[dict[str, object]]:
     url = f"{server_url}/worker/tasks?limit={int(limit)}"
     data = request_json(url)
@@ -1579,10 +1629,10 @@ def run_task(
         **_result_diagnostic_kwargs(result),
     )
     if update_overall:
-        post_status(
+        post_site_terminal_status(
             server_url,
             request.task_id,
-            "desktop_fast_completed_with_errors" if _status_blocks_progress(result.status) else "desktop_fast_completed",
+            result.status,
             result.detail,
         )
     print(f"[worker] finished task {request.task_id}: {result.status}", flush=True)
@@ -1778,7 +1828,13 @@ def _run_all_sites_task_impl(
         )
         maximize_worker_site_windows()
         return failed_results[-1]
-    post_status(server_url, request.task_id, "desktop_fast_completed", f"公務電腦 worker {site_count_label}登打完成。")
+    post_status(
+        server_url,
+        request.task_id,
+        "desktop_fast_completed",
+        f"公務電腦 worker {site_count_label}登打完成。",
+    )
+    print_worker_completion_if_reached(server_url, request.task_id)
     maximize_worker_site_windows()
     return last_result
 
@@ -2105,10 +2161,10 @@ def run_vehicle_task(
         **_result_diagnostic_kwargs(result),
     )
     if update_overall:
-        post_status(
+        post_site_terminal_status(
             server_url,
             request.task_id,
-            "desktop_fast_completed_with_errors" if _status_blocks_progress(result.status) else "desktop_fast_completed",
+            result.status,
             result.detail,
         )
     print(f"[worker] finished vehicle mileage {request.task_id}: {result.status}", flush=True)
@@ -2203,10 +2259,10 @@ def run_fuel_worker_task(
         **_result_diagnostic_kwargs(result),
     )
     if update_overall:
-        post_status(
+        post_site_terminal_status(
             server_url,
             request.task_id,
-            "desktop_fast_completed_with_errors" if _status_blocks_progress(result.status) else "desktop_fast_completed",
+            result.status,
             result.detail,
         )
     print(f"[worker] finished fuel record {request.task_id}: {result.status}", flush=True)
@@ -2313,10 +2369,10 @@ def run_disinfection_worker_task(
         **_result_diagnostic_kwargs(result),
     )
     if update_overall:
-        post_status(
+        post_site_terminal_status(
             server_url,
             request.task_id,
-            "desktop_fast_completed_with_errors" if _status_blocks_progress(result.status) else "desktop_fast_completed",
+            result.status,
             result.detail,
         )
     print(f"[worker] finished disinfection {request.task_id}: {result.status}", flush=True)
@@ -2424,10 +2480,10 @@ def run_consumables_worker_task(
         **_result_diagnostic_kwargs(result),
     )
     if update_overall:
-        post_status(
+        post_site_terminal_status(
             server_url,
             request.task_id,
-            "desktop_fast_completed_with_errors" if _result_blocks_progress(result) else "desktop_fast_completed",
+            result.status,
             result.detail,
         )
     print(f"[worker] finished consumables {request.task_id}: {result.status}", flush=True)
