@@ -10,12 +10,166 @@ from ambulance_bot.task_store import (
     JsonTaskStore,
     SiteCompletionConflictError,
     WorkerClaimConflictError,
+    merge_pending_edit_impacts,
     task_completion_snapshot,
     worker_claim_lease_is_active,
 )
 
 
 class JsonTaskStoreTests(unittest.TestCase):
+    def test_repeated_edit_impact_keeps_unresolved_earlier_site(self):
+        existing = {
+            "changed_fields": [{"key": "mileage", "label": "里程"}],
+            "changed_labels": ["里程"],
+            "affected_sites": {
+                "vehicle_mileage": {
+                    "site_key": "vehicle_mileage",
+                    "site_label": "里程",
+                    "vehicle_keys": ["新坡92"],
+                    "vehicle_labels": [],
+                    "field_labels": ["里程"],
+                },
+            },
+        }
+        current = {
+            "changed_fields": [{"key": "consumables", "label": "耗材"}],
+            "changed_labels": ["耗材"],
+            "affected_sites": {
+                "consumables": {
+                    "site_key": "consumables",
+                    "site_label": "耗材",
+                    "vehicle_keys": ["新坡92"],
+                    "vehicle_labels": [],
+                    "field_labels": ["耗材"],
+                },
+            },
+        }
+
+        merged = merge_pending_edit_impacts(existing, current, ["consumables"])
+
+        self.assertEqual(merged["changed_labels"], ["里程", "耗材"])
+        self.assertEqual(
+            list(merged["affected_sites"]),
+            ["vehicle_mileage", "consumables"],
+        )
+
+    def test_repeated_edit_impact_merges_vehicle_keys_for_same_site(self):
+        existing = {
+            "changed_fields": [],
+            "changed_labels": ["第 2 車里程"],
+            "affected_sites": {
+                "vehicle_mileage": {
+                    "site_key": "vehicle_mileage",
+                    "site_label": "里程",
+                    "vehicle_keys": ["新坡93"],
+                    "vehicle_labels": ["第 2 車"],
+                    "field_labels": ["第 2 車里程"],
+                },
+            },
+        }
+        current = {
+            "changed_fields": [],
+            "changed_labels": ["第 1 車里程"],
+            "affected_sites": {
+                "vehicle_mileage": {
+                    "site_key": "vehicle_mileage",
+                    "site_label": "里程",
+                    "vehicle_keys": ["新坡92"],
+                    "vehicle_labels": ["第 1 車"],
+                    "field_labels": ["第 1 車里程"],
+                },
+            },
+        }
+
+        merged = merge_pending_edit_impacts(
+            existing,
+            current,
+            ["vehicle_mileage"],
+        )
+
+        site = merged["affected_sites"]["vehicle_mileage"]
+        self.assertEqual(site["vehicle_keys"], ["新坡93", "新坡92"])
+        self.assertEqual(site["vehicle_labels"], ["第 2 車", "第 1 車"])
+        self.assertEqual(merged["site_summaries"], ["里程"])
+
+    def test_pending_edit_impact_clears_after_affected_site_is_resaved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            original = AmbulanceReturnRequest(
+                task_id="edit-impact-resolved",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+                mileage="100",
+            )
+            payload = store.create(original)
+            for site_key in (
+                "duty_work_log",
+                "vehicle_mileage",
+                "consumables",
+                "disinfection",
+            ):
+                payload["site_statuses"][site_key]["status"] = f"{site_key}_saved"
+            payload["overall_status"] = "desktop_fast_completed"
+            store.save_payload(original.task_id, payload)
+            updated_request = AmbulanceReturnRequest.from_dict(original.to_dict())
+            updated_request.mileage = "200"
+            impact = {
+                "changed_fields": [
+                    {"key": "vehicle_entries.0.mileage", "label": "里程"},
+                ],
+                "changed_labels": ["里程"],
+                "affected_sites": {
+                    "vehicle_mileage": {
+                        "site_key": "vehicle_mileage",
+                        "site_label": "里程",
+                        "vehicle_keys": ["新坡92"],
+                        "vehicle_labels": [],
+                        "field_labels": ["里程"],
+                    },
+                },
+                "site_summaries": ["里程"],
+            }
+
+            edited = store.update_task(
+                original.task_id,
+                updated_request,
+                changed_site_keys={"vehicle_mileage"},
+                site_update_contexts={
+                    "vehicle_mileage": {
+                        "previous_task": original.to_dict(),
+                        "current_task": updated_request.to_dict(),
+                    },
+                },
+                edit_impact=impact,
+            )
+
+            self.assertEqual(
+                edited["overall_status"],
+                "task_updated_needs_site_update",
+            )
+            self.assertEqual(
+                edited["pending_edit_impact"]["site_summaries"],
+                ["里程"],
+            )
+
+            completed = store.update_site_result(
+                original.task_id,
+                SiteAutomationResult(
+                    "vehicle_mileage",
+                    "車輛里程",
+                    "vehicle_mileage_saved",
+                    "saved",
+                ),
+            )
+
+            self.assertNotIn("pending_edit_impact", completed)
+            self.assertTrue(task_completion_snapshot(completed)["all_complete"])
+            self.assertEqual(
+                completed["overall_status"],
+                "desktop_fast_completed",
+            )
+
     def test_completion_snapshot_requires_all_four_active_sites(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))

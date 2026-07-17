@@ -5398,6 +5398,11 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["overall_status"], "task_updated_needs_site_update")
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
         self.assertEqual(payload["site_statuses"]["consumables"]["status"], "consumables_needs_update")
+        self.assertEqual(payload["pending_edit_impact"]["changed_labels"], ["耗材"])
+        self.assertEqual(
+            list(payload["pending_edit_impact"]["affected_sites"]),
+            ["consumables"],
+        )
         self.assertIn("\u66f4\u65b0\u8017\u6750", body)
         self.assertIn("\u9700\u66f4\u65b0", body)
 
@@ -5629,7 +5634,10 @@ class WebAppTests(unittest.TestCase):
 
         changed = app_module.changed_sites_for_task_edit(previous_request.to_dict(), current_request.to_dict())
 
-        self.assertEqual(changed, {"duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"})
+        self.assertEqual(
+            changed,
+            {"duty_work_log", "vehicle_mileage", "consumables", "disinfection"},
+        )
 
     def test_task_edit_second_vehicle_identity_marks_consumables_for_update(self):
         previous_request = app_module.request_from_form(

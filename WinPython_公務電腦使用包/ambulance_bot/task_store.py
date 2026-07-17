@@ -171,6 +171,89 @@ def now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _merge_unique_values(existing: object, current: object) -> list[str]:
+    merged: list[str] = []
+    for value in list(existing or []) + list(current or []):
+        normalized = str(value or "").strip()
+        if normalized and normalized not in merged:
+            merged.append(normalized)
+    return merged
+
+
+def _pending_edit_site_summary(site_key: str, site: dict[str, Any]) -> str:
+    vehicle_labels = list(site.get("vehicle_labels") or [])
+    site_label = str(site.get("site_label") or site_key)
+    if len(vehicle_labels) == 1:
+        return f"{site_label}（只重登{vehicle_labels[0]}）"
+    return site_label
+
+
+def merge_pending_edit_impacts(
+    existing: dict[str, Any],
+    current: dict[str, Any],
+    updated_sites: list[str],
+) -> dict[str, Any]:
+    merged_changed_fields: list[dict[str, str]] = []
+    for item in list(existing.get("changed_fields") or []) + list(
+        current.get("changed_fields") or []
+    ):
+        if isinstance(item, dict):
+            normalized = {
+                "key": str(item.get("key") or ""),
+                "label": str(item.get("label") or ""),
+            }
+            if normalized not in merged_changed_fields:
+                merged_changed_fields.append(normalized)
+
+    merged_sites = {
+        str(site_key): dict(site)
+        for site_key, site in dict(existing.get("affected_sites") or {}).items()
+        if isinstance(site, dict)
+    }
+    current_sites = dict(current.get("affected_sites") or {})
+    for site_key in updated_sites:
+        incoming = current_sites.get(site_key)
+        if not isinstance(incoming, dict):
+            continue
+        previous = merged_sites.get(site_key)
+        if not isinstance(previous, dict):
+            merged_sites[site_key] = dict(incoming)
+            continue
+        merged_site = {**previous, **incoming}
+        previous_labels = list(previous.get("vehicle_labels") or [])
+        incoming_labels = list(incoming.get("vehicle_labels") or [])
+        if previous_labels and incoming_labels:
+            merged_site["vehicle_keys"] = _merge_unique_values(
+                previous.get("vehicle_keys"),
+                incoming.get("vehicle_keys"),
+            )
+            merged_site["vehicle_labels"] = _merge_unique_values(
+                previous_labels,
+                incoming_labels,
+            )
+        else:
+            merged_site["vehicle_keys"] = []
+            merged_site["vehicle_labels"] = []
+        merged_site["field_labels"] = _merge_unique_values(
+            previous.get("field_labels"),
+            incoming.get("field_labels"),
+        )
+        merged_sites[site_key] = merged_site
+
+    return {
+        "changed_fields": merged_changed_fields,
+        "changed_labels": _merge_unique_values(
+            existing.get("changed_labels"),
+            current.get("changed_labels"),
+        ),
+        "affected_sites": merged_sites,
+        "site_summaries": [
+            _pending_edit_site_summary(site_key, site)
+            for site_key, site in merged_sites.items()
+        ],
+    }
+
+
 class TaskActiveError(RuntimeError):
     pass
 
@@ -221,6 +304,7 @@ class JsonTaskStore:
         request: AmbulanceReturnRequest,
         changed_site_keys: set[str] | None = None,
         site_update_contexts: dict[str, dict[str, object]] | None = None,
+        edit_impact: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)
@@ -251,7 +335,36 @@ class JsonTaskStore:
                 payload["worker_queue"] = reset_queue_state
             else:
                 payload["overall_status"] = str(payload.get("overall_status") or "created")
-            self.add_event_to_payload(payload, "task_updated", "任務內容已修改。")
+            impact = dict(edit_impact or {})
+            existing_impact = (
+                dict(payload.get("pending_edit_impact") or {})
+                if isinstance(payload.get("pending_edit_impact"), dict)
+                else {}
+            )
+            if updated_sites and impact.get("affected_sites"):
+                pending_impact = merge_pending_edit_impacts(
+                    existing_impact,
+                    impact,
+                    updated_sites,
+                )
+                payload["pending_edit_impact"] = pending_impact
+                changed_text = "、".join(impact.get("changed_labels") or [])
+                site_text = "、".join(
+                    str(
+                        dict(impact.get("affected_sites") or {})
+                        .get(site_key, {})
+                        .get("site_label")
+                        or site_key
+                    )
+                    for site_key in updated_sites
+                )
+                self.add_event_to_payload(
+                    payload,
+                    "task_updated",
+                    f"任務內容已修改：{changed_text}；需重新登打：{site_text}。",
+                )
+            elif edit_impact is None:
+                self.add_event_to_payload(payload, "task_updated", "任務內容已修改。")
             self.save_payload(task_id, payload)
             return payload
 
@@ -341,6 +454,33 @@ class JsonTaskStore:
                 site[field] = ""
             updated_sites.append(site_key)
         return updated_sites
+
+    def _resolve_pending_edit_site(
+        self,
+        payload: dict[str, Any],
+        site_key: str,
+    ) -> None:
+        impact = payload.get("pending_edit_impact")
+        if not isinstance(impact, dict):
+            return
+        affected = impact.get("affected_sites")
+        if not isinstance(affected, dict) or site_key not in affected:
+            return
+        site = dict(payload.get("site_statuses", {}).get(site_key) or {})
+        if not site_status_is_complete(site.get("status")):
+            return
+        remaining = dict(affected)
+        remaining.pop(site_key, None)
+        if not remaining:
+            payload.pop("pending_edit_impact", None)
+            return
+        impact["affected_sites"] = remaining
+        impact["site_summaries"] = [
+            _pending_edit_site_summary(key, item)
+            for key, item in remaining.items()
+            if isinstance(item, dict)
+        ]
+        payload["pending_edit_impact"] = impact
 
     def get(self, task_id: str) -> dict[str, Any]:
         path = self.path_for(task_id)
@@ -823,6 +963,7 @@ class JsonTaskStore:
                     **({"vehicle_key": vehicle_key} if vehicle_key else {}),
                 },
             )
+            self._resolve_pending_edit_site(payload, result.key)
             self._reconcile_completion_payload(
                 payload,
                 finalize_queue=_payload is None,
@@ -1181,6 +1322,7 @@ class JsonTaskStore:
                 "completed_by_user",
                 f"{site['name']}{event_target} 使用者已確認完成。",
             )
+            self._resolve_pending_edit_site(payload, site_key)
             self._reconcile_completion_payload(
                 payload,
                 finalize_queue=True,

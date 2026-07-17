@@ -76,6 +76,7 @@ from ambulance_bot.sinposmart_backend import (
 )
 from ambulance_bot.task_runner import TaskRunner
 from ambulance_bot.task_cancellation import clear_task_cancellation, request_task_cancellation
+from ambulance_bot.task_edit_impact import analyze_task_edit, changed_site_keys
 from ambulance_bot.task_store import (
     JsonTaskStore,
     SiteCompletionConflictError,
@@ -335,14 +336,22 @@ def update_task(task_id: str):
             selected_consumable_packages=selected_consumable_packages_from_form(request.form),
             two_vehicle_available=form_flag_enabled(request.form.get("two_vehicle_available")) or task_request.two_vehicle,
         ), 400
-    changed_site_keys = changed_sites_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict())
-    site_update_contexts = site_update_contexts_for_task_edit(dict(previous_payload.get("task") or {}), task_request.to_dict(), changed_site_keys)
+    previous_task = dict(previous_payload.get("task") or {})
+    current_task = task_request.to_dict()
+    edit_impact = analyze_task_edit(previous_task, current_task)
+    changed_site_keys_for_edit = changed_site_keys(edit_impact)
+    site_update_contexts = site_update_contexts_for_task_edit(
+        previous_task,
+        current_task,
+        changed_site_keys_for_edit,
+    )
     try:
         payload = store.update_task(
             task_id,
             task_request,
-            changed_site_keys=changed_site_keys,
+            changed_site_keys=changed_site_keys_for_edit,
             site_update_contexts=site_update_contexts,
+            edit_impact=edit_impact,
         )
     except TaskActiveError:
         return "任務正在執行中，請等待完成或先中止登打後再編輯。", 409
@@ -2725,36 +2734,7 @@ def write_json_atomic(path: Path, payload: dict) -> None:
 
 
 def changed_sites_for_task_edit(previous_task: dict, current_task: dict) -> set[str]:
-    changed_sites: set[str] = set()
-    if task_fields_changed(previous_task, current_task, ("case_date", "case_time")):
-        changed_sites.update({"duty_work_log", "vehicle_mileage", "consumables", "disinfection"})
-    if task_fields_changed(previous_task, current_task, ("case_address",)):
-        changed_sites.update({"duty_work_log", "vehicle_mileage"})
-    if task_fields_changed(previous_task, current_task, ("two_vehicle",)):
-        changed_sites.update({"duty_work_log", "vehicle_mileage", "consumables", "disinfection"})
-    if task_fields_changed(previous_task, current_task, ("vehicle", "driver")):
-        changed_sites.update({"duty_work_log", "vehicle_mileage"})
-    if task_fields_changed(previous_task, current_task, ("mileage", "return_date", "return_time")):
-        changed_sites.add("vehicle_mileage")
-    if task_fields_changed(previous_task, current_task, ("fuel_record",)):
-        changed_sites.add("fuel_record")
-    if task_fields_changed(previous_task, current_task, ("case_reason", "patient_summary", "work_note")):
-        changed_sites.add("duty_work_log")
-    if task_fields_changed(previous_task, current_task, ("consumables",)):
-        changed_sites.add("consumables")
-    if task_fields_changed(previous_task, current_task, ("disinfection", "disinfection_items")):
-        changed_sites.add("disinfection")
-    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "driver", "patient_summary")):
-        changed_sites.add("duty_work_log")
-    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "driver", "mileage", "return_date", "return_time")):
-        changed_sites.add("vehicle_mileage")
-    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "driver", "fuel_record")):
-        changed_sites.add("fuel_record")
-    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "consumables")):
-        changed_sites.add("consumables")
-    if task_vehicle_entries_changed(previous_task, current_task, ("vehicle", "disinfection", "disinfection_items")):
-        changed_sites.add("disinfection")
-    return changed_sites
+    return changed_site_keys(analyze_task_edit(previous_task, current_task))
 
 
 def site_update_contexts_for_task_edit(previous_task: dict, current_task: dict, changed_site_keys: set[str]) -> dict[str, dict[str, object]]:
@@ -2765,54 +2745,6 @@ def site_update_contexts_for_task_edit(previous_task: dict, current_task: dict, 
         }
         for site_key in changed_site_keys
     }
-
-
-def task_fields_changed(previous_task: dict, current_task: dict, field_names: tuple[str, ...]) -> bool:
-    return any(normalized_task_edit_value(previous_task.get(name)) != normalized_task_edit_value(current_task.get(name)) for name in field_names)
-
-
-def task_vehicle_entries_changed(previous_task: dict, current_task: dict, field_names: tuple[str, ...]) -> bool:
-    return normalized_vehicle_entry_values(previous_task, field_names) != normalized_vehicle_entry_values(current_task, field_names)
-
-
-def normalized_vehicle_entry_values(task: dict, field_names: tuple[str, ...]) -> tuple[tuple[object, ...], ...]:
-    raw_entries = task.get("vehicle_entries")
-    entries = raw_entries if isinstance(raw_entries, list) and raw_entries else [
-        {
-            "vehicle": task.get("vehicle"),
-            "driver": task.get("driver"),
-            "mileage": task.get("mileage"),
-            "return_date": task.get("return_date"),
-            "return_time": task.get("return_time"),
-            "patient_summary": task.get("patient_summary"),
-            "consumables": task.get("consumables"),
-            "disinfection": task.get("disinfection"),
-            "disinfection_items": task.get("disinfection_items"),
-        }
-    ]
-    normalized: list[tuple[object, ...]] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        normalized.append(tuple(normalized_task_edit_value(entry.get(name)) for name in field_names))
-    return tuple(normalized)
-
-
-def normalized_task_edit_value(value: object) -> object:
-    if isinstance(value, dict):
-        normalized_items: list[tuple[str, int]] = []
-        for key, item_value in value.items():
-            name = str(key).strip()
-            try:
-                qty = int(item_value)
-            except (TypeError, ValueError):
-                qty = 0
-            if name and qty > 0:
-                normalized_items.append((name, qty))
-        return tuple(sorted(normalized_items))
-    if isinstance(value, list):
-        return tuple(sorted(str(item).strip() for item in value if str(item).strip()))
-    return str(value or "").strip()
 
 
 def status_label(status: str) -> str:
