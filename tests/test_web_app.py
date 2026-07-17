@@ -672,6 +672,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["event_id"], "stable-reconciliation-event")
         self.assertEqual(pending[0]["task_id"], "durable-report")
+        self.assertFalse(pending[0]["completion"]["all_complete"])
 
     def test_public_pc_report_requires_explicit_matching_ack(self):
         task_payload = {
@@ -2738,6 +2739,76 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("成功案件 1", success_page)
         self.assertIn("失敗案件 0", success_page)
 
+    def test_admin_main_status_uses_full_completion_not_last_single_site_action(self):
+        task = app_module.request_from_form(self.valid_task_data()).to_dict()
+        site_statuses = {
+            site_key: {
+                "status": f"{site_key}_saved",
+                "detail": "saved",
+            }
+            for site_key in (
+                "duty_work_log",
+                "vehicle_mileage",
+                "consumables",
+                "disinfection",
+            )
+        }
+        site_statuses["fuel_record"] = {"status": "not_started", "detail": ""}
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "single-final-event",
+                "task_id": task["task_id"],
+                "task": task,
+                "title": "最後單站補打",
+                "action": "單站補打成功：消毒",
+                "status": "disinfection_saved",
+                "overall_status": "desktop_fast_completed",
+                "site_statuses": site_statuses,
+            }
+        )
+
+        body = html.unescape(
+            self.client.get("/admin/public-pc").get_data(as_text=True)
+        )
+
+        self.assertIn("四站登打完成", body)
+        self.assertIn("單站補打成功：消毒", body)
+        report = app_module.public_pc_reports()[0]
+        self.assertTrue(report["completion"]["all_complete"])
+        self.assertEqual(report["completion"]["site_count_label"], "四站")
+
+    def test_admin_success_filter_excludes_premature_overall_success(self):
+        task = app_module.request_from_form(self.valid_task_data()).to_dict()
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "premature-success",
+                "task_id": task["task_id"],
+                "task": task,
+                "title": "只有消毒完成",
+                "action": "單站補打成功：消毒",
+                "status": "desktop_fast_completed",
+                "overall_status": "desktop_fast_completed",
+                "completion": {"all_complete": True},
+                "site_statuses": {
+                    "duty_work_log": {"status": "not_started"},
+                    "vehicle_mileage": {"status": "not_started"},
+                    "fuel_record": {"status": "not_started"},
+                    "consumables": {"status": "not_started"},
+                    "disinfection": {"status": "disinfection_saved"},
+                },
+            }
+        )
+
+        success_body = html.unescape(
+            self.client.get("/admin/public-pc?result=success").get_data(
+                as_text=True
+            )
+        )
+
+        self.assertNotIn("只有消毒完成", success_body)
+        report = app_module.public_pc_reports()[0]
+        self.assertFalse(report["completion"]["all_complete"])
+
     def test_remote_update_command_is_idempotent_and_worker_authenticated(self):
         os.environ["WORKER_TOKEN"] = "test-token"
 
@@ -3125,6 +3196,34 @@ class WebAppTests(unittest.TestCase):
             ("running-task", "執行中案件樣本", "desktop_fast_running"),
         ]
         for task_id, reason, status in samples:
+            site_statuses = {
+                site_key: {"status": "not_started"}
+                for site_key in (
+                    "duty_work_log",
+                    "vehicle_mileage",
+                    "fuel_record",
+                    "consumables",
+                    "disinfection",
+                )
+            }
+            if status == "desktop_fast_completed":
+                for site_key in (
+                    "duty_work_log",
+                    "vehicle_mileage",
+                    "consumables",
+                    "disinfection",
+                ):
+                    site_statuses[site_key] = {
+                        "status": f"{site_key}_saved"
+                    }
+            elif status == "desktop_fast_completed_with_errors":
+                site_statuses["consumables"] = {
+                    "status": "consumables_failed"
+                }
+            else:
+                site_statuses["duty_work_log"] = {
+                    "status": "duty_work_log_running"
+                }
             app_module.upsert_public_pc_report(
                 {
                     "event_id": f"evt-{task_id}",
@@ -3133,6 +3232,7 @@ class WebAppTests(unittest.TestCase):
                     "task": {"task_id": task_id, "case_reason": reason},
                     "status": status,
                     "overall_status": status,
+                    "site_statuses": site_statuses,
                 }
             )
 

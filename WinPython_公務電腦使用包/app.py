@@ -1739,13 +1739,20 @@ def worker_heartbeat_admin_view(
     }
 
 
+def task_completion_label(payload: dict) -> str:
+    snapshot = task_completion_snapshot(payload)
+    if snapshot["all_complete"]:
+        return f"{snapshot['site_count_label']}登打完成"
+    return task_progress_summary(payload)
+
+
 def public_pc_report_result(report: dict) -> str:
-    current_class = status_class(effective_task_status(report))
-    if current_class == "complete":
+    snapshot = task_completion_snapshot(report)
+    if snapshot["all_complete"]:
         return "success"
-    if current_class == "failed":
+    if snapshot["failed_site_keys"]:
         return "failed"
-    return "other"
+    return "pending"
 
 
 def upsert_public_pc_report(data: dict) -> dict:
@@ -1785,11 +1792,19 @@ def upsert_public_pc_report(data: dict) -> dict:
             if isinstance(data.get("site_login_accounts"), dict)
             else existing.get("site_login_accounts", {})
         )
+        stored_task = task or (
+            existing.get("task") if isinstance(existing.get("task"), dict) else {}
+        )
+        site_statuses = (
+            data.get("site_statuses")
+            if isinstance(data.get("site_statuses"), dict)
+            else existing.get("site_statuses", {})
+        )
         payload = {
             **existing,
             "task_id": task_id,
-            "title": str(data.get("title") or task_title(task) or task_id),
-            "task": task,
+            "title": str(data.get("title") or task_title(stored_task) or task_id),
+            "task": stored_task,
             "operator": operator_label,
             "user": operator_label,
             "synced_account": synced_account,
@@ -1797,7 +1812,13 @@ def upsert_public_pc_report(data: dict) -> dict:
             "worker_id": event["worker_id"],
             "package_version": event["package_version"] or str(existing.get("package_version") or ""),
             "overall_status": str(data.get("overall_status") or existing.get("overall_status") or ""),
-            "site_statuses": data.get("site_statuses") if isinstance(data.get("site_statuses"), dict) else existing.get("site_statuses", {}),
+            "site_statuses": site_statuses,
+            "completion": task_completion_snapshot(
+                {
+                    "task": stored_task,
+                    "site_statuses": site_statuses,
+                }
+            ),
             "created_at": str(data.get("created_at") or existing.get("created_at") or now),
             "updated_at": now,
             "last_action": event["action"],
@@ -2042,6 +2063,7 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
         "detail": str(latest_event.get("detail") or ""),
         "overall_status": str(payload.get("overall_status") or ""),
         "site_statuses": payload.get("site_statuses") or {},
+        "completion": task_completion_snapshot(payload),
         "created_at": str(payload.get("created_at") or ""),
     }
     server_url = public_pc_report_server_url()
@@ -3457,6 +3479,7 @@ def template_helpers() -> dict:
         "task_payload_is_active_for_edit": task_payload_is_active_for_edit,
         "task_edit_is_locked": task_edit_is_locked,
         "task_completion_snapshot": task_completion_snapshot,
+        "task_completion_label": task_completion_label,
         "task_progress_summary": task_progress_summary,
         "task_has_active_fuel_site": task_has_active_fuel_site,
         "task_has_fuel_record": task_has_fuel_record,

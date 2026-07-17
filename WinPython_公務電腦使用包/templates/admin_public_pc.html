@@ -352,7 +352,7 @@
                 <div class="meta">同步帳號：{{ synced_account }}</div>
                 <div class="meta">公務電腦：{{ item.worker_id or '未回報' }}｜更新：{{ item.updated_at }}</div>
               </div>
-              <span class="status {{ status_class(item.overall_status) }}">{{ item.last_action or status_label(item.overall_status) }}</span>
+              <span class="status {{ status_class(effective_task_status(item)) }}">{{ task_completion_label(item) }}</span>
             </div>
 
             {% if vehicle_entries %}
