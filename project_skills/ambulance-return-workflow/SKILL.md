@@ -1,23 +1,28 @@
 ---
 name: ambulance-return-workflow
-description: Maintain the 救護返隊小幫手 ambulance-return project across the NAS Flask task center, public-duty WinPython worker GUI, local desktop web app, four-site Selenium automation, package builds, GitHub releases, and NAS deployment output. Use when working in ambulance_return_bot, 救護返隊小幫手, WinPython_公務電腦使用包, UPDATE\NAS包, app.py, worker.py, worker_gui.py, ambulance_bot modules, templates, tests, case lookup, public PC admin, task status, or four-site entry behavior.
+description: Use when working in ambulance_return_bot or 救護返隊小幫手 on the NAS Flask task center, public-duty WinPython worker GUI, four-site Selenium automation, package builds, GitHub releases, or generated NAS deployment output.
 ---
 
 # Ambulance Return Workflow
 
 ## Current Layout
 
-Use the new project path:
+Resolve the current project path without assuming a drive letter:
 
 ```powershell
-I:\我的雲端硬碟\專案\救護返隊小幫手\ambulance_return_bot
+$repoRoot = Get-PSDrive -PSProvider FileSystem | ForEach-Object {
+  $candidate = Join-Path $_.Root '我的雲端硬碟\專案\救護返隊小幫手\ambulance_return_bot'
+  if (Test-Path -LiteralPath $candidate -PathType Container) { $candidate }
+} | Select-Object -First 1
+if (-not $repoRoot) { throw '找不到救護返隊小幫手專案。' }
+Set-Location -LiteralPath $repoRoot
 ```
 
-The old `I:\我的雲端硬碟\專案\IOS` path is historical. Do not add new commands, shortcuts, docs, or restart scripts that point there.
+The old `專案\IOS\ambulance_return_bot` path is historical. Do not add new commands, shortcuts, docs, or restart scripts that point there.
 
 Treat this repository as linked deliverables:
 
-- `WinPython_公務電腦使用包`: public-duty PC runtime source of truth.
+- `WinPython_公務電腦使用包`: canonical source tree for both the public-duty PC runtime and the NAS Flask files copied during packaging.
 - `UPDATE\NAS包`: generated NAS Flask/task-center deployment output.
 - repository root: tests, release scripts, docs, and thin compatibility entrypoints.
 
@@ -39,8 +44,8 @@ git status --short --branch
 
 Read and edit the owning runtime source first:
 
-- Public-duty local web/API/GUI/worker: `WinPython_公務電腦使用包\app.py`, `worker.py`, `worker_gui.py`, `templates\`, `ambulance_bot\`.
-- NAS web/API/task center: edit the same runtime source first, then rebuild `UPDATE\NAS包` with `scripts\build_nas_package.ps1`.
+- Canonical local web/API/GUI/worker source: `WinPython_公務電腦使用包\app.py`, `worker.py`, `worker_gui.py`, `templates\`, `ambulance_bot\`.
+- NAS web/API/task center: edit those same canonical files, then rebuild `UPDATE\NAS包` with `scripts\build_nas_package.ps1`.
 - Tests/release flow: root `tests\` and `scripts\`.
 
 Do not restore duplicated full runtime source under root. Do not edit generated `NAS包` output as source.
@@ -149,7 +154,9 @@ $procs = Get-CimInstance Win32_Process | Where-Object {
 }
 foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 2
-Start-Process -FilePath "wscript.exe" -ArgumentList '"I:\我的雲端硬碟\專案\救護返隊小幫手\ambulance_return_bot\WinPython_公務電腦使用包\run_worker_forever.vbs"'
+$repoRoot = (Resolve-Path -LiteralPath ".").Path
+$launcher = Join-Path $repoRoot "WinPython_公務電腦使用包\run_worker_forever.vbs"
+Start-Process -FilePath "wscript.exe" -ArgumentList ('"{0}"' -f $launcher)
 Start-Sleep -Seconds 7
 Invoke-WebRequest -Uri http://127.0.0.1:8090/app -UseBasicParsing -TimeoutSec 5
 ```

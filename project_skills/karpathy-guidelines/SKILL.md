@@ -1,67 +1,48 @@
 ---
 name: karpathy-guidelines
-description: Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.
+description: Use when non-trivial coding work needs careful assumptions, simple implementation, surgical edits, and verification discipline.
 license: MIT
 ---
 
 # Karpathy Guidelines
 
-Behavioral guidelines to reduce common LLM coding mistakes, derived from [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls.
+Behavioral guidelines adapted from `multica-ai/andrej-karpathy-skills`.
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+Use this skill for non-trivial coding tasks, especially when the task is ambiguous,
+touches existing code, or has meaningful risk of overengineering.
 
-## 1. Think Before Coding
+## Think Before Coding
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+- State assumptions explicitly when ambiguity matters.
+- If multiple interpretations exist, present them instead of silently choosing.
+- Push back when a simpler or safer approach exists.
+- If something is unclear enough to affect correctness, stop and ask.
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+## Simplicity First
 
-## 2. Simplicity First
+- Implement the minimum code that solves the requested problem.
+- Do not add features beyond what was asked.
+- Do not add abstractions for single-use code.
+- Do not add speculative configurability or extension points.
+- If the implementation is much larger than the problem requires, simplify it.
 
-**Minimum code that solves the problem. Nothing speculative.**
+## Surgical Changes
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
+- Touch only the files and lines required by the user's request.
+- Do not refactor unrelated code.
+- Do not reformat or rewrite adjacent code just because it could be cleaner.
+- Match the existing local style unless there is a clear reason not to.
+- Remove only unused code introduced by the current change.
+- Mention unrelated dead code or issues instead of deleting them.
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+## Goal-Driven Execution
 
-## 3. Surgical Changes
+- Convert broad requests into concrete success criteria.
+- For fixes, reproduce or identify the failure before changing behavior when practical.
+- Verify with focused tests, checks, or a clear explanation of why verification was not possible.
+- Continue iterating until the stated success criteria are met or a concrete blocker is found.
 
-**Touch only what you must. Clean up only your own mess.**
+## Tradeoff
 
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+These guidelines bias toward caution over speed. For trivial edits, simple one-liners,
+or clearly mechanical tasks, use judgment and avoid unnecessary ceremony.

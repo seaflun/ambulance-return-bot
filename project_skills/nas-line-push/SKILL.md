@@ -1,6 +1,6 @@
 ---
 name: nas-line-push
-description: Use this skill when the user wants to run or maintain an automated job on a Synology NAS, especially a Docker Compose or Selenium-based task, and send LINE Messaging API push notifications after success or failure. Trigger it for requests involving DSM Container Manager, Synology Task Scheduler, `.env` secrets, LINE channel access tokens, LINE user IDs, or post-run notifications from NAS-hosted automations.
+description: Use when a Synology NAS Docker Compose, Selenium, DSM Task Scheduler, or other hosted automation needs LINE Messaging API success or failure notifications.
 ---
 
 # NAS LINE Push
@@ -8,6 +8,10 @@ description: Use this skill when the user wants to run or maintain an automated 
 ## Overview
 
 This skill packages the working pattern for Synology-hosted automation jobs that run in Docker and notify one or more LINE users when the job succeeds or fails. Use it to set up a new NAS job, repair an unstable one, or add LINE push notifications to an existing Python or Selenium workflow.
+
+## Ambulance Return Boundary
+
+When this skill is used inside `ambulance_return_bot` or 救護返隊小幫手, the repository `AGENTS.md` takes priority: NAS runs the Flask task center only. Keep Chrome, Selenium, worker GUI, case lookup, and four-site entry on the public-duty Windows PC. Do not add a NAS Selenium service to that project.
 
 ## Workflow
 
@@ -24,12 +28,12 @@ This skill packages the working pattern for Synology-hosted automation jobs that
 
 ## Synology Pattern
 
-For Synology Container Manager projects, prefer this shape unless the repo already uses something else:
+For Synology Container Manager projects other than `ambulance_return_bot`, prefer this shape unless the repo already uses something else. This Selenium service is not allowed in the ambulance-return project; follow the boundary above there.
 
 ```yaml
 services:
   selenium:
-    image: selenium/standalone-chromium:latest
+    image: ${SELENIUM_IMAGE}
     shm_size: "4gb"
     environment:
       TZ: Asia/Taipei
@@ -59,6 +63,7 @@ Use `python -u` so DSM logs flush immediately. If Selenium startup is flaky, wai
 Store secrets in `.env` at the project root. Typical fields:
 
 ```dotenv
+SELENIUM_IMAGE=selenium/standalone-chromium:<tested-version-tag-or-digest>
 PPE_ACCOUNT=...
 PPE_PASSWORD=...
 SELENIUM_TIMEOUT_SECONDS=60
@@ -69,6 +74,7 @@ LINE_TO_USER_IDS=Uxxxxxxxx,Uyyyyyyyy
 
 Rules:
 
+- Pin `SELENIUM_IMAGE` to an explicitly tested version tag or digest; do not use the mutable `latest` tag.
 - Prefer `LINE_TO_USER_IDS` for multiple recipients.
 - Keep support for a legacy single-recipient `LINE_TO_USER_ID` only if the script already uses it.
 - Treat channel access tokens, passwords, and user IDs as secrets; prefer `.env` over hardcoding.

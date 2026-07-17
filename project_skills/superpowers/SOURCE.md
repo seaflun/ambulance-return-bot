@@ -2,7 +2,9 @@
 
 Vendored from https://github.com/obra/superpowers.
 
-Source commit: `b62616fc12f6a007c6fd5118146821d748da0d33`
+Source commit: `d884ae04edebef577e82ff7c4e143debd0bbec99`
+
+Local normalization: one trailing space in `writing-skills/SKILL.md` was removed so repository whitespace checks pass; behavior is unchanged.
 
 This folder keeps the Superpowers skill collection inside the repository so GitHub contains the same workflow guidance as the local Codex installation.
 
