@@ -10,11 +10,145 @@ from ambulance_bot.task_store import (
     JsonTaskStore,
     SiteCompletionConflictError,
     WorkerClaimConflictError,
+    task_completion_snapshot,
     worker_claim_lease_is_active,
 )
 
 
 class JsonTaskStoreTests(unittest.TestCase):
+    def test_completion_snapshot_requires_all_four_active_sites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="snapshot-four-sites",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            payload = store.create(request)
+            for site_key in ("duty_work_log", "vehicle_mileage", "consumables"):
+                payload["site_statuses"][site_key]["status"] = f"{site_key}_saved"
+            payload["overall_status"] = "desktop_fast_completed"
+
+            snapshot = task_completion_snapshot(payload)
+
+            self.assertEqual(
+                snapshot["active_site_keys"],
+                [
+                    "duty_work_log",
+                    "vehicle_mileage",
+                    "consumables",
+                    "disinfection",
+                ],
+            )
+            self.assertEqual(snapshot["site_count_label"], "四站")
+            self.assertEqual(snapshot["completed_count"], 3)
+            self.assertEqual(snapshot["remaining_site_keys"], ["disinfection"])
+            self.assertFalse(snapshot["all_complete"])
+
+    def test_single_site_terminal_status_cannot_complete_incomplete_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="single-site-not-global",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            store.create(request)
+            store.update_site_result(
+                request.task_id,
+                SiteAutomationResult(
+                    "disinfection",
+                    "緊急救護消毒",
+                    "disinfection_saved",
+                    "saved",
+                ),
+            )
+
+            updated = store.set_overall_status(
+                request.task_id,
+                "site_run_completed",
+                "單站登打完成：消毒。",
+            )
+
+            self.assertEqual(updated["overall_status"], "site_run_completed")
+            self.assertFalse(task_completion_snapshot(updated)["all_complete"])
+            self.assertEqual(updated["worker_queue"]["status"], "idle")
+
+    def test_last_site_result_atomically_completes_task_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="last-site-upgrade",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            payload = store.create(request)
+            for site_key in ("duty_work_log", "vehicle_mileage", "consumables"):
+                payload["site_statuses"][site_key]["status"] = f"{site_key}_saved"
+            store.save_payload(request.task_id, payload)
+
+            first = store.update_site_result(
+                request.task_id,
+                SiteAutomationResult(
+                    "disinfection",
+                    "緊急救護消毒",
+                    "disinfection_saved",
+                    "saved",
+                ),
+            )
+            second = store.set_overall_status(
+                request.task_id,
+                "desktop_fast_completed",
+                "重複完成回報。",
+            )
+
+            completion_events = [
+                event
+                for event in second["events"]
+                if event.get("status") == "desktop_fast_completed"
+            ]
+            self.assertEqual(first["overall_status"], "desktop_fast_completed")
+            self.assertEqual(second["overall_status"], "desktop_fast_completed")
+            self.assertEqual(len(completion_events), 1)
+
+    def test_completion_snapshot_requires_fuel_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest.from_dict(
+                {
+                    "task_id": "snapshot-five-sites",
+                    "created_at": datetime.now().isoformat(),
+                    "vehicle": "新坡92",
+                    "fuel_record": {
+                        "enabled": True,
+                        "date": "2026-07-17",
+                        "time": "1200",
+                        "driver": "包華先",
+                        "product": "柴油",
+                        "quantity": "30",
+                        "unit_price": "30",
+                    },
+                }
+            )
+            payload = store.create(request)
+            for site_key in (
+                "duty_work_log",
+                "vehicle_mileage",
+                "consumables",
+                "disinfection",
+            ):
+                payload["site_statuses"][site_key]["status"] = f"{site_key}_saved"
+
+            snapshot = task_completion_snapshot(payload)
+
+            self.assertEqual(snapshot["site_count_label"], "五站")
+            self.assertEqual(snapshot["total_count"], 5)
+            self.assertEqual(snapshot["remaining_site_keys"], ["fuel_record"])
+            self.assertFalse(snapshot["all_complete"])
+
     def _create_legacy_silent_save_task(
         self,
         store: JsonTaskStore,

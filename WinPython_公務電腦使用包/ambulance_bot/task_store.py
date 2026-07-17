@@ -77,6 +77,7 @@ SUCCESS_SITE_STATUSES = {
     "disinfection_saved",
     "consumables_saved",
 }
+SITE_RUN_ORDER = tuple(site.key for site in SITE_DEFINITIONS)
 COMPLETED_TASK_HISTORY_HOURS = 24 * 7
 WORKER_CLAIM_LEASE_SECONDS = 15 * 60
 RECENT_STATUS_EVENT_ID_LIMIT = 256
@@ -89,6 +90,81 @@ def task_has_waiting_confirmation(payload: dict[str, Any]) -> bool:
         for site in site_statuses.values()
         if isinstance(site, dict)
     )
+
+
+def site_status_is_complete(status: object) -> bool:
+    value = str(status or "").strip()
+    return value in SUCCESS_SITE_STATUSES or value.endswith("_saved")
+
+
+def task_completion_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    site_statuses = payload.get("site_statuses")
+    valid_sites = isinstance(site_statuses, dict)
+    statuses = dict(site_statuses or {}) if valid_sites else {}
+    valid_task = True
+    try:
+        request = AmbulanceReturnRequest.from_dict(dict(payload.get("task") or {}))
+        has_fuel_record = request.has_fuel_record()
+    except (AttributeError, KeyError, TypeError, ValueError):
+        valid_task = False
+        has_fuel_record = False
+
+    raw_fuel_site = statuses.get("fuel_record")
+    fuel_status = (
+        str(raw_fuel_site.get("status") or "")
+        if isinstance(raw_fuel_site, dict)
+        else ""
+    )
+    fuel_cleanup_pending = "waiting_confirmation" in fuel_status
+    active_site_keys = [
+        site_key
+        for site_key in SITE_RUN_ORDER
+        if site_key != "fuel_record" or has_fuel_record or fuel_cleanup_pending
+    ]
+    completed_site_keys: list[str] = []
+    remaining_site_keys: list[str] = []
+    failed_site_keys: list[str] = []
+    waiting_site_keys: list[str] = []
+    needs_update_site_keys: list[str] = []
+    running_site_keys: list[str] = []
+
+    for site_key in active_site_keys:
+        site = statuses.get(site_key)
+        status = str(site.get("status") or "") if isinstance(site, dict) else ""
+        if site_status_is_complete(status):
+            completed_site_keys.append(site_key)
+            continue
+        remaining_site_keys.append(site_key)
+        if "failed" in status or "error" in status:
+            failed_site_keys.append(site_key)
+        if status.endswith("_needs_update"):
+            needs_update_site_keys.append(site_key)
+            waiting_site_keys.append(site_key)
+        elif "waiting_confirmation" in status:
+            waiting_site_keys.append(site_key)
+        if "running" in status:
+            running_site_keys.append(site_key)
+
+    total_count = len(active_site_keys)
+    all_complete = (
+        valid_task
+        and valid_sites
+        and total_count > 0
+        and len(completed_site_keys) == total_count
+    )
+    return {
+        "active_site_keys": active_site_keys,
+        "site_count_label": "五站" if total_count == 5 else "四站",
+        "total_count": total_count,
+        "completed_count": len(completed_site_keys),
+        "completed_site_keys": completed_site_keys,
+        "remaining_site_keys": remaining_site_keys,
+        "failed_site_keys": failed_site_keys,
+        "waiting_site_keys": waiting_site_keys,
+        "needs_update_site_keys": needs_update_site_keys,
+        "running_site_keys": running_site_keys,
+        "all_complete": all_complete,
+    }
 
 
 def now_text() -> str:
@@ -559,6 +635,44 @@ class JsonTaskStore:
         if add_event:
             self.add_event_to_payload(payload, status, detail)
 
+    def _reconcile_completion_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        finalize_queue: bool,
+        detail: str = "",
+    ) -> dict[str, Any]:
+        snapshot = task_completion_snapshot(payload)
+        current_status = str(payload.get("overall_status") or "")
+        if snapshot["all_complete"]:
+            if current_status != "desktop_fast_completed":
+                completion_detail = detail or f"{snapshot['site_count_label']}登打完成。"
+                payload["overall_status"] = "desktop_fast_completed"
+                self.add_event_to_payload(
+                    payload,
+                    "desktop_fast_completed",
+                    completion_detail,
+                )
+            if finalize_queue:
+                queue_state = worker_queue_state(payload)
+                queue_state["status"] = "completed"
+                queue_state["completed_at"] = (
+                    queue_state.get("completed_at") or now_text()
+                )
+                queue_state["lease_expires_at"] = ""
+                queue_state["last_error"] = ""
+                payload["worker_queue"] = queue_state
+            return snapshot
+
+        if current_status == "desktop_fast_completed":
+            if snapshot["needs_update_site_keys"]:
+                payload["overall_status"] = "task_updated_needs_site_update"
+            elif snapshot["failed_site_keys"]:
+                payload["overall_status"] = "desktop_fast_completed_with_errors"
+            else:
+                payload["overall_status"] = "site_run_completed"
+        return snapshot
+
     def set_overall_status(
         self,
         task_id: str,
@@ -577,7 +691,33 @@ class JsonTaskStore:
                 worker_id,
                 enforce_claim_identity,
             )
-            self._apply_overall_status_to_payload(payload, status, detail)
+            snapshot = task_completion_snapshot(payload)
+            if snapshot["all_complete"]:
+                self._reconcile_completion_payload(
+                    payload,
+                    finalize_queue=worker_queue_overall_status_is_terminal(status),
+                    detail=detail,
+                )
+            else:
+                effective_status = status
+                effective_detail = detail
+                if status == "desktop_fast_completed":
+                    effective_status = "site_run_completed"
+                    effective_detail = (
+                        detail or "單次執行已結束，但任務尚未全部完成。"
+                    )
+                self._apply_overall_status_to_payload(
+                    payload,
+                    effective_status,
+                    effective_detail,
+                )
+                self._reconcile_completion_payload(
+                    payload,
+                    finalize_queue=worker_queue_overall_status_is_terminal(
+                        effective_status
+                    ),
+                    detail=detail,
+                )
             self.save_payload(task_id, payload)
             return payload
 
@@ -683,6 +823,11 @@ class JsonTaskStore:
                     **({"vehicle_key": vehicle_key} if vehicle_key else {}),
                 },
             )
+            self._reconcile_completion_payload(
+                payload,
+                finalize_queue=_payload is None,
+                detail=f"{result.name}完成後，所有有效站別皆已完成。",
+            )
             self._renew_worker_claim(payload)
             if _save:
                 self.save_payload(task_id, payload)
@@ -751,8 +896,26 @@ class JsonTaskStore:
                     _payload=payload,
                     _save=False,
                 )
-            if overall_status:
-                self._apply_overall_status_to_payload(payload, overall_status, overall_detail)
+            snapshot = task_completion_snapshot(payload)
+            if overall_status and not snapshot["all_complete"]:
+                effective_status = overall_status
+                effective_detail = overall_detail
+                if overall_status == "desktop_fast_completed":
+                    effective_status = "site_run_completed"
+                    effective_detail = (
+                        overall_detail
+                        or "單次執行已結束，但任務尚未全部完成。"
+                    )
+                self._apply_overall_status_to_payload(
+                    payload,
+                    effective_status,
+                    effective_detail,
+                )
+            self._reconcile_completion_payload(
+                payload,
+                finalize_queue=bool(overall_status),
+                detail=overall_detail,
+            )
             self._remember_status_event_id(payload, event_id)
             self.save_payload(task_id, payload)
             return payload, False
@@ -889,19 +1052,11 @@ class JsonTaskStore:
                 return payload, False
 
             detail = f"舊版無提示儲存誤判已修正：{'、'.join(corrected_site_names)}。"
-            if self._is_fully_done(payload):
-                self._apply_overall_status_to_payload(
-                    payload,
-                    "desktop_fast_completed",
-                    detail,
-                    add_event=False,
-                )
-                queue_state = worker_queue_state(payload)
-                queue_state["status"] = "completed"
-                queue_state["completed_at"] = now_text()
-                queue_state["lease_expires_at"] = ""
-                queue_state["last_error"] = ""
-                payload["worker_queue"] = queue_state
+            self._reconcile_completion_payload(
+                payload,
+                finalize_queue=True,
+                detail=detail,
+            )
             self.add_event_to_payload(payload, "legacy_silent_save_reconciled", detail)
             payload["legacy_silent_save_report"] = {
                 "event_id": str(
@@ -1026,12 +1181,11 @@ class JsonTaskStore:
                 "completed_by_user",
                 f"{site['name']}{event_target} 使用者已確認完成。",
             )
-            if self._is_fully_done(payload):
-                self._apply_overall_status_to_payload(
-                    payload,
-                    "desktop_fast_completed",
-                    "各站皆已完成；人工確認後更新任務狀態。",
-                )
+            self._reconcile_completion_payload(
+                payload,
+                finalize_queue=True,
+                detail="各站皆已完成；人工確認後更新任務狀態。",
+            )
             self.save_payload(task_id, payload)
             return payload
 
@@ -1258,31 +1412,7 @@ class JsonTaskStore:
         return updated_at < cutoff
 
     def _is_fully_done(self, payload: dict[str, Any]) -> bool:
-        site_statuses = payload.get("site_statuses")
-        if not isinstance(site_statuses, dict) or not site_statuses:
-            return False
-        try:
-            has_fuel_record = AmbulanceReturnRequest.from_dict(dict(payload.get("task") or {})).has_fuel_record()
-        except (AttributeError, KeyError, TypeError, ValueError):
-            return False
-        raw_fuel_site = site_statuses.get("fuel_record")
-        if raw_fuel_site is not None and not isinstance(raw_fuel_site, dict):
-            return False
-        fuel_site = raw_fuel_site or {}
-        fuel_cleanup_pending = "waiting_confirmation" in str(fuel_site.get("status") or "")
-        expected_site_keys = [
-            site.key
-            for site in SITE_DEFINITIONS
-            if site.key != "fuel_record" or has_fuel_record or fuel_cleanup_pending
-        ]
-        for site_key in expected_site_keys:
-            site = site_statuses.get(site_key)
-            if not isinstance(site, dict):
-                return False
-            status = str(site.get("status") or "")
-            if status not in SUCCESS_SITE_STATUSES and not status.endswith("_saved"):
-                return False
-        return True
+        return bool(task_completion_snapshot(payload)["all_complete"])
 
     def _read_payload_or_quarantine(self, path: Path) -> dict[str, Any] | None:
         try:
@@ -1534,7 +1664,10 @@ def task_payload_is_active_for_edit(payload: dict[str, Any]) -> bool:
 
 def worker_queue_overall_status_is_terminal(status: str) -> bool:
     value = str(status or "").strip().lower()
-    return value.startswith("desktop_fast_completed") or value in {"failed", "worker_failed"}
+    return (
+        value.startswith("desktop_fast_completed")
+        or value in {"failed", "worker_failed", "site_run_completed"}
+    )
 
 
 def initial_site_statuses() -> dict[str, dict[str, str]]:
