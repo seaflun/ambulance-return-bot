@@ -83,6 +83,7 @@ from ambulance_bot.task_store import (
     TaskActiveError,
     WorkerClaimConflictError,
     pending_legacy_silent_save_report_event_id,
+    task_completion_snapshot,
     task_payload_is_active_for_edit,
     worker_claim_lease_is_active,
     worker_queue_state,
@@ -2757,6 +2758,8 @@ def status_label(status: str) -> str:
         return "部分失敗"
     if value == "desktop_fast_completed":
         return "完成"
+    if value == "site_run_completed":
+        return "部分完成"
     if value == "site_needs_update" or value.endswith("_needs_update"):
         return "需更新"
     if value in {"not_started", ""}:
@@ -2778,6 +2781,8 @@ def status_class(status: str) -> str:
         return "waiting"
     if value == "desktop_fast_completed":
         return "complete"
+    if value == "site_run_completed":
+        return "waiting"
     if value == "desktop_fast_completed_with_errors":
         return "failed"
     if value == "site_needs_update" or value.endswith("_needs_update"):
@@ -2922,23 +2927,25 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
 
 
 def effective_task_status(payload: dict) -> str:
-    site_statuses = dict(payload.get("site_statuses") or {})
-    sites = [
-        dict(site_statuses.get(site_key) or {})
-        for site_key in active_site_keys_for_task(payload.get("task") or {}, site_statuses)
-    ]
-    if any(status_class(str(site.get("status") or "")) == "running" for site in sites):
+    snapshot = task_completion_snapshot(payload)
+    if snapshot["running_site_keys"]:
         return "desktop_fast_running"
-    if any(status_class(str(site.get("status") or "")) == "failed" for site in sites):
+    if snapshot["failed_site_keys"]:
         return "failed"
-    if any(str(site.get("status") or "").endswith("_needs_update") for site in sites):
+    if snapshot["needs_update_site_keys"]:
         return "site_needs_update"
-    if any(site_waits_for_confirmation(str(site.get("status") or "")) for site in sites):
+    site_statuses = dict(payload.get("site_statuses") or {})
+    if any(
+        site_waits_for_confirmation(
+            str(dict(site_statuses.get(site_key) or {}).get("status") or "")
+        )
+        for site_key in snapshot["waiting_site_keys"]
+    ):
         return "manual_confirmation_required"
-    if any(status_class(str(site.get("status") or "")) == "waiting" for site in sites):
+    if snapshot["waiting_site_keys"]:
         return "manual_captcha_required"
-    if sites and all(status_class(str(site.get("status") or "")) == "complete" for site in sites):
-        return "completed_by_user"
+    if snapshot["all_complete"]:
+        return "desktop_fast_completed"
     return str(payload.get("overall_status") or "")
 
 
@@ -3019,58 +3026,39 @@ def recent_tasks_need_refresh(recent_tasks: list[dict]) -> bool:
 
 
 def task_progress_summary(payload: dict) -> str:
-    site_statuses = dict(payload.get("site_statuses") or {})
-    completed_count = 0
-    site_keys = active_site_keys_for_task(payload.get("task") or {}, site_statuses)
-    total_count = len(site_keys)
-    failed_sites: list[str] = []
-    updated_sites: list[str] = []
-    waiting_site = ""
-    running_site = ""
-
-    for site_key in site_keys:
-        site = dict(site_statuses.get(site_key) or {})
-        site_status = str(site.get("status") or "")
-        site_class = status_class(site_status)
-        site_name = SITE_SHORT_NAMES.get(site_key, site_key)
-        if site_class == "complete":
-            completed_count += 1
-            continue
-        if site_class == "running":
-            running_site = running_site or site_name
-            continue
-        if site_class == "failed":
-            failed_sites.append(site_name)
-            continue
-        if site_status.endswith("_needs_update"):
-            updated_sites.append(site_name)
-            continue
-        if site_class == "waiting":
-            waiting_site = waiting_site or site_name
-
-    if running_site:
-        return f"已完成 {completed_count}/{total_count}；目前：{running_site}執行中"
-    if updated_sites:
-        return f"已完成 {completed_count}/{total_count}；需更新：{'、'.join(updated_sites)}"
-    if waiting_site:
-        return f"已完成 {completed_count}/{total_count}；待確認：{waiting_site}"
-
-    if completed_count == total_count:
-        return f"{total_count}\u7ad9\u5b8c\u6210"
-    if len(failed_sites) == 1:
-        return f"已完成 {completed_count}/{total_count}；失敗：{failed_sites[0]}"
-    if failed_sites:
-        return f"已完成 {completed_count}/{total_count}；{len(failed_sites)} 站失敗"
-
-    overall_status = str(payload.get("overall_status") or "")
-    if overall_status == "queued_for_worker":
-        return f"已完成 {completed_count}/{total_count}；等待公務電腦 worker"
-    if overall_status == "claimed_by_worker":
-        return f"已完成 {completed_count}/{total_count}；worker 已接手"
-    if status_class(effective_task_status(payload)) == "running":
-        return f"已完成 {completed_count}/{total_count}；{total_count}\u7ad9\u767b\u6253\u4e2d"
-    if status_class(effective_task_status(payload)) == "failed":
-        return f"已完成 {completed_count}/{total_count}；流程有錯誤"
+    snapshot = task_completion_snapshot(payload)
+    completed_count = int(snapshot["completed_count"])
+    total_count = int(snapshot["total_count"])
+    if snapshot["all_complete"]:
+        return f"{snapshot['site_count_label']}登打完成"
+    if snapshot["running_site_keys"]:
+        site_key = snapshot["running_site_keys"][0]
+        return (
+            f"已完成 {completed_count}/{total_count}；"
+            f"目前：{SITE_SHORT_NAMES[site_key]}執行中"
+        )
+    if snapshot["needs_update_site_keys"]:
+        names = "、".join(
+            SITE_SHORT_NAMES[key] for key in snapshot["needs_update_site_keys"]
+        )
+        return f"已完成 {completed_count}/{total_count}；需更新：{names}"
+    if snapshot["waiting_site_keys"]:
+        site_key = snapshot["waiting_site_keys"][0]
+        return (
+            f"已完成 {completed_count}/{total_count}；"
+            f"待確認：{SITE_SHORT_NAMES[site_key]}"
+        )
+    if len(snapshot["failed_site_keys"]) == 1:
+        site_key = snapshot["failed_site_keys"][0]
+        return (
+            f"已完成 {completed_count}/{total_count}；"
+            f"失敗：{SITE_SHORT_NAMES[site_key]}"
+        )
+    if snapshot["failed_site_keys"]:
+        return (
+            f"已完成 {completed_count}/{total_count}；"
+            f"{len(snapshot['failed_site_keys'])} 站失敗"
+        )
     return f"已完成 {completed_count}/{total_count}；尚未開始"
 
 
@@ -3468,6 +3456,7 @@ def template_helpers() -> dict:
         "task_payload_is_active": task_payload_is_active,
         "task_payload_is_active_for_edit": task_payload_is_active_for_edit,
         "task_edit_is_locked": task_edit_is_locked,
+        "task_completion_snapshot": task_completion_snapshot,
         "task_progress_summary": task_progress_summary,
         "task_has_active_fuel_site": task_has_active_fuel_site,
         "task_has_fuel_record": task_has_fuel_record,

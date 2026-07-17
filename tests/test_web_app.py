@@ -3616,7 +3616,7 @@ class WebAppTests(unittest.TestCase):
         completed_body = html.unescape(completed_response.data.decode("utf-8"))
 
         self.assertNotIn("window.location.reload()", completed_body)
-        self.assertIn("4站完成", completed_body)
+        self.assertIn("四站登打完成", completed_body)
 
     def test_app_page_shows_empty_case_lookup_result(self):
         cases_dir = app_module.artifacts_dir / "cases"
@@ -5273,6 +5273,109 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("\u9001\u5230\u516c\u52d9\u96fb\u8166", header)
         self.assertLess(body.index("\u56db\u7ad9\u767b\u6253\u555f\u52d5"), body.index("\u8fd4\u56de\u7de8\u8f2f"))
 
+    def test_completed_task_hides_all_run_buttons_and_shows_four_site_completion(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        for site_key, name in (
+            ("duty_work_log", "工作"),
+            ("vehicle_mileage", "里程"),
+            ("consumables", "耗材"),
+            ("disinfection", "消毒"),
+        ):
+            self.store.update_site_result(
+                task_id,
+                app_module.SiteAutomationResult(
+                    site_key,
+                    name,
+                    f"{site_key}_saved",
+                    "saved",
+                ),
+            )
+
+        body = html.unescape(
+            self.client.get(f"/tasks/{task_id}").get_data(as_text=True)
+        )
+
+        self.assertIn("✓ 四站登打完成", body)
+        self.assertNotIn("四站登打啟動", body)
+        self.assertNotIn("單獨登打", body)
+        self.assertIn("返回編輯", body)
+
+    def test_completed_task_edit_shows_changed_field_site_and_vehicle(self):
+        original = self.valid_task_data(
+            two_vehicle="1",
+            vehicle_2="新坡93",
+            driver_2="陳小華",
+            mileage_2="200",
+            return_time_2="1120",
+            patient_summary_2="女一名",
+            consumables_2="手套=2",
+        )
+        create_response = self.client.post("/tasks", data=original)
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        for site_key in (
+            "duty_work_log",
+            "vehicle_mileage",
+            "consumables",
+            "disinfection",
+        ):
+            payload["site_statuses"][site_key]["status"] = f"{site_key}_saved"
+        payload["site_statuses"]["vehicle_mileage"]["vehicle_results"] = {
+            "新坡91": {
+                "status": "vehicle_mileage_saved",
+                "detail": "first",
+            },
+            "新坡93": {
+                "status": "vehicle_mileage_saved",
+                "detail": "second",
+            },
+        }
+        payload["overall_status"] = "desktop_fast_completed"
+        self.store.save_payload(task_id, payload)
+
+        update_data = {
+            **original,
+            "mileage_2": "220",
+        }
+        self.client.post(f"/tasks/{task_id}/edit", data=update_data)
+        body = html.unescape(
+            self.client.get(f"/tasks/{task_id}").get_data(as_text=True)
+        )
+
+        self.assertIn("任務資料已修改", body)
+        self.assertIn("已修改：第 2 車里程", body)
+        self.assertIn("需重新登打：里程（只重登第 2 車）", body)
+        self.assertIn("更新里程", body)
+        self.assertIn("四站登打啟動", body)
+        self.assertEqual(
+            list(
+                self.store.get(task_id)["site_statuses"]["vehicle_mileage"][
+                    "vehicle_results"
+                ]
+            ),
+            ["新坡91"],
+        )
+
+    def test_recent_task_uses_four_site_completion_label(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        for site_key in (
+            "duty_work_log",
+            "vehicle_mileage",
+            "consumables",
+            "disinfection",
+        ):
+            payload["site_statuses"][site_key]["status"] = f"{site_key}_saved"
+        payload["overall_status"] = "site_run_completed"
+        self.store.save_payload(task_id, payload)
+
+        body = html.unescape(self.client.get("/app").get_data(as_text=True))
+
+        self.assertIn("四站登打完成", body)
+        self.assertIn('class="status complete">完成</span>', body)
+
     def test_task_edit_updates_existing_task_and_marks_changed_saved_sites_for_update(self):
         create_response = self.client.post(
             "/tasks",
@@ -5999,8 +6102,9 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual(status_response.status_code, 200)
         updated = self.store.get(task_id)
-        self.assertEqual(updated["overall_status"], "desktop_fast_completed")
+        self.assertEqual(updated["overall_status"], "site_run_completed")
         self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
+        self.assertFalse(app_module.task_completion_snapshot(updated)["all_complete"])
 
     def test_worker_status_rejects_explicit_wrong_claim_owner(self):
         os.environ["WORKER_TOKEN"] = "test-token"

@@ -97,6 +97,17 @@ def site_status_is_complete(status: object) -> bool:
     return value in SUCCESS_SITE_STATUSES or value.endswith("_saved")
 
 
+def site_status_is_waiting(status: object) -> bool:
+    value = str(status or "").strip()
+    return (
+        value.endswith("_needs_update")
+        or "waiting_confirmation" in value
+        or "captcha" in value
+        or "ready" in value
+        or "prefilled" in value
+    )
+
+
 def task_completion_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     site_statuses = payload.get("site_statuses")
     valid_sites = isinstance(site_statuses, dict)
@@ -140,7 +151,7 @@ def task_completion_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         if status.endswith("_needs_update"):
             needs_update_site_keys.append(site_key)
             waiting_site_keys.append(site_key)
-        elif "waiting_confirmation" in status:
+        elif site_status_is_waiting(status):
             waiting_site_keys.append(site_key)
         if "running" in status:
             running_site_keys.append(site_key)
