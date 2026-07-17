@@ -531,7 +531,7 @@ class DesktopFastRunner:
             if site_key == "fuel_record" and not request.has_fuel_record():
                 self._set_overall_status_owned(
                     task_id,
-                    "desktop_fast_completed",
+                    "desktop_fast_unavailable",
                     "此任務未勾選加油紀錄，已略過加油登打。",
                 )
                 return
@@ -557,7 +557,7 @@ class DesktopFastRunner:
             else:
                 self._set_overall_status_owned(
                     task_id,
-                    "desktop_fast_completed",
+                    "site_run_completed",
                     f"單站登打完成：{SITE_NAMES[site_key]}。",
                 )
                 self._notify(task_id, f"單站登打成功：{SITE_NAMES[site_key]}")

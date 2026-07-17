@@ -13,7 +13,7 @@ from ambulance_bot.desktop_fast_runner import DEFAULT_RECORD_ROOT, DesktopFastRu
 from ambulance_bot.manual_task_lock import acquire_manual_task_lock, manual_task_lock_path
 from ambulance_bot.models import AmbulanceReturnRequest, FuelRecord, request_from_form
 from ambulance_bot.task_cancellation import request_task_cancellation, task_cancellation_marker_path
-from ambulance_bot.task_store import JsonTaskStore
+from ambulance_bot.task_store import JsonTaskStore, task_completion_snapshot
 from ambulance_bot.update_safety import ManualUpdateRequiredError
 
 
@@ -421,7 +421,14 @@ class DesktopFastRunnerTests(unittest.TestCase):
 
             self.assertFalse(manual_task_lock_path(artifacts_dir).exists())
             self.assertEqual(runner._execution_owner(request.task_id), "")
-            self.assertEqual(store.get(request.task_id)["overall_status"], "desktop_fast_completed")
+            completed_payload = store.get(request.task_id)
+            self.assertEqual(
+                completed_payload["overall_status"],
+                "site_run_completed",
+            )
+            self.assertFalse(
+                task_completion_snapshot(completed_payload)["all_complete"]
+            )
 
     def test_runs_four_sites_and_writes_local_statuses(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -462,6 +469,7 @@ class DesktopFastRunnerTests(unittest.TestCase):
 
             payload = store.get("task-1")
             self.assertEqual(payload["overall_status"], "desktop_fast_completed")
+            self.assertTrue(task_completion_snapshot(payload)["all_complete"])
             self.assertFalse(manual_task_lock_path(Path(tmp)).exists())
             self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
             self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
@@ -644,7 +652,8 @@ class DesktopFastRunnerTests(unittest.TestCase):
                 self.assertTrue(runner.wait_for_idle())
 
             payload = store.get("task-3")
-            self.assertEqual(payload["overall_status"], "desktop_fast_completed")
+            self.assertEqual(payload["overall_status"], "site_run_completed")
+            self.assertFalse(task_completion_snapshot(payload)["all_complete"])
             self.assertEqual(payload["site_statuses"]["disinfection"]["status"], "disinfection_saved")
             self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "not_started")
             self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "not_started")
@@ -654,6 +663,49 @@ class DesktopFastRunnerTests(unittest.TestCase):
             disinfection_login_mock.assert_called_once()
             disinfection_mock.assert_called_once()
             acs_login_mock.assert_not_called()
+
+    def test_single_site_success_writes_site_terminal_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="single-site-terminal",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch.object(
+                runner,
+                "_prepare_execution",
+                return_value="desktop_fast:single-site-terminal",
+            ), patch.object(
+                desktop_fast_runner_module,
+                "_start_manual_task_lock_heartbeat",
+                return_value=lambda: None,
+            ), patch.object(
+                runner,
+                "_run_site",
+                return_value=0,
+            ), patch.object(
+                runner,
+                "_finish_execution",
+            ), patch.object(
+                runner,
+                "_set_overall_status_owned",
+            ) as set_status:
+                runner._run_single_site(
+                    request.task_id,
+                    "disinfection",
+                    f"{request.task_id}:disinfection",
+                )
+
+            set_status.assert_any_call(
+                request.task_id,
+                "site_run_completed",
+                "單站登打完成：緊急救護消毒。",
+            )
 
     def test_mileage_fuel_single_site_continues_to_other_unfinished_pair_site(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -697,11 +749,71 @@ class DesktopFastRunnerTests(unittest.TestCase):
 
             payload = store.get("task-mileage-fuel")
             self.assertEqual(calls, ["fuel_record", "vehicle_mileage"])
-            self.assertEqual(payload["overall_status"], "desktop_fast_completed")
+            self.assertEqual(payload["overall_status"], "site_run_completed")
+            self.assertFalse(task_completion_snapshot(payload)["all_complete"])
             self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
             self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
             fuel_mock.assert_called_once()
             mileage_mock.assert_called_once()
+
+    def test_two_failed_sites_then_two_single_site_retries_finish_four_sites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="two-retries-finish",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            payload = store.create(request)
+            payload["site_statuses"]["duty_work_log"]["status"] = "duty_work_log_saved"
+            payload["site_statuses"]["vehicle_mileage"]["status"] = "vehicle_mileage_saved"
+            payload["site_statuses"]["consumables"]["status"] = "consumables_failed"
+            payload["site_statuses"]["disinfection"]["status"] = "disinfection_failed"
+            payload["overall_status"] = "desktop_fast_completed_with_errors"
+            store.save_payload(request.task_id, payload)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch(
+                "ambulance_bot.desktop_fast_runner.login_acs_and_get_driver",
+                return_value=SimpleNamespace(),
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.open_consumable_record_for_task",
+                return_value="saved",
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.save_consumables_record_enabled",
+                return_value=True,
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.login_disinfection_and_get_driver",
+                return_value=SimpleNamespace(),
+            ), patch(
+                "ambulance_bot.desktop_fast_runner.run_disinfection_task",
+                return_value=SimpleNamespace(
+                    ok=True,
+                    status="disinfection_saved",
+                    detail="saved",
+                ),
+            ):
+                runner.start_site(request.task_id, "consumables")
+                self.assertTrue(runner.wait_for_idle())
+                first_retry = store.get(request.task_id)
+                self.assertFalse(
+                    task_completion_snapshot(first_retry)["all_complete"]
+                )
+                self.assertEqual(
+                    first_retry["overall_status"],
+                    "site_run_completed",
+                )
+
+                runner.start_site(request.task_id, "disinfection")
+                self.assertTrue(runner.wait_for_idle())
+
+            completed = store.get(request.task_id)
+            self.assertTrue(task_completion_snapshot(completed)["all_complete"])
+            self.assertEqual(
+                completed["overall_status"],
+                "desktop_fast_completed",
+            )
 
     def test_four_site_run_skips_completed_sites_and_resumes_at_failed_site(self):
         with tempfile.TemporaryDirectory() as tmp:
