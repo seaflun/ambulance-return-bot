@@ -739,7 +739,7 @@
         {% for item in recent_tasks %}
           <div class="recent-card">
             <div class="recent-main">
-              <a class="recent-title" href="/tasks/{{ item.task.task_id }}">{{ task_title(item.task) }}</a>
+              <a class="recent-title" href="/tasks/{{ item.task.task_id }}">{{ task_title(item.task) }}{% for entry in task_vehicle_display_entries(item.task) if entry.vehicle %}{{ ' - ' if loop.first else '、' }}{{ entry.vehicle }}{% endfor %}</a>
               <div class="recent-progress">{{ task_progress_summary(item) }}</div>
             </div>
             <span class="status {{ status_class(effective_task_status(item)) }}">{{ status_label(effective_task_status(item)) }}</span>

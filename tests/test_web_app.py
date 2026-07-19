@@ -1645,6 +1645,48 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn(f'action="/tasks/{task_id}/delete"', body)
         self.assertNotIn('aria-label="刪除案件"', body)
 
+    def test_app_page_recent_task_titles_show_one_or_two_vehicles(self):
+        address = "桃園市觀音區崙坪三路126號1樓(OHCA-N)"
+        single = self.store.create(
+            app_module.request_from_form(
+                self.valid_task_data(
+                    case_id="case-single-vehicle-title",
+                    case_reason="空跑",
+                    case_address=address,
+                    vehicle="新坡92",
+                )
+            )
+        )
+        double = self.store.create(
+            app_module.request_from_form(
+                self.valid_task_data(
+                    case_id="case-two-vehicle-title",
+                    case_reason="空跑",
+                    case_address=address,
+                    vehicle="新坡92",
+                    two_vehicle="1",
+                    vehicle_2="新坡93",
+                    driver_2="陳小華",
+                    mileage_2="200",
+                    return_time_2="1130",
+                    patient_summary_2="女一名",
+                    consumables_2="桃-口罩(片)=2",
+                )
+            )
+        )
+
+        body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+
+        title = f"緊急救護-空跑 - {address}"
+        self.assertIn(
+            f'<a class="recent-title" href="/tasks/{single["task"]["task_id"]}">{title} - 新坡92</a>',
+            body,
+        )
+        self.assertIn(
+            f'<a class="recent-title" href="/tasks/{double["task"]["task_id"]}">{title} - 新坡92、新坡93</a>',
+            body,
+        )
+
     def test_app_page_recent_tasks_keeps_only_completed_last_48_hours(self):
         now = datetime.now()
         for task_id, age_hours, completed in (
