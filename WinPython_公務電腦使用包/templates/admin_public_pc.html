@@ -404,11 +404,9 @@
               <ul class="events">
                 {% for event in item.events | reverse %}
                   <li>
-                    {% set event_operator = event.operator or event.user or '未知使用者' %}
                     <time class="event-time">{{ event.time }}</time>
                     <div class="event-main">
                       <div class="event-action">{{ event.action }}</div>
-                      <div class="event-operator">回報來源帳號：{{ event_operator }}</div>
                       {% if event.detail %}
                         <div class="event-detail">{{ event.detail }}</div>
                       {% endif %}

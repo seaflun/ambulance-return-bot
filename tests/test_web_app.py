@@ -1348,6 +1348,13 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('href="/admin/public-pc"', body)
         self.assertIn("救護登打", body)
         self.assertIn('href="/app"', body)
+        self.assertIn("車輛損害管理", body)
+        self.assertIn(
+            'href="https://sinposmart-vehicle-damage-portal.sinpo666.workers.dev"',
+            body,
+        )
+        self.assertIn('target="_blank"', body)
+        self.assertIn('rel="noopener noreferrer"', body)
         self.assertNotIn("救護車設定", body)
         self.assertNotIn("查詢案件", body)
         self.assertIn(".entry-link:focus-visible", body)
@@ -2073,7 +2080,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("8番 曾彥綸 - C123***789（同步帳號）", body)
         self.assertNotIn("任務司機優先", body)
         self.assertNotIn("司機帳號優先，失敗一次改同步帳號", body)
-        self.assertIn("回報來源帳號：8番 曾彥綸 - tyfd01510", body)
+        self.assertNotIn("回報來源帳號：8番 曾彥綸 - tyfd01510", body)
         self.assertNotIn("公務電腦選取帳號：", body)
         self.assertNotIn("操作人員：", body)
         self.assertNotIn("登入規則：", body)
