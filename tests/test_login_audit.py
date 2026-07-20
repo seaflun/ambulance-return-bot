@@ -174,7 +174,7 @@ class LoginAuditTests(unittest.TestCase):
         self.assertEqual(summaries["duty_work_log"], "12番 王昱勛 - tyfd01987（任務司機）")
         self.assertEqual(summaries["vehicle_mileage"], "12番 王昱勛 - tyfd01987（任務司機）")
         self.assertEqual(summaries["fuel_record"], "12番 王昱勛 - tyfd01987（任務司機）")
-        self.assertEqual(summaries["disinfection"], "21番 張家和 - tyfd01317（同步帳號）")
+        self.assertEqual(summaries["disinfection"], "12番 王昱勛 - tyfd01987（任務司機）")
         self.assertEqual(summaries["consumables"], "21番 張家和 - S124***209（同步帳號）")
 
     def test_site_login_account_summaries_can_match_driver_name_without_case_account(self):

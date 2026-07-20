@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 
@@ -13,7 +14,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry
-from ambulance_bot.duty_credentials import load_synced_worker_credential
+from ambulance_bot.duty_credentials import DutyCredential, load_duty_credential, load_synced_worker_credential
+from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.profile_paths import runtime_profile_dir
 from ambulance_bot.window_layout import apply_tile
 
@@ -41,12 +43,13 @@ def wait_until_logged_in(driver: webdriver.Chrome, timeout: int = 15) -> None:
 
 
 def login_and_get_driver(
+    request: AmbulanceReturnRequest | None = None,
     profile_name: str = "disinfection_profile",
     debugger_port: int | None = None,
     tile_name: str = "",
 ) -> webdriver.Chrome:
-    credential = load_synced_worker_credential()
-    if credential is None:
+    credentials = _disinfection_credential_attempts(request)
+    if not credentials:
         raise RuntimeError("尚未同步 worker 帳號；請先在 worker GUI 接收同步帳密後再執行消毒。")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,18 +70,20 @@ def login_and_get_driver(
     errors: list[str] = []
 
     try:
-        for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
-            try:
-                _login_once(driver, credential.user_id, credential.password, attempt)
-                wait_until_logged_in(driver)
-                if _is_logged_in(driver):
-                    return driver
-                errors.append(f"第 {attempt} 次登入後未進入系統")
-            except Exception as exc:
-                errors.append(f"第 {attempt} 次：{exc}")
+        for credential, source in credentials:
+            account = _mask_login_account(credential.user_id)
+            for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
+                try:
+                    _login_once(driver, credential.user_id, credential.password, attempt)
+                    wait_until_logged_in(driver)
+                    if _is_logged_in(driver):
+                        return driver
+                    errors.append(f"{source}（{account}）第 {attempt} 次登入後未進入系統")
+                except Exception as exc:
+                    errors.append(f"{source}（{account}）第 {attempt} 次：{exc}")
 
-            if attempt < MAX_LOGIN_ATTEMPTS:
-                driver.get(URL)
+                if attempt < MAX_LOGIN_ATTEMPTS:
+                    driver.get(URL)
 
         raise RuntimeError("消毒紀錄登入失敗，已重新整理並重試 3 次：" + "；".join(errors))
     except Exception as exc:
@@ -89,6 +94,51 @@ def login_and_get_driver(
 
 def _chrome_profile_dir(profile_name: str) -> Path:
     return runtime_profile_dir(profile_name)
+
+
+def _disinfection_credential_attempts(
+    request: AmbulanceReturnRequest | None,
+) -> list[tuple[DutyCredential, str]]:
+    attempts: list[tuple[DutyCredential, str]] = []
+    if request is not None:
+        _append_disinfection_credentials(attempts, request.driver_duty_login_account_candidates, "任務司機")
+        _append_disinfection_credentials(attempts, request.personnel_duty_login_account_candidates, "出勤人員")
+    synced = load_synced_worker_credential()
+    if synced is not None:
+        attempts.append((synced, "同步帳號"))
+    return _dedupe_disinfection_credentials(attempts)
+
+
+def _append_disinfection_credentials(
+    attempts: list[tuple[DutyCredential, str]],
+    candidates: list[str],
+    source: str,
+) -> None:
+    for candidate in candidates:
+        credential = load_duty_credential([candidate], fallback_user_id="", allow_default=False)
+        if credential is not None:
+            attempts.append((credential, source))
+
+
+def _dedupe_disinfection_credentials(
+    attempts: list[tuple[DutyCredential, str]],
+) -> list[tuple[DutyCredential, str]]:
+    deduped: list[tuple[DutyCredential, str]] = []
+    seen: set[str] = set()
+    for credential, source in attempts:
+        key = credential.user_id.lower()
+        if not credential.user_id or key in seen:
+            continue
+        seen.add(key)
+        deduped.append((credential, source))
+    return deduped
+
+
+def _mask_login_account(account: str) -> str:
+    value = str(account or "").strip()
+    if re.fullmatch(r"[A-Za-z][0-9]{9}", value):
+        return f"{value[:4]}***{value[-3:]}"
+    return value
 
 
 def _login_once(driver: webdriver.Chrome, account: str, password: str, attempt: int) -> None:

@@ -18,7 +18,7 @@ def login_audit_for_site(site_key: str, request: AmbulanceReturnRequest) -> str:
     if site_key == "fuel_record":
         return fuel_record_login_audit(request)
     if site_key == "disinfection":
-        return disinfection_login_audit()
+        return disinfection_login_audit(request)
     if site_key == "consumables":
         return consumables_login_audit()
     return ""
@@ -29,7 +29,7 @@ def site_login_account_summaries(request: AmbulanceReturnRequest) -> dict[str, s
         "duty_work_log": duty_work_log_login_summary(request),
         "vehicle_mileage": vehicle_mileage_login_summary(request),
         "fuel_record": fuel_record_login_summary(request),
-        "disinfection": disinfection_login_summary(),
+        "disinfection": disinfection_login_summary(request),
         "consumables": consumables_login_summary(),
     }
 
@@ -64,11 +64,11 @@ def fuel_record_login_summary(request: AmbulanceReturnRequest) -> str:
     return vehicle_mileage_login_summary(request)
 
 
-def disinfection_login_summary() -> str:
-    credential = load_synced_worker_credential()
+def disinfection_login_summary(request: AmbulanceReturnRequest) -> str:
+    credential, source = _ppe_login_credential_choice(request)
     if credential is None:
-        return "未取得（同步帳號）"
-    return f"{credential_public_label(credential)}（同步帳號）"
+        return f"未取得（{PPE_LOGIN_PRIORITY_LABEL}）"
+    return f"{credential_public_label(credential)}（{source}）"
 
 
 def consumables_login_summary() -> str:
@@ -105,11 +105,11 @@ def fuel_record_login_audit(request: AmbulanceReturnRequest) -> str:
     return vehicle_mileage_login_audit(request).replace("里程", "加油", 1)
 
 
-def disinfection_login_audit() -> str:
-    credential = load_synced_worker_credential()
+def disinfection_login_audit(request: AmbulanceReturnRequest) -> str:
+    credential, source = _ppe_login_credential_choice(request)
     if credential is None:
-        return "登入帳號：消毒=公務電腦同步帳號，未取得可用帳號"
-    return f"登入帳號：消毒=公務電腦同步帳號，{credential_public_label(credential)}"
+        return f"登入帳號：消毒={PPE_LOGIN_PRIORITY_LABEL}，未取得可用帳號"
+    return f"登入帳號：消毒={PPE_LOGIN_PRIORITY_LABEL}，{source}，{credential_public_label(credential)}"
 
 
 def consumables_login_audit() -> str:
