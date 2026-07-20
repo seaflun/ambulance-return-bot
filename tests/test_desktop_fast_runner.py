@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 import ambulance_bot.desktop_fast_runner as desktop_fast_runner_module
 from ambulance_bot.desktop_fast_runner import DEFAULT_RECORD_ROOT, DesktopFastRunner
 from ambulance_bot.manual_task_lock import acquire_manual_task_lock, manual_task_lock_path
-from ambulance_bot.models import AmbulanceReturnRequest, FuelRecord, request_from_form
+from ambulance_bot.models import AmbulanceReturnRequest, FuelRecord, VehicleEntry, request_from_form
 from ambulance_bot.task_cancellation import request_task_cancellation, task_cancellation_marker_path
 from ambulance_bot.task_store import JsonTaskStore, task_completion_snapshot
 from ambulance_bot.update_safety import ManualUpdateRequiredError
@@ -46,6 +46,55 @@ class DesktopFastRunnerTests(unittest.TestCase):
             preflight.assert_called_once()
             login.assert_not_called()
             run.assert_not_called()
+
+    def test_disinfection_logs_in_per_vehicle_with_its_driver(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-disinfection-two-vehicles",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡91",
+                driver="甲司機",
+                two_vehicle=True,
+                vehicle_entries=[
+                    VehicleEntry(vehicle="新坡91", driver="甲司機"),
+                    VehicleEntry(vehicle="新坡92", driver="乙司機"),
+                ],
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+            drivers = [Mock(name="driver_one"), Mock(name="driver_two")]
+
+            with patch.object(
+                desktop_fast_runner_module, "require_safe_automated_update"
+            ), patch.object(
+                desktop_fast_runner_module,
+                "login_disinfection_and_get_driver",
+                side_effect=drivers,
+            ) as login, patch.object(
+                desktop_fast_runner_module,
+                "run_disinfection_task",
+                return_value=SimpleNamespace(status="disinfection_saved", detail="ok"),
+            ) as run:
+                runner._running.add(request.task_id)
+                owner = runner._prepare_execution(request.task_id, request.task_id, "busy")
+                try:
+                    runner._run_disinfection(request, "two_vehicles")
+                finally:
+                    runner._finish_execution(request.task_id, owner, request.task_id, lambda: None)
+
+            self.assertEqual(login.call_count, 2)
+            self.assertEqual(
+                [call.kwargs["request"].driver for call in login.call_args_list],
+                ["甲司機", "乙司機"],
+            )
+            self.assertEqual(
+                [call.kwargs["profile_name"] for call in login.call_args_list],
+                ["disinfection_profile_two_vehicles_1", "disinfection_profile_two_vehicles_2"],
+            )
+            self.assertIs(run.call_args_list[0].kwargs["existing_driver"], drivers[0])
+            self.assertIs(run.call_args_list[1].kwargs["existing_driver"], drivers[1])
 
     def test_manual_update_error_becomes_waiting_confirmation_instead_of_failure(self):
         with tempfile.TemporaryDirectory() as tmp:

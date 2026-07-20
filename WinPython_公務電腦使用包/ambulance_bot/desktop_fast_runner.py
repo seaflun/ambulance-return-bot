@@ -809,41 +809,41 @@ class DesktopFastRunner:
         self._raise_if_cancelled(request.task_id)
         update_context = self._site_update_context(request.task_id, "disinfection")
         require_safe_automated_update("disinfection", request, update_context)
-        driver = login_disinfection_and_get_driver(
-            profile_name=f"disinfection_profile_{profile_suffix}",
-            tile_name="disinfection",
-        )
-        self._raise_if_cancelled(request.task_id)
-        if len(request.vehicle_requests()) <= 1:
-            return run_disinfection_task(
-                request,
-                self.artifacts_dir,
-                existing_driver=driver,
-                profile_name=f"disinfection_profile_{profile_suffix}",
-                use_session_lock=False,
+
+        def run_one(vehicle_request, index: int, vehicle_update_context):
+            profile_name = f"disinfection_profile_{profile_suffix}_{index}"
+            driver = login_disinfection_and_get_driver(
+                request=vehicle_request,
+                profile_name=profile_name,
                 tile_name="disinfection",
-                force_new_driver=True,
-                update_context=update_context,
-                cancel_check=self._cancel_check(request.task_id),
             )
-        return self._run_per_vehicle_site(
-            request,
-            "disinfection",
-            lambda vehicle_request, index: run_disinfection_task(
+            self._raise_if_cancelled(request.task_id)
+            return run_disinfection_task(
                 vehicle_request,
                 self.artifacts_dir,
                 existing_driver=driver,
-                profile_name=f"disinfection_profile_{profile_suffix}",
+                profile_name=profile_name,
                 use_session_lock=False,
                 tile_name="disinfection",
                 force_new_driver=True,
-                update_context=self._vehicle_site_update_context(
+                update_context=vehicle_update_context,
+                cancel_check=self._cancel_check(request.task_id),
+            )
+
+        if len(request.vehicle_requests()) <= 1:
+            return run_one(request, 1, update_context)
+        return self._run_per_vehicle_site(
+            request,
+            "disinfection",
+            lambda vehicle_request, index: run_one(
+                vehicle_request,
+                index,
+                self._vehicle_site_update_context(
                     request.task_id,
                     "disinfection",
                     vehicle_request,
                     index,
                 ),
-                cancel_check=self._cancel_check(request.task_id),
             ),
         )
 
