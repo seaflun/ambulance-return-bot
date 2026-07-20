@@ -2302,9 +2302,11 @@ def run_disinfection_worker_task(
         require_safe_automated_update("disinfection", request, update_context)
         if len(request.vehicle_requests()) > 1:
             shared_driver = driver or login_disinfection_and_get_driver(
+                request=request,
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 tile_name=tile_name,
+                artifacts_dir=artifacts_dir,
             )
             result = _run_worker_per_vehicle_site(
                 server_url,
@@ -2328,9 +2330,11 @@ def run_disinfection_worker_task(
             )
         else:
             shared_driver = driver or login_disinfection_and_get_driver(
+                request=request,
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 tile_name=tile_name,
+                artifacts_dir=artifacts_dir,
             )
             result = run_disinfection_task(
                 request,
@@ -2414,6 +2418,7 @@ def run_consumables_worker_task(
             debugger_port=debugger_port,
             tile_name=tile_name,
             task=request,
+            artifacts_dir=artifacts_dir,
         )
         if len(request.vehicle_requests()) > 1:
             result = _run_worker_per_vehicle_site(
@@ -2440,6 +2445,7 @@ def run_consumables_worker_task(
                             else {}
                         ),
                         **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+                        artifacts_dir=artifacts_dir,
                     ),
                 ),
                 vehicle_results=vehicle_results,
@@ -2451,6 +2457,7 @@ def run_consumables_worker_task(
                 request,
                 **({"update_context": update_context} if update_context is not None else {}),
                 **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+                artifacts_dir=artifacts_dir,
             )
             status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
             result = SiteAutomationResult("consumables", "一站通耗材", status, detail)

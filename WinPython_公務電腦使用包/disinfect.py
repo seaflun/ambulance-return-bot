@@ -15,6 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry
 from ambulance_bot.duty_credentials import DutyCredential, load_duty_credential, load_synced_worker_credential
+from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.profile_paths import runtime_profile_dir
 from ambulance_bot.window_layout import apply_tile
@@ -47,6 +48,7 @@ def login_and_get_driver(
     profile_name: str = "disinfection_profile",
     debugger_port: int | None = None,
     tile_name: str = "",
+    artifacts_dir: Path | None = None,
 ) -> webdriver.Chrome:
     credentials = _disinfection_credential_attempts(request)
     if not credentials:
@@ -87,9 +89,23 @@ def login_and_get_driver(
 
         raise RuntimeError("消毒紀錄登入失敗，已重新整理並重試 3 次：" + "；".join(errors))
     except Exception as exc:
+        output_dir = Path(artifacts_dir or os.getenv("ARTIFACTS_DIR", "artifacts")) / "selenium"
+        try:
+            evidence = capture_failure_artifacts(
+                driver,
+                output_dir,
+                request.task_id if request is not None else "unknown_task",
+                "disinfection",
+                vehicle=request.vehicle if request is not None else "",
+                exception=exc,
+                target_url=URL,
+            )
+            detail = augment_failure_detail(str(exc), evidence)
+        except Exception as capture_exc:
+            detail = f"{exc} [failure_capture_error:{capture_exc.__class__.__name__}: {capture_exc}]"
         if os.getenv("DISINFECTION_CLOSE_BROWSER_ON_LOGIN_FAILURE", "false").strip().lower() in {"1", "true", "yes", "on"}:
             driver.quit()
-        raise RuntimeError(f"消毒紀錄登入失敗：{exc}") from exc
+        raise RuntimeError(f"消毒紀錄登入失敗：{detail}") from exc
 
 
 def _chrome_profile_dir(profile_name: str) -> Path:

@@ -71,7 +71,15 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     status = str(site.get("status") or "")
     detail = str(site.get("detail") or "")
     computed = diagnostic_payload(site_key, status, detail)
-    prefer_computed = computed["exception_type"] in {"case_not_closed", "ppe_driver"}
+    prefer_computed = computed["exception_type"] in {
+        "case_not_closed",
+        "ppe_driver",
+        "web_renderer_timeout",
+        "web_page_timeout",
+        "renderer_timeout_unverified",
+        "chrome_unresponsive",
+        "chromedriver_ended",
+    }
     def value_for(field: str) -> str:
         if prefer_computed:
             return str(computed[field])
@@ -121,6 +129,16 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return "waiting_confirmation"
     if "prefilled" in status or "ready" in status or "captcha" in status or "未按儲存" in raw_detail:
         return "waiting_confirmation"
+    for browser_category in (
+        "web_renderer_timeout",
+        "web_page_timeout",
+        "chrome_unresponsive",
+        "chromedriver_ended",
+    ):
+        if f"[browser_failure:{browser_category}]" in text:
+            return browser_category
+    if "timed out receiving message from renderer" in text:
+        return "renderer_timeout_unverified"
     if _is_invalid_argument_oserror(exception, text):
         return "chrome_session"
     if "chrome" in text or "devtoolsactiveport" in text or "session not created" in text or "not reachable" in text:
@@ -181,7 +199,7 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         if site_key == "disinfection" and status == "manual_captcha_required":
             return "登入消毒系統"
         return stage
-    if category == "chrome_session":
+    if category in {"chrome_session", "chrome_unresponsive", "chromedriver_ended"}:
         return "啟動 Chrome"
     if category == "worker_api":
         return "讀取任務"
@@ -258,6 +276,11 @@ def _reason_for(category: str, status: str, detail: str) -> str:
     return {
         "waiting_confirmation": "資料已開啟或預填，但尚未完成儲存確認。",
         "chrome_session": "Chrome 或 ChromeDriver 工作階段無法建立或已中斷。",
+        "web_renderer_timeout": "網頁轉譯程序逾時；Chrome 與 ChromeDriver 仍可連線，較可能是網頁卡住。",
+        "web_page_timeout": "網頁載入或等待元件逾時；Chrome 與 ChromeDriver 仍可連線。",
+        "renderer_timeout_unverified": "網頁轉譯程序回應逾時；舊紀錄未執行即時 Chrome 健康探測，無法確定是網頁卡住或 Chrome 異常。",
+        "chrome_unresponsive": "Google Chrome 無回應、頁籤崩潰，或 DevTools 連線已中斷。",
+        "chromedriver_ended": "ChromeDriver 程序已結束，瀏覽器自動化工作階段無法繼續。",
         "worker_api": "公務電腦與 NAS 任務狀態同步失敗。",
         "login": "登入、帳密、SSO 或驗證碼尚未完成。",
         "case_not_found": "系統清單內找不到符合本案件時間或地址的資料。",
@@ -281,6 +304,16 @@ def _next_action_for(site_key: str, category: str) -> str:
         return f"在公務電腦確認{site_name}資料無誤後手動儲存；若要重跑，請回可操作的本機任務頁重新執行該站。"
     if category == "chrome_session":
         return "關閉殘留 Chrome/ChromeDriver，重啟 worker，再重新登打。"
+    if category == "web_renderer_timeout":
+        return f"保留截圖，重新整理{site_name}頁面後單獨重跑；若持續發生再重啟 Chrome。"
+    if category == "web_page_timeout":
+        return f"查看截圖確認{site_name}頁面停在哪一步，再重新整理並單獨重跑。"
+    if category == "renderer_timeout_unverified":
+        return f"此舊紀錄沒有失敗截圖；更新後若再發生，後台會以即時探測結果區分網頁與 Chrome。"
+    if category == "chrome_unresponsive":
+        return f"關閉殘留 Chrome／ChromeDriver，重啟 Worker，再單獨重跑{site_name}。"
+    if category == "chromedriver_ended":
+        return f"重啟 Worker 以建立新的 Chrome 工作階段，再單獨重跑{site_name}。"
     if category == "worker_api":
         return "確認 NAS 網址與 WORKER_TOKEN，重啟 worker 後重試登打流程。"
     if category == "multi_patient_consumables":

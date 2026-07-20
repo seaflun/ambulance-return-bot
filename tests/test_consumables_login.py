@@ -28,6 +28,36 @@ from consumables_login import (
 
 
 class ConsumablesLoginTests(unittest.TestCase):
+    def test_consumables_operation_failure_captures_task_and_vehicle_evidence(self):
+        request = AmbulanceReturnRequest(
+            task_id="consumables-capture",
+            created_at=datetime(2026, 7, 20, 15, 0),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        driver = Mock()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            consumables_login_module,
+            "_open_consumable_record_for_task",
+            side_effect=RuntimeError("Timed out receiving message from renderer"),
+        ), patch.object(
+            consumables_login_module,
+            "capture_failure_artifacts",
+            return_value={"category": "web_renderer_timeout", "reason": "網頁卡住"},
+            create=True,
+        ) as capture:
+            with self.assertRaisesRegex(RuntimeError, "browser_failure:web_renderer_timeout"):
+                open_consumable_record_for_task(
+                    driver,
+                    request,
+                    artifacts_dir=Path(tmp),
+                )
+
+        capture.assert_called_once()
+        self.assertEqual(capture.call_args.args[2], request.task_id)
+        self.assertEqual(capture.call_args.args[3], "consumables")
+        self.assertEqual(capture.call_args.kwargs["vehicle"], request.vehicle)
+
     def test_consumables_case_identity_change_fails_before_opening_maintenance_page(self):
         previous = AmbulanceReturnRequest(
             task_id="consumables-case-change",

@@ -1,3 +1,4 @@
+import base64
 import html
 import contextlib
 import io
@@ -3395,6 +3396,161 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("登入一站通", body)
         self.assertIn("登入、帳密、SSO 或驗證碼尚未完成", body)
         self.assertIn("下一步", body)
+
+    def test_public_pc_report_collects_only_failed_site_png_evidence(self):
+        selenium_dir = Path(self.tmp.name) / "selenium"
+        selenium_dir.mkdir(parents=True)
+        screenshot = selenium_dir / "evidence.png"
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\nrender-timeout")
+        (selenium_dir / "evidence.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "local-task-evidence",
+                    "site_key": "vehicle_mileage",
+                    "vehicle": "新坡92",
+                    "captured_at": "2026-07-20T15:21:19+08:00",
+                    "screenshot_path": str(screenshot),
+                    "screenshot_error": "",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        evidence = app_module._collect_public_pc_failure_evidence(
+            "local-task-evidence",
+            {
+                "vehicle_mileage": {"status": "vehicle_mileage_failed"},
+                "fuel_record": {"status": "fuel_record_saved"},
+            },
+        )
+
+        self.assertEqual(list(evidence), ["vehicle_mileage"])
+        item = evidence["vehicle_mileage"]["screenshots"][0]
+        self.assertEqual(item["vehicle"], "新坡92")
+        self.assertEqual(base64.b64decode(item["content_base64"]), screenshot.read_bytes())
+        self.assertNotIn("fuel_record", evidence)
+
+    def test_admin_public_pc_stores_and_renders_failure_screenshot(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        png = b"\x89PNG\r\n\x1a\nbackend-failure"
+        response = self.client.post(
+            "/worker/public-pc-task-events",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "event_id": "evt-evidence",
+                "task_id": "local-task-evidence",
+                "task": {
+                    "task_id": "local-task-evidence",
+                    "case_reason": "急病",
+                    "vehicle": "新坡92",
+                },
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": {
+                    "vehicle_mileage": {
+                        "key": "vehicle_mileage",
+                        "status": "vehicle_mileage_failed",
+                        "detail": (
+                            "Timed out receiving message from renderer "
+                            "[browser_failure:web_renderer_timeout]"
+                        ),
+                    }
+                },
+                "failure_evidence": {
+                    "vehicle_mileage": {
+                        "screenshots": [
+                            {
+                                "filename": "mileage.png",
+                                "content_base64": base64.b64encode(png).decode("ascii"),
+                                "vehicle": "新坡92",
+                                "captured_at": "2026-07-20T15:21:19+08:00",
+                            }
+                        ],
+                        "screenshot_error": "",
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        report = app_module.public_pc_reports()[0]
+        site = report["site_statuses"]["vehicle_mileage"]
+        image = site["failure_screenshots"][0]
+        self.assertEqual(image["vehicle"], "新坡92")
+        self.assertNotIn("content_base64", json.dumps(report))
+        stored = list(app_module.public_pc_failure_screenshot_dir().glob("*.png"))
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0].read_bytes(), png)
+
+        body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+        self.assertIn("網頁轉譯程序逾時", body)
+        self.assertIn("失敗畫面", body)
+        self.assertIn("新坡92", body)
+        self.assertIn(image["url"], body)
+        served = self.client.get(image["url"])
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.data, png)
+        served.close()
+
+        report_text = app_module.public_pc_report_file().read_text(encoding="utf-8")
+        self.assertNotIn(base64.b64encode(png).decode("ascii"), report_text)
+
+    def test_admin_public_pc_rejects_invalid_screenshot_and_shows_capture_reason(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        response = self.client.post(
+            "/worker/public-pc-task-events",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "event_id": "evt-bad-evidence",
+                "task_id": "local-task-bad-evidence",
+                "task": {"task_id": "local-task-bad-evidence", "case_reason": "急病"},
+                "site_statuses": {
+                    "consumables": {
+                        "key": "consumables",
+                        "status": "consumables_failed",
+                        "detail": "Chrome not reachable [browser_failure:chrome_unresponsive]",
+                    }
+                },
+                "failure_evidence": {
+                    "consumables": {
+                        "screenshots": [
+                            {
+                                "filename": "not-png.png",
+                                "content_base64": base64.b64encode(b"not a png").decode("ascii"),
+                            }
+                        ],
+                        "screenshot_error": "WebDriverException: Chrome not reachable",
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        site = app_module.public_pc_reports()[0]["site_statuses"]["consumables"]
+        self.assertEqual(site["failure_screenshots"], [])
+        self.assertIn("Chrome not reachable", site["failure_screenshot_error"])
+        self.assertEqual(list(app_module.public_pc_failure_screenshot_dir().glob("*.png")), [])
+        body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+        self.assertIn("截圖擷取失敗", body)
+        self.assertIn("Chrome not reachable", body)
+
+    def test_public_pc_failure_screenshot_cleanup_removes_only_expired_runtime_images(self):
+        root = app_module.public_pc_failure_screenshot_dir()
+        root.mkdir(parents=True)
+        old = root / "old.png"
+        recent = root / "recent.png"
+        old.write_bytes(b"\x89PNG\r\n\x1a\nold")
+        recent.write_bytes(b"\x89PNG\r\n\x1a\nrecent")
+        old_time = datetime(2026, 7, 10, 12, 0).timestamp()
+        recent_time = datetime(2026, 7, 20, 12, 0).timestamp()
+        os.utime(old, (old_time, old_time))
+        os.utime(recent, (recent_time, recent_time))
+
+        app_module._cleanup_public_pc_failure_screenshots(datetime(2026, 7, 20, 15, 0))
+
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists())
 
     def test_admin_public_pc_lists_all_task_events(self):
         os.environ["WORKER_TOKEN"] = "test-token"

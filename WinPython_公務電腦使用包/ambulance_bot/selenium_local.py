@@ -39,6 +39,7 @@ from .duty_credentials import (
     load_synced_worker_credential,
     update_saved_credential_id_number,
 )
+from .failure_evidence import augment_failure_detail, capture_failure_artifacts
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
 from .task_cancellation import TaskCancellationError
@@ -229,6 +230,7 @@ def run_local_selenium_task(
             summary_path,
         )
 
+    started_at = time.monotonic()
     driver = None
     driver_ready = False
     lock_acquired = False
@@ -268,13 +270,23 @@ def run_local_selenium_task(
     except TaskCancellationError:
         raise
     except Exception as exc:
+        detail = f"\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304\u64cd\u4f5c\u5931\u6557\uff1a{exc}"
         if driver is not None:
-            _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_error")
+            detail = _detail_with_failure_evidence(
+                detail,
+                driver,
+                output_dir,
+                request,
+                "duty_work_log",
+                exc,
+                BASE_URL,
+                started_at,
+            )
         if driver_ready:
             return SeleniumRunResult(
                 ok=False,
                 status="duty_work_log_failed",
-                detail=f"\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304\u64cd\u4f5c\u5931\u6557\uff1a{exc}",
+                detail=detail,
                 summary_path=summary_path,
             )
         return SeleniumRunResult(
@@ -316,6 +328,7 @@ def run_vehicle_mileage_task(
             summary_path,
         )
 
+    started_at = time.monotonic()
     driver = existing_driver
     lock_acquired = False
     owns_driver = existing_driver is None
@@ -359,9 +372,19 @@ def run_vehicle_mileage_task(
     except TaskCancellationError:
         raise
     except Exception as exc:
+        detail = f"車輛里程操作失敗：{exc}"
         if driver is not None:
-            _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_error")
-        return SeleniumRunResult(False, "vehicle_mileage_failed", f"車輛里程操作失敗：{exc}", summary_path)
+            detail = _detail_with_failure_evidence(
+                detail,
+                driver,
+                output_dir,
+                request,
+                "vehicle_mileage",
+                exc,
+                "https://ppe.tyfd.gov.tw/CarRecord/List",
+                started_at,
+            )
+        return SeleniumRunResult(False, "vehicle_mileage_failed", detail, summary_path)
     finally:
         mark_driver_operation_active(driver, False)
         if owns_driver and not keep_browser_open:
@@ -395,6 +418,7 @@ def run_fuel_record_task(
             summary_path,
         )
 
+    started_at = time.monotonic()
     driver = existing_driver
     lock_acquired = False
     owns_driver = existing_driver is None
@@ -438,9 +462,19 @@ def run_fuel_record_task(
     except TaskCancellationError:
         raise
     except Exception as exc:
+        detail = f"加油紀錄操作失敗：{exc}"
         if driver is not None:
-            _save_artifacts(driver, output_dir, request.task_id, "fuel_record_error")
-        return SeleniumRunResult(False, "fuel_record_failed", f"加油紀錄操作失敗：{exc}", summary_path)
+            detail = _detail_with_failure_evidence(
+                detail,
+                driver,
+                output_dir,
+                request,
+                "fuel_record",
+                exc,
+                "https://ppe.tyfd.gov.tw/FUC04100/Query",
+                started_at,
+            )
+        return SeleniumRunResult(False, "fuel_record_failed", detail, summary_path)
     finally:
         mark_driver_operation_active(driver, False)
         if owns_driver and not keep_browser_open:
@@ -474,6 +508,7 @@ def run_disinfection_task(
             summary_path,
         )
 
+    started_at = time.monotonic()
     driver = existing_driver
     lock_acquired = False
     owns_driver = existing_driver is None
@@ -516,9 +551,19 @@ def run_disinfection_task(
     except TaskCancellationError:
         raise
     except Exception as exc:
+        detail = f"消毒紀錄操作失敗：{exc}"
         if driver is not None:
-            _save_artifacts(driver, output_dir, request.task_id, "disinfection_error")
-        return SeleniumRunResult(False, "disinfection_failed", f"消毒紀錄操作失敗：{exc}", summary_path)
+            detail = _detail_with_failure_evidence(
+                detail,
+                driver,
+                output_dir,
+                request,
+                "disinfection",
+                exc,
+                EMS_BASE_URL,
+                started_at,
+            )
+        return SeleniumRunResult(False, "disinfection_failed", detail, summary_path)
     finally:
         mark_driver_operation_active(driver, False)
         if owns_driver and not keep_browser_open:
@@ -3839,13 +3884,42 @@ def _click_next_page_if_present(driver: webdriver.Chrome) -> bool:
         return False
 
 
+def _detail_with_failure_evidence(
+    detail: str,
+    driver: webdriver.Chrome,
+    output_dir: Path,
+    request: AmbulanceReturnRequest,
+    site_key: str,
+    exception: BaseException,
+    target_url: str,
+    started_at: float,
+) -> str:
+    try:
+        evidence = capture_failure_artifacts(
+            driver,
+            output_dir,
+            request.task_id,
+            site_key,
+            vehicle=request.vehicle,
+            exception=exception,
+            target_url=target_url,
+            elapsed_seconds=max(0.0, time.monotonic() - started_at),
+        )
+        return augment_failure_detail(detail, evidence)
+    except Exception as capture_exc:
+        return f"{detail} [failure_capture_error:{capture_exc.__class__.__name__}: {capture_exc}]"
+
+
 def _save_artifacts(driver: webdriver.Chrome, output_dir: Path, task_id: str, site_key: str) -> None:
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / f"{task_id}-{site_key}.html").write_text(driver.page_source, encoding="utf-8", errors="replace")
         driver.save_screenshot(str(output_dir / f"{task_id}-{site_key}.png"))
-    except WebDriverException:
-        return
+    except Exception:
+        pass
+    try:
+        (output_dir / f"{task_id}-{site_key}.html").write_text(driver.page_source, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 def _task_text(request: AmbulanceReturnRequest) -> str:

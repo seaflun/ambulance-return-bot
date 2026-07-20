@@ -99,6 +99,51 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("Chrome", payload["failure_reason"])
         self.assertEqual(payload["exception_type"], "OSError")
 
+    def test_renderer_timeout_marker_is_reported_as_webpage_stall(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage",
+            "vehicle_mileage_failed",
+            (
+                "車輛里程操作失敗：Timed out receiving message from renderer: 45.000 "
+                "[browser_failure:web_renderer_timeout]"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "web_renderer_timeout")
+        self.assertEqual(payload["failure_stage"], "開啟車輛里程")
+        self.assertIn("網頁", payload["failure_reason"])
+        self.assertNotIn("ChromeDriver 工作階段", payload["failure_reason"])
+
+    def test_legacy_renderer_timeout_is_honest_about_missing_live_probe(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage",
+            "vehicle_mileage_failed",
+            (
+                "車輛里程操作失敗：Message: timeout: "
+                "Timed out receiving message from renderer: -0.012 "
+                "(Session info: chrome=150.0.7871.127)"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "renderer_timeout_unverified")
+        self.assertEqual(payload["failure_stage"], "開啟車輛里程")
+        self.assertIn("舊紀錄", payload["failure_reason"])
+        self.assertIn("無法確定", payload["failure_reason"])
+
+    def test_chrome_unresponsive_marker_is_reported_as_browser_problem(self):
+        payload = diagnostic_payload(
+            "disinfection",
+            "disinfection_failed",
+            (
+                "消毒紀錄操作失敗：disconnected: not connected to DevTools "
+                "[browser_failure:chrome_unresponsive]"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "chrome_unresponsive")
+        self.assertEqual(payload["failure_stage"], "啟動 Chrome")
+        self.assertIn("Google Chrome", payload["failure_reason"])
+
     def test_vehicle_not_found_points_to_mileage_fill_stage(self):
         payload = diagnostic_payload("vehicle_mileage", "vehicle_mileage_failed", "vehicle not found: 新坡91")
 

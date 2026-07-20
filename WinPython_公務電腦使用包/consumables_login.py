@@ -22,6 +22,7 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry, mark_driver_operation_active
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.duty_credentials import load_synced_worker_credential
+from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm, vehicle_ppe_names
 from ambulance_bot.profile_paths import runtime_profile_dir
 from ambulance_bot.task_cancellation import TaskCancellationError
@@ -67,6 +68,7 @@ def login_acs_and_get_driver(
     debugger_port: int | None = None,
     tile_name: str = "",
     task: dict[str, object] | AmbulanceReturnRequest | None = None,
+    artifacts_dir: Path | None = None,
 ) -> webdriver.Chrome:
     account_text, password_text = _load_acs_credentials(task)
 
@@ -100,9 +102,15 @@ def login_acs_and_get_driver(
 
         _open_acs_system(driver, wait)
         return driver
-    except Exception:
-        _save_failure_artifacts(driver)
-        raise
+    except Exception as exc:
+        request = _request_or_none(task)
+        evidence = _capture_consumables_failure(
+            driver,
+            artifacts_dir,
+            request,
+            exc,
+        )
+        raise RuntimeError(augment_failure_detail(str(exc), evidence)) from exc
 
 
 def open_consumable_record_for_task(
@@ -110,6 +118,7 @@ def open_consumable_record_for_task(
     task: dict[str, object] | AmbulanceReturnRequest,
     cancel_check: Callable[[], None] | None = None,
     update_context: dict[str, object] | None = None,
+    artifacts_dir: Path | None = None,
 ) -> str:
     mark_driver_operation_active(driver)
     try:
@@ -119,6 +128,17 @@ def open_consumable_record_for_task(
             cancel_check=cancel_check,
             update_context=update_context,
         )
+    except (TaskCancellationError, ManualUpdateRequiredError):
+        raise
+    except Exception as exc:
+        request = task if isinstance(task, AmbulanceReturnRequest) else AmbulanceReturnRequest.from_dict(task)
+        evidence = _capture_consumables_failure(
+            driver,
+            artifacts_dir,
+            request,
+            exc,
+        )
+        raise RuntimeError(augment_failure_detail(str(exc), evidence)) from exc
     finally:
         mark_driver_operation_active(driver, False)
 
@@ -330,13 +350,37 @@ def _find_captcha_image(driver: webdriver.Chrome, wait: WebDriverWait):
     raise RuntimeError("找不到一站通驗證碼圖片。")
 
 
-def _save_failure_artifacts(driver: webdriver.Chrome) -> None:
+def _request_or_none(task: dict[str, object] | AmbulanceReturnRequest | None) -> AmbulanceReturnRequest | None:
+    if isinstance(task, AmbulanceReturnRequest):
+        return task
+    if isinstance(task, dict):
+        return AmbulanceReturnRequest.from_dict(task)
+    return None
+
+
+def _capture_consumables_failure(
+    driver: webdriver.Chrome,
+    artifacts_dir: Path | None,
+    request: AmbulanceReturnRequest | None,
+    exception: BaseException,
+) -> dict[str, object]:
+    output_dir = Path(artifacts_dir or os.getenv("ARTIFACTS_DIR", "artifacts")) / "selenium"
     try:
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        driver.save_screenshot(str(OUTPUT_DIR / "nfa_acs_login_failed.png"))
-        (OUTPUT_DIR / "nfa_acs_login_failed.html").write_text(driver.page_source, encoding="utf-8")
-    except Exception:
-        pass
+        return capture_failure_artifacts(
+            driver,
+            output_dir,
+            request.task_id if request is not None else "unknown_task",
+            "consumables",
+            vehicle=request.vehicle if request is not None else "",
+            exception=exception,
+            target_url=ACS_URL,
+        )
+    except Exception as capture_exc:
+        return {
+            "category": "",
+            "reason": "",
+            "screenshot_error": f"{capture_exc.__class__.__name__}: {capture_exc}",
+        }
 
 
 def _wait_until_sso_login_finished(driver: webdriver.Chrome, wait: WebDriverWait) -> None:

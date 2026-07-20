@@ -887,6 +887,83 @@ class SeleniumLocalTests(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "duty_work_log_failed")
+
+    def test_all_four_selenium_wrappers_capture_failure_evidence(self):
+        request = AmbulanceReturnRequest(
+            task_id="capture-five-sites",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+
+        class FakeDriver:
+            def implicitly_wait(self, _seconds):
+                pass
+
+        evidence = {
+            "category": "web_renderer_timeout",
+            "reason": "網頁轉譯程序逾時。",
+        }
+        cases = (
+            (
+                "duty_work_log",
+                selenium_local_module.run_local_selenium_task,
+                "_prepare_duty_work_log_form",
+                {"force_new_driver": True},
+            ),
+            (
+                "vehicle_mileage",
+                selenium_local_module.run_vehicle_mileage_task,
+                "_open_vehicle_mileage_page",
+                {"existing_driver": FakeDriver()},
+            ),
+            (
+                "fuel_record",
+                selenium_local_module.run_fuel_record_task,
+                "_open_fuel_record_page",
+                {"existing_driver": FakeDriver()},
+            ),
+            (
+                "disinfection",
+                selenium_local_module.run_disinfection_task,
+                "_open_disinfection_page",
+                {"existing_driver": FakeDriver()},
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            selenium_local_module,
+            "mark_driver_operation_active",
+        ), patch.object(selenium_local_module, "apply_tile"), patch.object(
+            selenium_local_module,
+            "_set_window_size_if_enabled",
+        ):
+            for site_key, runner, open_name, kwargs in cases:
+                with self.subTest(site_key=site_key), patch.object(
+                    selenium_local_module,
+                    "_create_driver",
+                    return_value=FakeDriver(),
+                ), patch.object(
+                    selenium_local_module,
+                    open_name,
+                    side_effect=RuntimeError("Timed out receiving message from renderer"),
+                ), patch.object(
+                    selenium_local_module,
+                    "capture_failure_artifacts",
+                    return_value=evidence,
+                    create=True,
+                ) as capture:
+                    result = runner(
+                        request,
+                        Path(tmp),
+                        use_session_lock=False,
+                        **kwargs,
+                    )
+
+                capture.assert_called_once()
+                self.assertEqual(capture.call_args.args[2], request.task_id)
+                self.assertEqual(capture.call_args.args[3], site_key)
+                self.assertEqual(capture.call_args.kwargs["vehicle"], request.vehicle)
+                self.assertIn("[browser_failure:web_renderer_timeout]", result.detail)
     def test_ppe_option_records_decode_unicode_driver_names(self):
         source = 'dataSource: [{"DeptSeq":null,"Value":"2448","Text":"\\u90ED\\u570B\\u5075"}]'
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -105,6 +107,16 @@ _public_pc_pending_report_lock = threading.RLock()
 _credential_sync_relay_lock = threading.RLock()
 _case_lookup_start_error = ""
 PUBLIC_PC_REPORT_RETENTION_DAYS = 7
+PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024
+PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT = 5
+PUBLIC_PC_FAILURE_REPORT_MAX_BYTES = 15 * 1024 * 1024
+PUBLIC_PC_FAILURE_SITE_KEYS = {
+    "duty_work_log",
+    "vehicle_mileage",
+    "fuel_record",
+    "consumables",
+    "disinfection",
+}
 TASK_FORM_COMPLETED_HISTORY_HOURS = 48
 TASK_FORM_RECENT_TASK_LIMIT = 5
 TASK_FORM_RECENT_TASK_SCAN_LIMIT = 500
@@ -1025,6 +1037,8 @@ def worker_cases():
 def worker_public_pc_task_events():
     if not worker_authorized():
         abort(403)
+    if request.content_length and request.content_length > PUBLIC_PC_FAILURE_REPORT_MAX_BYTES:
+        abort(413)
     data = request.get_json(silent=True) or {}
     task = data.get("task") if isinstance(data.get("task"), dict) else {}
     task_id = str(data.get("task_id") or task.get("task_id") or "").strip()
@@ -1046,6 +1060,17 @@ def artifact_file(filename: str):
     if selenium_root not in target.parents or target.suffix.lower() not in {".png", ".html"}:
         abort(404)
     if not target.exists() or not target.is_file():
+        abort(404)
+    return send_from_directory(root, filename)
+
+
+@app.get("/admin/public-pc/failure-screenshots/<filename>")
+def public_pc_failure_screenshot(filename: str):
+    if Path(filename).name != filename or Path(filename).suffix.lower() != ".png":
+        abort(404)
+    root = public_pc_failure_screenshot_dir().resolve()
+    target = (root / filename).resolve()
+    if target.parent != root or not target.is_file():
         abort(404)
     return send_from_directory(root, filename)
 
@@ -1291,6 +1316,23 @@ def public_pc_pending_report_file() -> Path:
 
 def public_pc_pending_report_spool_dir() -> Path:
     return artifacts_dir / "public_pc" / "pending_event_spool"
+
+
+def public_pc_failure_screenshot_dir() -> Path:
+    return artifacts_dir / "public_pc" / "failure_screenshots"
+
+
+def _cleanup_public_pc_failure_screenshots(now: datetime | None = None) -> None:
+    root = public_pc_failure_screenshot_dir()
+    if not root.exists():
+        return
+    cutoff = (now or datetime.now()).timestamp() - (PUBLIC_PC_REPORT_RETENTION_DAYS * 86400)
+    for path in root.glob("*.png"):
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            continue
 
 
 def worker_server_identity_file() -> Path:
@@ -1800,6 +1842,13 @@ def upsert_public_pc_report(data: dict) -> dict:
             if isinstance(data.get("site_statuses"), dict)
             else existing.get("site_statuses", {})
         )
+        site_statuses = _store_public_pc_failure_evidence(
+            task_id,
+            site_statuses,
+            data.get("failure_evidence"),
+            existing.get("site_statuses", {}),
+            now_value,
+        )
         payload = {
             **existing,
             "task_id": task_id,
@@ -1831,6 +1880,179 @@ def upsert_public_pc_report(data: dict) -> dict:
         write_json_atomic(path, output)
         write_json_atomic(public_pc_report_backup_file(), output)
         return payload
+
+
+def _store_public_pc_failure_evidence(
+    task_id: str,
+    site_statuses: dict,
+    failure_evidence: object,
+    existing_site_statuses: object,
+    now: datetime,
+) -> dict:
+    statuses = {
+        str(site_key): dict(site)
+        for site_key, site in site_statuses.items()
+        if isinstance(site, dict)
+    }
+    existing_statuses = existing_site_statuses if isinstance(existing_site_statuses, dict) else {}
+    for site_key, existing_site in existing_statuses.items():
+        if not isinstance(existing_site, dict):
+            continue
+        current = statuses.setdefault(str(site_key), dict(existing_site))
+        if "failure_screenshots" not in current and isinstance(existing_site.get("failure_screenshots"), list):
+            current["failure_screenshots"] = list(existing_site["failure_screenshots"])
+        if "failure_screenshot_error" not in current and existing_site.get("failure_screenshot_error"):
+            current["failure_screenshot_error"] = str(existing_site["failure_screenshot_error"])
+
+    evidence_by_site = failure_evidence if isinstance(failure_evidence, dict) else {}
+    _cleanup_public_pc_failure_screenshots(now)
+    remaining = PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT
+    for raw_site_key, raw_evidence in evidence_by_site.items():
+        site_key = str(raw_site_key)
+        if site_key not in PUBLIC_PC_FAILURE_SITE_KEYS or not isinstance(raw_evidence, dict):
+            continue
+        site = statuses.setdefault(site_key, {"key": site_key, "status": f"{site_key}_failed"})
+        stored_images = [
+            dict(item)
+            for item in site.get("failure_screenshots", [])
+            if isinstance(item, dict) and str(item.get("url") or "")
+        ]
+        errors: list[str] = []
+        capture_error = str(raw_evidence.get("screenshot_error") or "").strip()
+        if capture_error:
+            errors.append(capture_error)
+        screenshots = raw_evidence.get("screenshots") if isinstance(raw_evidence.get("screenshots"), list) else []
+        for item in screenshots:
+            if remaining <= 0:
+                errors.append("失敗截圖超過 5 張上限，後續圖片未保存。")
+                break
+            if not isinstance(item, dict):
+                continue
+            try:
+                encoded = str(item.get("content_base64") or "")
+                max_encoded_length = ((PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES + 2) // 3) * 4
+                if len(encoded) > max_encoded_length:
+                    raise ValueError("PNG Base64 超過 2 MB 上限")
+                image_bytes = base64.b64decode(encoded, validate=True)
+                if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise ValueError("檔案不是有效 PNG")
+                if len(image_bytes) > PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES:
+                    raise ValueError("PNG 超過 2 MB 上限")
+            except (ValueError, binascii.Error) as exc:
+                errors.append(f"截圖驗證失敗：{exc}")
+                continue
+
+            root = public_pc_failure_screenshot_dir()
+            root.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(image_bytes).hexdigest()[:20]
+            safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id).strip("._")[:80] or "task"
+            safe_vehicle = re.sub(
+                r"[^A-Za-z0-9_.-]+",
+                "_",
+                str(item.get("vehicle") or ""),
+            ).strip("._")[:40]
+            vehicle_suffix = f"-{safe_vehicle}" if safe_vehicle else ""
+            filename = f"{safe_task}-{site_key}{vehicle_suffix}-{digest}.png"
+            target = root / filename
+            if not target.exists():
+                target.write_bytes(image_bytes)
+            metadata = {
+                "url": f"/admin/public-pc/failure-screenshots/{filename}",
+                "vehicle": str(item.get("vehicle") or ""),
+                "captured_at": str(item.get("captured_at") or ""),
+                "sha256": hashlib.sha256(image_bytes).hexdigest(),
+            }
+            stored_images = [
+                existing
+                for existing in stored_images
+                if str(existing.get("url") or "") != metadata["url"]
+            ]
+            stored_images.append(metadata)
+            remaining -= 1
+        site["failure_screenshots"] = stored_images[-PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT:]
+        site["failure_screenshot_error"] = "；".join(dict.fromkeys(errors))
+    return statuses
+
+
+def _collect_public_pc_failure_evidence(task_id: str, site_statuses: object) -> dict[str, dict]:
+    statuses = site_statuses if isinstance(site_statuses, dict) else {}
+    failed_site_keys = {
+        str(site_key)
+        for site_key, site in statuses.items()
+        if (
+            str(site_key) in PUBLIC_PC_FAILURE_SITE_KEYS
+            and isinstance(site, dict)
+            and (
+                str(site.get("status") or "").endswith("_failed")
+                or "error" in str(site.get("status") or "").lower()
+            )
+        )
+    }
+    if not failed_site_keys:
+        return {}
+
+    root = (artifacts_dir / "selenium").resolve()
+    collected = {
+        site_key: {"screenshots": [], "screenshot_error": ""}
+        for site_key in failed_site_keys
+    }
+    if not root.exists():
+        for value in collected.values():
+            value["screenshot_error"] = "公務電腦找不到失敗截圖目錄。"
+        return collected
+
+    metadata_paths = sorted(
+        root.glob("*.json"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0,
+        reverse=True,
+    )
+    remaining = PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT
+    for metadata_path in metadata_paths[:200]:
+        if remaining <= 0:
+            break
+        try:
+            if metadata_path.stat().st_size > 64 * 1024:
+                continue
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict) or str(metadata.get("task_id") or "") != task_id:
+            continue
+        site_key = str(metadata.get("site_key") or "")
+        if site_key not in collected:
+            continue
+        screenshot_error = str(metadata.get("screenshot_error") or "").strip()
+        if screenshot_error and not collected[site_key]["screenshot_error"]:
+            collected[site_key]["screenshot_error"] = screenshot_error
+        raw_path = str(metadata.get("screenshot_path") or "").strip()
+        if not raw_path:
+            continue
+        try:
+            screenshot_path = Path(raw_path).resolve()
+            if root not in screenshot_path.parents or screenshot_path.suffix.lower() != ".png":
+                continue
+            image_bytes = screenshot_path.read_bytes()
+        except OSError:
+            continue
+        if (
+            not image_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+            or len(image_bytes) > PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES
+        ):
+            continue
+        collected[site_key]["screenshots"].append(
+            {
+                "filename": screenshot_path.name,
+                "content_base64": base64.b64encode(image_bytes).decode("ascii"),
+                "vehicle": str(metadata.get("vehicle") or ""),
+                "captured_at": str(metadata.get("captured_at") or ""),
+            }
+        )
+        remaining -= 1
+
+    for value in collected.values():
+        if not value["screenshots"] and not value["screenshot_error"]:
+            value["screenshot_error"] = "公務電腦未能取得失敗畫面，可能是 Chrome 已中斷。"
+    return collected
 
 
 def _enqueue_public_pc_report(payload: dict) -> None:
@@ -2047,6 +2269,7 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
     latest_event = events[-1] if events else {}
     operator_label = current_public_pc_user_label()
     site_login_accounts = public_pc_site_login_accounts(task)
+    site_statuses = payload.get("site_statuses") or {}
     body = {
         "event_id": str(event_id or "").strip() or str(uuid4()),
         "task_id": task_id,
@@ -2062,10 +2285,13 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
         "status": str(latest_event.get("status") or payload.get("overall_status") or ""),
         "detail": str(latest_event.get("detail") or ""),
         "overall_status": str(payload.get("overall_status") or ""),
-        "site_statuses": payload.get("site_statuses") or {},
+        "site_statuses": site_statuses,
         "completion": task_completion_snapshot(payload),
         "created_at": str(payload.get("created_at") or ""),
     }
+    failure_evidence = _collect_public_pc_failure_evidence(task_id, site_statuses)
+    if failure_evidence:
+        body["failure_evidence"] = failure_evidence
     server_url = public_pc_report_server_url()
     with _public_pc_pending_report_lock:
         try:

@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import disinfect
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
@@ -79,6 +81,59 @@ class DisinfectionCredentialTests(unittest.TestCase):
                 ("tyfd09999", "同步帳號"),
             ],
         )
+
+    def test_login_failure_captures_task_and_vehicle_evidence_before_optional_quit(self):
+        class FakeDriver:
+            def set_page_load_timeout(self, _seconds):
+                pass
+
+            def set_script_timeout(self, _seconds):
+                pass
+
+            def get(self, _url):
+                pass
+
+            def quit(self):
+                pass
+
+        request = AmbulanceReturnRequest(
+            task_id="disinfection-login",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        credential = SimpleNamespace(user_id="worker", password="secret")
+        driver = FakeDriver()
+        with patch.object(
+            disinfect,
+            "_disinfection_credential_attempts",
+            return_value=[(credential, "同步帳號")],
+        ), patch.object(
+            disinfect,
+            "create_chrome_driver_with_retry",
+            return_value=driver,
+        ), patch.object(
+            disinfect,
+            "apply_tile",
+        ), patch.object(
+            disinfect,
+            "_login_once",
+            side_effect=RuntimeError("Chrome not reachable"),
+        ), patch.object(
+            disinfect,
+            "capture_failure_artifacts",
+            return_value={"category": "chrome_unresponsive", "reason": "Chrome 無回應"},
+        ) as capture:
+            with self.assertRaisesRegex(RuntimeError, "browser_failure:chrome_unresponsive"):
+                disinfect.login_and_get_driver(
+                    request=request,
+                    artifacts_dir=Path(self.tmp.name),
+                )
+
+        capture.assert_called_once()
+        self.assertEqual(capture.call_args.args[2], request.task_id)
+        self.assertEqual(capture.call_args.args[3], "disinfection")
+        self.assertEqual(capture.call_args.kwargs["vehicle"], request.vehicle)
 
 
 if __name__ == "__main__":

@@ -724,6 +724,7 @@ class DesktopFastRunner:
             profile_name=f"consumables_profile_{profile_suffix}",
             tile_name="consumables",
             task=request,
+            artifacts_dir=self.artifacts_dir,
         )
         self._raise_if_cancelled(request.task_id)
         if len(request.vehicle_requests()) <= 1:
@@ -732,6 +733,7 @@ class DesktopFastRunner:
                 request,
                 update_context=self._site_update_context(request.task_id, "consumables"),
                 cancel_check=self._cancel_check(request.task_id),
+                artifacts_dir=self.artifacts_dir,
             )
             status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
             return SiteAutomationResult("consumables", SITE_NAMES["consumables"], status, detail)
@@ -752,6 +754,7 @@ class DesktopFastRunner:
                         index,
                     ),
                     cancel_check=self._cancel_check(request.task_id),
+                    artifacts_dir=self.artifacts_dir,
                 ),
             ),
         )
@@ -816,6 +819,7 @@ class DesktopFastRunner:
                 request=vehicle_request,
                 profile_name=profile_name,
                 tile_name="disinfection",
+                artifacts_dir=self.artifacts_dir,
             )
             self._raise_if_cancelled(request.task_id)
             return run_disinfection_task(

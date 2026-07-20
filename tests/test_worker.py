@@ -2942,7 +2942,7 @@ class WorkerTests(unittest.TestCase):
         with mock.patch.object(worker_module, "login_acs_and_get_driver", return_value=driver) as login, mock.patch.object(
             worker_module,
             "open_consumable_record_for_task",
-            side_effect=lambda actual_driver, request: calls.append(request.vehicle) or f"{request.vehicle} ok",
+            side_effect=lambda actual_driver, request, **_kwargs: calls.append(request.vehicle) or f"{request.vehicle} ok",
         ), mock.patch.object(worker_module, "save_consumables_record_enabled", return_value=True), mock.patch.object(
             worker_module,
             "post_status",

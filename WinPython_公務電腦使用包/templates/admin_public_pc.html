@@ -186,6 +186,27 @@
     .site-diagnostic-title { color: var(--ink); font-weight: 780; }
     .site-diagnostic strong { color: var(--ink); }
     .site-diagnostic .action { color: var(--failed); font-weight: 700; }
+    .failure-evidence { display: grid; gap: 7px; margin-top: 8px; }
+    .failure-evidence-title { color: var(--ink); font-weight: 780; }
+    .failure-shot {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .failure-shot img {
+      display: block;
+      width: 100%;
+      max-height: 150px;
+      object-fit: cover;
+      object-position: top;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--idle-bg);
+    }
+    .failure-shot:hover img { border-color: var(--failed); }
+    .failure-shot-caption { font-size: 11px; overflow-wrap: anywhere; }
+    .failure-shot-error { color: var(--failed); font-weight: 700; overflow-wrap: anywhere; }
     .login-summary {
       margin-top: 10px;
       border: 1px solid var(--line);
@@ -393,6 +414,26 @@
                       <div><strong>未完成點</strong> {{ diag.failure_stage }}</div>
                       <div><strong>原因</strong> {{ diag.failure_reason }}</div>
                       <div class="action"><strong>下一步</strong> {{ diag.next_action }}</div>
+                    </div>
+                  {% endif %}
+                  {% set failure_screenshots = site.failure_screenshots if site.failure_screenshots is sequence and site.failure_screenshots is not string else [] %}
+                  {% if failure_screenshots or site.failure_screenshot_error %}
+                    <div class="failure-evidence">
+                      {% if failure_screenshots %}
+                        <div class="failure-evidence-title">失敗畫面</div>
+                        {% for screenshot in failure_screenshots %}
+                          <a class="failure-shot" href="{{ screenshot.url }}" target="_blank" rel="noopener">
+                            <img src="{{ screenshot.url }}" alt="{{ title }}失敗畫面{% if screenshot.vehicle %}（{{ screenshot.vehicle }}）{% endif %}" loading="lazy">
+                            <span class="failure-shot-caption">
+                              {% if screenshot.vehicle %}{{ screenshot.vehicle }}{% endif %}
+                              {% if screenshot.captured_at %}{{ screenshot.captured_at }}{% endif %}
+                            </span>
+                          </a>
+                        {% endfor %}
+                      {% endif %}
+                      {% if site.failure_screenshot_error %}
+                        <div class="failure-shot-error"><strong>截圖擷取失敗</strong> {{ site.failure_screenshot_error }}</div>
+                      {% endif %}
                     </div>
                   {% endif %}
                 </div>
