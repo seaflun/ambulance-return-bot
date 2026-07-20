@@ -47,7 +47,7 @@ self.assertIn("本機快速執行完成。", body)
 
 - [ ] **Step 2: Run the focused test and verify RED**
 
-Run: `py -m unittest tests.test_web_app.WebAppTests.test_nas_index_shows_entry_buttons_only tests.test_web_app.WebAppTests.test_admin_public_pc_shows_reports -v`
+Run: `py -m unittest tests.test_web_app.WebAppTests.test_nas_index_shows_entry_buttons_only tests.test_web_app.WebAppTests.test_admin_public_pc_receives_and_lists_local_task_events -v`
 
 Expected: the new entry assertion fails and the removed event-row assertion fails because the current template still contains the row.
 
@@ -66,7 +66,7 @@ Delete only the `event_operator` assignment and the `event-operator` element tha
 
 - [ ] **Step 4: Run the focused test and verify GREEN**
 
-Run: `py -m unittest tests.test_web_app.WebAppTests.test_nas_index_shows_entry_buttons_only tests.test_web_app.WebAppTests.test_admin_public_pc_shows_reports -v`
+Run: `py -m unittest tests.test_web_app.WebAppTests.test_nas_index_shows_entry_buttons_only tests.test_web_app.WebAppTests.test_admin_public_pc_receives_and_lists_local_task_events -v`
 
 Expected: both tests pass.
 
