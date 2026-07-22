@@ -75,6 +75,9 @@
     .secondary { background: transparent; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
     .full { grid-column: 1 / -1; }
+    .address-row { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
+    .address-row label { margin-bottom: 11px; }
+    .clear-button { min-width: 88px; margin-bottom: 11px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .section-head h2 { margin-bottom: 0; }
     .lookup { margin-bottom: 16px; }
@@ -104,7 +107,8 @@
     .vehicle-card > .section-head { margin-bottom: 14px; }
     .time-field { display: grid; grid-template-columns: minmax(0, 1fr) 52px; gap: 10px; align-items: end; }
     .time-field button { width: 52px; min-width: 52px; min-height: 46px; margin-top: 6px; padding: 0; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; }
-    .fuel-toggle { width: 20px; height: 20px; min-height: 20px; margin: 0; accent-color: var(--accent); }
+    .check-item { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 46px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
+    #disaster-form .fuel-record-toggle input { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; transform: scale(1.2); accent-color: var(--accent); }
     label > span { display: flex; align-items: center; gap: 10px; }
     .fuel-fields { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .fuel-total { color: var(--accent); font-weight: 800; }
@@ -126,6 +130,8 @@
       .header-actions .button { flex: 0 0 auto; min-height: 38px; padding: 0 12px; font-size: var(--text-sm); }
       .grid { grid-template-columns: 1fr; gap: 8px; }
       .full { grid-column: auto; }
+      .address-row { grid-column: auto; grid-template-columns: minmax(0, 1fr) 84px; }
+      .clear-button { padding: 0 12px; }
       .lookup-head { align-items: stretch; flex-direction: column; }
       .lookup-form { display: grid; grid-template-columns: 1fr; gap: 8px; width: 100%; }
       .lookup-status.is-visible { justify-self: start; }
@@ -141,7 +147,7 @@
 </head>
 <body>
 <main>
-  <header><h1>SinpoSmart - 救災Worker</h1><div class="header-actions"><a class="button secondary" href="/task-entry">返回上一頁</a><a class="button secondary" href="/admin/disaster-vehicles">救災車設定</a></div></header>
+  <header><h1>SinpoSmart - 救災Worker</h1><div class="header-actions"><a class="button secondary" href="/task-entry">返回上一頁</a>{% if show_vehicle_settings_button() %}<a class="button secondary" href="/admin/disaster-vehicles">救災車設定</a>{% endif %}</div></header>
   <section class="panel lookup">
     <div class="lookup-head">
       <h2>勤務案件</h2>
@@ -178,10 +184,14 @@
     {% endif %}
     <div class="form-errors" id="client-form-errors" role="alert" hidden><ul></ul></div>
     <input type="hidden" name="service_type" value="disaster">
+    <input type="hidden" name="return_to" value="disaster">
     <section class="panel">
       <h2>案件資料</h2>
       <div class="grid">
-        <label class="field-visual full{% if not (selected_case.address or selected_case.case_address) %} is-pending{% endif %}" data-required-message="請填寫案件地址"><span class="field-label-title">案件地址<span class="field-error-mark" aria-hidden="true">*</span></span><input name="case_address" value="{{ selected_case.address or selected_case.case_address or '' }}" required></label>
+        <div class="address-row">
+          <label class="field-visual{% if not (selected_case.address or selected_case.case_address) %} is-pending{% endif %}" data-required-message="請填寫案件地址"><span class="field-label-title">案件地址<span class="field-error-mark" aria-hidden="true">*</span></span><input name="case_address" value="{{ selected_case.address or selected_case.case_address or '' }}" required></label>
+          <button class="clear-button" type="submit" formaction="/cases/clear" formmethod="post" formnovalidate>清除</button>
+        </div>
         <label class="field-visual{% if not (selected_case.case_time_hhmm or selected_case.case_time) %} is-pending{% endif %}" data-required-message="請填寫正確案件時間"><span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span><input name="case_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ selected_case.case_time_hhmm or selected_case.case_time or '' }}" required></label>
         <label class="field-visual{% if not selected_return_time_input(selected_case) %} is-pending{% endif %}" data-required-message="請填寫正確返隊時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field"><input name="return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ selected_return_time_input(selected_case) }}" required><button type="button" id="now-time" aria-label="帶入現在時間">◷</button></div></label>
         <label class="field-visual" data-required-message="請選擇正確案件類型"><span class="field-label-title">案件類型<span class="field-error-mark" aria-hidden="true">*</span></span><select name="summary_type" required><option value="火災"{% if selected_case.summary_type in ['', '火災'] %} selected{% endif %}>火災</option><option value="災害搶救"{% if selected_case.summary_type == '災害搶救' %} selected{% endif %}>災害搶救</option><option value="其他"{% if selected_case.summary_type == '其他' %} selected{% endif %}>其他</option></select></label>
@@ -207,7 +217,7 @@
             <label class="field-visual{% if not entry.driver %} is-pending{% endif %}" data-required-message="請選擇司機"><span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span><select name="driver" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not (entry.return_time or selected_return_time_input(selected_case)) %} is-pending{% endif %}" data-required-message="請填寫正確返隊時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><input name="vehicle_return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ entry.return_time or selected_return_time_input(selected_case) }}" required></label>
             <label class="field-visual{% if not entry.mileage %} is-pending{% endif %}" data-required-message="請填寫數字里程"><span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span><input name="mileage" inputmode="numeric" pattern="\d+" value="{{ entry.mileage or '' }}" required></label>
-            <label class="full"><span><input type="checkbox" class="fuel-toggle" name="fuel_enabled" value="{{ loop.index0 }}"{% if fuel.enabled %} checked{% endif %}> 登打加油紀錄</span></label>
+            <label class="check-item fuel-record-toggle full"><input type="checkbox" class="fuel-toggle" name="fuel_enabled" value="{{ loop.index0 }}"{% if fuel.enabled %} checked{% endif %}><span>登打加油紀錄</span></label>
             <div class="fuel-fields full grid"{% if not fuel.enabled %} hidden{% endif %}><label class="field-visual" data-required-message="請填寫加油日期"><span class="field-label-title">加油日期<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_date" value="{{ fuel.date or selected_case_date_input(selected_case) }}"></label><label class="field-visual" data-required-message="請填寫加油時間"><span class="field-label-title">加油時間<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ fuel.time or '' }}"></label><label class="field-visual" data-required-message="請填寫數字油量"><span class="field-label-title">油量<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_quantity" inputmode="decimal" pattern="\d+(?:\.\d+)?" value="{{ fuel.quantity or '' }}"></label><label class="field-visual" data-required-message="請填寫數字單價"><span class="field-label-title">單價<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_unit_price" inputmode="decimal" pattern="\d+(?:\.\d+)?" value="{{ fuel.unit_price or '' }}"></label><div class="full fuel-total">最終總價：0</div></div>
           </div>
         </article>
@@ -359,6 +369,7 @@
     if(errors.length) clientFormErrors.scrollIntoView({block:'start'});
   }
   form.addEventListener('submit',event=>{
+    if(event.submitter?.formAction.endsWith('/cases/clear')) return;
     reindexCards();
     const errors=[];
     form.querySelectorAll('.field-visual').forEach(wrapper=>{

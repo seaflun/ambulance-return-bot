@@ -205,6 +205,8 @@
     .fuel-record-row { margin: 4px 0 14px; }
     .fuel-record-toggle { width: fit-content; margin: 0 0 14px; }
     .fuel-record-row .fuel-record-toggle { margin: 0; }
+    #task-form .fuel-record-toggle input,
+    #task-form .disinfection-grid .check-item input { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; transform: scale(1.2); }
     .fuel-record-fields { margin: -4px 0 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .fuel-record-fields[hidden] { display: none; }
     .fuel-record-fields .grid:last-child label { margin-bottom: 0; }
@@ -437,7 +439,7 @@
       <input type="hidden" name="personnel_accounts" value="{{ selected_case.personnel_hidden_raw or (selected_case.personnel_accounts | join(',')) or '' }}">
       <input type="hidden" name="two_vehicle_available" value="{{ '1' if two_vehicle_available else '' }}">
       <section class="site-card" data-site-card="work-record">
-        <h2>工作紀錄</h2>
+        <h2>案件資料</h2>
       {% if two_vehicle_available %}
         <label class="check-item two-vehicle-toggle">
           <input type="checkbox" name="two_vehicle" id="two-vehicle-toggle" value="1"{% if selected_case.two_vehicle %} checked{% endif %}>
@@ -445,7 +447,7 @@
         </label>
       {% endif %}
       <div class="address-row">
-        <label>案發地址
+        <label>案件地址
           <input name="case_address" autocomplete="off" value="{{ selected_case_address(selected_case) }}">
         </label>
         {% if not cancel_url %}
@@ -512,9 +514,7 @@
           </select>
         </label>
       </div>
-      </section>
-      <section class="site-card" data-site-card="mileage">
-        <h2>車輛里程</h2>
+      <div data-site-card="mileage">
       <div class="mileage-row">
         <label class="field-visual" data-field-name="mileage">
           <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -524,6 +524,7 @@
           <span class="field-label-title mileage-hint-spacer" aria-hidden="true">&nbsp;</span>
           <div class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></div>
         </div>
+      </div>
       </div>
       </section>
       <section class="site-card" data-site-card="fuel">
@@ -569,7 +570,6 @@
         <input type="hidden" name="consumable_packages" id="consumable-packages-value" value="{{ selected_consumable_packages | default([]) | join(',') }}">
         <input type="hidden" name="baseline_consumables_loaded" value="{{ '1' if baseline_consumables_loaded else '' }}">
         <div class="consumable-head">
-          <span>使用耗材</span>
           <div class="consumable-actions">
             <div class="package-cluster">
               <span class="package-group-label">套餐帶入</span>
@@ -604,7 +604,7 @@
       <section class="two-vehicle-panel" id="second-vehicle-section" hidden>
         <h2 class="vehicle-section-title">2車</h2>
         <section class="site-card" data-site-card="work-record-2">
-          <h2>工作紀錄</h2>
+          <h2>案件資料</h2>
         <div class="grid time-grid">
           <label class="field-visual" data-field-name="case_time_2_display">
             <span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -662,9 +662,7 @@
             </select>
           </label>
         </div>
-        </section>
-        <section class="site-card" data-site-card="mileage-2">
-          <h2>車輛里程</h2>
+        <div data-site-card="mileage-2">
         <div class="mileage-row">
           <label class="field-visual" data-field-name="mileage_2">
             <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -674,6 +672,7 @@
             <span class="field-label-title mileage-hint-spacer" aria-hidden="true">&nbsp;</span>
             <div class="mileage-hint" data-last-mileage-for="vehicle_2" aria-live="polite"></div>
           </div>
+        </div>
         </div>
         </section>
         <section class="site-card" data-site-card="fuel-2">
