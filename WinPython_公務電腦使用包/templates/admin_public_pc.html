@@ -1,9 +1,17 @@
+{% extends "sinposmart_base.html" %}
+{% block page_title %}{{ admin_page_title }}{% endblock %}
+{% block body_class %}admin-report-page admin-report-page--{{ service_filter }}{% endblock %}
+{% block eyebrow %}{% if service_filter == 'disaster' %}救災任務管理{% elif service_filter == 'ems' %}救護任務管理{% else %}救災救護任務管理{% endif %}{% endblock %}
+{% block page_heading %}{{ admin_page_title }}{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-admin.css') }}">{% endblock %}
+{% block header_actions %}<div class="header-actions"><a class="button secondary" href="/">返回首頁</a></div>{% endblock %}
+
 <!doctype html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>SinpoSmart - 救災救護Worker 後台</title>
+  <title>{{ admin_page_title }}</title>
   <style>
     :root {
       color-scheme: light;
@@ -286,10 +294,11 @@
 <body>
   <main>
     <header>
-      <h1>SinpoSmart - 救災救護Worker 後台</h1>
+      <h1>{{ admin_page_title }}</h1>
       <a class="button secondary" href="/">返回首頁</a>
     </header>
 
+    {% block content %}
     {% if version_info %}
       <section class="version-card" aria-label="系統版本">
         <div class="version-label">系統版本</div>
@@ -343,6 +352,7 @@
         </div>
         <form action="{{ url_for('admin_public_pc_remote_update') }}" method="post" onsubmit="return confirm('確定下達遠端更新？系統會等待勤務完成且電腦閒置後才在背景執行。');">
           <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
+          {% if service_filter_locked %}<input type="hidden" name="return_service" value="{{ service_filter }}">{% endif %}
           <input class="remote-update-secret" type="password" name="admin_token" autocomplete="current-password" placeholder="遠端更新管理密碼" required{% if remote_update.active %} disabled{% endif %}>
           <button type="submit"{% if remote_update.active %} disabled aria-disabled="true"{% endif %}>
             {% if remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
@@ -351,15 +361,15 @@
       </section>
     {% endif %}
 
-    <nav class="result-filters" aria-label="救災救護分類">
+    {% if not service_filter_locked %}<nav class="result-filters" aria-label="救災救護分類">
       <a class="button result-filter{% if service_filter == 'all' %} active{% endif %}" href="/admin/public-pc{% if result_filter != 'all' %}?result={{ result_filter }}{% endif %}">全部類型 {{ service_counts['all'] }}</a>
       <a class="button result-filter{% if service_filter == 'disaster' %} active{% endif %}" href="/admin/public-pc?service=disaster{% if result_filter != 'all' %}&amp;result={{ result_filter }}{% endif %}">救災案件 {{ service_counts['disaster'] }}</a>
       <a class="button result-filter{% if service_filter == 'ems' %} active{% endif %}" href="/admin/public-pc?service=ems{% if result_filter != 'all' %}&amp;result={{ result_filter }}{% endif %}">救護案件 {{ service_counts['ems'] }}</a>
-    </nav>
+    </nav>{% endif %}
     <nav class="result-filters" aria-label="執行結果分類">
-      <a class="button result-filter{% if result_filter == 'all' %} active{% endif %}" href="/admin/public-pc{% if service_filter != 'all' %}?service={{ service_filter }}{% endif %}">顯示全部 {{ report_counts['all'] }}</a>
-      <a class="button result-filter{% if result_filter == 'success' %} active{% endif %}" href="/admin/public-pc?{% if service_filter != 'all' %}service={{ service_filter }}&amp;{% endif %}result=success">成功案件 {{ report_counts['success'] }}</a>
-      <a class="button result-filter{% if result_filter == 'failed' %} active{% endif %}" href="/admin/public-pc?{% if service_filter != 'all' %}service={{ service_filter }}&amp;{% endif %}result=failed">失敗案件 {{ report_counts['failed'] }}</a>
+      <a class="button result-filter{% if result_filter == 'all' %} active{% endif %}" href="{{ admin_base_url }}{% if not service_filter_locked and service_filter != 'all' %}?service={{ service_filter }}{% endif %}">顯示全部 {{ report_counts['all'] }}</a>
+      <a class="button result-filter{% if result_filter == 'success' %} active{% endif %}" href="{{ admin_base_url }}?{% if not service_filter_locked and service_filter != 'all' %}service={{ service_filter }}&amp;{% endif %}result=success">成功案件 {{ report_counts['success'] }}</a>
+      <a class="button result-filter{% if result_filter == 'failed' %} active{% endif %}" href="{{ admin_base_url }}?{% if not service_filter_locked and service_filter != 'all' %}service={{ service_filter }}&amp;{% endif %}result=failed">失敗案件 {{ report_counts['failed'] }}</a>
     </nav>
 
     {% if reports %}
@@ -481,6 +491,7 @@
     {% else %}
       <section class="empty">目前尚未收到公務電腦本機任務回報。</section>
     {% endif %}
+    {% endblock %}
   </main>
 </body>
 </html>

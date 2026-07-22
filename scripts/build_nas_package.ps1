@@ -310,7 +310,7 @@ foreach ($file in @(
     Copy-FileToOutput -Source $source -RelativePath $file
 }
 
-foreach ($dir in @("ambulance_bot", "templates")) {
+foreach ($dir in @("ambulance_bot", "templates", "static")) {
     Copy-DirectoryToOutput -SourceDir (Join-Path $publicDutyDir $dir) -RelativePath $dir
 }
 

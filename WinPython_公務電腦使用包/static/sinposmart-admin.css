@@ -1,0 +1,511 @@
+.admin-report-page {
+  --admin-accent: var(--brand);
+  --admin-accent-soft: var(--brand-soft);
+  --complete: #32804a;
+  --complete-bg: #eaf7ee;
+  --failed: #c9342f;
+  --failed-bg: #fff0ee;
+  --running: #176fa6;
+  --running-bg: #edf7ff;
+  --idle-bg: #f2f2f7;
+}
+
+.admin-report-page--disaster {
+  --admin-accent: var(--disaster);
+  --admin-accent-soft: var(--disaster-soft);
+}
+
+.admin-report-page--ems {
+  --admin-accent: var(--ems);
+  --admin-accent-soft: var(--ems-soft);
+}
+
+.admin-report-page .app-header__eyebrow {
+  color: var(--admin-accent);
+}
+
+.admin-report-page .app-content {
+  font-size: 15px;
+}
+
+.admin-report-page h2,
+.admin-report-page h3,
+.admin-report-page p {
+  margin: 0;
+}
+
+.admin-report-page button {
+  display: inline-flex;
+  min-height: var(--control-height);
+  align-items: center;
+  justify-content: center;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--admin-accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 720;
+  cursor: pointer;
+  transition: transform 120ms ease-out, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.admin-report-page button:hover {
+  box-shadow: 0 9px 22px color-mix(in srgb, var(--admin-accent) 22%, transparent);
+}
+
+.admin-report-page button:active {
+  transform: scale(.97);
+}
+
+.admin-report-page button:focus-visible,
+.admin-report-page summary:focus-visible {
+  outline: 4px solid color-mix(in srgb, var(--admin-accent) 24%, transparent);
+  outline-offset: 3px;
+}
+
+.version-card,
+.worker-health-card,
+.remote-update-card,
+.task-card,
+.empty {
+  border: 1px solid rgba(255, 255, 255, .9);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+.version-card {
+  margin-bottom: 14px;
+  padding: 15px 17px;
+}
+
+.version-label {
+  color: var(--secondary-label);
+  font-size: .82rem;
+}
+
+.version-value {
+  margin-top: 3px;
+  font-size: 1.08rem;
+  font-weight: 760;
+  overflow-wrap: anywhere;
+}
+
+.worker-health-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 14px;
+  padding: 17px;
+}
+
+.worker-health-card.online {
+  border-color: rgba(50, 128, 74, .25);
+}
+
+.worker-health-card.offline {
+  border-color: rgba(201, 52, 47, .22);
+}
+
+.worker-health-title {
+  font-size: 1.08rem;
+  font-weight: 760;
+}
+
+.worker-health-meta {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  color: var(--secondary-label);
+  font-size: .82rem;
+}
+
+.remote-update-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 310px);
+  gap: 18px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 18px;
+}
+
+.remote-update-card > div {
+  min-width: 0;
+}
+
+.remote-update-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-update-title h2 {
+  font-size: 1.08rem;
+  font-weight: 760;
+}
+
+.remote-update-detail {
+  margin-top: 8px !important;
+  color: var(--secondary-label);
+  font-size: .82rem;
+}
+
+.remote-update-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin-top: 8px;
+  color: var(--secondary-label);
+  font-size: .76rem;
+}
+
+.remote-update-meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.remote-update-secret {
+  width: 100%;
+  min-height: 44px;
+  margin-bottom: 8px;
+  padding: 0 13px;
+  border: 1px solid var(--separator-strong);
+  border-radius: var(--radius-small);
+  background: var(--surface-solid);
+  color: var(--label);
+  font: inherit;
+}
+
+.remote-update-secret:focus {
+  outline: 4px solid color-mix(in srgb, var(--admin-accent) 22%, transparent);
+  outline-offset: 2px;
+}
+
+.remote-update-card button,
+.remote-update-card form {
+  width: 100%;
+}
+
+.remote-update-card button[disabled] {
+  background: #d1d1d6;
+  color: #6e6e73;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.result-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.result-filter {
+  min-height: 42px;
+  padding: 0 15px;
+  border-color: var(--separator);
+  background: rgba(255, 255, 255, .78);
+  color: var(--label);
+  box-shadow: none;
+}
+
+.result-filter.active {
+  border-color: var(--admin-accent);
+  background: var(--admin-accent);
+  color: #fff;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--admin-accent) 20%, transparent);
+}
+
+.task-list {
+  display: grid;
+  gap: 14px;
+}
+
+.task-card {
+  padding: 18px;
+  transition: transform 160ms ease-out, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.task-card:hover {
+  border-color: color-mix(in srgb, var(--admin-accent) 24%, white);
+  box-shadow: var(--shadow-raised);
+  transform: translateY(-1px);
+}
+
+.card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 12px;
+}
+
+.title {
+  font-size: 1.08rem;
+  font-weight: 760;
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  margin-top: 4px;
+  color: var(--secondary-label);
+  font-size: .82rem;
+}
+
+.status {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--idle-bg);
+  color: var(--secondary-label);
+  font-size: .78rem;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.status.complete { background: var(--complete-bg); color: var(--complete); }
+.status.failed { background: var(--failed-bg); color: var(--failed); }
+.status.running { background: var(--running-bg); color: var(--running); }
+
+.site-grid,
+.login-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.site-grid {
+  margin: 12px 0;
+}
+
+.site,
+.login-summary,
+.login-account,
+.vehicle-line {
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-small);
+  background: rgba(255, 255, 255, .76);
+}
+
+.site {
+  min-width: 0;
+  padding: 10px;
+}
+
+.site-name {
+  margin-bottom: 5px;
+  font-weight: 720;
+}
+
+.site-diagnostic {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--separator);
+  color: var(--secondary-label);
+  font-size: .76rem;
+  overflow-wrap: anywhere;
+}
+
+.site-diagnostic-title,
+.site-diagnostic strong,
+.failure-evidence-title {
+  color: var(--label);
+  font-weight: 740;
+}
+
+.site-diagnostic .action,
+.failure-shot-error {
+  color: var(--failed);
+  font-weight: 700;
+}
+
+.failure-evidence {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.failure-shot {
+  display: grid;
+  gap: 4px;
+  color: var(--secondary-label);
+  text-decoration: none;
+}
+
+.failure-shot img {
+  display: block;
+  width: 100%;
+  max-height: 150px;
+  object-fit: cover;
+  object-position: top;
+  border: 1px solid var(--separator-strong);
+  border-radius: 10px;
+  background: var(--idle-bg);
+}
+
+.failure-shot:hover img { border-color: var(--failed); }
+.failure-shot-caption { font-size: .7rem; overflow-wrap: anywhere; }
+.failure-shot-error { overflow-wrap: anywhere; }
+
+.login-summary {
+  margin-top: 10px;
+  padding: 11px;
+}
+
+.login-title {
+  margin-bottom: 8px;
+  font-weight: 720;
+}
+
+.login-account {
+  min-width: 0;
+  padding: 9px;
+}
+
+.login-account-name {
+  display: block;
+  margin-bottom: 3px;
+  font-weight: 720;
+}
+
+.login-account-value {
+  color: var(--secondary-label);
+  font-size: .76rem;
+  overflow-wrap: anywhere;
+}
+
+.vehicle-summary {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 12px;
+}
+
+.vehicle-line {
+  padding: 9px;
+  font-size: .82rem;
+  overflow-wrap: anywhere;
+}
+
+.vehicle-line strong {
+  margin-right: 6px;
+  color: var(--label);
+}
+
+.task-details {
+  margin-top: 12px;
+  border-top: 1px solid var(--separator);
+}
+
+.task-details summary {
+  padding: 11px 0;
+  color: var(--label);
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.events {
+  margin: 12px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--separator);
+  list-style: none;
+}
+
+.events li {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--separator);
+}
+
+.event-time,
+.event-operator {
+  color: var(--secondary-label);
+  font-size: .76rem;
+}
+
+.event-main { min-width: 0; }
+.event-action { font-weight: 720; }
+.event-operator { margin-top: 2px; }
+.event-detail { margin-top: 2px; color: var(--secondary-label); font-size: .82rem; overflow-wrap: anywhere; }
+
+.empty {
+  padding: 20px;
+  color: var(--secondary-label);
+}
+
+@media (max-width: 980px) {
+  .site-grid,
+  .login-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .card-head,
+  .worker-health-card,
+  .remote-update-card {
+    grid-template-columns: 1fr;
+  }
+
+  .result-filter {
+    flex: 1 1 120px;
+  }
+
+  .site-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .login-grid,
+  .events li {
+    grid-template-columns: 1fr;
+  }
+
+  .events li {
+    gap: 2px;
+  }
+}
+
+@media (max-width: 430px) {
+  .site-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .task-card {
+    padding: 15px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-report-page button,
+  .task-card {
+    transition: none;
+  }
+
+  .admin-report-page button:active,
+  .task-card:hover {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .version-card,
+  .worker-health-card,
+  .remote-update-card,
+  .task-card,
+  .empty {
+    background: var(--surface-solid);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

@@ -28,6 +28,16 @@ class NasComposeTests(unittest.TestCase):
             build_script,
         )
 
+    def test_nas_package_includes_shared_static_assets(self) -> None:
+        build_script = (PROJECT_ROOT / "scripts" / "build_nas_package.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'foreach ($dir in @("ambulance_bot", "templates", "static"))',
+            build_script,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

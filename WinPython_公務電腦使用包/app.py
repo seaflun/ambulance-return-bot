@@ -832,6 +832,20 @@ def render_disaster_vehicle_settings(*, errors: list[str] | None = None, message
 
 @app.get("/admin/public-pc")
 def admin_public_pc():
+    return render_admin_public_pc()
+
+
+@app.get("/admin/disaster")
+def admin_disaster():
+    return render_admin_public_pc(locked_service="disaster")
+
+
+@app.get("/admin/ems")
+def admin_ems():
+    return render_admin_public_pc(locked_service="ems")
+
+
+def render_admin_public_pc(*, locked_service: str = ""):
     reports = public_pc_reports()
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()
@@ -840,7 +854,7 @@ def admin_public_pc():
     result_filter = str(request.args.get("result") or "all").strip().lower()
     if result_filter not in {"all", "success", "failed"}:
         result_filter = "all"
-    service_filter = str(request.args.get("service") or "all").strip().lower()
+    service_filter = locked_service or str(request.args.get("service") or "all").strip().lower()
     if service_filter not in {"all", "disaster", "ems"}:
         service_filter = "all"
     service_counts = {
@@ -870,6 +884,12 @@ def admin_public_pc():
         result_filter=result_filter,
         service_counts=service_counts,
         service_filter=service_filter,
+        service_filter_locked=bool(locked_service),
+        admin_base_url=request.path,
+        admin_page_title={
+            "disaster": "SinpoSmart - 救災後台",
+            "ems": "SinpoSmart - 救護後台",
+        }.get(locked_service, "SinpoSmart - 救災救護Worker 後台"),
         version_info=worker_admin_version_info(reports),
         worker_health=worker_heartbeat_admin_view(reports),
         worker_health_enabled=worker_health_enabled,
@@ -892,6 +912,11 @@ def admin_public_pc_remote_update():
     if not expected_admin_token or not hmac.compare_digest(supplied_admin_token, expected_admin_token):
         abort(403)
     create_remote_update_command()
+    return_service = str(request.form.get("return_service") or "").strip().lower()
+    if return_service == "disaster":
+        return redirect(url_for("admin_disaster"))
+    if return_service == "ems":
+        return redirect(url_for("admin_ems"))
     return redirect(url_for("admin_public_pc"))
 
 

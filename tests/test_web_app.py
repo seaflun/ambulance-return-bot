@@ -1344,12 +1344,28 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertIn('<html lang="zh-Hant" data-ui="task-console">', body)
+        self.assertIn("<title>SinpoSmart - 救災救護Worker</title>", body)
+        self.assertIn("<h1>SinpoSmart - 救災救護Worker</h1>", body)
+        self.assertIn('href="/static/sinposmart-ui.css"', body)
+        self.assertNotIn("<style>", body)
         self.assertIn("救災登打", body)
         self.assertIn('href="/app/disaster"', body)
         self.assertIn("救護登打", body)
         self.assertIn('href="/app"', body)
         self.assertIn("工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材", body)
         self.assertNotIn("entry-card-action", body)
+
+    def test_shared_ui_stylesheet_supports_touch_and_accessibility_states(self):
+        response = self.client.get("/static/sinposmart-ui.css")
+        try:
+            css = response.data.decode("utf-8")
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn("--control-height: 48px", css)
+            self.assertIn(".button:active", css)
+            self.assertIn("@media (prefers-reduced-motion: reduce)", css)
+        finally:
+            response.close()
 
     def test_task_entry_only_shows_back_button_on_nas(self):
         nas_body = html.unescape(
@@ -1737,13 +1753,21 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn('<html lang="zh-Hant" data-ui="task-console">', body)
         self.assertIn("<title>SinpoSmart</title>", body)
         self.assertIn("<h1>SinpoSmart</h1>", body)
+        self.assertIn('href="/static/sinposmart-ui.css"', body)
+        self.assertIn('class="portal-grid"', body)
+        self.assertEqual(5, body.count('class="choice-card portal-card'))
+        self.assertNotIn("<style>", body)
         self.assertNotIn("救護返隊小幫手", body)
         self.assertIn("值班後台", body)
         self.assertIn('href="/admin/sinposmart"', body)
-        self.assertIn("救災救護後台", body)
-        self.assertIn('href="/admin/public-pc"', body)
+        self.assertIn("救災後台", body)
+        self.assertIn('href="/admin/disaster"', body)
+        self.assertIn("救護後台", body)
+        self.assertIn('href="/admin/ems"', body)
+        self.assertNotIn('href="/admin/public-pc"', body)
         self.assertIn("救災救護登打", body)
         self.assertIn('href="/task-entry"', body)
         self.assertIn("車輛損害管理", body)
@@ -1755,9 +1779,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('rel="noopener noreferrer"', body)
         self.assertNotIn("救護車設定", body)
         self.assertNotIn("查詢案件", body)
-        self.assertIn(".entry-link:focus-visible", body)
-        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr));", body)
-        self.assertIn("transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;", body)
+        self.assertIn("portal-card--duty", body)
+        self.assertIn("portal-card--disaster", body)
+        self.assertIn("portal-card--ems", body)
+        self.assertIn("portal-card--entry", body)
+        self.assertIn("portal-card--vehicle", body)
 
     def test_vehicle_settings_links_are_only_shown_on_nas_pages(self):
         response = self.client.get("/app", headers={"Host": "100.114.126.58:8080"})
@@ -2495,20 +2521,21 @@ class WebAppTests(unittest.TestCase):
         sinposmart_body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
 
         self.assertIn("main { max-width: 960px;", vehicle_body)
-        self.assertIn("main { max-width: 1180px;", public_pc_body)
-        self.assertIn("repeat(auto-fit, minmax(150px, 1fr))", public_pc_body)
-        for body in (vehicle_body, public_pc_body, sinposmart_body):
+        self.assertIn('href="/static/sinposmart-ui.css"', public_pc_body)
+        self.assertIn('href="/static/sinposmart-admin.css"', public_pc_body)
+        self.assertIn('class="app-shell"', public_pc_body)
+        self.assertNotIn("<style>", public_pc_body)
+        for body in (vehicle_body, sinposmart_body):
             self.assertIn("--text-md: 15px;", body)
             self.assertIn("--text-xl: 28px;", body)
             self.assertIn("repeating-linear-gradient", body)
-        for body in (public_pc_body, sinposmart_body):
+        for body in (sinposmart_body,):
             self.assertIn(":focus-visible", body)
             self.assertIn("transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;", body)
             self.assertIn("border-radius: 8px;", body)
             self.assertIn("body {", body)
             self.assertIn("min-height: 100vh;", body)
-        for body in (vehicle_body, public_pc_body):
-            self.assertIn(".secondary { background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }", body)
+        self.assertIn(".secondary { background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }", vehicle_body)
 
     def test_nas_admin_pages_return_to_nas_home(self):
         for path in ("/admin/public-pc", "/admin/sinposmart"):
@@ -3880,6 +3907,65 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('href="/admin/public-pc?service=disaster&result=success"', body)
         self.assertLess(body.index("救災案件"), body.index("顯示全部"))
 
+    def test_split_admin_pages_lock_service_and_keep_result_filter_paths(self):
+        for task_id, title, service_type in (
+            ("ems-split", "救護分頁樣本", "ems"),
+            ("disaster-split", "救災分頁樣本", "disaster"),
+        ):
+            app_module.upsert_public_pc_report(
+                {
+                    "event_id": f"evt-{task_id}",
+                    "task_id": task_id,
+                    "title": title,
+                    "task": {
+                        "task_id": task_id,
+                        "service_type": service_type,
+                        "case_reason": title,
+                        "case_address": "桃園市觀音區",
+                    },
+                    "overall_status": "desktop_fast_completed",
+                    "site_statuses": {
+                        "duty_work_log": {"status": "duty_work_log_saved"},
+                        "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                    },
+                }
+            )
+
+        disaster_body = html.unescape(self.client.get("/admin/disaster").data.decode("utf-8"))
+        ems_body = html.unescape(self.client.get("/admin/ems").data.decode("utf-8"))
+
+        self.assertIn("SinpoSmart - 救災後台", disaster_body)
+        self.assertIn('href="/static/sinposmart-ui.css"', disaster_body)
+        self.assertIn('href="/static/sinposmart-admin.css"', disaster_body)
+        self.assertNotIn("<style>", disaster_body)
+        self.assertIn("救災分頁樣本", disaster_body)
+        self.assertNotIn("救護分頁樣本", disaster_body)
+        self.assertIn('href="/admin/disaster?result=success"', disaster_body)
+        self.assertNotIn('aria-label="救災救護分類"', disaster_body)
+        self.assertIn("SinpoSmart - 救護後台", ems_body)
+        self.assertIn("救護分頁樣本", ems_body)
+        self.assertNotIn("救災分頁樣本", ems_body)
+        self.assertIn('href="/admin/ems?result=failed"', ems_body)
+        self.assertNotIn('aria-label="救災救護分類"', ems_body)
+
+    def test_split_admin_remote_update_returns_to_origin_page(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        page = html.unescape(self.client.get("/admin/disaster").data.decode("utf-8"))
+        self.assertIn('name="return_service" value="disaster"', page)
+
+        response = self.client.post(
+            "/admin/public-pc/remote-update",
+            data={
+                "csrf_token": app_module.remote_update_csrf_token(),
+                "admin_token": "test-admin-token",
+                "return_service": "disaster",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(302, response.status_code)
+        self.assertEqual("/admin/disaster", response.headers["Location"])
+
     def test_admin_public_pc_shows_remote_update_card_only_on_nas(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -3931,10 +4017,14 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<section class="remote-update-card"', body)
 
     def test_admin_public_pc_remote_update_meta_wraps_on_mobile(self):
-        body = self.client.get("/admin/public-pc").data.decode("utf-8")
-
-        self.assertIn(".remote-update-meta span {", body)
-        self.assertIn("overflow-wrap: anywhere", body)
+        response = self.client.get("/static/sinposmart-admin.css")
+        try:
+            css = response.data.decode("utf-8")
+            self.assertEqual(200, response.status_code)
+            self.assertIn(".remote-update-meta span {", css)
+            self.assertIn("overflow-wrap: anywhere", css)
+        finally:
+            response.close()
 
     def test_admin_public_pc_shows_site_diagnostics(self):
         os.environ["WORKER_TOKEN"] = "test-token"
