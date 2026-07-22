@@ -2840,6 +2840,20 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIn("includes('火災')", driver.script)
         self.assertIn("summary_type:", driver.script)
 
+    def test_extract_emergency_cases_includes_disaster_rescue_cases(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                self.script = script
+                return [{"case_id": "20260722170000001", "category": "災害搶救-輸電線路災害", "reason": "輸電線路災害"}]
+
+        driver = FakeDriver()
+        cases = selenium_local_module._extract_emergency_cases(driver)
+
+        self.assertEqual(cases[0]["category"], "災害搶救-輸電線路災害")
+        self.assertEqual(cases[0]["reason"], "輸電線路災害")
+        self.assertIn("includes('災害搶救')", driver.script)
+        self.assertIn("category.includes('災害搶救') ? '災害搶救'", driver.script)
+
     def test_extract_emergency_cases_includes_salvaged_body_as_drowning(self):
         class FakeDriver:
             def execute_script(self, script):

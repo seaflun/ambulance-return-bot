@@ -118,6 +118,16 @@ DISASTER_REASON_OPTIONS = [
     "地下建築物", "臨時屋(含工寮、樣品屋、雞舍等無門牌之建築物)", "機關、學校(軍公教辦公廳舍、宿舍)",
     "山林", "工廠及倉庫(含石化工業設備設施)", "爆炸",
 ]
+DISASTER_RESCUE_REASON_OPTIONS = [
+    "輸電線路災害",
+    "溺水",
+    "公用氣體及油類管路災害",
+]
+DISASTER_REASON_OPTIONS_BY_TYPE = {
+    "火災": DISASTER_REASON_OPTIONS,
+    "災害搶救": DISASTER_RESCUE_REASON_OPTIONS,
+    "救護": CASE_REASON_OPTIONS,
+}
 DISASTER_ACTION_PACKAGES = [
     "中途取消", "到場不需支援", "誤報／警報器誤動作", "到達現場時火勢已熄滅", "到達現場未發現火煙",
     "出一水線執行滅火攻擊", "執行殘火處理", "現場待命", "協助布署／收拾水帶", "水源供給／中繼",
@@ -847,6 +857,13 @@ def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
             )
         )
     primary = entries[0] if entries else VehicleEntry(return_date=case_date, return_time=case_return_time)
+    summary_type = str(form.get("summary_type") or "").strip()
+    case_reason = str(form.get("case_reason") or "").strip()
+    recorder_category = str(form.get("recorder_category") or "").strip()
+    recorder_subcategory = str(form.get("recorder_subcategory") or "").strip()
+    if summary_type == "火災" and case_reason == "誤(謊)報":
+        recorder_category = "轄內其他案件"
+        recorder_subcategory = "誤報"
     return AmbulanceReturnRequest(
         task_id=new_task_id(),
         created_at=datetime.now(),
@@ -864,18 +881,18 @@ def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         return_time=case_return_time,
         case_address=clean_case_address(str(form.get("case_address") or "")),
         patient_summary="無",
-        case_reason=str(form.get("case_reason") or "").strip(),
+        case_reason=case_reason,
         disinfection_items=[],
         consumables={},
         vehicle_entries=entries,
         fuel_record=FuelRecord.from_dict(primary.fuel_record),
         duty_item=str(form.get("duty_item") or "火警").strip() or "火警",
-        summary_type=str(form.get("summary_type") or "").strip(),
+        summary_type=summary_type,
         commander=str(form.get("commander") or "").strip(),
         action_note=str(form.get("action_note") or "").strip(),
         reason_other=str(form.get("reason_other") or "").strip(),
-        recorder_category=str(form.get("recorder_category") or "").strip(),
-        recorder_subcategory=str(form.get("recorder_subcategory") or "").strip(),
+        recorder_category=recorder_category,
+        recorder_subcategory=recorder_subcategory,
     )
 
 

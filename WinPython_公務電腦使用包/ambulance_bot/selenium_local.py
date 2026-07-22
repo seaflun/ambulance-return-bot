@@ -3799,8 +3799,8 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
       const cells = Array.from(row.querySelectorAll('td, th')).map(textOf).filter(Boolean);
       const joined = cells.join(' ');
       const isSalvagedBody = joined.includes('其他-打撈浮屍');
-      const isEmergencyOrFire = joined.includes('緊急救護') || joined.includes('火災') || isSalvagedBody;
-      if (!isEmergencyOrFire) continue;
+      const isSupportedCase = joined.includes('緊急救護') || joined.includes('火災') || joined.includes('災害搶救') || isSalvagedBody;
+      if (!isSupportedCase) continue;
       const caseId = cells[0] || '';
       if (!/^\\d{17}$/.test(caseId)) continue;
       const choose = Array.from(row.querySelectorAll('input, button, a')).find(el => {
@@ -3809,8 +3809,8 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
       });
       const chooseDataMatch = String(choose ? (choose.getAttribute('onclick') || '') : '').match(/choose\\('([\\s\\S]*)'\\)/);
       const chooseParts = chooseDataMatch ? chooseDataMatch[1].split('(^w^)') : [];
-      const category = cells.find(cell => cell.includes('緊急救護') || cell.includes('火災') || cell.includes('其他-打撈浮屍')) || '';
-      if (!category.startsWith('緊急救護') && !category.includes('火災') && !category.includes('其他-打撈浮屍')) continue;
+      const category = cells.find(cell => cell.includes('緊急救護') || cell.includes('火災') || cell.includes('災害搶救') || cell.includes('其他-打撈浮屍')) || '';
+      if (!category.startsWith('緊急救護') && !category.includes('火災') && !category.includes('災害搶救') && !category.includes('其他-打撈浮屍')) continue;
       const reason = isSalvagedBody ? '溺水' : (category.includes('-') ? category.split('-').slice(1).join('-').trim() : (category.includes('火災') ? '火災' : ''));
       const personnelRaw = chooseParts[34] || '';
       cases.push({
@@ -3828,7 +3828,7 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
         case_date: chooseParts[1] || '',
         case_time_h: chooseParts[2] || '',
         case_time_m: chooseParts[3] || '',
-        summary_type: chooseParts[5] || (category.includes('火災') ? '火災' : ''),
+        summary_type: category.includes('災害搶救') ? '災害搶救' : (category.includes('火災') ? '火災' : (category.includes('緊急救護') ? '救護' : '')),
         description: chooseParts.length ? ['119案件', chooseParts[5] || '', `返隊時間:${chooseParts[35] || ''}`, `地點:${chooseParts[8] || ''}`].join('\\n') : '',
         personnel_raw: personnelRaw,
         personnel_hidden_raw: chooseParts[33] || '',

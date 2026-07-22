@@ -105,6 +105,7 @@
     .field-visual.has-error .field-error-mark { display: inline; }
     .vehicle-card { margin-top: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
     .vehicle-card > .section-head { margin-bottom: 14px; }
+    .case-time-field { display: grid; grid-template-columns: minmax(0, 1fr) 108px; gap: 10px; align-items: end; }
     .time-field { display: grid; grid-template-columns: minmax(0, 1fr) 52px; gap: 10px; align-items: end; }
     .time-field button { width: 52px; min-width: 52px; min-height: 46px; margin-top: 6px; padding: 0; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; }
     .check-item { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 46px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
@@ -129,6 +130,7 @@
       .header-actions { flex-wrap: nowrap; max-width: 68%; }
       .header-actions .button { flex: 0 0 auto; min-height: 38px; padding: 0 12px; font-size: var(--text-sm); }
       .grid { grid-template-columns: 1fr; gap: 8px; }
+      .case-time-field { grid-template-columns: 1fr; }
       .full { grid-column: auto; }
       .address-row { grid-column: auto; grid-template-columns: minmax(0, 1fr) 84px; }
       .clear-button { padding: 0 12px; }
@@ -178,6 +180,9 @@
   {% set task_form_enabled = selected_case.case_id %}
   {% if task_form_enabled %}
   {% set disaster_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [{}] %}
+  {% set selected_summary_type = selected_case.summary_type if selected_case.summary_type in disaster_reason_options_by_type else '火災' %}
+  {% set selected_reason = selected_case.reason or selected_case.case_reason or '' %}
+  {% set selected_reason_options = disaster_reason_options_by_type[selected_summary_type] %}
   <form method="post" action="{{ form_action }}" id="disaster-form" autocomplete="off" novalidate>
     {% if form_errors %}
       <div class="form-errors" role="alert"><ul>{% for error in form_errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
@@ -192,15 +197,14 @@
           <label class="field-visual{% if not (selected_case.address or selected_case.case_address) %} is-pending{% endif %}" data-required-message="請填寫案件地址"><span class="field-label-title">案件地址<span class="field-error-mark" aria-hidden="true">*</span></span><input name="case_address" value="{{ selected_case.address or selected_case.case_address or '' }}" required></label>
           <button class="clear-button" type="submit" formaction="/cases/clear" formmethod="post" formnovalidate>清除</button>
         </div>
-        <label class="field-visual{% if not (selected_case.case_time_hhmm or selected_case.case_time) %} is-pending{% endif %}" data-required-message="請填寫正確案件時間"><span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span><input name="case_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ selected_case.case_time_hhmm or selected_case.case_time or '' }}" required></label>
+        <label class="field-visual{% if not selected_case_date_input(selected_case) or not (selected_case.case_time_hhmm or selected_case.case_time) %} is-pending{% endif %}" data-required-message="請填寫正確案件日期與時間"><span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="case-time-field"><input type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_case_date_input(selected_case) }}" required><input name="case_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ selected_case.case_time_hhmm or selected_case.case_time or '' }}" required></div></label>
         <label class="field-visual{% if not selected_return_time_input(selected_case) %} is-pending{% endif %}" data-required-message="請填寫正確返隊時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field"><input name="return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ selected_return_time_input(selected_case) }}" required><button type="button" id="now-time" aria-label="帶入現在時間">◷</button></div></label>
-        <label class="field-visual" data-required-message="請選擇正確案件類型"><span class="field-label-title">案件類型<span class="field-error-mark" aria-hidden="true">*</span></span><select name="summary_type" required><option value="火災"{% if selected_case.summary_type in ['', '火災'] %} selected{% endif %}>火災</option><option value="災害搶救"{% if selected_case.summary_type == '災害搶救' %} selected{% endif %}>災害搶救</option><option value="其他"{% if selected_case.summary_type == '其他' %} selected{% endif %}>其他</option></select></label>
-        <label class="field-visual{% if not (selected_case.reason or selected_case.case_reason) %} is-pending{% endif %}" data-required-message="請選擇正確事由"><span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span><select name="case_reason" id="case-reason" required><option value="">請選擇</option>{% for reason in disaster_reason_options %}<option value="{{ reason }}"{% if (selected_case.reason or selected_case.case_reason) == reason %} selected{% endif %}>{{ reason }}</option>{% endfor %}</select></label>
+        <label class="field-visual" data-required-message="請選擇正確案件類型"><span class="field-label-title">案件類型<span class="field-error-mark" aria-hidden="true">*</span></span><select name="summary_type" required><option value="火災"{% if selected_summary_type == '火災' %} selected{% endif %}>火災</option><option value="災害搶救"{% if selected_summary_type == '災害搶救' %} selected{% endif %}>災害搶救</option><option value="救護"{% if selected_summary_type == '救護' %} selected{% endif %}>救護</option></select></label>
+        <label class="field-visual{% if not selected_reason %} is-pending{% endif %}" data-required-message="請選擇正確事由"><span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span><select name="case_reason" id="case-reason" required><option value="">請選擇</option>{% for reason in selected_reason_options %}<option value="{{ reason }}"{% if selected_reason == reason %} selected{% endif %}>{{ reason }}</option>{% endfor %}{% if selected_reason and selected_reason not in selected_reason_options %}<option value="{{ selected_reason }}" selected>{{ selected_reason }}</option>{% endif %}</select></label>
         <label class="field-visual{% if not selected_case.commander %} is-pending{% endif %}" data-required-message="請選擇指揮官"><span class="field-label-title">指揮官<span class="field-error-mark" aria-hidden="true">*</span></span><select name="commander" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if selected_case.commander == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
-        <label class="field-visual full{% if (selected_case.reason or selected_case.case_reason) == '其他' and not selected_case.reason_other %} is-pending{% endif %}" id="reason-other-field" data-required-message="事由選擇其他時請填寫說明"{% if (selected_case.reason or selected_case.case_reason) != '其他' %} hidden{% endif %}><span class="field-label-title">其他事由說明<span class="field-error-mark" aria-hidden="true">*</span></span><input name="reason_other" value="{{ selected_case.reason_other or '' }}"></label>
+        <label class="field-visual full{% if selected_summary_type == '火災' and selected_reason == '其他' and not selected_case.reason_other %} is-pending{% endif %}" id="reason-other-field" data-required-message="事由選擇其他時請填寫說明"{% if selected_summary_type != '火災' or selected_reason != '其他' %} hidden{% endif %}><span class="field-label-title">其他事由說明<span class="field-error-mark" aria-hidden="true">*</span></span><input name="reason_other" value="{{ selected_case.reason_other or '' }}"></label>
       </div>
       <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
-      <input type="hidden" name="case_date" value="{{ selected_case_date_input(selected_case) }}">
       <input type="hidden" name="personnel" value="{{ (selected_case.personnel or [])|join(',') if selected_case.personnel is not string else selected_case.personnel }}">
       <input type="hidden" name="personnel_accounts" value="{{ (selected_case.personnel_accounts or [])|join(',') if selected_case.personnel_accounts is not string else selected_case.personnel_accounts }}">
     </section>
@@ -235,7 +239,9 @@
       <h2>將建立的 NAS 資料夾名稱</h2>
       <div class="grid">
         <label class="field-visual{% if not selected_case.recorder_category %} is-pending{% endif %}" data-required-message="請選擇行車紀錄器分類"><span class="field-label-title">行車紀錄器分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_category" id="recorder-category" required><option value="">請選擇</option>{% for category in ['轄內A2','轄內A3','轄內其他案件','支援他轄'] %}<option value="{{ category }}"{% if selected_case.recorder_category == category %} selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
-        <label class="field-visual{% if selected_case.recorder_category == '轄內其他案件' and not selected_case.recorder_subcategory %} is-pending{% endif %}" id="subcategory-field" data-required-message="請選擇轄內其他案件子分類"{% if selected_case.recorder_category != '轄內其他案件' %} hidden{% endif %}><span class="field-label-title">子分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_subcategory"><option value="">請選擇</option>{% for subcategory in ['其他','溺水','破門','警報器誤動作','車禍救助','輸電線災害','電梯受困','電線桿災害'] %}<option value="{{ subcategory }}"{% if selected_case.recorder_subcategory == subcategory %} selected{% endif %}>{{ subcategory }}</option>{% endfor %}</select></label>
+        <input type="hidden" name="recorder_category" id="locked-recorder-category" value="轄內其他案件" disabled>
+        <label class="field-visual{% if selected_case.recorder_category == '轄內其他案件' and not selected_case.recorder_subcategory %} is-pending{% endif %}" id="subcategory-field" data-required-message="請選擇轄內其他案件子分類"{% if selected_case.recorder_category != '轄內其他案件' %} hidden{% endif %}><span class="field-label-title">子分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_subcategory"><option value="">請選擇</option>{% for subcategory in ['其他','誤報','溺水','破門','警報器誤動作','車禍救助','輸電線災害','電梯受困','電線桿災害'] %}<option value="{{ subcategory }}"{% if selected_case.recorder_subcategory == subcategory %} selected{% endif %}>{{ subcategory }}</option>{% endfor %}</select></label>
+        <input type="hidden" name="recorder_subcategory" id="locked-recorder-subcategory" value="誤報" disabled>
         <div class="folder-preview-output"><div data-folder-empty>請先完成案件與車輛資料。</div><ul data-folder-list></ul></div>
       </div>
     </section>
@@ -263,25 +269,50 @@
   const form = document.getElementById('disaster-form');
   const list = document.getElementById('vehicle-list');
   const topReturn = form.elements.return_time;
+  const summaryType = form.elements.summary_type;
   const category = document.getElementById('recorder-category');
   const reason = document.getElementById('case-reason');
+  const reasonOptionsByType = {{ disaster_reason_options_by_type | tojson }};
+  const lockedCategory = document.getElementById('locked-recorder-category');
+  const lockedSubcategory = document.getElementById('locked-recorder-subcategory');
   const folderPreview = document.getElementById('disaster-folder-preview');
   const clientFormErrors = document.getElementById('client-form-errors');
   function hhmmNow(){ const now=new Date(); return String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0'); }
   document.getElementById('now-time').addEventListener('click',()=>{ topReturn.value=hhmmNow(); list.querySelectorAll('[name="vehicle_return_time"]').forEach(input=>{if(!input.value) input.value=topReturn.value;}); });
   topReturn.addEventListener('change',()=>list.querySelectorAll('[name="vehicle_return_time"]').forEach(input=>{if(!input.value) input.value=topReturn.value;}));
+  function updateReasonOptions(){
+    const options=reasonOptionsByType[summaryType.value]||[];
+    reason.innerHTML='<option value="">請選擇</option>'+options.map(value=>`<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('');
+    reason.value='';
+  }
   function updateConditionalFields(){
     const subcategoryField=document.getElementById('subcategory-field');
     const subcategoryInput=subcategoryField.querySelector('select');
+    const falseAlarm=summaryType.value==='火災'&&reason.value==='誤(謊)報';
+    if(falseAlarm){
+      category.value='轄內其他案件';
+      subcategoryInput.value='誤報';
+      category.disabled=true;
+      subcategoryInput.disabled=true;
+      lockedCategory.disabled=false;
+      lockedSubcategory.disabled=false;
+    }else{
+      category.disabled=false;
+      subcategoryInput.disabled=false;
+      lockedCategory.disabled=true;
+      lockedSubcategory.disabled=true;
+    }
     subcategoryField.hidden=category.value!=='轄內其他案件';
     subcategoryInput.required=category.value==='轄內其他案件';
     const otherField=document.getElementById('reason-other-field');
-    otherField.hidden=reason.value!=='其他';
-    otherField.querySelector('input').required=reason.value==='其他';
+    const fireOther=summaryType.value==='火災'&&reason.value==='其他';
+    otherField.hidden=!fireOther;
+    otherField.querySelector('input').required=fireOther;
     updateRequiredHints();
   }
   category.addEventListener('change',updateConditionalFields);
   reason.addEventListener('change',updateConditionalFields);
+  summaryType.addEventListener('change',()=>{updateReasonOptions();updateConditionalFields();});
   function updateFuelTotal(card){
     const q=Number(card.querySelector('[name="fuel_quantity"]').value||0);
     const p=Number(card.querySelector('[name="fuel_unit_price"]').value||0);

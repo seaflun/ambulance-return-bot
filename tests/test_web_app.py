@@ -1520,7 +1520,91 @@ class WebAppTests(unittest.TestCase):
             "/cases/import",
             data={"return_to": "disaster", "case_id": "fire-1"},
         )
-        self.assertEqual("/app/disaster#task-form", imported.headers["Location"])
+        self.assertEqual("/app/disaster#disaster-form", imported.headers["Location"])
+
+    def test_disaster_form_shows_full_case_date_and_type_specific_reasons(self):
+        self.import_case_for_form(
+            {
+                "case_id": "rescue-reasons",
+                "case_date": "2026/07/22",
+                "case_time_hhmm": "1207",
+                "return_time_hhmm": "1300",
+                "address": "桃園市觀音區",
+                "category": "災害搶救-輸電線路災害",
+                "summary_type": "災害搶救",
+                "reason": "輸電線路災害",
+                "personnel": ["甲"],
+            }
+        )
+
+        body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn('name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="2026/07/22"', body)
+        self.assertIn('<option value="救護">救護</option>', body)
+        summary_select = body[body.index('<select name="summary_type"'):]
+        summary_select = summary_select[:summary_select.index("</select>")]
+        self.assertNotIn('<option value="其他">其他</option>', summary_select)
+        self.assertIn('<option value="輸電線路災害" selected>輸電線路災害</option>', body)
+        self.assertIn('<option value="溺水">溺水</option>', body)
+        self.assertIn('<option value="公用氣體及油類管路災害">公用氣體及油類管路災害</option>', body)
+        self.assertIn("summaryType.addEventListener('change'", body)
+
+    def test_disaster_import_normalizes_ems_case_type_and_keeps_lookup_reason(self):
+        self.import_case_for_form(
+            {
+                "case_id": "ems-in-disaster",
+                "case_date": "2026/07/22",
+                "case_time_hhmm": "1207",
+                "return_time_hhmm": "1300",
+                "address": "桃園市觀音區",
+                "category": "緊急救護-特殊救護事由",
+                "reason": "特殊救護事由",
+                "personnel": ["甲"],
+            }
+        )
+
+        body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn('<option value="救護" selected>救護</option>', body)
+        self.assertIn('<option value="特殊救護事由" selected>特殊救護事由</option>', body)
+
+    def test_disaster_false_alarm_locks_recorder_folder_to_false_alarm_subcategory(self):
+        self.import_case_for_form(
+            {
+                "case_id": "fire-false-alarm",
+                "case_date": "2026/07/22",
+                "case_time_hhmm": "1207",
+                "return_time_hhmm": "1300",
+                "address": "桃園市觀音區",
+                "category": "火災-誤(謊)報",
+                "summary_type": "火災",
+                "reason": "誤(謊)報",
+                "personnel": ["甲"],
+            }
+        )
+
+        body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn('<option value="誤報">誤報</option>', body)
+        self.assertIn("const falseAlarm=summaryType.value==='火災'&&reason.value==='誤(謊)報';", body)
+        self.assertIn("category.value='轄內其他案件';", body)
+        self.assertIn("subcategoryInput.value='誤報';", body)
+        self.assertIn("category.disabled=false;", body)
+
+    def test_disaster_task_accepts_rescue_and_ems_case_types(self):
+        base = [
+            ("case_date", "2026/07/22"), ("case_time", "1207"),
+            ("return_time", "1300"), ("case_address", "桃園市觀音區"),
+            ("personnel", "甲"), ("commander", "甲"), ("action_note", "現場處理"),
+            ("recorder_category", "轄內A3"),
+            ("vehicle", "新坡11"), ("driver", "甲"), ("vehicle_return_time", "1300"), ("mileage", "100"),
+        ]
+        for case_id, summary_type, reason in (("RESCUE-TYPE", "災害搶救", "輸電線路災害"), ("EMS-TYPE", "救護", "特殊救護事由")):
+            with self.subTest(summary_type=summary_type):
+                data = MultiDict(base + [("case_id", case_id), ("summary_type", summary_type), ("case_reason", reason)])
+                with mock.patch.object(app_module, "ensure_disaster_record_folders", return_value=[]):
+                    response = self.client.post("/tasks/disaster", data=data, follow_redirects=False)
+                self.assertEqual(302, response.status_code)
 
     def test_disaster_vehicle_settings_page_saves_recorder_code(self):
         nas_headers = {"Host": "100.114.126.58:8080"}

@@ -60,6 +60,7 @@ from ambulance_bot.models import (
     DEFAULT_CONSUMABLES,
     DISASTER_ACTION_PACKAGES,
     DISASTER_REASON_OPTIONS,
+    DISASTER_REASON_OPTIONS_BY_TYPE,
     DISINFECTION_ITEM_OPTIONS,
     PERSON_OPTIONS,
     example_command,
@@ -264,6 +265,7 @@ def disaster_task():
         person_options=person_options,
         vehicle_options=effective_disaster_vehicle_options(),
         disaster_reason_options=DISASTER_REASON_OPTIONS,
+        disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
         disaster_action_packages=DISASTER_ACTION_PACKAGES,
         form_errors=[],
     )
@@ -325,7 +327,8 @@ def import_case():
         abort(400)
     if not write_selected_case_from_lookup(case_id):
         abort(404)
-    return redirect(task_form_url(anchor="task-form"))
+    anchor = "disaster-form" if str(request.form.get("return_to") or "").strip() == "disaster" else "task-form"
+    return redirect(task_form_url(anchor=anchor))
 
 
 @app.post("/cases/clear")
@@ -377,6 +380,7 @@ def create_disaster_task():
             person_options=person_options_from_personnel(task_request.personnel),
             vehicle_options=effective_disaster_vehicle_options(),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
+            disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
             disaster_action_packages=DISASTER_ACTION_PACKAGES,
             form_errors=errors,
         ), 400
@@ -398,6 +402,7 @@ def create_disaster_task():
             person_options=person_options_from_personnel(task_request.personnel),
             vehicle_options=effective_disaster_vehicle_options(),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
+            disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
             disaster_action_packages=DISASTER_ACTION_PACKAGES,
             form_errors=[f"行車紀錄器資料夾建立失敗：{exc}"],
         ), 400
@@ -4066,6 +4071,16 @@ def write_selected_case_from_lookup(case_id: str) -> bool:
     if selected is None:
         return False
     selected["address"] = clean_case_address(str(selected.get("address") or ""))
+    category_text = " ".join(
+        str(selected.get(key) or "")
+        for key in ("category", "case_type", "title", "summary_type")
+    )
+    if "災害搶救" in category_text or "其他-打撈浮屍" in category_text:
+        selected["summary_type"] = "災害搶救"
+    elif "火災" in category_text:
+        selected["summary_type"] = "火災"
+    elif "救護" in category_text:
+        selected["summary_type"] = "救護"
 
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -4305,11 +4320,16 @@ def validate_disaster_task_form(task_request) -> list[str]:
         errors.append("請填寫正確返隊時間")
     if not task_request.case_address.strip():
         errors.append("請填寫案件地址")
-    if task_request.summary_type not in {"火災", "災害搶救", "其他"}:
+    if task_request.summary_type not in {"火災", "災害搶救", "救護"}:
         errors.append("請選擇正確案件類型")
-    if task_request.case_reason not in DISASTER_REASON_OPTIONS:
+    valid_reasons = DISASTER_REASON_OPTIONS_BY_TYPE.get(task_request.summary_type)
+    if not task_request.case_reason or (
+        task_request.summary_type != "救護"
+        and valid_reasons is not None
+        and task_request.case_reason not in valid_reasons
+    ):
         errors.append("請選擇正確事由")
-    if task_request.case_reason == "其他" and not task_request.reason_other.strip():
+    if task_request.summary_type == "火災" and task_request.case_reason == "其他" and not task_request.reason_other.strip():
         errors.append("事由選擇其他時請填寫說明")
     if not task_request.commander.strip():
         errors.append("請選擇指揮官")

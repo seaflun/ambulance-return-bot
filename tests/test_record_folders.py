@@ -46,6 +46,22 @@ class RecordFolderTests(unittest.TestCase):
         self.assertEqual(("115年", "A2"), path.parts[-3:-1])
         self.assertNotIn("轄內A2", str(path))
 
+    def test_fire_false_alarm_creates_false_alarm_subcategory_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            request = self.disaster_request(
+                case_reason="誤(謊)報",
+                recorder_category="轄內其他案件",
+                recorder_subcategory="誤報",
+                vehicle_entries=[VehicleEntry(vehicle="新坡11", driver="甲")],
+            )
+
+            result = ensure_disaster_record_folders(request, Path(tmp))[0]
+
+            self.assertEqual("created", result.status)
+            self.assertEqual(("115年", "轄內其他案件", "誤報"), result.path.parts[-4:-1])
+            self.assertIn("(誤報)-11", result.path.name)
+            self.assertTrue(result.path.is_dir())
+
     def test_existing_disaster_directory_is_reused_without_copy_suffix(self):
         with tempfile.TemporaryDirectory() as tmp:
             request = self.disaster_request(vehicle_entries=[VehicleEntry(vehicle="新坡11", driver="甲")])
