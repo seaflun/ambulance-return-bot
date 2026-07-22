@@ -299,11 +299,17 @@
     </header>
 
     {% block content %}
+    {% if version_info or worker_health_enabled or remote_update_enabled %}
+      <section class="system-overview-card" aria-label="系統狀態">
+        <div class="system-overview-head">
+          <h2>系統狀態</h2>
+        </div>
+        <div class="system-overview-grid">
     {% if version_info %}
       <section class="version-card" aria-label="系統版本">
-        <div class="version-label">系統版本</div>
+        <div class="version-label">NAS 後台版本</div>
         <div class="version-value">{{ version_info.label }}｜{{ version_info.version }}</div>
-        {% if version_info.detail %}
+        {% if version_info.detail and version_info.detail != 'NAS 後台' %}
           <div class="meta">{{ version_info.detail }}</div>
         {% endif %}
       </section>
@@ -358,6 +364,9 @@
             {% if remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
           </button>
         </form>
+      </section>
+    {% endif %}
+        </div>
       </section>
     {% endif %}
 

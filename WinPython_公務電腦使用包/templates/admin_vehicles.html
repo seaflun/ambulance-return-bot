@@ -125,12 +125,14 @@
       .button { width: 100%; }
     }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
 </head>
-<body>
+<body class="workspace-page workspace-page--settings workspace-page--ems-settings">
   <main>
     <header>
       <h1>救護車設定</h1>
-      <a class="button secondary" href="/app">返回首頁</a>
+      <a class="button secondary" href="/app">返回救護登打</a>
     </header>
 
     <form method="post" action="/admin/vehicles">

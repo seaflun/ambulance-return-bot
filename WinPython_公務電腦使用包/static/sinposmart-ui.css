@@ -354,10 +354,21 @@ h1 {
   }
 
   .app-header {
+    align-items: stretch;
+    flex-direction: column;
     min-height: 68px;
     margin-bottom: 26px;
     padding: 12px 14px;
     border-radius: var(--radius-medium);
+  }
+
+  .app-header__copy,
+  .header-actions {
+    width: 100%;
+  }
+
+  .header-actions .button {
+    width: 100%;
   }
 
   .app-header__eyebrow {

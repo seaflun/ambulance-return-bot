@@ -6,6 +6,7 @@ from pathlib import Path
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
 from ambulance_bot.login_audit import (
     consumables_login_audit,
+    disinfection_login_audit,
     duty_work_log_login_audit,
     fuel_record_login_audit,
     mask_login_account,
@@ -63,7 +64,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = duty_work_log_login_audit(request)
 
-        self.assertIn("工作=任務司機優先", audit)
+        self.assertIn("工作=任務司機 > 出勤人員 > 同步帳號，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
         self.assertNotIn("21番 張家和 - tyfd01317", audit)
 
@@ -77,7 +78,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = consumables_login_audit()
 
-        self.assertIn("耗材=公務電腦同步帳號", audit)
+        self.assertIn("耗材=任務司機 > 出勤人員 > 同步帳號，同步帳號", audit)
         self.assertIn("21番 張家和 - S124***209", audit)
         self.assertNotIn("S124774209", audit)
         self.assertNotIn("ACS 環境設定", audit)
@@ -147,6 +148,42 @@ class LoginAuditTests(unittest.TestCase):
 
         self.assertIn("加油=任務司機 > 出勤人員 > 同步帳號，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
+
+    def test_all_site_audits_use_the_same_login_priority_wording(self):
+        save_duty_automation_credentials(
+            [
+                {
+                    "actor_no": "12",
+                    "name": "王昱勛",
+                    "user_id": "tyfd01987",
+                    "id_number": "S124774209",
+                    "password": "pw",
+                }
+            ],
+            last_selected="tyfd01987",
+        )
+        request = AmbulanceReturnRequest(
+            task_id="task-unified-audit",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            driver="王昱勛",
+            personnel=["王昱勛"],
+            personnel_accounts=["tyfd01987"],
+        )
+
+        audits = {
+            "工作": duty_work_log_login_audit(request),
+            "里程": vehicle_mileage_login_audit(request),
+            "加油": fuel_record_login_audit(request),
+            "消毒": disinfection_login_audit(request),
+            "耗材": consumables_login_audit(),
+        }
+
+        for site, audit in audits.items():
+            with self.subTest(site=site):
+                self.assertIn(f"{site}=任務司機 > 出勤人員 > 同步帳號", audit)
+                self.assertNotIn("任務司機優先", audit)
+                self.assertNotIn("公務電腦同步帳號", audit)
 
     def test_mask_login_account_only_masks_id_number_style(self):
         self.assertEqual(mask_login_account("S124774209"), "S124***209")

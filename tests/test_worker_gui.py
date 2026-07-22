@@ -174,11 +174,12 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertTrue(active)
         marker_health.assert_called_once_with()
 
-    def test_gui_theme_uses_pastel_orange_white_and_deep_navy(self):
-        self.assertEqual(worker_gui.GUI_THEME["bg"], "#fff7ef")
+    def test_gui_theme_matches_shared_apple_design_palette(self):
+        self.assertEqual(worker_gui.GUI_THEME["bg"], "#f5f5f7")
         self.assertEqual(worker_gui.GUI_THEME["surface"], "#ffffff")
-        self.assertEqual(worker_gui.GUI_THEME["accent"], "#f08a4b")
-        self.assertEqual(worker_gui.GUI_THEME["ink"], "#10233f")
+        self.assertEqual(worker_gui.GUI_THEME["surface_soft"], "#f2f2f7")
+        self.assertEqual(worker_gui.GUI_THEME["accent"], "#0f766e")
+        self.assertEqual(worker_gui.GUI_THEME["ink"], "#1d1d1f")
 
     def test_worker_gui_status_and_card_label_backgrounds_match_root(self):
         source = Path(worker_gui.__file__).read_text(encoding="utf-8")
@@ -189,7 +190,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertNotIn('text="救護回程小幫手"', source)
         self.assertIn('self.configure(fg_color=theme["bg"])', source)
         self.assertIn('fg_color=theme["status_bg"]', source)
-        self.assertIn("corner_radius=14", source)
+        self.assertIn("corner_radius=18", source)
         self.assertIn("ctk.CTkTextbox", source)
         self.assertIn('self._card(top_area, "本地伺服器")', source)
         self.assertIn('self._card(top_area, "NAS伺服器")', source)

@@ -86,8 +86,11 @@ def consumables_login_summary() -> str:
 def duty_work_log_login_audit(request: AmbulanceReturnRequest) -> str:
     credential = load_duty_credential(request.duty_login_account_candidates)
     if credential is None:
-        return "登入帳號：工作=任務司機優先，未取得可用帳號"
-    return f"登入帳號：工作=任務司機優先，{credential_public_label(credential)}"
+        return f"登入帳號：工作={PPE_LOGIN_PRIORITY_LABEL}，未取得可用帳號"
+    selected_credential, source = _ppe_login_credential_choice(request)
+    if selected_credential is None or selected_credential.user_id != credential.user_id:
+        source = "同步帳號"
+    return f"登入帳號：工作={PPE_LOGIN_PRIORITY_LABEL}，{source}，{credential_public_label(credential)}"
 
 
 def vehicle_mileage_login_audit(request: AmbulanceReturnRequest) -> str:
@@ -115,13 +118,13 @@ def disinfection_login_audit(request: AmbulanceReturnRequest) -> str:
 def consumables_login_audit() -> str:
     credential = load_synced_worker_credential()
     if credential is None:
-        return "登入帳號：耗材=公務電腦同步帳號，未取得可用帳號"
+        return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，未取得可用帳號"
     acs_account = credential.id_number.strip() or (
         credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else ""
     )
     if acs_account and credential.password:
-        return f"登入帳號：耗材=公務電腦同步帳號，{credential_public_label(credential, login_account=acs_account)}"
-    return f"登入帳號：耗材=公務電腦同步帳號，{credential_public_label(credential)}（缺 ACS 可用帳號）"
+        return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，{credential_public_label(credential, login_account=acs_account)}"
+    return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，{credential_public_label(credential)}（缺 ACS 可用帳號）"
 
 
 def with_login_audit(detail: str, audit: str) -> str:

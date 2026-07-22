@@ -1,0 +1,360 @@
+:root {
+  --workspace-max-width: 1120px;
+  --workspace-radius: 18px;
+  --workspace-radius-large: 26px;
+  --workspace-shadow: 0 18px 50px rgba(29, 29, 31, .08);
+  --workspace-shadow-hover: 0 24px 64px rgba(29, 29, 31, .12);
+}
+
+body.workspace-page {
+  --bg: #f5f5f7;
+  --bg-top: #fbfbfd;
+  --bg-line: transparent;
+  --surface: rgba(255, 255, 255, .9);
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --line: rgba(60, 60, 67, .15);
+  --line-strong: rgba(60, 60, 67, .28);
+  --accent: #0f766e;
+  --accent-soft: #e5f4f2;
+  --focus: rgba(15, 118, 110, .24);
+  --complete: #287a5c;
+  --complete-bg: #e8f5ef;
+  --failed: #b42318;
+  --failed-bg: #fef0ef;
+  --running: #2563a6;
+  --running-bg: #edf5ff;
+  --waiting: #8a5b12;
+  --waiting-bg: #fff7e6;
+  --idle-bg: #f2f2f7;
+  --shadow: var(--workspace-shadow);
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 12% -8%, rgba(15, 118, 110, .1), transparent 34rem),
+    linear-gradient(180deg, #fbfbfd 0, #f5f5f7 32rem);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Noto Sans TC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.workspace-page *,
+.workspace-page *::before,
+.workspace-page *::after {
+  box-sizing: border-box;
+}
+
+.workspace-page main {
+  width: min(100%, var(--workspace-max-width));
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px 18px 56px;
+}
+
+.workspace-page main > header {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 76px;
+  margin: 0 0 20px;
+  padding: 14px 18px;
+  border: 1px solid rgba(255, 255, 255, .72);
+  border-radius: var(--workspace-radius-large);
+  background: rgba(255, 255, 255, .76);
+  box-shadow: 0 12px 36px rgba(29, 29, 31, .07);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+}
+
+.workspace-page h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(24px, 2.6vw, 32px);
+  font-weight: 760;
+  letter-spacing: -.025em;
+  line-height: 1.16;
+}
+
+.workspace-page h2 {
+  color: var(--ink);
+  font-weight: 740;
+  letter-spacing: -.012em;
+}
+
+.workspace-page .header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: none;
+}
+
+.workspace-page button,
+.workspace-page .button {
+  min-height: 46px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 0 16px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  box-shadow: 0 7px 18px rgba(15, 118, 110, .16);
+  transition: transform .18s ease, box-shadow .18s ease, background-color .18s ease, border-color .18s ease;
+}
+
+.workspace-page button:hover,
+.workspace-page .button:hover {
+  filter: none;
+  transform: translateY(-1px);
+  box-shadow: 0 11px 26px rgba(15, 118, 110, .2);
+}
+
+.workspace-page button:active,
+.workspace-page .button:active {
+  transform: scale(.985);
+}
+
+.workspace-page .secondary,
+.workspace-page .button.secondary {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, .82);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.workspace-page .secondary:hover,
+.workspace-page .button.secondary:hover {
+  border-color: rgba(15, 118, 110, .36);
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(29, 29, 31, .08);
+}
+
+.workspace-page button:focus-visible,
+.workspace-page .button:focus-visible,
+.workspace-page input:focus-visible,
+.workspace-page select:focus-visible,
+.workspace-page textarea:focus-visible,
+.workspace-page .day-link:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.workspace-page .panel,
+.workspace-page .site-card,
+.workspace-page .section,
+.workspace-page .summary-card,
+.workspace-page .event-card,
+.workspace-page .empty,
+.workspace-page main > form {
+  border: 1px solid var(--line);
+  border-radius: var(--workspace-radius);
+  background: var(--surface);
+  box-shadow: var(--workspace-shadow);
+}
+
+.workspace-page .panel,
+.workspace-page .site-card,
+.workspace-page main > form {
+  padding: 20px;
+}
+
+.workspace-page .site-card,
+.workspace-page .event-card,
+.workspace-page .recent-card,
+.workspace-page .case-card,
+.workspace-page .vehicle-row {
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+
+.workspace-page .site-card:hover,
+.workspace-page .event-card:hover,
+.workspace-page .recent-card:hover,
+.workspace-page .case-card:hover {
+  border-color: rgba(15, 118, 110, .25);
+  box-shadow: var(--workspace-shadow-hover);
+}
+
+.workspace-page input,
+.workspace-page select,
+.workspace-page textarea {
+  min-height: 48px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .96);
+  color: var(--ink);
+  box-shadow: inset 0 1px 2px rgba(29, 29, 31, .025);
+  transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
+}
+
+.workspace-page input:focus,
+.workspace-page select:focus,
+.workspace-page textarea:focus {
+  border-color: rgba(15, 118, 110, .72);
+  outline: none;
+  box-shadow: 0 0 0 4px var(--focus);
+}
+
+.workspace-page input[type="checkbox"],
+.workspace-page input[type="radio"] {
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+
+.workspace-page .lookup-message,
+.workspace-page .notice,
+.workspace-page .errors,
+.workspace-page .form-errors,
+.workspace-page .pause-reason,
+.workspace-page .package-reminder,
+.workspace-page .mileage-hint {
+  border-radius: 12px;
+}
+
+.workspace-page .case-card,
+.workspace-page .recent-card,
+.workspace-page .vehicle-row,
+.workspace-page .check-item,
+.workspace-page .consumable-row,
+.workspace-page .fuel-record-fields {
+  border-color: var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .92);
+}
+
+.workspace-page .status {
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.workspace-page .day-nav {
+  gap: 8px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .7);
+  box-shadow: 0 8px 26px rgba(29, 29, 31, .05);
+}
+
+.workspace-page .day-link {
+  min-height: 40px;
+  border-radius: 11px;
+  box-shadow: none;
+}
+
+.workspace-page .day-link.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.workspace-page .event-card,
+.workspace-page .summary-card,
+.workspace-page .empty {
+  padding: 16px;
+}
+
+.workspace-page .summary-value,
+.workspace-page .version-value {
+  color: var(--ink);
+  letter-spacing: -.02em;
+}
+
+.workspace-page .delete-form,
+.workspace-page .case-card form,
+.workspace-page #task-form,
+.workspace-page .lookup-form,
+.workspace-page .recent-delete {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-page .delete-button,
+.workspace-page .clear-button,
+.workspace-page .icon-button,
+.workspace-page .qty-button,
+.workspace-page .clock-button,
+.workspace-page .recent-delete button {
+  border-color: var(--line);
+  background: #fff;
+  box-shadow: none;
+}
+
+.workspace-page .form-actions button,
+.workspace-page .form-actions .button {
+  border-radius: 16px;
+}
+
+.workspace-page--settings main,
+.workspace-page--duty main {
+  width: min(100%, var(--workspace-max-width));
+}
+
+.workspace-page--settings main > form + .panel {
+  margin-top: 18px;
+}
+
+@media (max-width: 720px) {
+  .workspace-page main {
+    padding: 14px 12px 38px;
+  }
+
+  .workspace-page main > header {
+    align-items: stretch;
+    flex-direction: column;
+    min-height: 0;
+    padding: 15px;
+    border-radius: 20px;
+  }
+
+  .workspace-page .header-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    width: 100%;
+    max-width: none;
+  }
+
+  .workspace-page .header-actions .button,
+  .workspace-page main > header > .button {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .workspace-page .panel,
+  .workspace-page .site-card,
+  .workspace-page main > form {
+    padding: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-page *,
+  .workspace-page *::before,
+  .workspace-page *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .001ms !important;
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .workspace-page main > header,
+  .workspace-page .panel,
+  .workspace-page .site-card,
+  .workspace-page .section,
+  .workspace-page .summary-card,
+  .workspace-page .event-card,
+  .workspace-page .empty,
+  .workspace-page main > form {
+    background: #fff;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

@@ -132,8 +132,10 @@
       .button:hover { transform: none; }
     }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
 </head>
-<body>
+<body class="workspace-page workspace-page--duty">
   <main>
     <header>
       <h1>SinpoSmart 值班後台</h1>

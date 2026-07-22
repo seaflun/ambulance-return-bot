@@ -146,10 +146,20 @@
       .vehicle-card > .section-head button { width: auto; }
     }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
 </head>
-<body>
-<main>
-  <header><h1>SinpoSmart - 救災Worker</h1><div class="header-actions"><a class="button secondary" href="/task-entry">返回上一頁</a>{% if show_vehicle_settings_button() %}<a class="button secondary" href="/admin/disaster-vehicles">救災車設定</a>{% endif %}</div></header>
+<body class="workspace-page workspace-page--task workspace-page--disaster-task">
+  <main>
+  <header>
+    <h1>SinpoSmart - 救災Worker</h1>
+    {% if show_nas_home_button() or show_vehicle_settings_button() %}
+      <div class="header-actions">
+        {% if show_nas_home_button() %}<a class="button secondary" href="/task-entry">返回上一頁</a>{% endif %}
+        {% if show_vehicle_settings_button() %}<a class="button secondary" href="/admin/disaster-vehicles">救災車設定</a>{% endif %}
+      </div>
+    {% endif %}
+  </header>
   <section class="panel lookup">
     <div class="lookup-head">
       <h2>勤務案件</h2>

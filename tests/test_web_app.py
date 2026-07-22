@@ -1363,6 +1363,22 @@ class WebAppTests(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             self.assertIn("--control-height: 48px", css)
             self.assertIn(".button:active", css)
+            self.assertIn(".app-header {\n    align-items: stretch;\n    flex-direction: column;", css)
+            self.assertIn(".header-actions .button {\n    width: 100%;", css)
+            self.assertIn("@media (prefers-reduced-motion: reduce)", css)
+        finally:
+            response.close()
+
+    def test_workspace_stylesheet_defines_shared_apple_design_surface(self):
+        response = self.client.get("/static/sinposmart-workspace.css")
+        try:
+            css = response.data.decode("utf-8")
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(".workspace-page main", css)
+            self.assertIn("max-width: 1120px", css)
+            self.assertIn("backdrop-filter: blur(24px) saturate(160%)", css)
+            self.assertIn(".workspace-page .panel", css)
             self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         finally:
             response.close()
@@ -1403,7 +1419,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertIn('<html lang="zh-Hant" data-ui="task-console">', body)
-        self.assertIn('<a class="button secondary" href="/task-entry">返回上一頁</a>', body)
+        self.assertNotIn('<a class="button secondary" href="/task-entry">返回上一頁</a>', body)
         self.assertLess(body.index("案件地址"), body.index("案件時間"))
         self.assertLess(body.index("案件時間"), body.index("案件類型"))
         self.assertLess(body.index("出動車輛"), body.index("工作紀錄"))
@@ -1797,6 +1813,32 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('href="/admin/vehicles"', body)
         self.assertIn("救災車設定", disaster_body)
         self.assertIn('href="/admin/disaster-vehicles"', disaster_body)
+
+    def test_nas_task_headers_keep_back_link_before_vehicle_settings(self):
+        headers = {"Host": "100.114.126.58:8080"}
+        ems_body = html.unescape(self.client.get("/app", headers=headers).data.decode("utf-8"))
+        disaster_body = html.unescape(
+            self.client.get("/app/disaster", headers=headers).data.decode("utf-8")
+        )
+
+        self.assertLess(ems_body.index("返回上一頁"), ems_body.index("救護車設定"))
+        self.assertLess(disaster_body.index("返回上一頁"), disaster_body.index("救災車設定"))
+
+    def test_local_entry_and_task_forms_hide_nas_navigation_and_vehicle_settings(self):
+        headers = {"Host": "127.0.0.1:8090"}
+        entry_body = html.unescape(self.client.get("/task-entry", headers=headers).data.decode("utf-8"))
+        ems_body = html.unescape(self.client.get("/app", headers=headers).data.decode("utf-8"))
+        disaster_body = html.unescape(
+            self.client.get("/app/disaster", headers=headers).data.decode("utf-8")
+        )
+
+        self.assertNotIn("返回首頁", entry_body)
+        for body in (ems_body, disaster_body):
+            self.assertNotIn("返回上一頁", body)
+            self.assertNotIn("救護車設定", body)
+            self.assertNotIn("救災車設定", body)
+            self.assertNotIn('href="/admin/vehicles"', body)
+            self.assertNotIn('href="/admin/disaster-vehicles"', body)
 
     def test_local_vehicle_settings_routes_are_not_available(self):
         for path in ("/admin/vehicles", "/admin/disaster-vehicles"):
@@ -2477,7 +2519,7 @@ class WebAppTests(unittest.TestCase):
         page_body = html.unescape(page.data.decode("utf-8"))
         self.assertIn("救護車設定", page_body)
         self.assertIn("救護車代號", page_body)
-        self.assertIn("返回首頁", page_body)
+        self.assertIn('href="/app">返回救護登打</a>', page_body)
         self.assertIn('<button type="submit">新增</button>', page_body)
         self.assertIn("目前車輛", page_body)
         self.assertIn('<div class="vehicle-label">救護車代號</div>', page_body)
@@ -2517,25 +2559,37 @@ class WebAppTests(unittest.TestCase):
         vehicle_body = html.unescape(
             self.client.get("/admin/vehicles", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
         )
+        disaster_vehicle_body = html.unescape(
+            self.client.get(
+                "/admin/disaster-vehicles", headers={"Host": "100.114.126.58:8080"}
+            ).data.decode("utf-8")
+        )
         public_pc_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
         sinposmart_body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
 
-        self.assertIn("main { max-width: 960px;", vehicle_body)
         self.assertIn('href="/static/sinposmart-ui.css"', public_pc_body)
         self.assertIn('href="/static/sinposmart-admin.css"', public_pc_body)
         self.assertIn('class="app-shell"', public_pc_body)
         self.assertNotIn("<style>", public_pc_body)
-        for body in (vehicle_body, sinposmart_body):
-            self.assertIn("--text-md: 15px;", body)
-            self.assertIn("--text-xl: 28px;", body)
-            self.assertIn("repeating-linear-gradient", body)
-        for body in (sinposmart_body,):
-            self.assertIn(":focus-visible", body)
-            self.assertIn("transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;", body)
-            self.assertIn("border-radius: 8px;", body)
-            self.assertIn("body {", body)
-            self.assertIn("min-height: 100vh;", body)
-        self.assertIn(".secondary { background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }", vehicle_body)
+        for body in (vehicle_body, disaster_vehicle_body, sinposmart_body):
+            self.assertIn('href="/static/sinposmart-ui.css"', body)
+            self.assertIn('href="/static/sinposmart-workspace.css"', body)
+            self.assertIn('class="workspace-page', body)
+
+        admin_css = self.client.get("/static/sinposmart-admin.css").data.decode("utf-8")
+        self.assertIn('.result-filters[aria-label="執行結果分類"] {', admin_css)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", admin_css)
+        self.assertIn('.result-filters[aria-label="執行結果分類"] .result-filter:first-child {', admin_css)
+        self.assertIn("grid-column: 1 / -1;", admin_css)
+
+    def test_task_forms_use_shared_workspace_stylesheet(self):
+        headers = {"Host": "100.114.126.58:8080"}
+        for path in ("/app", "/app/disaster"):
+            with self.subTest(path=path):
+                body = html.unescape(self.client.get(path, headers=headers).data.decode("utf-8"))
+                self.assertIn('href="/static/sinposmart-ui.css"', body)
+                self.assertIn('href="/static/sinposmart-workspace.css"', body)
+                self.assertIn('class="workspace-page workspace-page--task', body)
 
     def test_nas_admin_pages_return_to_nas_home(self):
         for path in ("/admin/public-pc", "/admin/sinposmart"):
@@ -3978,6 +4032,13 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("等待公務電腦接收", nas_body)
         self.assertIn("勤務完成並閒置 120 秒後", nas_body)
         self.assertIn("公務電腦心跳", nas_body)
+        self.assertIn('<section class="system-overview-card" aria-label="系統狀態">', nas_body)
+        self.assertIn('<div class="system-overview-grid">', nas_body)
+
+        admin_css = self.client.get("/static/sinposmart-admin.css").data.decode("utf-8")
+        self.assertIn(".system-overview-card {", admin_css)
+        self.assertIn(".system-overview-grid {", admin_css)
+        self.assertIn(".system-overview-card .remote-update-card {", admin_css)
 
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
         local_body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
@@ -6239,6 +6300,8 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("返回首頁", header)
         self.assertNotIn("回到上一頁", header)
+        self.assertIn(".page-head { align-items: stretch; flex-direction: column; }", body)
+        self.assertIn(".head-actions .button { width: 100%; }", body)
         self.assertNotIn("06/06 1633", header)
         self.assertNotIn("\u65b0\u576192 / \u5305\u83ef\u5148", header)
         self.assertNotIn("\u9001\u5230\u516c\u52d9\u96fb\u8166", header)

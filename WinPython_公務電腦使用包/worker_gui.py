@@ -72,21 +72,21 @@ WORKER_CHROME_PROFILE_PREFIXES = (
 )
 
 GUI_THEME = {
-    "bg": "#fff7ef",
+    "bg": "#f5f5f7",
     "surface": "#ffffff",
-    "surface_soft": "#fff1e6",
-    "surface_hover": "#ffe2cd",
-    "ink": "#10233f",
-    "muted": "#667085",
-    "line": "#efd8c4",
-    "accent": "#f08a4b",
-    "accent_active": "#dc6f32",
+    "surface_soft": "#f2f2f7",
+    "surface_hover": "#e8e8ed",
+    "ink": "#1d1d1f",
+    "muted": "#6e6e73",
+    "line": "#d2d2d7",
+    "accent": "#0f766e",
+    "accent_active": "#0b5f59",
     "success": "#2f8f6b",
     "success_active": "#247556",
-    "status_bg": "#fff1e6",
-    "input": "#fffaf5",
-    "log_bg": "#10233f",
-    "log_fg": "#f8efe7",
+    "status_bg": "#eaf7f5",
+    "input": "#f9f9fb",
+    "log_bg": "#1d1d1f",
+    "log_fg": "#f5f5f7",
 }
 GUI_FONT_FAMILY = "Microsoft JhengHei UI"
 
@@ -446,7 +446,7 @@ class WorkerGui(ctk.CTk):
             textvariable=self.worker_status,
             fg_color=theme["status_bg"],
             text_color=theme["ink"],
-            corner_radius=14,
+            corner_radius=18,
             padx=16,
             pady=8,
             width=176,
@@ -540,7 +540,7 @@ class WorkerGui(ctk.CTk):
             fg_color=GUI_THEME["surface"],
             border_color=GUI_THEME["line"],
             border_width=1,
-            corner_radius=14,
+            corner_radius=18,
         )
         ctk.CTkLabel(
             frame,

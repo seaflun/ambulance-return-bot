@@ -77,6 +77,55 @@
   -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
 
+.system-overview-card {
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, .9);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+.system-overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.system-overview-head h2 {
+  font-size: 1.15rem;
+  font-weight: 760;
+}
+
+.system-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.system-overview-card .version-card,
+.system-overview-card .worker-health-card,
+.system-overview-card .remote-update-card {
+  margin: 0;
+  border-color: var(--separator);
+  background: rgba(255, 255, 255, .72);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.system-overview-card .version-card,
+.system-overview-card .worker-health-card {
+  min-height: 100%;
+}
+
+.system-overview-card .remote-update-card {
+  grid-column: 1 / -1;
+}
+
 .version-card {
   margin-bottom: 14px;
   padding: 15px 17px;
@@ -458,8 +507,29 @@
     grid-template-columns: 1fr;
   }
 
-  .result-filter {
-    flex: 1 1 120px;
+  .system-overview-card {
+    padding: 15px;
+  }
+
+  .system-overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .system-overview-card .remote-update-card {
+    grid-column: auto;
+  }
+
+  .result-filters[aria-label="執行結果分類"] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .result-filters[aria-label="執行結果分類"] .result-filter {
+    width: 100%;
+  }
+
+  .result-filters[aria-label="執行結果分類"] .result-filter:first-child {
+    grid-column: 1 / -1;
   }
 
   .site-grid {
@@ -499,6 +569,7 @@
 }
 
 @media (prefers-reduced-transparency: reduce) {
+  .system-overview-card,
   .version-card,
   .worker-health-card,
   .remote-update-card,

@@ -350,18 +350,20 @@
       .form-actions { grid-template-columns: 1fr; }
     }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
 </head>
-<body>
+<body class="workspace-page workspace-page--task workspace-page--ems-task">
   <main>
     <header>
       <h1>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</h1>
       {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button()) %}
         <div class="header-actions">
-          {% if show_vehicle_settings_button() %}
-            <a class="button secondary" href="/admin/vehicles">救護車設定</a>
-          {% endif %}
           {% if show_nas_home_button() %}
             <a class="button secondary" href="/task-entry">返回上一頁</a>
+          {% endif %}
+          {% if show_vehicle_settings_button() %}
+            <a class="button secondary" href="/admin/vehicles">救護車設定</a>
           {% endif %}
         </div>
       {% endif %}
