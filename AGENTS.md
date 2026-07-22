@@ -157,10 +157,12 @@ Expected container name: `ambulance-app-1`.
 Expected SSH user: `codex_restart`.
 Expected key: `%USERPROFILE%\.ssh\id_ed25519_ambulance_nas`.
 
-If the key is rejected, do not try `sinpo666` first. Re-check that the NAS `codex_restart` account still exists, that SSH on port `22` is enabled, and that the NAS still has this public key in `codex_restart` SSH `authorized_keys`:
+If the key is rejected, do not try `sinpo666` first. Re-check that the NAS `codex_restart` account still exists, that SSH on port `22` is enabled, and that the public key derived from the current local key is present in `codex_restart` SSH `authorized_keys`:
 
-```text
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP1xcKm/naCpqhT60Cctltv91uW9ftjd8UMv4Ql5WGLj codex-ambulance-nas-restart
+```powershell
+ssh-keygen -y -f "$env:USERPROFILE\.ssh\id_ed25519_ambulance_nas"
 ```
+
+Do not embed a public key value in this file; the local key may be rotated independently. Compare or register the derived public key through the authorized NAS administration path.
 
 The prior setup also installed a narrow sudoers rule for `codex_restart`, allowing only Docker container listing and restart of `ambulance-app-1`. If `sudo -n` fails, restore that limited rule instead of broad passwordless sudo.

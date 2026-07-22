@@ -1,4 +1,4 @@
 interface:
-  display_name: "Ambulance Return Workflow"
-  short_description: "Maintain the ambulance return NAS task center, public-duty worker, package build, and release workflow."
-  default_prompt: "Use $ambulance-return-workflow to update ambulance_return_bot and verify the public-duty plus generated NAS package workflow."
+  display_name: "救護返隊小幫手 Workflow"
+  short_description: "維護 NAS 任務中心、公務電腦 worker、打包與 release 流程。"
+  default_prompt: "Use $ambulance-return-workflow to update 救護返隊小幫手 and verify the public-duty package plus generated NAS deployment workflow."

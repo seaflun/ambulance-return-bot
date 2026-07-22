@@ -46,6 +46,7 @@ credentials.json
 Thumbs.db
 .vscode/
 .idea/
+.codex/
 .worktrees/
 
 # Public-duty package local-only files
