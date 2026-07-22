@@ -861,8 +861,7 @@ def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
     case_reason = str(form.get("case_reason") or "").strip()
     recorder_category = str(form.get("recorder_category") or "").strip()
     recorder_subcategory = str(form.get("recorder_subcategory") or "").strip()
-    if summary_type == "火災" and case_reason == "誤(謊)報":
-        recorder_category = "轄內其他案件"
+    if summary_type == "火災" and case_reason == "誤(謊)報" and recorder_category == "轄內其他案件":
         recorder_subcategory = "誤報"
     return AmbulanceReturnRequest(
         task_id=new_task_id(),

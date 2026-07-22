@@ -239,7 +239,6 @@
       <h2>將建立的 NAS 資料夾名稱</h2>
       <div class="grid">
         <label class="field-visual{% if not selected_case.recorder_category %} is-pending{% endif %}" data-required-message="請選擇行車紀錄器分類"><span class="field-label-title">行車紀錄器分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_category" id="recorder-category" required><option value="">請選擇</option>{% for category in ['轄內A2','轄內A3','轄內其他案件','支援他轄'] %}<option value="{{ category }}"{% if selected_case.recorder_category == category %} selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
-        <input type="hidden" name="recorder_category" id="locked-recorder-category" value="轄內其他案件" disabled>
         <label class="field-visual{% if selected_case.recorder_category == '轄內其他案件' and not selected_case.recorder_subcategory %} is-pending{% endif %}" id="subcategory-field" data-required-message="請選擇轄內其他案件子分類"{% if selected_case.recorder_category != '轄內其他案件' %} hidden{% endif %}><span class="field-label-title">子分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_subcategory"><option value="">請選擇</option>{% for subcategory in ['其他','誤報','溺水','破門','警報器誤動作','車禍救助','輸電線災害','電梯受困','電線桿災害'] %}<option value="{{ subcategory }}"{% if selected_case.recorder_subcategory == subcategory %} selected{% endif %}>{{ subcategory }}</option>{% endfor %}</select></label>
         <input type="hidden" name="recorder_subcategory" id="locked-recorder-subcategory" value="誤報" disabled>
         <div class="folder-preview-output"><div data-folder-empty>請先完成案件與車輛資料。</div><ul data-folder-list></ul></div>
@@ -273,7 +272,6 @@
   const category = document.getElementById('recorder-category');
   const reason = document.getElementById('case-reason');
   const reasonOptionsByType = {{ disaster_reason_options_by_type | tojson }};
-  const lockedCategory = document.getElementById('locked-recorder-category');
   const lockedSubcategory = document.getElementById('locked-recorder-subcategory');
   const folderPreview = document.getElementById('disaster-folder-preview');
   const clientFormErrors = document.getElementById('client-form-errors');
@@ -288,18 +286,13 @@
   function updateConditionalFields(){
     const subcategoryField=document.getElementById('subcategory-field');
     const subcategoryInput=subcategoryField.querySelector('select');
-    const falseAlarm=summaryType.value==='火災'&&reason.value==='誤(謊)報';
-    if(falseAlarm){
-      category.value='轄內其他案件';
+    const localFalseAlarm=summaryType.value==='火災'&&reason.value==='誤(謊)報'&&category.value==='轄內其他案件';
+    if(localFalseAlarm){
       subcategoryInput.value='誤報';
-      category.disabled=true;
       subcategoryInput.disabled=true;
-      lockedCategory.disabled=false;
       lockedSubcategory.disabled=false;
     }else{
-      category.disabled=false;
       subcategoryInput.disabled=false;
-      lockedCategory.disabled=true;
       lockedSubcategory.disabled=true;
     }
     subcategoryField.hidden=category.value!=='轄內其他案件';

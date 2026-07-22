@@ -1568,7 +1568,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('<option value="救護" selected>救護</option>', body)
         self.assertIn('<option value="特殊救護事由" selected>特殊救護事由</option>', body)
 
-    def test_disaster_false_alarm_locks_recorder_folder_to_false_alarm_subcategory(self):
+    def test_disaster_false_alarm_only_locks_false_alarm_subcategory_for_local_other_case(self):
         self.import_case_for_form(
             {
                 "case_id": "fire-false-alarm",
@@ -1586,10 +1586,10 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
         self.assertIn('<option value="誤報">誤報</option>', body)
-        self.assertIn("const falseAlarm=summaryType.value==='火災'&&reason.value==='誤(謊)報';", body)
-        self.assertIn("category.value='轄內其他案件';", body)
+        self.assertIn("const localFalseAlarm=summaryType.value==='火災'&&reason.value==='誤(謊)報'&&category.value==='轄內其他案件';", body)
         self.assertIn("subcategoryInput.value='誤報';", body)
-        self.assertIn("category.disabled=false;", body)
+        self.assertNotIn("\n      category.disabled=true;", body)
+        self.assertNotIn("category.value='轄內其他案件';", body)
 
     def test_disaster_task_accepts_rescue_and_ems_case_types(self):
         base = [
