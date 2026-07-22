@@ -122,6 +122,11 @@
   min-height: 100%;
 }
 
+.system-overview-card .worker-health-card,
+.system-overview-card > .system-overview-grid > .version-card {
+  grid-column: 1 / -1;
+}
+
 .system-overview-card .remote-update-card {
   grid-column: 1 / -1;
 }
@@ -171,6 +176,16 @@
   margin-top: 9px;
   color: var(--secondary-label);
   font-size: .82rem;
+}
+
+.worker-health-version {
+  color: var(--label);
+  font-weight: 700;
+}
+
+.version-difference {
+  color: color-mix(in srgb, var(--admin-accent) 76%, var(--label));
+  font-weight: 650;
 }
 
 .remote-update-card {

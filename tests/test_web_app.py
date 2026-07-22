@@ -1369,6 +1369,20 @@ class WebAppTests(unittest.TestCase):
         finally:
             response.close()
 
+    def test_home_portal_cards_use_destination_colors(self):
+        response = self.client.get("/static/sinposmart-ui.css")
+        try:
+            css = response.data.decode("utf-8")
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(".portal-card--duty {\n  --choice-color: #7657c8;", css)
+            self.assertIn(".portal-card--disaster {\n  --choice-color: var(--disaster);", css)
+            self.assertIn(".portal-card--ems {\n  --choice-color: var(--ems);", css)
+            self.assertIn(".portal-card--entry {\n  --choice-color: var(--brand);", css)
+            self.assertIn(".portal-card--vehicle {\n  --choice-color: #b46b00;", css)
+        finally:
+            response.close()
+
     def test_workspace_stylesheet_defines_shared_apple_design_surface(self):
         response = self.client.get("/static/sinposmart-workspace.css")
         try:
@@ -1380,6 +1394,34 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("backdrop-filter: blur(24px) saturate(160%)", css)
             self.assertIn(".workspace-page .panel", css)
             self.assertIn("@media (prefers-reduced-motion: reduce)", css)
+        finally:
+            response.close()
+
+    def test_workspace_pages_use_destination_colors(self):
+        response = self.client.get("/static/sinposmart-workspace.css")
+        try:
+            css = response.data.decode("utf-8")
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn("body.workspace-page--duty {\n  --accent: #7657c8;", css)
+            self.assertIn("body.workspace-page--disaster-task,\nbody.workspace-page--disaster-settings {\n  --accent: #d84a3f;", css)
+            self.assertIn("--page-tint: #fff4f2;", css)
+            self.assertIn("body.workspace-page--ems-task,\nbody.workspace-page--ems-settings {\n  --accent: #1677d2;", css)
+            self.assertIn("--page-tint: #f1f7ff;", css)
+            self.assertIn("linear-gradient(180deg, var(--page-tint) 0, #f5f5f7 34rem)", css)
+        finally:
+            response.close()
+
+    def test_workspace_secondary_controls_restore_visible_foreground_colors(self):
+        response = self.client.get("/static/sinposmart-workspace.css")
+        try:
+            css = response.data.decode("utf-8")
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(".workspace-page .clear-button,\n.workspace-page .icon-button", css)
+            self.assertIn("color: var(--failed);", css)
+            self.assertIn(".workspace-page .qty-button,\n.workspace-page .clock-button", css)
+            self.assertIn("color: var(--accent);", css)
         finally:
             response.close()
 
@@ -3764,9 +3806,9 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("NAS-2026.07.15", body)
-        self.assertIn("心跳版本：2026.07.15.1326", body)
-        self.assertIn("最後任務回報：TASK-2026.07.14", body)
-        self.assertIn("目前版本：2026.07.15.1326", body)
+        self.assertIn("公務電腦版本：2026.07.15.1326", body)
+        self.assertIn("最後任務回報版本：TASK-2026.07.14", body)
+        self.assertNotIn("目前版本：", body)
 
     def test_public_pc_reports_keep_all_statuses_for_seven_days(self):
         now = datetime(2026, 7, 10, 18, 0, 0)
@@ -4031,7 +4073,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('action="/admin/public-pc/remote-update"', nas_body)
         self.assertIn("等待公務電腦接收", nas_body)
         self.assertIn("勤務完成並閒置 120 秒後", nas_body)
-        self.assertIn("公務電腦心跳", nas_body)
+        self.assertIn("公務電腦狀態", nas_body)
         self.assertIn('<section class="system-overview-card" aria-label="系統狀態">', nas_body)
         self.assertIn('<div class="system-overview-grid">', nas_body)
 
@@ -4045,7 +4087,56 @@ class WebAppTests(unittest.TestCase):
 
         self.assertNotIn("遠端更新公務電腦", local_body)
         self.assertNotIn('action="/admin/public-pc/remote-update"', local_body)
-        self.assertNotIn("公務電腦心跳", local_body)
+        self.assertNotIn("公務電腦狀態", local_body)
+
+    def test_admin_system_overview_deduplicates_matching_versions(self):
+        version = "2026.07.23.0300"
+        worker_health = {
+            "online": True,
+            "worker_id": "PUBLIC-PC",
+            "last_seen_at": "2026-07-23 03:01:00",
+            "package_version": version,
+            "last_task_report_version": version,
+            "route_label": "區網",
+            "status_class": "complete",
+            "status_label": "線上",
+        }
+        version_info = {"label": "SinpoSmart", "version": version, "detail": "NAS 後台"}
+
+        with mock.patch.object(app_module, "worker_heartbeat_admin_view", return_value=worker_health), mock.patch.object(
+            app_module, "worker_admin_version_info", return_value=version_info
+        ):
+            body = html.unescape(self.client.get("/admin/ems").data.decode("utf-8"))
+
+        self.assertIn("公務電腦狀態", body)
+        self.assertNotIn('class="version-card"', body)
+        self.assertEqual(1, body.count(version))
+        self.assertNotIn("心跳版本：", body)
+        self.assertNotIn("目前版本：", body)
+        self.assertNotIn("最後任務回報：", body)
+
+    def test_admin_system_overview_only_expands_version_differences(self):
+        worker_health = {
+            "online": True,
+            "worker_id": "PUBLIC-PC",
+            "last_seen_at": "2026-07-23 03:01:00",
+            "package_version": "2026.07.23.0300",
+            "last_task_report_version": "2026.07.23.0250",
+            "route_label": "區網",
+            "status_class": "complete",
+            "status_label": "線上",
+        }
+        version_info = {"label": "SinpoSmart", "version": "2026.07.23.0310", "detail": "NAS 後台"}
+
+        with mock.patch.object(app_module, "worker_heartbeat_admin_view", return_value=worker_health), mock.patch.object(
+            app_module, "worker_admin_version_info", return_value=version_info
+        ):
+            body = html.unescape(self.client.get("/admin/disaster").data.decode("utf-8"))
+
+        self.assertIn("公務電腦版本：2026.07.23.0300", body)
+        self.assertIn("NAS 後台版本：2026.07.23.0310", body)
+        self.assertIn("最後任務回報版本：2026.07.23.0250", body)
+        self.assertEqual(1, body.count("PUBLIC-PC"))
 
     def test_admin_public_pc_remote_update_post_requires_csrf_token(self):
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -4318,10 +4409,10 @@ class WebAppTests(unittest.TestCase):
             page = self.client.get("/admin/public-pc")
             body = html.unescape(page.data.decode("utf-8"))
 
-            self.assertIn("系統版本", body)
-            self.assertIn("SinpoSmart - 救災救護Worker", body)
-            self.assertIn("2026.06.19.0715", body)
-            self.assertIn("目前後台", body)
+            self.assertIn("系統狀態", body)
+            self.assertIn("公務電腦狀態", body)
+            self.assertIn("NAS 後台版本：2026.06.19.0715", body)
+            self.assertNotIn('class="version-card"', body)
         finally:
             if original_version_info is None:
                 delattr(app_module, "worker_admin_version_info")
@@ -4351,8 +4442,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("SinpoSmart - 救災救護Worker", body)
         self.assertIn("2026.06.19.0801-installed", body)
         self.assertIn("NAS 後台", body)
-        self.assertIn("心跳版本：未標示", body)
-        self.assertIn("最後任務回報：2026.06.19.0801-installed", body)
+        self.assertIn("公務電腦版本：未標示", body)
+        self.assertIn("最後任務回報版本：2026.06.19.0801-installed", body)
 
     def test_public_pc_report_is_queued_on_failure_and_flushed_on_next_success(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"

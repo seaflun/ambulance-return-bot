@@ -305,7 +305,7 @@
           <h2>系統狀態</h2>
         </div>
         <div class="system-overview-grid">
-    {% if version_info %}
+    {% if version_info and not worker_health_enabled %}
       <section class="version-card" aria-label="系統版本">
         <div class="version-label">NAS 後台版本</div>
         <div class="version-value">{{ version_info.label }}｜{{ version_info.version }}</div>
@@ -316,15 +316,19 @@
     {% endif %}
 
     {% if worker_health_enabled %}
-      <section class="worker-health-card {{ 'online' if worker_health.online else 'offline' }}" aria-label="公務電腦心跳">
+      <section class="worker-health-card {{ 'online' if worker_health.online else 'offline' }}" aria-label="公務電腦狀態">
         <div>
-          <div class="worker-health-title">公務電腦心跳</div>
+          <div class="worker-health-title">公務電腦狀態</div>
           <div class="worker-health-meta">
             <div>公務電腦：{{ worker_health.worker_id or '尚未辨識' }}</div>
-            <div>最後心跳：{{ worker_health.last_seen_at or '尚未收到' }}</div>
-            <div>心跳版本：{{ worker_health.package_version or '未標示' }}</div>
-            <div>最後任務回報：{{ worker_health.last_task_report_version or '尚未回報' }}</div>
-            <div>路徑：{{ worker_health.route_label }}</div>
+            <div>最後心跳：{{ worker_health.last_seen_at or '尚未收到' }}・路徑：{{ worker_health.route_label }}</div>
+            <div class="worker-health-version">公務電腦版本：{{ worker_health.package_version or '未標示' }}</div>
+            {% if version_info and version_info.version and version_info.version != worker_health.package_version %}
+              <div class="version-difference">NAS 後台版本：{{ version_info.version }}</div>
+            {% endif %}
+            {% if worker_health.last_task_report_version and worker_health.last_task_report_version != worker_health.package_version %}
+              <div class="version-difference">最後任務回報版本：{{ worker_health.last_task_report_version }}</div>
+            {% endif %}
           </div>
         </div>
         <span class="status {{ worker_health.status_class }}">{{ worker_health.status_label }}</span>
@@ -345,12 +349,6 @@
             <p class="remote-update-detail">{{ remote_update.detail }}</p>
           {% endif %}
           <div class="remote-update-meta">
-            {% if worker_health.package_version %}
-              <span>目前版本：{% if worker_health.online %}{{ worker_health.package_version }}{% else %}最後心跳版本 {{ worker_health.package_version }}{% endif %}</span>
-            {% else %}
-              <span>目前版本：尚未收到心跳</span>
-            {% endif %}
-            {% if remote_update.worker_id %}<span>公務電腦：{{ remote_update.worker_id }}</span>{% endif %}
             {% if remote_update.requested_at %}<span>下達：{{ remote_update.requested_at }}</span>{% endif %}
             {% if remote_update.updated_at %}<span>更新：{{ remote_update.updated_at }}</span>{% endif %}
             {% if remote_update.request_id %}<span>命令：{{ remote_update.request_id }}</span>{% endif %}

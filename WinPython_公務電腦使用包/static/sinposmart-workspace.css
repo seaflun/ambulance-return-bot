@@ -16,7 +16,9 @@ body.workspace-page {
   --line: rgba(60, 60, 67, .15);
   --line-strong: rgba(60, 60, 67, .28);
   --accent: #0f766e;
+  --accent-rgb: 15, 118, 110;
   --accent-soft: #e5f4f2;
+  --page-tint: #f1faf8;
   --focus: rgba(15, 118, 110, .24);
   --complete: #287a5c;
   --complete-bg: #e8f5ef;
@@ -30,13 +32,40 @@ body.workspace-page {
   --shadow: var(--workspace-shadow);
   min-height: 100vh;
   background:
-    radial-gradient(circle at 12% -8%, rgba(15, 118, 110, .1), transparent 34rem),
-    linear-gradient(180deg, #fbfbfd 0, #f5f5f7 32rem);
+    radial-gradient(circle at 12% -8%, rgba(var(--accent-rgb), .16), transparent 34rem),
+    radial-gradient(circle at 92% 10%, rgba(var(--accent-rgb), .07), transparent 28rem),
+    linear-gradient(180deg, var(--page-tint) 0, #f5f5f7 34rem);
   background-attachment: fixed;
   color: var(--ink);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Noto Sans TC", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+body.workspace-page--duty {
+  --accent: #7657c8;
+  --accent-rgb: 118, 87, 200;
+  --accent-soft: #f2efff;
+  --page-tint: #f7f3ff;
+  --focus: rgba(118, 87, 200, .24);
+}
+
+body.workspace-page--disaster-task,
+body.workspace-page--disaster-settings {
+  --accent: #d84a3f;
+  --accent-rgb: 216, 74, 63;
+  --accent-soft: #fff0ed;
+  --page-tint: #fff4f2;
+  --focus: rgba(216, 74, 63, .24);
+}
+
+body.workspace-page--ems-task,
+body.workspace-page--ems-settings {
+  --accent: #1677d2;
+  --accent-rgb: 22, 119, 210;
+  --accent-soft: #eef6ff;
+  --page-tint: #f1f7ff;
+  --focus: rgba(22, 119, 210, .24);
 }
 
 .workspace-page *,
@@ -104,7 +133,7 @@ body.workspace-page {
   color: #fff;
   font: inherit;
   font-weight: 700;
-  box-shadow: 0 7px 18px rgba(15, 118, 110, .16);
+  box-shadow: 0 7px 18px rgba(var(--accent-rgb), .16);
   transition: transform .18s ease, box-shadow .18s ease, background-color .18s ease, border-color .18s ease;
 }
 
@@ -112,7 +141,7 @@ body.workspace-page {
 .workspace-page .button:hover {
   filter: none;
   transform: translateY(-1px);
-  box-shadow: 0 11px 26px rgba(15, 118, 110, .2);
+  box-shadow: 0 11px 26px rgba(var(--accent-rgb), .2);
 }
 
 .workspace-page button:active,
@@ -130,7 +159,7 @@ body.workspace-page {
 
 .workspace-page .secondary:hover,
 .workspace-page .button.secondary:hover {
-  border-color: rgba(15, 118, 110, .36);
+  border-color: rgba(var(--accent-rgb), .36);
   background: #fff;
   box-shadow: 0 8px 22px rgba(29, 29, 31, .08);
 }
@@ -176,7 +205,7 @@ body.workspace-page {
 .workspace-page .event-card:hover,
 .workspace-page .recent-card:hover,
 .workspace-page .case-card:hover {
-  border-color: rgba(15, 118, 110, .25);
+  border-color: rgba(var(--accent-rgb), .25);
   box-shadow: var(--workspace-shadow-hover);
 }
 
@@ -195,7 +224,7 @@ body.workspace-page {
 .workspace-page input:focus,
 .workspace-page select:focus,
 .workspace-page textarea:focus {
-  border-color: rgba(15, 118, 110, .72);
+  border-color: rgba(var(--accent-rgb), .72);
   outline: none;
   box-shadow: 0 0 0 4px var(--focus);
 }
@@ -284,6 +313,18 @@ body.workspace-page {
   border-color: var(--line);
   background: #fff;
   box-shadow: none;
+}
+
+.workspace-page .clear-button,
+.workspace-page .icon-button,
+.workspace-page .delete-button,
+.workspace-page .recent-delete button {
+  color: var(--failed);
+}
+
+.workspace-page .qty-button,
+.workspace-page .clock-button {
+  color: var(--accent);
 }
 
 .workspace-page .form-actions button,

@@ -257,9 +257,9 @@ h1 {
 }
 
 .portal-card--disaster {
-  --choice-color: var(--brand);
-  --choice-soft: #eaf7f5;
-  --choice-glow: rgba(15, 118, 110, .14);
+  --choice-color: var(--disaster);
+  --choice-soft: var(--disaster-soft);
+  --choice-glow: rgba(216, 74, 63, .13);
 }
 
 .portal-card--ems {
@@ -269,9 +269,9 @@ h1 {
 }
 
 .portal-card--entry {
-  --choice-color: var(--disaster);
-  --choice-soft: var(--disaster-soft);
-  --choice-glow: rgba(216, 74, 63, .13);
+  --choice-color: var(--brand);
+  --choice-soft: #eaf7f5;
+  --choice-glow: rgba(15, 118, 110, .14);
 }
 
 .portal-card--vehicle {
