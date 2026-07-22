@@ -145,7 +145,7 @@ Keep the actual EMS path `西元年\月份\MMDDHHmm-車號` and children `1`, `2
 
 - [ ] **Step 5: Configure NAS mount without hard-coding generated output**
 
-Set `DISASTER_RECORD_ROOT=/data/disaster-records` in NAS compose and mount `/volume1/搶救災害硬碟/救災行車紀錄器:/data/disaster-records`. Windows/local fallback remains `\\100.114.126.58\nas\搶救災害硬碟\救災行車紀錄器`.
+Set `DISASTER_RECORD_ROOT=/data/disaster-records` in NAS compose and mount `/volume1/nas/搶救災害硬碟/救災行車紀錄器:/data/disaster-records`. Windows/local fallback remains `\\100.114.126.58\nas\搶救災害硬碟\救災行車紀錄器`.
 
 - [ ] **Step 6: Verify GREEN**
 

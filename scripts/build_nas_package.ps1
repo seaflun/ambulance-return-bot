@@ -317,6 +317,7 @@ foreach ($dir in @("ambulance_bot", "templates")) {
 $compose = Join-Path $project "compose.nas.yml"
 if (Test-Path -LiteralPath $compose -PathType Leaf) {
     Copy-FileToOutput -Source $compose -RelativePath "compose.nas.yml"
+    Copy-FileToOutput -Source $compose -RelativePath "compose.yaml"
 }
 
 $docs = Join-Path $project "docs"
