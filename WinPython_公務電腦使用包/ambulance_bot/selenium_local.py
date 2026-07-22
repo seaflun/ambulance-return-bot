@@ -1447,7 +1447,7 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
         }
         return selected ? [] : ['勤務項目'];
         """,
-        "救護",
+        request.duty_item or ("火警" if request.service_type == "disaster" else "救護"),
     )
     if not item_missing:
         try:
@@ -3828,6 +3828,7 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
         case_date: chooseParts[1] || '',
         case_time_h: chooseParts[2] || '',
         case_time_m: chooseParts[3] || '',
+        summary_type: chooseParts[5] || (category.includes('火災') ? '火災' : ''),
         description: chooseParts.length ? ['119案件', chooseParts[5] || '', `返隊時間:${chooseParts[35] || ''}`, `地點:${chooseParts[8] || ''}`].join('\\n') : '',
         personnel_raw: personnelRaw,
         personnel_hidden_raw: chooseParts[33] || '',

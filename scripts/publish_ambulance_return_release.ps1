@@ -41,4 +41,4 @@ if (-not $gh) {
 }
 
 $tag = "ambulance-return-$Version"
-gh release create $tag $stagedVersionPath $stagedZipPath $stagedShaPath $stagedUpdaterPath --repo $Repository --title $tag --notes "SinpoSmart - 救護Worker 公務電腦使用包 $Version"
+gh release create $tag $stagedVersionPath $stagedZipPath $stagedShaPath $stagedUpdaterPath --repo $Repository --title $tag --notes "SinpoSmart - 救災救護Worker 公務電腦使用包 $Version"

@@ -11,12 +11,14 @@ services:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       TASK_EXECUTION_MODE: "worker_queue"
       CASE_LOOKUP_SCHEDULER_ENABLED: "false"
+      DISASTER_RECORD_ROOT: "/data/disaster-records"
     env_file:
       - .env
     ports:
       - "8080:8080"
     volumes:
       - ./:/app
+      - /volume1/搶救災害硬碟/救災行車紀錄器:/data/disaster-records
     command: sh -c "pip install --root-user-action=ignore --no-cache-dir -r requirements.txt && echo '[app] dependencies ready, starting web server' && python -u app.py"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/status', timeout=5).read()"]

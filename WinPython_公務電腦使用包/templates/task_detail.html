@@ -368,7 +368,7 @@
         <h1>{{ task_title(payload.task) }}</h1>
       </div>
       <div class="head-actions">
-        <a class="button secondary" href="/app">返回首頁</a>
+        <a class="button secondary" href="{{ '/app/disaster' if payload.task.service_type == 'disaster' else '/app' }}">返回首頁</a>
       </div>
     </header>
 
@@ -397,7 +397,7 @@
             <button type="submit">{{ task_site_count_label(payload.task, payload.site_statuses) }}登打啟動</button>
           </form>
         {% endif %}
-        {% if not task_edit_locked %}
+        {% if not task_edit_locked and payload.task.service_type != 'disaster' %}
           <a class="button secondary" href="/tasks/{{ payload.task.task_id }}/edit">返回編輯</a>
         {% endif %}
       </div>
@@ -423,15 +423,19 @@
           <ul class="line-list">
             <li><span class="label">地址</span><span class="value">{{ payload.task.case_address or '未填' }}</span></li>
             <li><span class="label">事由</span><span class="value">{{ payload.task.case_reason or '未填' }}</span></li>
+            {% if payload.task.service_type == 'disaster' %}
+              <li><span class="label">指揮官</span><span class="value">{{ payload.task.commander or '未填' }}</span></li>
+              <li><span class="label">處理情形</span><span class="value">{{ payload.task.action_note or '未填' }}</span></li>
+            {% endif %}
             {% if vehicle_entries|length > 1 %}
               {% for entry in vehicle_entries %}
-                <li><span class="label">{{ entry.label }}</span><span class="value">{{ entry.vehicle or '未填' }} / {{ entry.driver or '未填' }} / {{ entry.patient_summary or '未填' }}</span></li>
+                <li><span class="label">{{ entry.label }}</span><span class="value">{{ entry.vehicle or '未填' }} / {{ entry.driver or '未填' }}{% if payload.task.service_type != 'disaster' %} / {{ entry.patient_summary or '未填' }}{% endif %}</span></li>
               {% endfor %}
             {% else %}
               {% set entry = vehicle_entries[0] %}
               <li><span class="label">車輛</span><span class="value">{{ entry.vehicle or '未填' }}</span></li>
               <li><span class="label">司機</span><span class="value">{{ entry.driver or '未填' }}</span></li>
-              <li><span class="label">傷病患</span><span class="value">{{ entry.patient_summary or '未填' }}</span></li>
+              {% if payload.task.service_type != 'disaster' %}<li><span class="label">傷病患</span><span class="value">{{ entry.patient_summary or '未填' }}</span></li>{% endif %}
             {% endif %}
           </ul>
         </article>
@@ -474,6 +478,7 @@
           </ul>
         </article>
 
+        {% if payload.task.service_type != 'disaster' %}
         {% set consumables_site = payload.site_statuses.get('consumables', {}) %}
         <article class="task-card {{ status_class(consumables_site.status) }}">
           <div class="card-head">
@@ -536,6 +541,7 @@
             {% endif %}
           </ul>
         </article>
+        {% endif %}
       </div>
     </section>
 

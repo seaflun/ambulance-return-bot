@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
+from werkzeug.datastructures import MultiDict
 
 import app as app_module
 import ambulance_bot.selenium_local as selenium_local_module
@@ -1238,11 +1239,11 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(app_module.app.config["TEMPLATES_AUTO_RELOAD"])
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("SinpoSmart - 救護Worker", body)
+        self.assertIn("SinpoSmart - 救災救護Worker", body)
         self.assertIn("救護車設定", body)
         self.assertNotIn('href="/admin/public-pc"', body)
         self.assertNotIn('href="/admin/sinposmart"', body)
-        self.assertNotIn("SinpoSmart - 救護Worker 後台", body)
+        self.assertNotIn("SinpoSmart - 救災救護Worker 後台", body)
         self.assertNotIn("值班後台", body)
         self.assertNotIn('id="task-form" autocomplete="off" novalidate', body)
         self.assertIn("請先從上方案件按「帶入」", body)
@@ -1329,11 +1330,170 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('document.querySelectorAll(\'.case-card form[action="/cases/import"] button[type="submit"]\')', body)
         self.assertIn("importButton.disabled = true;", body)
 
-    def test_local_index_redirects_to_app(self):
+    def test_local_index_redirects_to_task_entry(self):
         response = self.client.get("/", follow_redirects=False)
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.headers["Location"], "/app")
+        self.assertEqual(response.headers["Location"], "/task-entry")
+
+    def test_task_entry_shows_disaster_and_ems_cards(self):
+        response = self.client.get("/task-entry")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(200, response.status_code)
+        self.assertIn("救災登打", body)
+        self.assertIn('href="/app/disaster"', body)
+        self.assertIn("救護登打", body)
+        self.assertIn('href="/app"', body)
+
+    def test_disaster_page_uses_approved_layout_and_dynamic_vehicle_cards(self):
+        response = self.client.get("/app/disaster")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(200, response.status_code)
+        self.assertLess(body.index("案件地址"), body.index("案件時間"))
+        self.assertLess(body.index("案件時間"), body.index("案件類型"))
+        self.assertLess(body.index("出動車輛"), body.index("工作紀錄"))
+        self.assertIn("轄內A2", body)
+        self.assertIn("轄內A3", body)
+        self.assertIn("新增車輛", body)
+        self.assertIn("處理情形套餐", body)
+        self.assertNotIn("服勤人員</label>", body)
+
+    def test_disaster_case_lookup_and_import_return_to_disaster_page(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True, exist_ok=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "updated_at": "2026-07-22T12:00:00",
+                "cases": [{"case_id": "fire-1", "title": "火警", "case_time": "1207"}],
+            },
+        )
+
+        page = self.client.get("/app/disaster")
+        body = html.unescape(page.data.decode("utf-8"))
+        self.assertIn('action="/cases/query"', body)
+        self.assertIn('name="return_to" value="disaster"', body)
+        self.assertIn('action="/cases/import"', body)
+
+        query = self.client.post("/cases/query", data={"return_to": "disaster"})
+        self.assertEqual("/app/disaster", query.headers["Location"])
+
+        imported = self.client.post(
+            "/cases/import",
+            data={"return_to": "disaster", "case_id": "fire-1"},
+        )
+        self.assertEqual("/app/disaster#task-form", imported.headers["Location"])
+
+    def test_disaster_vehicle_settings_page_saves_recorder_code(self):
+        page = self.client.get("/admin/disaster-vehicles")
+        body = html.unescape(page.data.decode("utf-8"))
+        self.assertIn("救災車設定", body)
+        self.assertIn("行車紀錄器車號", body)
+
+        response = self.client.post(
+            "/admin/disaster-vehicles",
+            data={"label": "新坡71", "ppe_name": "FIRE-71", "recorder_code": "CAM71"},
+        )
+        self.assertEqual(200, response.status_code)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn("新坡71", body)
+        self.assertIn("CAM71", body)
+
+        disaster_page = self.client.get("/app/disaster")
+        self.assertIn("新坡71", html.unescape(disaster_page.data.decode("utf-8")))
+
+    def test_record_folder_preview_uses_shared_ems_and_disaster_rules(self):
+        blank_disaster = self.client.post(
+            "/api/record-folder-preview",
+            data={"service_type": "disaster"},
+        )
+        self.assertEqual(200, blank_disaster.status_code)
+        self.assertEqual([], blank_disaster.get_json()["paths"])
+        self.assertIn("請先完成案件與車輛資料", blank_disaster.get_json()["detail"])
+
+        ems = self.client.post(
+            "/api/record-folder-preview",
+            data={
+                "service_type": "ems",
+                "case_date": "2026/07/22",
+                "case_time": "1207",
+                "vehicle": "新坡91",
+            },
+        )
+        self.assertEqual(["2026/7月/07221207-91"], ems.get_json()["paths"])
+
+        disaster = self.client.post(
+            "/api/record-folder-preview",
+            data=MultiDict(
+                [
+                    ("service_type", "disaster"),
+                    ("case_date", "2026/07/21"),
+                    ("case_time", "1207"),
+                    ("case_address", "桃園市觀音區金華路31號"),
+                    ("case_reason", "一般(集合)住宅"),
+                    ("recorder_category", "轄內A3"),
+                    ("vehicle", "新坡11"),
+                    ("driver", "甲"),
+                ]
+            ),
+        )
+        self.assertEqual(
+            ["115年/轄內A3/202607211207桃園市觀音區金華路31號(住宅火警)-11"],
+            disaster.get_json()["paths"],
+        )
+
+    def test_disaster_task_detail_hides_ems_cards_and_shows_commander_and_processing(self):
+        task = AmbulanceReturnRequest(
+            task_id="disaster-detail",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            case_date="2026/07/22",
+            case_time="1207",
+            return_time="1300",
+            case_address="桃園市觀音區",
+            case_reason="雜草(含廢棄物、墓地)",
+            commander="指揮官甲",
+            action_note="現場待命",
+            vehicle_entries=[{"vehicle": "新坡11", "driver": "司機甲", "mileage": "100", "return_time": "1300"}],
+        )
+        self.store.create(task)
+
+        body = html.unescape(self.client.get("/tasks/disaster-detail").data.decode("utf-8"))
+
+        self.assertIn("指揮官甲", body)
+        self.assertIn("現場待命", body)
+        self.assertNotIn("<h3>耗材</h3>", body)
+        self.assertNotIn("<h3>消毒</h3>", body)
+        self.assertIn('href="/app/disaster"', body)
+        self.assertNotIn("返回編輯", body)
+
+        edit_get = self.client.get("/tasks/disaster-detail/edit")
+        edit_post = self.client.post("/tasks/disaster-detail/edit", data={})
+        self.assertEqual(409, edit_get.status_code)
+        self.assertEqual(409, edit_post.status_code)
+        self.assertIn("救災案件不使用救護編輯頁", edit_get.get_data(as_text=True))
+
+    def test_ems_form_shows_folder_preview_and_live_fuel_total_without_changing_entry_route(self):
+        self.import_case_for_form(
+            {
+                "case_id": "case-preview",
+                "case_date": "2026/07/22",
+                "case_time": "1207",
+                "address": "桃園市觀音區",
+                "personnel": ["甲"],
+            }
+        )
+        response = self.client.get("/app")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn('id="record-folder-preview"', body)
+        self.assertIn('data-fuel-total', body)
+        self.assertIn('/api/record-folder-preview', body)
+        self.assertIn('action="/tasks"', body)
 
     def test_nas_index_shows_entry_buttons_only(self):
         response = self.client.get("/", headers={"Host": "100.114.126.58:8080"})
@@ -1345,10 +1505,10 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("救護返隊小幫手", body)
         self.assertIn("值班後台", body)
         self.assertIn('href="/admin/sinposmart"', body)
-        self.assertIn("救護後台", body)
+        self.assertIn("救災救護後台", body)
         self.assertIn('href="/admin/public-pc"', body)
-        self.assertIn("救護登打", body)
-        self.assertIn('href="/app"', body)
+        self.assertIn("救災救護登打", body)
+        self.assertIn('href="/task-entry"', body)
         self.assertIn("車輛損害管理", body)
         self.assertIn(
             'href="https://sinposmart-vehicle-damage-portal.sinpo666.workers.dev"',
@@ -1367,7 +1527,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("SinpoSmart - 救護Worker", body)
+        self.assertIn("SinpoSmart - 救災救護Worker", body)
         self.assertNotIn("救護車設定", body)
         self.assertNotIn('href="/admin/vehicles"', body)
 
@@ -1780,7 +1940,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("SinpoSmart - 救護Worker - 編輯狀態", body)
+        self.assertIn("SinpoSmart - 救災救護Worker - 編輯狀態", body)
         self.assertNotIn('formaction="/cases/clear"', body)
         self.assertNotIn(">清除</button>", body)
 
@@ -1811,6 +1971,45 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(self.store.list_recent(), [])
         self.assertIn("請先從上方案件按「帶入」", body)
         self.assertNotIn('id="task-form"', body)
+
+    def test_create_disaster_task_builds_folders_before_storing_and_prevents_duplicate_case(self):
+        data = MultiDict([
+            ("case_id", "FIRE-1"), ("case_date", "2026/07/22"), ("case_time", "1207"),
+            ("return_time", "1300"), ("case_address", "桃園市觀音區金華路31號"),
+            ("summary_type", "火災"), ("case_reason", "一般(集合)住宅"),
+            ("personnel", "甲,乙,丙"), ("personnel_accounts", "TYFD-A,TYFD-B,TYFD-C"),
+            ("commander", "丙"), ("action_note", "現場待命"),
+            ("recorder_category", "轄內A3"),
+            ("vehicle", "新坡11"), ("driver", "甲"), ("vehicle_return_time", "1300"), ("mileage", "100"),
+            ("vehicle", "新坡15"), ("driver", "乙"), ("vehicle_return_time", "1310"), ("mileage", "200"),
+        ])
+        folder_results = [mock.Mock(vehicle="新坡11", path=Path("X:/one"), status="created")]
+
+        with mock.patch.object(app_module, "ensure_disaster_record_folders", return_value=folder_results) as folders:
+            first = self.client.post("/tasks/disaster", data=data, follow_redirects=False)
+            second = self.client.post("/tasks/disaster", data=data, follow_redirects=False)
+
+        self.assertEqual(302, first.status_code)
+        self.assertEqual(first.headers["Location"], second.headers["Location"])
+        self.assertEqual(1, folders.call_count)
+        payload = self.store.list_recent()[0]
+        self.assertEqual("disaster", payload["task"]["service_type"])
+        self.assertEqual(2, len(payload["task"]["vehicle_entries"]))
+
+    def test_create_disaster_task_requires_commander_from_case_personnel(self):
+        data = MultiDict([
+            ("case_id", "FIRE-2"), ("case_date", "2026/07/22"), ("case_time", "1207"),
+            ("return_time", "1300"), ("case_address", "桃園市觀音區金華路31號"),
+            ("case_reason", "一般(集合)住宅"), ("personnel", "甲,乙"), ("commander", "丙"),
+            ("action_note", "現場待命"), ("recorder_category", "轄內A3"),
+            ("vehicle", "新坡11"), ("driver", "甲"), ("vehicle_return_time", "1300"), ("mileage", "100"),
+        ])
+
+        response = self.client.post("/tasks/disaster", data=data)
+
+        self.assertEqual(400, response.status_code)
+        self.assertIn("指揮官必須是本案服勤人員", html.unescape(response.data.decode("utf-8")))
+        self.assertEqual([], self.store.list_recent())
 
     def test_create_task_writes_json_and_redirects(self):
         response = self.client.post(
@@ -2069,7 +2268,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.get_json()["ack_id"], "evt-1")
         page = self.client.get("/admin/public-pc")
         body = html.unescape(page.data.decode("utf-8"))
-        self.assertIn("SinpoSmart - 救護Worker 後台", body)
+        self.assertIn("SinpoSmart - 救災救護Worker 後台", body)
         self.assertIn('<details class="task-details">', body)
         self.assertIn("<summary>完整事件</summary>", body)
         self.assertIn("任務司機：曾彥綸", body)
@@ -3304,6 +3503,48 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("成功案件樣本", failed_body)
         self.assertNotIn("執行中案件樣本", failed_body)
 
+    def test_admin_public_pc_service_filter_cross_composes_with_result_filter(self):
+        samples = [
+            ("ems-filter", "救護篩選樣本", "ems", "desktop_fast_completed", "duty_work_log_saved"),
+            ("disaster-filter", "救災篩選樣本", "disaster", "desktop_fast_completed_with_errors", "duty_work_log_failed"),
+        ]
+        for task_id, title, service_type, overall_status, work_status in samples:
+            task = {
+                "task_id": task_id,
+                "service_type": service_type,
+                "case_reason": title,
+                "case_address": "桃園市觀音區",
+                "commander": "指揮官甲" if service_type == "disaster" else "",
+            }
+            site_statuses = {
+                "duty_work_log": {"status": work_status},
+                "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                "fuel_record": {"status": "not_applicable"},
+                "consumables": {"status": "consumables_saved" if service_type == "ems" else "not_applicable"},
+                "disinfection": {"status": "disinfection_saved" if service_type == "ems" else "not_applicable"},
+            }
+            app_module.upsert_public_pc_report(
+                {
+                    "event_id": f"evt-{task_id}",
+                    "task_id": task_id,
+                    "title": title,
+                    "task": task,
+                    "overall_status": overall_status,
+                    "site_statuses": site_statuses,
+                }
+            )
+
+        body = html.unescape(
+            self.client.get("/admin/public-pc?service=disaster&result=failed").data.decode("utf-8")
+        )
+
+        self.assertIn("SinpoSmart - 救災救護Worker 後台", body)
+        self.assertIn("救災篩選樣本", body)
+        self.assertNotIn("救護篩選樣本", body)
+        self.assertIn("指揮官：指揮官甲", body)
+        self.assertIn('href="/admin/public-pc?service=disaster&result=success"', body)
+        self.assertLess(body.index("救災案件"), body.index("顯示全部"))
+
     def test_admin_public_pc_shows_remote_update_card_only_on_nas(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -3583,7 +3824,7 @@ class WebAppTests(unittest.TestCase):
     def test_admin_public_pc_shows_worker_version(self):
         original_version_info = getattr(app_module, "worker_admin_version_info", None)
         app_module.worker_admin_version_info = lambda _reports=None: {
-            "label": "SinpoSmart - 救護Worker",
+            "label": "SinpoSmart - 救災救護Worker",
             "version": "2026.06.19.0715",
             "detail": "目前後台",
         }
@@ -3592,7 +3833,7 @@ class WebAppTests(unittest.TestCase):
             body = html.unescape(page.data.decode("utf-8"))
 
             self.assertIn("系統版本", body)
-            self.assertIn("SinpoSmart - 救護Worker", body)
+            self.assertIn("SinpoSmart - 救災救護Worker", body)
             self.assertIn("2026.06.19.0715", body)
             self.assertIn("目前後台", body)
         finally:
@@ -3621,7 +3862,7 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/public-pc")
         body = html.unescape(page.data.decode("utf-8"))
 
-        self.assertIn("SinpoSmart - 救護Worker", body)
+        self.assertIn("SinpoSmart - 救災救護Worker", body)
         self.assertIn("2026.06.19.0801-installed", body)
         self.assertIn("NAS 後台", body)
         self.assertIn("心跳版本：未標示", body)
@@ -5695,10 +5936,10 @@ class WebAppTests(unittest.TestCase):
         edit_response = self.client.get(f"/tasks/{task_id}/edit")
         edit_body = html.unescape(edit_response.data.decode("utf-8"))
         self.assertEqual(edit_response.status_code, 200)
-        self.assertIn("SinpoSmart - 救護Worker - 編輯狀態", edit_body)
+        self.assertIn("SinpoSmart - 救災救護Worker - 編輯狀態", edit_body)
         self.assertNotIn("勤務案件", edit_body)
         self.assertNotIn("救護車設定", edit_body)
-        self.assertNotIn("SinpoSmart - 救護Worker 後台", edit_body)
+        self.assertNotIn("SinpoSmart - 救災救護Worker 後台", edit_body)
         self.assertIn("儲存修改", edit_body)
         self.assertIn('class="form-actions"', edit_body)
         self.assertIn('value="100"', edit_body)

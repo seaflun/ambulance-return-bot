@@ -17,6 +17,27 @@ from ambulance_bot.task_store import (
 
 
 class JsonTaskStoreTests(unittest.TestCase):
+    def test_disaster_completion_uses_only_work_log_mileage_and_enabled_fuel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="disaster-sites",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                vehicle="新坡11",
+            )
+            payload = store.create(request)
+            payload["site_statuses"]["duty_work_log"]["status"] = "duty_work_log_saved"
+            payload["site_statuses"]["vehicle_mileage"]["status"] = "vehicle_mileage_saved"
+
+            snapshot = task_completion_snapshot(payload)
+
+            self.assertEqual(["duty_work_log", "vehicle_mileage"], snapshot["active_site_keys"])
+            self.assertTrue(snapshot["all_complete"])
+            self.assertEqual("not_applicable", payload["site_statuses"]["consumables"]["status"])
+            self.assertEqual("not_applicable", payload["site_statuses"]["disinfection"]["status"])
+
     def test_repeated_edit_impact_keeps_unresolved_earlier_site(self):
         existing = {
             "changed_fields": [{"key": "mileage", "label": "里程"}],

@@ -115,10 +115,10 @@ def task_completion_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     valid_task = True
     try:
         request = AmbulanceReturnRequest.from_dict(dict(payload.get("task") or {}))
-        has_fuel_record = request.has_fuel_record()
+        active_site_keys = request.active_site_keys()
     except (AttributeError, KeyError, TypeError, ValueError):
         valid_task = False
-        has_fuel_record = False
+        active_site_keys = []
 
     raw_fuel_site = statuses.get("fuel_record")
     fuel_status = (
@@ -127,11 +127,9 @@ def task_completion_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         else ""
     )
     fuel_cleanup_pending = "waiting_confirmation" in fuel_status
-    active_site_keys = [
-        site_key
-        for site_key in SITE_RUN_ORDER
-        if site_key != "fuel_record" or has_fuel_record or fuel_cleanup_pending
-    ]
+    if fuel_cleanup_pending and "fuel_record" not in active_site_keys:
+        active_site_keys.append("fuel_record")
+    active_site_keys = [site_key for site_key in SITE_RUN_ORDER if site_key in active_site_keys]
     completed_site_keys: list[str] = []
     remaining_site_keys: list[str] = []
     failed_site_keys: list[str] = []
@@ -165,7 +163,7 @@ def task_completion_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "active_site_keys": active_site_keys,
-        "site_count_label": "五站" if total_count == 5 else "四站",
+        "site_count_label": {2: "二站", 3: "三站", 4: "四站", 5: "五站"}.get(total_count, f"{total_count}站"),
         "total_count": total_count,
         "completed_count": len(completed_site_keys),
         "completed_site_keys": completed_site_keys,
@@ -295,7 +293,7 @@ class JsonTaskStore:
             "overall_status": "created",
             "worker_queue": initial_worker_queue_state(),
             "recent_status_event_ids": [],
-            "site_statuses": initial_site_statuses(),
+            "site_statuses": initial_site_statuses(request),
             "site_attempts": initial_site_attempts(),
             "events": [
                 {
@@ -1823,13 +1821,15 @@ def worker_queue_overall_status_is_terminal(status: str) -> bool:
     )
 
 
-def initial_site_statuses() -> dict[str, dict[str, str]]:
+def initial_site_statuses(request: AmbulanceReturnRequest | None = None) -> dict[str, dict[str, str]]:
+    all_sites = {site.key for site in SITE_DEFINITIONS}
+    active = set(request.active_site_keys()) if request is not None and request.service_type == "disaster" else all_sites
     return {
         site.key: {
             "key": site.key,
             "name": site.name,
             "url": site.url,
-            "status": "not_started",
+            "status": "not_started" if site.key in active else "not_applicable",
             "detail": "",
             "updated_at": "",
             **{field: "" for field in DIAGNOSTIC_FIELDS},

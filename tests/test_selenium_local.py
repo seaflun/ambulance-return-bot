@@ -2838,6 +2838,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(cases[0]["category"], "火災")
         self.assertEqual(cases[0]["reason"], "火災")
         self.assertIn("includes('火災')", driver.script)
+        self.assertIn("summary_type:", driver.script)
 
     def test_extract_emergency_cases_includes_salvaged_body_as_drowning(self):
         class FakeDriver:

@@ -184,8 +184,8 @@ class WorkerGuiEnvTests(unittest.TestCase):
         source = Path(worker_gui.__file__).read_text(encoding="utf-8")
 
         self.assertIn("class WorkerGui(ctk.CTk):", source)
-        self.assertIn('self.title("SinpoSmart - 救護Worker")', source)
-        self.assertIn('text="SinpoSmart - 救護Worker"', source)
+        self.assertIn('self.title("SinpoSmart - 救災救護Worker")', source)
+        self.assertIn('text="SinpoSmart - 救災救護Worker"', source)
         self.assertNotIn('text="救護回程小幫手"', source)
         self.assertIn('self.configure(fg_color=theme["bg"])', source)
         self.assertIn('fg_color=theme["status_bg"]', source)

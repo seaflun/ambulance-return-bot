@@ -112,6 +112,17 @@ CASE_REASON_OPTIONS = [
     "\u8aa4(\u8b0a)\u5831",
     "\u5176\u4ed6",
 ]
+DISASTER_REASON_OPTIONS = [
+    "商店(量販店)", "公共場所(機場、車站)", "隧道", "航空器、火車等大眾運輸工具", "船舶",
+    "汽機車", "雜草(含廢棄物、墓地)", "誤(謊)報", "其他", "一般(集合)住宅", "高層(超高)建築物",
+    "地下建築物", "臨時屋(含工寮、樣品屋、雞舍等無門牌之建築物)", "機關、學校(軍公教辦公廳舍、宿舍)",
+    "山林", "工廠及倉庫(含石化工業設備設施)", "爆炸",
+]
+DISASTER_ACTION_PACKAGES = [
+    "中途取消", "到場不需支援", "誤報／警報器誤動作", "到達現場時火勢已熄滅", "到達現場未發現火煙",
+    "出一水線執行滅火攻擊", "執行殘火處理", "現場待命", "協助布署／收拾水帶", "水源供給／中繼",
+    "交由轄區分隊處理", "交由台電處理",
+]
 
 
 def vehicle_settings_path(base_dir: Path | None = None) -> Path:
@@ -310,6 +321,7 @@ class AmbulanceReturnRequest:
     task_id: str
     created_at: datetime
     raw_text: str
+    service_type: str = "ems"
     vehicle: str = ""
     driver: str = ""
     mileage: str = ""
@@ -330,6 +342,13 @@ class AmbulanceReturnRequest:
     two_vehicle: bool = False
     vehicle_entries: list[VehicleEntry] = field(default_factory=list)
     fuel_record: FuelRecord = field(default_factory=FuelRecord)
+    duty_item: str = ""
+    summary_type: str = ""
+    commander: str = ""
+    action_note: str = ""
+    reason_other: str = ""
+    recorder_category: str = ""
+    recorder_subcategory: str = ""
 
     @property
     def consumable_summary(self) -> str:
@@ -373,6 +392,25 @@ class AmbulanceReturnRequest:
 
     @property
     def duty_login_account_candidates(self) -> list[str]:
+        if self.service_type == "disaster":
+            entries = self.effective_vehicle_entries()
+            preferred_names: list[str] = []
+            for vehicle_suffix in ("15", "11"):
+                preferred_names.extend(
+                    entry.driver.strip() for entry in entries
+                    if entry.driver.strip() and entry.vehicle.strip().endswith(vehicle_suffix)
+                )
+            preferred_names.extend(name.strip() for name in self.personnel if name.strip())
+            ordered: list[str] = []
+            for name in preferred_names:
+                matched = False
+                for index, person in enumerate(self.personnel):
+                    if person.strip() == name and index < len(self.personnel_accounts):
+                        ordered.append(self.personnel_accounts[index])
+                        matched = True
+                if not matched:
+                    ordered.append(name)
+            return _dedupe_login_candidates(ordered)
         accounts = [account.strip() for account in self.personnel_accounts if account.strip()]
         driver = self.driver.strip()
         if not accounts:
@@ -424,6 +462,12 @@ class AmbulanceReturnRequest:
     @property
     def duty_status_text(self) -> str:
         entries = self.effective_vehicle_entries()
+        if self.service_type == "disaster":
+            vehicles = "、".join(
+                f"{entry.vehicle or '未填車輛'}:{entry.driver or '未填司機'}" for entry in entries
+            )
+            commander = f"、指揮官:{self.commander}" if self.commander else ""
+            return f"1.{vehicles}{commander}\n2.{self.action_note}".rstrip()
         if len(entries) > 1:
             vehicle_line = " ".join(_vehicle_driver_text(entry) for entry in entries if entry.vehicle or entry.driver).strip()
             patient_entries = [
@@ -461,9 +505,17 @@ class AmbulanceReturnRequest:
 
     def effective_vehicle_entries(self) -> list[VehicleEntry]:
         entries = [VehicleEntry.from_dict(entry) for entry in self.vehicle_entries]
-        if self.two_vehicle and entries:
+        if entries and (self.two_vehicle or self.service_type == "disaster"):
             return entries
         return [self.primary_vehicle_entry()]
+
+    def active_site_keys(self) -> list[str]:
+        keys = ["duty_work_log", "vehicle_mileage"]
+        if self.has_fuel_record():
+            keys.append("fuel_record")
+        if self.service_type == "ems":
+            keys.extend(["consumables", "disinfection"])
+        return keys
 
     def vehicle_requests(self) -> list["AmbulanceReturnRequest"]:
         entries = self.effective_vehicle_entries()
@@ -540,6 +592,7 @@ class AmbulanceReturnRequest:
             task_id=str(payload.get("task_id") or new_task_id()),
             created_at=datetime.fromisoformat(created_at_raw),
             raw_text=str(payload.get("raw_text") or ""),
+            service_type=str(payload.get("service_type") or "ems"),
             vehicle=str(payload.get("vehicle") or ""),
             driver=str(payload.get("driver") or ""),
             mileage=str(payload.get("mileage") or ""),
@@ -560,6 +613,13 @@ class AmbulanceReturnRequest:
             two_vehicle=form_flag_enabled(payload.get("two_vehicle")),
             vehicle_entries=vehicle_entries,
             fuel_record=FuelRecord.from_dict(payload.get("fuel_record")),
+            duty_item=str(payload.get("duty_item") or ""),
+            summary_type=str(payload.get("summary_type") or ""),
+            commander=str(payload.get("commander") or ""),
+            action_note=str(payload.get("action_note") or ""),
+            reason_other=str(payload.get("reason_other") or ""),
+            recorder_category=str(payload.get("recorder_category") or ""),
+            recorder_subcategory=str(payload.get("recorder_subcategory") or ""),
         )
 
 
@@ -744,6 +804,81 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
     )
 
 
+def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
+    case_date = normalize_case_date(str(form.get("case_date") or ""))
+    case_return_time = str(form.get("return_time") or "").strip()
+    vehicles = _form_values(form, "vehicle", preserve_empty=True)
+    drivers = _form_values(form, "driver", preserve_empty=True)
+    mileages = _form_values(form, "mileage", preserve_empty=True)
+    return_times = _form_values(form, "vehicle_return_time", preserve_empty=True)
+    return_dates = _form_values(form, "vehicle_return_date", preserve_empty=True)
+    fuel_enabled = {int(value) for value in _form_values(form, "fuel_enabled") if value.isdigit()}
+    fuel_dates = _form_values(form, "fuel_date", preserve_empty=True)
+    fuel_times = _form_values(form, "fuel_time", preserve_empty=True)
+    fuel_quantities = _form_values(form, "fuel_quantity", preserve_empty=True)
+    fuel_prices = _form_values(form, "fuel_unit_price", preserve_empty=True)
+
+    def item(values: list[str], index: int, default: str = "") -> str:
+        return values[index] if index < len(values) else default
+
+    entries: list[VehicleEntry] = []
+    for index, vehicle in enumerate(vehicles):
+        driver = item(drivers, index)
+        enabled = index in fuel_enabled
+        entries.append(
+            VehicleEntry(
+                vehicle=vehicle,
+                driver=driver,
+                mileage=item(mileages, index),
+                return_date=normalize_case_date(item(return_dates, index) or case_date),
+                return_time=item(return_times, index) or case_return_time,
+                patient_summary="無",
+                disinfection_items=[],
+                consumables={},
+                fuel_record=FuelRecord(
+                    enabled=enabled,
+                    date=compact_case_date(item(fuel_dates, index, case_date)) if enabled else "",
+                    time=normalize_hhmm(item(fuel_times, index)) if enabled else "",
+                    driver=driver if enabled else "",
+                    product=DEFAULT_FUEL_PRODUCT,
+                    quantity=item(fuel_quantities, index) if enabled else "",
+                    unit_price=item(fuel_prices, index) if enabled else "",
+                ),
+            )
+        )
+    primary = entries[0] if entries else VehicleEntry(return_date=case_date, return_time=case_return_time)
+    return AmbulanceReturnRequest(
+        task_id=new_task_id(),
+        created_at=datetime.now(),
+        raw_text="",
+        service_type="disaster",
+        vehicle=primary.vehicle,
+        driver=primary.driver,
+        mileage=primary.mileage,
+        case_id=str(form.get("case_id") or "").strip(),
+        personnel=parse_list(form.get("personnel") or ""),
+        personnel_accounts=parse_account_list(form.get("personnel_accounts") or ""),
+        case_date=case_date,
+        case_time=str(form.get("case_time") or "").strip(),
+        return_date=primary.return_date,
+        return_time=case_return_time,
+        case_address=clean_case_address(str(form.get("case_address") or "")),
+        patient_summary="無",
+        case_reason=str(form.get("case_reason") or "").strip(),
+        disinfection_items=[],
+        consumables={},
+        vehicle_entries=entries,
+        fuel_record=FuelRecord.from_dict(primary.fuel_record),
+        duty_item=str(form.get("duty_item") or "火警").strip() or "火警",
+        summary_type=str(form.get("summary_type") or "").strip(),
+        commander=str(form.get("commander") or "").strip(),
+        action_note=str(form.get("action_note") or "").strip(),
+        reason_other=str(form.get("reason_other") or "").strip(),
+        recorder_category=str(form.get("recorder_category") or "").strip(),
+        recorder_subcategory=str(form.get("recorder_subcategory") or "").strip(),
+    )
+
+
 def parse_request(text: str) -> AmbulanceReturnRequest:
     request = AmbulanceReturnRequest(task_id=new_task_id(), created_at=datetime.now(), raw_text=text)
     for line in _meaningful_lines(text):
@@ -864,16 +999,18 @@ def _dedupe_login_candidates(candidates: Iterable[str]) -> list[str]:
     return result
 
 
-def _form_values(form: dict[str, Any], name: str) -> list[str]:
+def _form_values(form: dict[str, Any], name: str, *, preserve_empty: bool = False) -> list[str]:
     getlist = getattr(form, "getlist", None)
     if callable(getlist):
-        return [str(value or "").strip() for value in getlist(name) if str(value or "").strip()]
+        values = [str(value or "").strip() for value in getlist(name)]
+        return values if preserve_empty else [value for value in values if value]
     value = form.get(name)
     if isinstance(value, list):
-        return [str(item or "").strip() for item in value if str(item or "").strip()]
+        values = [str(item or "").strip() for item in value]
+        return values if preserve_empty else [item for item in values if item]
     if value:
         return [str(value).strip()]
-    return []
+    return [""] if preserve_empty and name in form else []
 
 
 _CASE_ADDRESS_DASH_NOISE_PREFIXES = (

@@ -1,6 +1,6 @@
-# SinpoSmart - 救護Worker
+# SinpoSmart - 救災救護Worker
 
-SinpoSmart - 救護Worker is maintained as a Windows public-duty worker plus a NAS Flask task center.
+SinpoSmart - 救災救護Worker is maintained as a Windows public-duty worker plus a NAS Flask task center.
 
 ## Layout
 

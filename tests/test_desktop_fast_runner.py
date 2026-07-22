@@ -4,6 +4,7 @@ import time
 import unittest
 import os
 import json
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -18,6 +19,25 @@ from ambulance_bot.update_safety import ManualUpdateRequiredError
 
 
 class DesktopFastRunnerTests(unittest.TestCase):
+    def test_disaster_active_site_groups_exclude_ems_sites(self):
+        request = AmbulanceReturnRequest(
+            task_id="disaster-groups",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+        )
+        runner = SimpleNamespace(
+            _site_update_context=lambda *args: None,
+            _run_vehicle_mileage=lambda *args: None,
+            _run_fuel_record=lambda *args: None,
+            _run_consumables=lambda *args: None,
+            _run_disinfection=lambda *args: None,
+        )
+
+        groups = desktop_fast_runner_module.active_site_groups(request, "test", runner)
+
+        self.assertEqual(["duty_work_log", "vehicle_mileage"], [key for group in groups for key, _ in group])
+
     def test_disinfection_preflights_manual_update_before_login(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp) / "tasks")

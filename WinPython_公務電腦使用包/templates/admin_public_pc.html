@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>SinpoSmart - 救護Worker 後台</title>
+  <title>SinpoSmart - 救災救護Worker 後台</title>
   <style>
     :root {
       color-scheme: light;
@@ -286,7 +286,7 @@
 <body>
   <main>
     <header>
-      <h1>SinpoSmart - 救護Worker 後台</h1>
+      <h1>SinpoSmart - 救災救護Worker 後台</h1>
       <a class="button secondary" href="/">返回首頁</a>
     </header>
 
@@ -351,10 +351,15 @@
       </section>
     {% endif %}
 
-    <nav class="result-filters" aria-label="案件分類">
-      <a class="button result-filter{% if result_filter == 'all' %} active{% endif %}" href="/admin/public-pc">顯示全部 {{ report_counts['all'] }}</a>
-      <a class="button result-filter{% if result_filter == 'success' %} active{% endif %}" href="/admin/public-pc?result=success">成功案件 {{ report_counts['success'] }}</a>
-      <a class="button result-filter{% if result_filter == 'failed' %} active{% endif %}" href="/admin/public-pc?result=failed">失敗案件 {{ report_counts['failed'] }}</a>
+    <nav class="result-filters" aria-label="救災救護分類">
+      <a class="button result-filter{% if service_filter == 'all' %} active{% endif %}" href="/admin/public-pc{% if result_filter != 'all' %}?result={{ result_filter }}{% endif %}">全部類型 {{ service_counts['all'] }}</a>
+      <a class="button result-filter{% if service_filter == 'disaster' %} active{% endif %}" href="/admin/public-pc?service=disaster{% if result_filter != 'all' %}&amp;result={{ result_filter }}{% endif %}">救災案件 {{ service_counts['disaster'] }}</a>
+      <a class="button result-filter{% if service_filter == 'ems' %} active{% endif %}" href="/admin/public-pc?service=ems{% if result_filter != 'all' %}&amp;result={{ result_filter }}{% endif %}">救護案件 {{ service_counts['ems'] }}</a>
+    </nav>
+    <nav class="result-filters" aria-label="執行結果分類">
+      <a class="button result-filter{% if result_filter == 'all' %} active{% endif %}" href="/admin/public-pc{% if service_filter != 'all' %}?service={{ service_filter }}{% endif %}">顯示全部 {{ report_counts['all'] }}</a>
+      <a class="button result-filter{% if result_filter == 'success' %} active{% endif %}" href="/admin/public-pc?{% if service_filter != 'all' %}service={{ service_filter }}&amp;{% endif %}result=success">成功案件 {{ report_counts['success'] }}</a>
+      <a class="button result-filter{% if result_filter == 'failed' %} active{% endif %}" href="/admin/public-pc?{% if service_filter != 'all' %}service={{ service_filter }}&amp;{% endif %}result=failed">失敗案件 {{ report_counts['failed'] }}</a>
     </nav>
 
     {% if reports %}
@@ -369,7 +374,13 @@
             <div class="card-head">
               <div>
                 <h2 class="title">{{ item.title }}</h2>
-                <div class="meta">任務司機：{{ task.driver or '未填司機' }}</div>
+                {% if task.service_type == 'disaster' %}
+                  <div class="meta">案件時間：{{ task.case_date or '未填' }} {{ task.case_time or '' }}</div>
+                  <div class="meta">案件地址：{{ task.case_address or '未填地址' }}</div>
+                  <div class="meta">事由：{{ task.case_reason or '未填事由' }}｜指揮官：{{ task.commander or '未填指揮官' }}</div>
+                {% else %}
+                  <div class="meta">任務司機：{{ task.driver or '未填司機' }}</div>
+                {% endif %}
                 <div class="meta">同步帳號：{{ synced_account }}</div>
                 <div class="meta">公務電腦：{{ item.worker_id or '未回報' }}｜更新：{{ item.updated_at }}</div>
               </div>
@@ -377,11 +388,19 @@
             </div>
 
             {% if vehicle_entries %}
-              <section class="vehicle-summary" aria-label="救護車明細">
+              <section class="vehicle-summary" aria-label="出動車輛明細">
                 {% for entry in vehicle_entries %}
                   <div class="vehicle-line">
                     <strong>{{ entry.label }}</strong>
-                    {{ entry.vehicle or '未填車輛' }} / {{ entry.patient_gender or '未填傷病患' }} / 出勤 {{ entry.case_time or '未填' }} / 返隊 {{ entry.return_time or '未填' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }} / {{ entry.consumables_summary or '未填耗材' }} / {{ entry.disinfection_count_text or '消毒0項' }}
+                    {% if task.service_type == 'disaster' %}
+                      {% set mileage_results = item.site_statuses.get('vehicle_mileage', {}).get('vehicle_results', {}) if item.site_statuses else {} %}
+                      {% set fuel_results = item.site_statuses.get('fuel_record', {}).get('vehicle_results', {}) if item.site_statuses else {} %}
+                      {% set mileage_state = mileage_results.get(entry.vehicle, {}) if mileage_results is mapping else {} %}
+                      {% set fuel_state = fuel_results.get(entry.vehicle, {}) if fuel_results is mapping else {} %}
+                      {{ entry.vehicle or '未填車輛' }} / {{ entry.driver or '未填司機' }} / 返隊 {{ entry.return_time or '未填' }} / 里程 {{ entry.mileage or '未填' }} / 里程狀態 {{ status_label(mileage_state.status or item.site_statuses.get('vehicle_mileage', {}).status or 'not_started') }}{% if entry.fuel_enabled %} / 加油狀態 {{ status_label(fuel_state.status or item.site_statuses.get('fuel_record', {}).status or 'not_started') }}{% endif %}
+                    {% else %}
+                      {{ entry.vehicle or '未填車輛' }} / {{ entry.patient_gender or '未填傷病患' }} / 出勤 {{ entry.case_time or '未填' }} / 返隊 {{ entry.return_time or '未填' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }} / {{ entry.consumables_summary or '未填耗材' }} / {{ entry.disinfection_count_text or '消毒0項' }}
+                    {% endif %}
                   </div>
                 {% endfor %}
               </section>

@@ -7,7 +7,7 @@ exit /b 0
 :run_update
 cd /d "%~dp0"
 
-echo SinpoSmart Ambulance Worker package updater
+echo SinpoSmart Disaster EMS Worker package updater
 echo Package: %CD%
 echo.
 

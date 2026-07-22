@@ -4,13 +4,86 @@ from datetime import datetime
 import json
 from pathlib import Path
 import tempfile
+from werkzeug.datastructures import MultiDict
 
-from ambulance_bot.models import clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_form
+from ambulance_bot.models import clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_disaster_form, request_from_form
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.models import delete_vehicle_record, load_vehicle_records, save_vehicle_record, vehicle_options, vehicle_ppe_names
 
 
 class ModelParsingTests(unittest.TestCase):
+    def test_disaster_form_parses_n_vehicle_entries_and_active_sites(self):
+        request = request_from_disaster_form(
+            MultiDict(
+                [
+                    ("case_id", "CASE-1"),
+                    ("case_date", "2026/07/22"),
+                    ("case_time", "1207"),
+                    ("return_time", "1300"),
+                    ("case_address", "桃園市觀音區金華路31號"),
+                    ("case_reason", "一般(集合)住宅"),
+                    ("commander", "王小明"),
+                    ("action_note", "現場待命"),
+                    ("recorder_category", "轄內A3"),
+                    ("vehicle", "新坡11"),
+                    ("driver", "甲"),
+                    ("mileage", "100"),
+                    ("vehicle_return_time", "1300"),
+                    ("vehicle", "新坡15"),
+                    ("driver", "乙"),
+                    ("mileage", "200"),
+                    ("vehicle_return_time", "1310"),
+                ]
+            )
+        )
+
+        self.assertEqual("disaster", request.service_type)
+        self.assertEqual(["新坡11", "新坡15"], [item.vehicle for item in request.vehicle_entries])
+        self.assertEqual(["1300", "1310"], [item.return_time for item in request.vehicle_entries])
+        self.assertEqual(["duty_work_log", "vehicle_mileage"], request.active_site_keys())
+
+    def test_disaster_work_log_login_prefers_15_then_11_then_other_personnel(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-1",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            personnel=["甲", "乙", "丙"],
+            personnel_accounts=["TYFD-A", "TYFD-B", "TYFD-C"],
+            vehicle_entries=[
+                {"vehicle": "新坡11", "driver": "甲"},
+                {"vehicle": "新坡15", "driver": "乙"},
+            ],
+        )
+
+        self.assertEqual(["TYFD-B", "TYFD-A", "TYFD-C"], request.duty_login_account_candidates)
+
+    def test_disaster_form_keeps_repeated_vehicle_fields_aligned_when_middle_value_is_blank(self):
+        request = request_from_disaster_form(
+            MultiDict(
+                [
+                    ("case_date", "2026/07/22"),
+                    ("return_time", "1300"),
+                    ("vehicle", "新坡11"),
+                    ("vehicle", "新坡15"),
+                    ("vehicle", "新坡16"),
+                    ("driver", "甲"),
+                    ("driver", ""),
+                    ("driver", "丙"),
+                    ("mileage", "100"),
+                    ("mileage", ""),
+                    ("mileage", "300"),
+                    ("vehicle_return_time", "1300"),
+                    ("vehicle_return_time", ""),
+                    ("vehicle_return_time", "1320"),
+                ]
+            )
+        )
+
+        self.assertEqual(["甲", "", "丙"], [item.driver for item in request.vehicle_entries])
+        self.assertEqual(["100", "", "300"], [item.mileage for item in request.vehicle_entries])
+        self.assertEqual(["1300", "1300", "1320"], [item.return_time for item in request.vehicle_entries])
+
     def test_default_consumables(self):
         request = parse_request("\u6551\u8b77\u56de\u7a0b\n\u8eca\u8f1b:91A1")
 

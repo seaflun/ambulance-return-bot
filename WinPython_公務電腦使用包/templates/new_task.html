@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f766e">
-  <title>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</title>
+  <title>{{ 'SinpoSmart - 救災救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救災救護Worker' }}</title>
   <style>
     :root {
       color-scheme: light;
@@ -200,6 +200,10 @@
     .fuel-record-fields { margin: -4px 0 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .fuel-record-fields[hidden] { display: none; }
     .fuel-record-fields .grid:last-child label { margin-bottom: 0; }
+    .fuel-total { margin-top: 10px; color: var(--accent); font-weight: 800; }
+    .record-folder-preview { margin: 14px 0 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); }
+    .record-folder-preview strong { display: block; margin-bottom: 5px; }
+    .record-folder-preview ul { margin: 0; padding-left: 22px; overflow-wrap: anywhere; }
     .vehicle-section-title { display: none; margin: 4px 0 14px; padding-top: 2px; color: var(--accent); font-size: var(--text-xl); line-height: 1.2; }
     .two-vehicle-enabled .vehicle-section-title { display: block; }
     .two-vehicle-panel { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
@@ -340,7 +344,7 @@
 <body>
   <main>
     <header>
-      <h1>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</h1>
+      <h1>{{ 'SinpoSmart - 救災救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救災救護Worker' }}</h1>
       {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button()) %}
         <div class="header-actions">
           {% if show_vehicle_settings_button() %}
@@ -539,6 +543,7 @@
             <input name="fuel_unit_price" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ primary_fuel.unit_price or '' }}">
           </label>
         </div>
+        <div class="fuel-total" data-fuel-total="1">最終總價：0.00</div>
       </section>
 
       <section class="consumables form-section-divider">
@@ -676,6 +681,7 @@
               <input name="fuel_unit_price_2" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ second_fuel.unit_price or '' }}">
             </label>
           </div>
+          <div class="fuel-total" data-fuel-total="2">最終總價：0.00</div>
         </section>
         <section class="consumables form-section-divider">
           <input type="hidden" name="consumables_2" id="consumables-value-2">
@@ -710,6 +716,11 @@
         </div>
       </section>
       {% endif %}
+      <section class="record-folder-preview" id="record-folder-preview" aria-live="polite">
+        <strong>將建立的 NAS 資料夾名稱</strong>
+        <div data-record-folder-empty>請先完成案件時間與車輛選擇。</div>
+        <ul data-record-folder-list></ul>
+      </section>
       <div class="form-actions">
         <button type="submit">{{ submit_label or '建立任務' }}</button>
         {% if cancel_url %}
@@ -857,6 +868,7 @@
     const lookupForm = document.getElementById("lookup-form");
     const lookupStatus = document.getElementById("lookup-status");
     const taskForm = document.getElementById("task-form");
+    const recordFolderPreview = document.getElementById("record-folder-preview");
     const clientFormErrors = document.getElementById("client-form-errors");
     const requiredTaskFields = [
       { name: "case_time", label: "案件時間", selector: 'input[name="case_time"]' },
@@ -878,8 +890,8 @@
     let taskFormDirty = false;
 
     if (taskForm) {
-      taskForm.addEventListener("input", () => { taskFormDirty = true; });
-      taskForm.addEventListener("change", () => { taskFormDirty = true; });
+      taskForm.addEventListener("input", () => { taskFormDirty = true; updateRecordFolderPreview(); });
+      taskForm.addEventListener("change", () => { taskFormDirty = true; updateRecordFolderPreview(); });
     }
 
     function updateTwoVehicleUi() {
@@ -923,6 +935,40 @@
       if (fuelRecordFields) fuelRecordFields.hidden = !(fuelRecordToggle && fuelRecordToggle.checked);
       if (fuelRecordFields2) fuelRecordFields2.hidden = !(fuelRecordToggle2 && fuelRecordToggle2.checked);
       updateFuelRequiredHints();
+      updateFuelTotals();
+    }
+
+    function updateFuelTotals() {
+      [["", "1"], ["_2", "2"]].forEach(([suffix, number]) => {
+        const quantity = Number(document.querySelector(`input[name="fuel_quantity${suffix}"]`)?.value || 0);
+        const price = Number(document.querySelector(`input[name="fuel_unit_price${suffix}"]`)?.value || 0);
+        const output = document.querySelector(`[data-fuel-total="${number}"]`);
+        if (output) output.textContent = `最終總價：${(quantity * price).toFixed(2)}`;
+      });
+    }
+
+    let recordFolderPreviewTimer = 0;
+    function updateRecordFolderPreview() {
+      if (!taskForm || !recordFolderPreview) return;
+      window.clearTimeout(recordFolderPreviewTimer);
+      recordFolderPreviewTimer = window.setTimeout(async () => {
+        const formData = new FormData(taskForm);
+        formData.set("service_type", "ems");
+        const list = recordFolderPreview.querySelector("[data-record-folder-list]");
+        const empty = recordFolderPreview.querySelector("[data-record-folder-empty]");
+        try {
+          const response = await fetch("/api/record-folder-preview", { method: "POST", body: formData });
+          const payload = await response.json();
+          const paths = Array.isArray(payload.paths) ? payload.paths : [];
+          list.innerHTML = paths.map((path) => `<li>${escapeHtml(path)}</li>`).join("");
+          empty.hidden = paths.length > 0;
+          if (!paths.length) empty.textContent = payload.detail || "請先完成案件時間與車輛選擇。";
+        } catch (error) {
+          list.innerHTML = "";
+          empty.hidden = false;
+          empty.textContent = "目前無法預覽資料夾名稱。";
+        }
+      }, 120);
     }
 
     function syncFuelDrivers() {
@@ -1119,6 +1165,7 @@
         normalizeNumericInput(input);
         updateFieldVisualHints();
         updateFuelRequiredHints();
+        updateFuelTotals();
       });
     });
 
@@ -1825,6 +1872,7 @@
     }
     updateTwoVehicleUi();
     updateFuelRecordUi();
+    updateRecordFolderPreview();
     syncFuelDrivers();
     updateLastMileageHints();
     updateConsumablePackageUi();

@@ -32,6 +32,13 @@ from ambulance_bot.credential_envelope import (
     seal_credential_payload,
 )
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
+from ambulance_bot.disaster_settings import (
+    delete_disaster_vehicle_record,
+    disaster_vehicle_options,
+    disaster_vehicle_recorder_codes,
+    load_disaster_vehicle_records,
+    save_disaster_vehicle_record,
+)
 from ambulance_bot.duty_credentials import (
     credential_sync_accounts_from_payload,
     load_synced_worker_credential,
@@ -51,6 +58,8 @@ from ambulance_bot.models import (
     COMMAND_PREFIX,
     DEFAULT_DISINFECTION_ITEMS,
     DEFAULT_CONSUMABLES,
+    DISASTER_ACTION_PACKAGES,
+    DISASTER_REASON_OPTIONS,
     DISINFECTION_ITEM_OPTIONS,
     PERSON_OPTIONS,
     example_command,
@@ -61,11 +70,18 @@ from ambulance_bot.models import (
     parse_case_date,
     parse_request,
     request_from_form,
+    request_from_disaster_form,
     save_vehicle_record,
     vehicle_options,
     vehicle_ppe_names,
 )
 from ambulance_bot.profile_paths import runtime_profile_root
+from ambulance_bot.record_folders import (
+    RecordFolderError,
+    disaster_folder_plan,
+    ems_record_relative_paths,
+    ensure_disaster_record_folders,
+)
 from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, SITE_STAGE_DEFINITIONS, merge_diagnostic_fields
 from ambulance_bot.sinposmart_backend import (
     SinpoSmartBackendStore,
@@ -201,7 +217,12 @@ def cleanup_active_worker_browsers() -> int:
 def index():
     if not request_is_local_host():
         return render_template("nas_home.html")
-    return redirect(url_for("new_task"))
+    return redirect(url_for("task_entry"))
+
+
+@app.get("/task-entry")
+def task_entry():
+    return render_template("task_entry.html")
 
 
 @app.get("/app")
@@ -231,6 +252,23 @@ def new_task():
     )
 
 
+@app.get("/app/disaster")
+def disaster_task():
+    selected_case = pop_selected_case()
+    person_options = selected_case.get("person_options") or person_options_from_personnel(selected_case.get("personnel") or [])
+    return render_template(
+        "disaster_task.html",
+        form_action=url_for("create_disaster_task"),
+        selected_case=selected_case,
+        case_lookup=prepared_case_lookup(),
+        person_options=person_options,
+        vehicle_options=disaster_vehicle_options(artifacts_dir),
+        disaster_reason_options=DISASTER_REASON_OPTIONS,
+        disaster_action_packages=DISASTER_ACTION_PACKAGES,
+        form_errors=[],
+    )
+
+
 @app.post("/cases/query")
 def query_cases():
     global _case_lookup_start_error
@@ -248,7 +286,36 @@ def query_cases():
         print(f"[case_lookup] startup failed host={request.host} source={source} range={lookup_range} mode={mode} error={exc}", flush=True)
     else:
         _case_lookup_start_error = ""
-    return redirect(url_for("new_task"))
+    return redirect(task_form_url())
+
+
+@app.post("/api/record-folder-preview")
+def record_folder_preview():
+    service_type = str(request.form.get("service_type") or "ems").strip().lower()
+    required_preview_values = [request.form.get("case_date"), request.form.get("case_time")]
+    if service_type == "disaster":
+        required_preview_values.append(request.form.get("case_address"))
+    if not all(str(value or "").strip() for value in required_preview_values):
+        return jsonify({"ok": True, "paths": [], "detail": "請先完成案件與車輛資料。"})
+    if not any(str(value or "").strip() for value in request.form.getlist("vehicle")):
+        return jsonify({"ok": True, "paths": [], "detail": "請先完成案件與車輛資料。"})
+    try:
+        if service_type == "disaster":
+            task_request = request_from_disaster_form(request.form)
+            paths = [
+                entry.path.as_posix()
+                for entry in disaster_folder_plan(
+                    task_request,
+                    Path(),
+                    disaster_vehicle_recorder_codes(artifacts_dir),
+                )
+            ]
+        else:
+            task_request = request_from_form(request.form)
+            paths = [path.as_posix() for path in ems_record_relative_paths(task_request)]
+    except (OSError, RecordFolderError, ValueError) as exc:
+        return jsonify({"ok": False, "paths": [], "detail": str(exc)}), 400
+    return jsonify({"ok": True, "paths": paths})
 
 
 @app.post("/cases/import")
@@ -258,13 +325,18 @@ def import_case():
         abort(400)
     if not write_selected_case_from_lookup(case_id):
         abort(404)
-    return redirect(url_for("new_task", _anchor="task-form"))
+    return redirect(task_form_url(anchor="task-form"))
 
 
 @app.post("/cases/clear")
 def clear_imported_case():
     pop_selected_case()
-    return redirect(url_for("new_task"))
+    return redirect(task_form_url())
+
+
+def task_form_url(*, anchor: str = "") -> str:
+    endpoint = "disaster_task" if str(request.form.get("return_to") or "").strip() == "disaster" else "new_task"
+    return url_for(endpoint, _anchor=anchor or None)
 
 
 @app.post("/tasks")
@@ -292,6 +364,58 @@ def create_task():
     return redirect(url_for("task_detail", task_id=task_request.task_id))
 
 
+@app.post("/tasks/disaster")
+def create_disaster_task():
+    task_request = request_from_disaster_form(request.form)
+    errors = validate_disaster_task_form(task_request)
+    if errors:
+        return render_template(
+            "disaster_task.html",
+            form_action=url_for("create_disaster_task"),
+            selected_case=task_form_values(task_request.to_dict()),
+            case_lookup=prepared_case_lookup(),
+            person_options=person_options_from_personnel(task_request.personnel),
+            vehicle_options=disaster_vehicle_options(artifacts_dir),
+            disaster_reason_options=DISASTER_REASON_OPTIONS,
+            disaster_action_packages=DISASTER_ACTION_PACKAGES,
+            form_errors=errors,
+        ), 400
+    existing = existing_disaster_task_for_case(task_request.case_id)
+    if existing:
+        existing_task_id = str(dict(existing.get("task") or {}).get("task_id") or "")
+        return redirect(url_for("task_detail", task_id=existing_task_id))
+    try:
+        folder_results = ensure_disaster_record_folders(
+            task_request,
+            recorder_codes=disaster_vehicle_recorder_codes(artifacts_dir),
+        )
+    except (OSError, RecordFolderError) as exc:
+        return render_template(
+            "disaster_task.html",
+            form_action=url_for("create_disaster_task"),
+            selected_case=task_form_values(task_request.to_dict()),
+            case_lookup=prepared_case_lookup(),
+            person_options=person_options_from_personnel(task_request.personnel),
+            vehicle_options=disaster_vehicle_options(artifacts_dir),
+            disaster_reason_options=DISASTER_REASON_OPTIONS,
+            disaster_action_packages=DISASTER_ACTION_PACKAGES,
+            form_errors=[f"行車紀錄器資料夾建立失敗：{exc}"],
+        ), 400
+    payload = store.create(task_request)
+    for folder in folder_results:
+        store.add_event_to_payload(
+            payload,
+            "disaster_record_folder_ready",
+            f"{folder.vehicle}：{folder.status}：{folder.path}",
+        )
+    store.save_payload(task_request.task_id, payload)
+    report_public_pc_task_event(payload, "建立救災任務")
+    if should_auto_queue_task_on_create():
+        queue_task_for_worker(task_request.task_id)
+    pop_selected_case()
+    return redirect(url_for("task_detail", task_id=task_request.task_id))
+
+
 @app.get("/tasks/<task_id>/edit")
 def edit_task(task_id: str):
     try:
@@ -299,9 +423,11 @@ def edit_task(task_id: str):
     except FileNotFoundError:
         abort(404)
     payload = refresh_stale_running_task(payload)
+    task = dict(payload.get("task") or {})
+    if str(task.get("service_type") or "ems").strip().lower() == "disaster":
+        return "救災案件不使用救護編輯頁，請返回救災任務明細。", 409
     if task_edit_is_locked(payload):
         return task_edit_lock_message(payload), 409
-    task = dict(payload.get("task") or {})
     selected_case = task_form_values(task)
     return render_template(
         "new_task.html",
@@ -332,6 +458,9 @@ def update_task(task_id: str):
     except FileNotFoundError:
         abort(404)
     previous_payload = refresh_stale_running_task(previous_payload)
+    previous_task = dict(previous_payload.get("task") or {})
+    if str(previous_task.get("service_type") or "ems").strip().lower() == "disaster":
+        return "救災案件不使用救護編輯頁，請返回救災任務明細。", 409
     if task_edit_is_locked(previous_payload):
         return task_edit_lock_message(previous_payload), 409
     task_request = request_from_form(request.form)
@@ -349,7 +478,6 @@ def update_task(task_id: str):
             selected_consumable_packages=selected_consumable_packages_from_form(request.form),
             two_vehicle_available=form_flag_enabled(request.form.get("two_vehicle_available")) or task_request.two_vehicle,
         ), 400
-    previous_task = dict(previous_payload.get("task") or {})
     current_task = task_request.to_dict()
     edit_impact = analyze_task_edit(previous_task, current_task)
     changed_site_keys_for_edit = changed_site_keys(edit_impact)
@@ -655,6 +783,40 @@ def admin_vehicles():
     )
 
 
+@app.get("/admin/disaster-vehicles")
+def admin_disaster_vehicles():
+    return render_disaster_vehicle_settings()
+
+
+@app.post("/admin/disaster-vehicles")
+def save_disaster_vehicle_option():
+    label = str(request.form.get("label") or "").strip()
+    ppe_name = str(request.form.get("ppe_name") or "").strip()
+    recorder_code = str(request.form.get("recorder_code") or "").strip()
+    try:
+        save_disaster_vehicle_record(label, ppe_name, recorder_code, artifacts_dir)
+    except ValueError as exc:
+        return render_disaster_vehicle_settings(errors=[str(exc)]), 400
+    return render_disaster_vehicle_settings(message=f"已儲存 {label}")
+
+
+@app.post("/admin/disaster-vehicles/delete")
+def delete_disaster_vehicle_option():
+    label = str(request.form.get("label") or "").strip()
+    if not delete_disaster_vehicle_record(label, artifacts_dir):
+        return render_disaster_vehicle_settings(errors=["找不到要刪除的救災車輛"]), 400
+    return render_disaster_vehicle_settings(message=f"已刪除 {label}")
+
+
+def render_disaster_vehicle_settings(*, errors: list[str] | None = None, message: str = ""):
+    return render_template(
+        "admin_disaster_vehicles.html",
+        vehicles=load_disaster_vehicle_records(artifacts_dir),
+        errors=errors or [],
+        message=message,
+    )
+
+
 @app.get("/admin/public-pc")
 def admin_public_pc():
     reports = public_pc_reports()
@@ -665,21 +827,36 @@ def admin_public_pc():
     result_filter = str(request.args.get("result") or "all").strip().lower()
     if result_filter not in {"all", "success", "failed"}:
         result_filter = "all"
-    report_counts = {
+    service_filter = str(request.args.get("service") or "all").strip().lower()
+    if service_filter not in {"all", "disaster", "ems"}:
+        service_filter = "all"
+    service_counts = {
         "all": len(reports),
-        "success": sum(public_pc_report_result(item) == "success" for item in reports),
-        "failed": sum(public_pc_report_result(item) == "failed" for item in reports),
+        "disaster": sum(public_pc_report_service_type(item) == "disaster" for item in reports),
+        "ems": sum(public_pc_report_service_type(item) == "ems" for item in reports),
+    }
+    service_reports = (
+        reports
+        if service_filter == "all"
+        else [item for item in reports if public_pc_report_service_type(item) == service_filter]
+    )
+    report_counts = {
+        "all": len(service_reports),
+        "success": sum(public_pc_report_result(item) == "success" for item in service_reports),
+        "failed": sum(public_pc_report_result(item) == "failed" for item in service_reports),
     }
     visible_reports = (
-        reports
+        service_reports
         if result_filter == "all"
-        else [item for item in reports if public_pc_report_result(item) == result_filter]
+        else [item for item in service_reports if public_pc_report_result(item) == result_filter]
     )
     return render_template(
         "admin_public_pc.html",
         reports=visible_reports,
         report_counts=report_counts,
         result_filter=result_filter,
+        service_counts=service_counts,
+        service_filter=service_filter,
         version_info=worker_admin_version_info(reports),
         worker_health=worker_heartbeat_admin_view(reports),
         worker_health_enabled=worker_health_enabled,
@@ -1138,7 +1315,15 @@ def sinposmart_admin_version_info(selected_day: dict | None = None) -> dict[str,
 
 def worker_admin_version_info(reports: list[dict] | None = None) -> dict[str, str]:
     backend_version = package_version() or "未標示"
-    return {"label": "SinpoSmart - 救護Worker", "version": backend_version, "detail": "NAS 後台"}
+    for report in reports or []:
+        version = str(report.get("package_version") or "").strip()
+        if version:
+            return {
+                "label": "SinpoSmart - 救災救護Worker",
+                "version": backend_version,
+                "detail": f"NAS 後台；公務電腦最後回報：{version}",
+            }
+    return {"label": "SinpoSmart - 救災救護Worker", "version": backend_version, "detail": "NAS 後台"}
 
 
 def credential_sync_relay_file() -> Path:
@@ -1675,7 +1860,7 @@ def _load_public_pc_reports(*, strict: bool = False) -> list[dict]:
         if isinstance(reports, list):
             return [item for item in reports if isinstance(item, dict)]
     if strict and found_file:
-        raise ValueError("救護後台案件主檔與備份均無法讀取，已停止寫入以保留現場資料。")
+        raise ValueError("救災救護後台案件主檔與備份均無法讀取，已停止寫入以保留現場資料。")
     return []
 
 
@@ -1795,6 +1980,11 @@ def public_pc_report_result(report: dict) -> str:
     if snapshot["failed_site_keys"]:
         return "failed"
     return "pending"
+
+
+def public_pc_report_service_type(report: dict) -> str:
+    task = report.get("task") if isinstance(report.get("task"), dict) else {}
+    return "disaster" if str(task.get("service_type") or "ems").strip().lower() == "disaster" else "ems"
 
 
 def upsert_public_pc_report(data: dict) -> dict:
@@ -3314,7 +3504,8 @@ def task_title(task: dict) -> str:
     reason = str(task.get("case_reason") or "救護").strip()
     address = display_case_address(task).strip()
     if address:
-        return f"緊急救護-{reason} - {address}"
+        prefix = "救災" if str(task.get("service_type") or "ems") == "disaster" else "緊急救護"
+        return f"{prefix}-{reason} - {address}"
     vehicle = str(task.get("vehicle") or "").strip()
     driver = str(task.get("driver") or "").strip()
     if vehicle or driver:
@@ -3396,13 +3587,18 @@ def task_has_active_fuel_site(task: dict, site_statuses: dict | None = None) -> 
 
 
 def active_site_keys_for_task(task: dict, site_statuses: dict | None = None) -> list[str]:
-    if task_has_active_fuel_site(task, site_statuses):
-        return list(SITE_RUN_ORDER)
-    return [site_key for site_key in SITE_RUN_ORDER if site_key != "fuel_record"]
+    keys = AmbulanceReturnRequest.from_dict(dict(task or {})).active_site_keys()
+    fuel_status = str(dict((site_statuses or {}).get("fuel_record") or {}).get("status") or "")
+    if "waiting_confirmation" in fuel_status and "fuel_record" not in keys:
+        keys.append("fuel_record")
+    return keys
 
 
 def task_site_count_label(task: dict, site_statuses: dict | None = None) -> str:
-    return "五站" if len(active_site_keys_for_task(task, site_statuses)) == 5 else "四站"
+    return {2: "二站", 3: "三站", 4: "四站", 5: "五站"}.get(
+        len(active_site_keys_for_task(task, site_statuses)),
+        f"{len(active_site_keys_for_task(task, site_statuses))}站",
+    )
 
 
 def task_site_display_pairs(task: dict, site_statuses: dict | None = None) -> list[tuple[str, str]]:
@@ -3742,6 +3938,8 @@ def queue_task_for_worker(task_id: str) -> None:
     payload = store.get(task_id)
     site_statuses = dict(payload.get("site_statuses") or {})
     for adapter in default_adapters():
+        if adapter.key not in request_payload.active_site_keys():
+            continue
         site = dict(site_statuses.get(adapter.key) or {})
         status = str(site.get("status") or "")
         should_prepare = (
@@ -3981,6 +4179,64 @@ def validate_task_form(task_request) -> list[str]:
     return errors
 
 
+def existing_disaster_task_for_case(case_id: str) -> dict | None:
+    normalized = str(case_id or "").strip()
+    if not normalized:
+        return None
+    for payload in store.list_recent(limit=100000):
+        task = dict(payload.get("task") or {})
+        if str(task.get("service_type") or "ems") == "disaster" and str(task.get("case_id") or "").strip() == normalized:
+            return payload
+    return None
+
+
+def validate_disaster_task_form(task_request) -> list[str]:
+    errors: list[str] = []
+    if not task_request.case_id.strip():
+        errors.append("請先由勤務案件查詢選擇案件")
+    if not task_request.case_date.strip():
+        errors.append("請填寫案件日期")
+    if not normalize_hhmm(task_request.case_time):
+        errors.append("請填寫正確案件時間")
+    if not task_request.return_time.strip() or not normalize_hhmm(task_request.return_time):
+        errors.append("請填寫正確返隊時間")
+    if not task_request.case_address.strip():
+        errors.append("請填寫案件地址")
+    if task_request.case_reason not in DISASTER_REASON_OPTIONS:
+        errors.append("請選擇正確事由")
+    if task_request.case_reason == "其他" and not task_request.reason_other.strip():
+        errors.append("事由選擇其他時請填寫說明")
+    if not task_request.commander.strip():
+        errors.append("請選擇指揮官")
+    elif task_request.commander not in task_request.personnel:
+        errors.append("指揮官必須是本案服勤人員")
+    if not task_request.action_note.strip():
+        errors.append("請填寫其他處理情形")
+    categories = {"轄內A2", "轄內A3", "轄內其他案件", "支援他轄"}
+    if task_request.recorder_category not in categories:
+        errors.append("請選擇行車紀錄器分類")
+    if task_request.recorder_category == "轄內其他案件" and not task_request.recorder_subcategory.strip():
+        errors.append("請選擇轄內其他案件子分類")
+    entries = task_request.effective_vehicle_entries()
+    if not entries:
+        errors.append("至少需要一輛出動車輛")
+    vehicles = [entry.vehicle.strip() for entry in entries if entry.vehicle.strip()]
+    if len(vehicles) != len(set(vehicles)):
+        errors.append("同一任務的出動車輛不得重複")
+    for index, entry in enumerate(entries, start=1):
+        label = f"第{index}車"
+        if not entry.vehicle.strip():
+            errors.append(f"{label}請選擇車輛")
+        if not entry.driver.strip():
+            errors.append(f"{label}請選擇司機")
+        if not normalize_hhmm(entry.return_time):
+            errors.append(f"{label}請填寫正確返隊時間")
+        if not re.fullmatch(r"\d+", entry.mileage.strip()):
+            errors.append(f"{label}里程只能輸入數字")
+        errors.extend(validate_fuel_record(entry.fuel_record, label))
+    return errors
+
+
 def validate_fuel_record(fuel_record, label: str) -> list[str]:
     if not getattr(fuel_record, "enabled", False):
         return []
@@ -4096,7 +4352,7 @@ def run_web_app(host: str | None = None, port: int | None = None) -> None:
     if public_pc_reporting_enabled():
         start_public_pc_legacy_reconciliation()
         start_public_pc_pending_report_flusher()
-    print(f"[app] starting SinpoSmart ambulance worker web app on {host}:{port}", flush=True)
+    print(f"[app] starting SinpoSmart disaster EMS worker web app on {host}:{port}", flush=True)
     try:
         from waitress import serve
     except ImportError:

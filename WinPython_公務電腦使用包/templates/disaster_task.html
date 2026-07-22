@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SinpoSmart - 救災登打</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif; color: #202522; background: #fafaf8; --accent:#b86b5b; --line:#ded9d0; }
+    * { box-sizing: border-box; } body { margin:0; } main { max-width:1080px; margin:auto; padding:24px 16px 48px; }
+    header { display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:18px; } h1 { margin:0; }
+    a { color:var(--accent); } .panel { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+    h2 { margin:0 0 14px; font-size:21px; } .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .full { grid-column:1/-1; } label { display:grid; gap:6px; font-weight:700; } input,select,textarea,button { min-height:46px; border:1px solid var(--line); border-radius:8px; padding:9px 11px; font:inherit; }
+    textarea { min-height:110px; resize:vertical; } button { cursor:pointer; font-weight:800; background:#fff; } button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .time-field { display:grid; grid-template-columns:1fr 48px; gap:6px; } .vehicle-card { border:1px solid var(--line); border-radius:10px; padding:14px; margin-top:10px; }
+    .section-head { display:flex; align-items:center; justify-content:space-between; gap:10px; } .package-buttons { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+    .package-buttons button { min-height:38px; padding:7px 10px; } .preview { white-space:pre-wrap; background:#f7f4ef; border-radius:8px; padding:12px; min-height:64px; }
+    .errors { color:#a33; font-weight:700; } .fuel-fields[hidden], [hidden] { display:none !important; } .form-actions { margin-top:16px; display:grid; }
+    .remove-vehicle { color:#a33; } .folder-preview ul { margin:6px 0 0; padding-left:22px; overflow-wrap:anywhere; }
+    @media(max-width:700px){ .grid{grid-template-columns:1fr}.full{grid-column:auto} }
+  </style>
+</head>
+<body>
+<main>
+  <header><div><h1>救災登打</h1><a href="/task-entry">返回救災救護入口</a></div><a href="/admin/disaster-vehicles">救災車設定</a></header>
+  {% if form_errors %}<section class="panel errors">{% for error in form_errors %}<div>{{ error }}</div>{% endfor %}</section>{% endif %}
+  <section class="panel lookup">
+    <div class="section-head">
+      <h2>勤務案件</h2>
+      <form method="post" action="/cases/query">
+        <input type="hidden" name="return_to" value="disaster">
+        <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢案件</button>
+      </form>
+    </div>
+    {% if case_lookup.is_running or case_lookup.empty_message or case_lookup.detail %}
+      <div>{{ case_lookup.empty_message if case_lookup.empty_message else case_lookup.detail }}</div>
+    {% endif %}
+    {% if case_lookup.cases %}
+      {% for case in case_lookup.cases %}
+        <div class="vehicle-card section-head">
+          <div><strong>{{ display_case_title(case) }}</strong><div>{{ case_time_range(case) }}</div></div>
+          <form method="post" action="/cases/import">
+            <input type="hidden" name="return_to" value="disaster">
+            <input type="hidden" name="case_id" value="{{ case.case_id }}">
+            <button type="submit">帶入</button>
+          </form>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </section>
+  {% set disaster_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [{}] %}
+  <form method="post" action="{{ form_action }}" id="disaster-form">
+    <input type="hidden" name="service_type" value="disaster">
+    <section class="panel">
+      <h2>案件資料</h2>
+      <div class="grid">
+        <label class="full">案件地址<input name="case_address" value="{{ selected_case.address or selected_case.case_address or '' }}" required></label>
+        <label>案件時間<input name="case_time" inputmode="numeric" maxlength="4" value="{{ selected_case.case_time_hhmm or selected_case.case_time or '' }}" required></label>
+        <label>返隊時間<div class="time-field"><input name="return_time" inputmode="numeric" maxlength="4" value="{{ selected_return_time_input(selected_case) }}" required><button type="button" id="now-time" aria-label="帶入現在時間">◷</button></div></label>
+        <label>案件類型<select name="summary_type"><option value="火災"{% if selected_case.summary_type == '火災' %} selected{% endif %}>火災</option><option value="災害搶救"{% if selected_case.summary_type == '災害搶救' %} selected{% endif %}>災害搶救</option><option value="其他"{% if selected_case.summary_type == '其他' %} selected{% endif %}>其他</option></select></label>
+        <label>事由<select name="case_reason" id="case-reason" required><option value="">請選擇</option>{% for reason in disaster_reason_options %}<option value="{{ reason }}"{% if (selected_case.reason or selected_case.case_reason) == reason %} selected{% endif %}>{{ reason }}</option>{% endfor %}</select></label>
+        <label class="full" id="reason-other-field"{% if (selected_case.reason or selected_case.case_reason) != '其他' %} hidden{% endif %}>其他事由說明<input name="reason_other" value="{{ selected_case.reason_other or '' }}"></label>
+        <label>行車紀錄器分類<select name="recorder_category" id="recorder-category" required>{% for category in ['轄內A2','轄內A3','轄內其他案件','支援他轄'] %}<option value="{{ category }}"{% if selected_case.recorder_category == category %} selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
+        <label id="subcategory-field"{% if selected_case.recorder_category != '轄內其他案件' %} hidden{% endif %}>子分類<select name="recorder_subcategory">{% for subcategory in ['其他','溺水','破門','警報器誤動作','車禍救助','輸電線災害','電梯受困','電線桿災害'] %}<option value="{{ subcategory }}"{% if selected_case.recorder_subcategory == subcategory %} selected{% endif %}>{{ subcategory }}</option>{% endfor %}</select></label>
+      </div>
+      <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
+      <input type="hidden" name="case_date" value="{{ selected_case_date_input(selected_case) }}">
+      <input type="hidden" name="personnel" value="{{ (selected_case.personnel or [])|join(',') if selected_case.personnel is not string else selected_case.personnel }}">
+      <input type="hidden" name="personnel_accounts" value="{{ (selected_case.personnel_accounts or [])|join(',') if selected_case.personnel_accounts is not string else selected_case.personnel_accounts }}">
+    </section>
+
+    <section class="panel" id="vehicle-section">
+      <div class="section-head"><h2>出動車輛</h2><button type="button" id="add-vehicle">新增車輛</button></div>
+      <div id="vehicle-list">
+        {% for entry in disaster_entries %}
+        {% set fuel = entry.fuel_record if entry.fuel_record is defined else {} %}
+        <article class="vehicle-card">
+          <div class="section-head"><strong data-vehicle-title>{{ loop.index }}車</strong><button type="button" class="remove-vehicle">移除車輛</button></div>
+          <div class="grid">
+            <label>車輛<select name="vehicle" required><option value="">請選擇</option>{% for vehicle in vehicle_options %}<option value="{{ vehicle }}"{% if entry.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}</option>{% endfor %}</select></label>
+            <label>司機<select name="driver" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+            <label>返隊時間<input name="vehicle_return_time" inputmode="numeric" maxlength="4" value="{{ entry.return_time or selected_return_time_input(selected_case) }}" required></label>
+            <label>里程<input name="mileage" inputmode="numeric" value="{{ entry.mileage or '' }}" required></label>
+            <label class="full"><span><input type="checkbox" class="fuel-toggle" name="fuel_enabled" value="{{ loop.index0 }}"{% if fuel.enabled %} checked{% endif %}> 登打加油紀錄</span></label>
+            <div class="fuel-fields full grid"{% if not fuel.enabled %} hidden{% endif %}><label>加油日期<input name="fuel_date" value="{{ fuel.date or selected_case_date_input(selected_case) }}"></label><label>加油時間<input name="fuel_time" value="{{ fuel.time or '' }}"></label><label>油量<input name="fuel_quantity" inputmode="decimal" value="{{ fuel.quantity or '' }}"></label><label>單價<input name="fuel_unit_price" inputmode="decimal" value="{{ fuel.unit_price or '' }}"></label><div class="full fuel-total">最終總價：0.00</div></div>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>工作紀錄</h2>
+      <div class="grid"><label>勤務項目<input name="duty_item" value="{{ selected_case.duty_item or '火警' }}" required></label><label>指揮官<select name="commander" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if selected_case.commander == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label></div>
+      <h3>處理情形套餐</h3><div class="package-buttons">{% for text in disaster_action_packages %}<button type="button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
+      <label>其他處理情形<textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
+      <h3>處理情形預覽</h3><div class="preview" id="processing-preview"></div>
+    </section>
+    <section class="panel folder-preview" id="disaster-folder-preview"><strong>將建立的 NAS 資料夾名稱</strong><div data-folder-empty>請先完成案件與車輛資料。</div><ul data-folder-list></ul></section>
+    <div class="form-actions"><button class="primary" type="submit">建立任務</button></div>
+  </form>
+</main>
+<script>
+  const form = document.getElementById('disaster-form');
+  const list = document.getElementById('vehicle-list');
+  const topReturn = form.elements.return_time;
+  const category = document.getElementById('recorder-category');
+  const reason = document.getElementById('case-reason');
+  const folderPreview = document.getElementById('disaster-folder-preview');
+  function hhmmNow(){ const now=new Date(); return String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0'); }
+  document.getElementById('now-time').addEventListener('click',()=>{ topReturn.value=hhmmNow(); list.querySelectorAll('[name="vehicle_return_time"]').forEach(input=>{if(!input.value) input.value=topReturn.value;}); });
+  topReturn.addEventListener('change',()=>list.querySelectorAll('[name="vehicle_return_time"]').forEach(input=>{if(!input.value) input.value=topReturn.value;}));
+  function updateConditionalFields(){
+    document.getElementById('subcategory-field').hidden=category.value!=='轄內其他案件';
+    const otherField=document.getElementById('reason-other-field');
+    otherField.hidden=reason.value!=='其他';
+    otherField.querySelector('input').required=reason.value==='其他';
+  }
+  category.addEventListener('change',updateConditionalFields);
+  reason.addEventListener('change',updateConditionalFields);
+  function updateFuelTotal(card){
+    const q=Number(card.querySelector('[name="fuel_quantity"]').value||0);
+    const p=Number(card.querySelector('[name="fuel_unit_price"]').value||0);
+    card.querySelector('.fuel-total').textContent=`最終總價：${(q*p).toFixed(2)}`;
+  }
+  function updateFuelFields(card){
+    const enabled=card.querySelector('.fuel-toggle').checked;
+    card.querySelector('.fuel-fields').hidden=!enabled;
+    card.querySelectorAll('.fuel-fields input').forEach(input=>input.required=enabled);
+    updateFuelTotal(card);
+  }
+  function bindCard(card){
+    if(card.dataset.bound==='1') return;
+    card.dataset.bound='1';
+    card.querySelector('.fuel-toggle').addEventListener('change',()=>updateFuelFields(card));
+    card.querySelectorAll('[name="fuel_quantity"],[name="fuel_unit_price"]').forEach(input=>input.addEventListener('input',()=>updateFuelTotal(card)));
+    card.querySelector('.remove-vehicle').addEventListener('click',()=>{ if(list.children.length<=1) return; card.remove(); reindexCards(); updatePreview(); updateFolderPreview(); });
+  }
+  function reindexCards(){
+    Array.from(list.querySelectorAll('.vehicle-card')).forEach((card,index)=>{
+      card.querySelector('[data-vehicle-title]').textContent=`${index+1}車`;
+      card.querySelector('.fuel-toggle').value=String(index);
+      card.querySelector('.remove-vehicle').hidden=list.children.length<=1;
+      bindCard(card);
+      updateFuelFields(card);
+    });
+  }
+  document.getElementById('add-vehicle').addEventListener('click',()=>{
+    const card=list.firstElementChild.cloneNode(true);
+    card.dataset.bound='';
+    card.querySelectorAll('select').forEach(select=>select.selectedIndex=0);
+    card.querySelectorAll('input').forEach(input=>{ if(input.type==='checkbox') input.checked=false; else input.value=''; });
+    card.querySelector('[name="vehicle_return_time"]').value=topReturn.value;
+    card.querySelector('.fuel-fields').hidden=true;
+    list.appendChild(card);
+    reindexCards();
+    updatePreview();
+    updateFolderPreview();
+  });
+  function updatePreview(){
+    const assignments=Array.from(list.querySelectorAll('.vehicle-card')).map(card=>{ const vehicle=card.querySelector('[name="vehicle"]').value; const driver=card.querySelector('[name="driver"]').value; return vehicle&&driver?`${vehicle}:${driver}`:''; }).filter(Boolean);
+    const commander=form.elements.commander.value;
+    if(commander) assignments.push(`指揮官:${commander}`);
+    const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官';
+    document.getElementById('processing-preview').textContent=`1.${assignmentText}\n2.${document.getElementById('action-note').value}`;
+  }
+  function escapeHtml(value){ return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
+  let folderTimer=0;
+  function updateFolderPreview(){
+    window.clearTimeout(folderTimer);
+    folderTimer=window.setTimeout(async()=>{
+      const listElement=folderPreview.querySelector('[data-folder-list]');
+      const empty=folderPreview.querySelector('[data-folder-empty]');
+      try{
+        const response=await fetch('/api/record-folder-preview',{method:'POST',body:new FormData(form)});
+        const payload=await response.json();
+        const paths=Array.isArray(payload.paths)?payload.paths:[];
+        listElement.innerHTML=paths.map(path=>`<li>${escapeHtml(path)}</li>`).join('');
+        empty.hidden=paths.length>0;
+        if(!paths.length) empty.textContent=payload.detail||'請先完成案件與車輛資料。';
+      }catch(error){ listElement.innerHTML=''; empty.hidden=false; empty.textContent='目前無法預覽資料夾名稱。'; }
+    },120);
+  }
+  form.addEventListener('input',()=>{updatePreview();updateFolderPreview();});
+  form.addEventListener('change',()=>{updatePreview();updateFolderPreview();});
+  form.addEventListener('submit',reindexCards);
+  document.querySelectorAll('[data-action-text]').forEach(button=>button.addEventListener('click',()=>{ const note=document.getElementById('action-note'); note.value=[note.value.trim(),button.dataset.actionText].filter(Boolean).join('，'); updatePreview(); }));
+  updateConditionalFields();
+  reindexCards();
+  updatePreview();
+  updateFolderPreview();
+  {% if case_lookup.is_running %}
+  window.setTimeout(()=>{ if(!form.matches(':focus-within')) window.location.reload(); },2000);
+  {% endif %}
+</script>
+</body>
+</html>

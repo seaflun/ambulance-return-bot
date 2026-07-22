@@ -21,6 +21,7 @@ from .manual_task_lock import (
     refresh_manual_task_lock,
     run_with_manual_task_lock_owner,
 )
+from .record_folders import ensure_ems_record_folders
 from .selenium_local import run_disinfection_task, run_fuel_record_task, run_local_selenium_task, run_vehicle_mileage_task
 from .site_diagnostics import make_site_result
 from .task_cancellation import (
@@ -75,6 +76,8 @@ def active_site_groups(request, profile_suffix: str, runner: "DesktopFastRunner"
                 lambda: runner._run_fuel_record(request, profile_suffix),
             )
         )
+    if request.service_type == "disaster":
+        return site_groups
     site_groups.extend(
         [
             [
@@ -95,6 +98,8 @@ def active_site_groups(request, profile_suffix: str, runner: "DesktopFastRunner"
 
 
 def task_site_count_label(request) -> str:
+    if request.service_type == "disaster":
+        return "三站" if request.has_fuel_record() else "二站"
     return "五站" if request.has_fuel_record() else "四站"
 
 
@@ -812,7 +817,6 @@ class DesktopFastRunner:
         self._raise_if_cancelled(request.task_id)
         update_context = self._site_update_context(request.task_id, "disinfection")
         require_safe_automated_update("disinfection", request, update_context)
-
         def run_one(vehicle_request, index: int, vehicle_update_context):
             profile_name = f"disinfection_profile_{profile_suffix}_{index}"
             driver = login_disinfection_and_get_driver(
@@ -914,22 +918,14 @@ class DesktopFastRunner:
         )
 
     def _ensure_record_folders(self, request) -> str:
-        root = DEFAULT_RECORD_ROOT
-        created: list[str] = []
-        errors: list[str] = []
-        for index, vehicle_request in enumerate(request.vehicle_requests(), start=1):
-            try:
-                folder = root / f"{vehicle_request.service_case_date().year}" / f"{vehicle_request.service_case_date().month}月" / _record_folder_name(vehicle_request, index)
-                for child in ("1", "2", "車"):
-                    (folder / child).mkdir(parents=True, exist_ok=True)
-                created.append(str(folder))
-            except Exception as exc:
-                errors.append(f"{_vehicle_result_key(vehicle_request, index)}: {exc}")
-        if errors:
-            return f"record folder warning: {' | '.join(errors)}"
-        if created:
-            return f"record folders ready: {' | '.join(created)}"
-        return ""
+        if request.service_type == "disaster":
+            return "disaster record folders prepared by NAS"
+        try:
+            results = ensure_ems_record_folders(request, DEFAULT_RECORD_ROOT)
+        except Exception as exc:
+            return f"record folder warning: {exc}"
+        paths = [str(result.path) for result in results]
+        return f"record folders ready: {' | '.join(paths)}" if paths else ""
 
 
 def _result_blocks_next(result) -> bool:

@@ -357,7 +357,7 @@ def _manual_task_for_execution(
 class WorkerGui(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("SinpoSmart - 救護Worker")
+        self.title("SinpoSmart - 救災救護Worker")
         self.geometry("820x820")
         self.minsize(720, 720)
 
@@ -429,7 +429,7 @@ class WorkerGui(ctk.CTk):
         title_block.grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(
             title_block,
-            text="SinpoSmart - 救護Worker",
+            text="SinpoSmart - 救災救護Worker",
             text_color=theme["ink"],
             font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=26, weight="bold"),
         ).pack(anchor="w")
@@ -1093,9 +1093,9 @@ class WorkerGui(ctk.CTk):
         self.tray_icon = pystray.Icon(
             "ambulance_return_worker",
             image,
-            "SinpoSmart - 救護Worker",
+            "SinpoSmart - 救災救護Worker",
             pystray.Menu(
-                pystray.MenuItem("SinpoSmart - 救護Worker", lambda _icon, _item: None, enabled=False),
+                pystray.MenuItem("SinpoSmart - 救災救護Worker", lambda _icon, _item: None, enabled=False),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("顯示控制台", lambda _icon, _item: self.after(0, self.show_from_tray), default=True),
                 pystray.MenuItem("縮小到背景", lambda _icon, _item: self.after(0, self.hide_to_tray)),
@@ -2137,8 +2137,8 @@ def show_single_instance_message() -> None:
 
             ctypes.windll.user32.MessageBoxW(
                 None,
-                "SinpoSmart - 救護Worker 已在執行中，請查看右下角系統匣圖示。",
-                "SinpoSmart - 救護Worker",
+                "SinpoSmart - 救災救護Worker 已在執行中，請查看右下角系統匣圖示。",
+                "SinpoSmart - 救災救護Worker",
                 0x40,
             )
             return
