@@ -1,11 +1,20 @@
 param(
     [string]$Repository = "seaflun/ambulance-return-bot",
-    [string]$Version
+    [string]$Version,
+    [string]$TargetCommitish
 )
 
 $ErrorActionPreference = "Stop"
 
 $project = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+$resolvedTarget = $TargetCommitish
+if ([string]::IsNullOrWhiteSpace($resolvedTarget)) {
+    $resolvedTarget = (& git -C $project rev-parse HEAD 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or $resolvedTarget -notmatch "^[0-9a-fA-F]{40}$") {
+        throw "Could not resolve the current Git commit for the release tag."
+    }
+}
+$TargetCommitish = $resolvedTarget
 $updateDir = Join-Path $project "UPDATE"
 $versionPath = Join-Path $updateDir "ambulance-return-version.txt"
 $zipPath = Join-Path $updateDir "ambulance-return-public-package.zip"
@@ -41,4 +50,4 @@ if (-not $gh) {
 }
 
 $tag = "ambulance-return-$Version"
-gh release create $tag $stagedVersionPath $stagedZipPath $stagedShaPath $stagedUpdaterPath --repo $Repository --title $tag --notes "SinpoSmart - 救災救護Worker 公務電腦使用包 $Version"
+gh release create $tag $stagedVersionPath $stagedZipPath $stagedShaPath $stagedUpdaterPath --repo $Repository --target $TargetCommitish --title $tag --notes "SinpoSmart - 救災救護Worker 公務電腦使用包 $Version"
