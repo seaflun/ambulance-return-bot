@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" data-ui="task-console">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f766e">
-  <title>{{ 'SinpoSmart - 救災救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救災救護Worker' }}</title>
+  <title>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</title>
   <style>
     :root {
       color-scheme: light;
@@ -70,8 +70,16 @@
       padding: 20px;
       box-shadow: var(--shadow);
     }
+    .site-card {
+      margin: 0 0 16px;
+      padding: 20px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+    }
     label { display: block; min-width: 0; margin: 0 0 15px; color: var(--ink); font-size: var(--text-label); font-weight: 780; }
-    #task-form { padding: 16px; }
+    #task-form { padding: 0; background: transparent; border: 0; box-shadow: none; }
     #task-form label { margin-bottom: 11px; font-size: var(--text-md); }
     #task-form input,
     #task-form select { min-height: 46px; padding: 10px 12px; }
@@ -194,19 +202,19 @@
     .mileage-hint-spacer { min-height: 1.45em; visibility: hidden; }
     .mileage-hint { min-height: 46px; margin: 6px 0 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
     .mileage-hint:empty { display: none; }
-    .fuel-record-row { border-top: 1px solid var(--line); margin: 4px 0 14px; padding-top: 14px; }
+    .fuel-record-row { margin: 4px 0 14px; }
     .fuel-record-toggle { width: fit-content; margin: 0 0 14px; }
     .fuel-record-row .fuel-record-toggle { margin: 0; }
     .fuel-record-fields { margin: -4px 0 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .fuel-record-fields[hidden] { display: none; }
     .fuel-record-fields .grid:last-child label { margin-bottom: 0; }
     .fuel-total { margin-top: 10px; color: var(--accent); font-weight: 800; }
-    .record-folder-preview { margin: 14px 0 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); }
-    .record-folder-preview strong { display: block; margin-bottom: 5px; }
+    .record-folder-preview { background: var(--surface); }
+    .record-folder-preview strong { display: block; margin-bottom: 8px; font-size: var(--text-lg); }
     .record-folder-preview ul { margin: 0; padding-left: 22px; overflow-wrap: anywhere; }
     .vehicle-section-title { display: none; margin: 4px 0 14px; padding-top: 2px; color: var(--accent); font-size: var(--text-xl); line-height: 1.2; }
     .two-vehicle-enabled .vehicle-section-title { display: block; }
-    .two-vehicle-panel { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
+    .two-vehicle-panel { margin-top: 18px; }
     .two-vehicle-panel[hidden] { display: none; }
     .consumables { margin: 0 0 14px; }
     .consumable-head { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
@@ -344,14 +352,14 @@
 <body>
   <main>
     <header>
-      <h1>{{ 'SinpoSmart - 救災救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救災救護Worker' }}</h1>
+      <h1>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</h1>
       {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button()) %}
         <div class="header-actions">
           {% if show_vehicle_settings_button() %}
             <a class="button secondary" href="/admin/vehicles">救護車設定</a>
           {% endif %}
           {% if show_nas_home_button() %}
-            <a class="button secondary" href="/">返回首頁</a>
+            <a class="button secondary" href="/task-entry">返回上一頁</a>
           {% endif %}
         </div>
       {% endif %}
@@ -428,6 +436,8 @@
       <input type="hidden" name="personnel" value="{{ selected_case.personnel | join(',') if selected_case.personnel else '' }}">
       <input type="hidden" name="personnel_accounts" value="{{ selected_case.personnel_hidden_raw or (selected_case.personnel_accounts | join(',')) or '' }}">
       <input type="hidden" name="two_vehicle_available" value="{{ '1' if two_vehicle_available else '' }}">
+      <section class="site-card" data-site-card="work-record">
+        <h2>工作紀錄</h2>
       {% if two_vehicle_available %}
         <label class="check-item two-vehicle-toggle">
           <input type="checkbox" name="two_vehicle" id="two-vehicle-toggle" value="1"{% if selected_case.two_vehicle %} checked{% endif %}>
@@ -502,6 +512,9 @@
           </select>
         </label>
       </div>
+      </section>
+      <section class="site-card" data-site-card="mileage">
+        <h2>車輛里程</h2>
       <div class="mileage-row">
         <label class="field-visual" data-field-name="mileage">
           <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -512,6 +525,9 @@
           <div class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></div>
         </div>
       </div>
+      </section>
+      <section class="site-card" data-site-card="fuel">
+        <h2>加油紀錄</h2>
       <div class="fuel-record-row">
         <label class="check-item fuel-record-toggle">
           <input type="checkbox" name="fuel_record" id="fuel-record-toggle" value="1"{% if primary_fuel.enabled %} checked{% endif %}>
@@ -545,8 +561,10 @@
         </div>
         <div class="fuel-total" data-fuel-total="1">最終總價：0.00</div>
       </section>
+      </section>
 
-      <section class="consumables form-section-divider">
+      <section class="site-card consumables" data-site-card="consumables">
+        <h2>救護耗材</h2>
         <input type="hidden" name="consumables" id="consumables-value">
         <input type="hidden" name="consumable_packages" id="consumable-packages-value" value="{{ selected_consumable_packages | default([]) | join(',') }}">
         <input type="hidden" name="baseline_consumables_loaded" value="{{ '1' if baseline_consumables_loaded else '' }}">
@@ -571,18 +589,22 @@
         <div class="consumable-list" id="consumable-list"></div>
       </section>
 
-      <label class="form-section-divider">消毒項目</label>
-      <div class="check-grid disinfection-grid">
-        {% for item in disinfection_item_options %}
-          <label class="check-item">
-            <input type="checkbox" name="disinfection_items" value="{{ item }}"{% if item in default_disinfection_items %} checked{% endif %}>
-            <span>{{ loop.index }}. {{ item }}</span>
-          </label>
-        {% endfor %}
-      </div>
+      <section class="site-card" data-site-card="disinfection">
+        <h2>消毒記錄</h2>
+        <div class="check-grid disinfection-grid">
+          {% for item in disinfection_item_options %}
+            <label class="check-item">
+              <input type="checkbox" name="disinfection_items" value="{{ item }}"{% if item in default_disinfection_items %} checked{% endif %}>
+              <span>{{ loop.index }}. {{ item }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      </section>
       {% if two_vehicle_available %}
       <section class="two-vehicle-panel" id="second-vehicle-section" hidden>
         <h2 class="vehicle-section-title">2車</h2>
+        <section class="site-card" data-site-card="work-record-2">
+          <h2>工作紀錄</h2>
         <div class="grid time-grid">
           <label class="field-visual" data-field-name="case_time_2_display">
             <span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -640,6 +662,9 @@
             </select>
           </label>
         </div>
+        </section>
+        <section class="site-card" data-site-card="mileage-2">
+          <h2>車輛里程</h2>
         <div class="mileage-row">
           <label class="field-visual" data-field-name="mileage_2">
             <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -650,6 +675,9 @@
             <div class="mileage-hint" data-last-mileage-for="vehicle_2" aria-live="polite"></div>
           </div>
         </div>
+        </section>
+        <section class="site-card" data-site-card="fuel-2">
+          <h2>加油紀錄</h2>
         <div class="fuel-record-row">
           <label class="check-item fuel-record-toggle">
             <input type="checkbox" name="fuel_record_2" id="fuel-record-toggle-2" value="1"{% if second_fuel.enabled %} checked{% endif %}>
@@ -683,7 +711,9 @@
           </div>
           <div class="fuel-total" data-fuel-total="2">最終總價：0.00</div>
         </section>
-        <section class="consumables form-section-divider">
+        </section>
+        <section class="site-card consumables" data-site-card="consumables-2">
+          <h2>救護耗材</h2>
           <input type="hidden" name="consumables_2" id="consumables-value-2">
           <div class="consumable-head">
             <span>耗材</span>
@@ -705,20 +735,22 @@
           <div class="package-reminder" id="consumable-package-reminder-2" role="status" aria-live="polite" hidden></div>
           <div class="consumable-list" id="consumable-list-2"></div>
         </section>
-        <label class="form-section-divider">消毒項目</label>
-        <div class="check-grid disinfection-grid">
-          {% for item in disinfection_item_options %}
-            <label class="check-item">
-              <input type="checkbox" name="disinfection_items_2" value="{{ item }}"{% if item in second_disinfection_items %} checked{% endif %}>
-              <span>{{ loop.index }}. {{ item }}</span>
-            </label>
-          {% endfor %}
-        </div>
+        <section class="site-card" data-site-card="disinfection-2">
+          <h2>消毒記錄</h2>
+          <div class="check-grid disinfection-grid">
+            {% for item in disinfection_item_options %}
+              <label class="check-item">
+                <input type="checkbox" name="disinfection_items_2" value="{{ item }}"{% if item in second_disinfection_items %} checked{% endif %}>
+                <span>{{ loop.index }}. {{ item }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </section>
       </section>
       {% endif %}
-      <section class="record-folder-preview" id="record-folder-preview" aria-live="polite">
+      <section class="site-card record-folder-preview" id="record-folder-preview" aria-live="polite">
         <strong>將建立的 NAS 資料夾名稱</strong>
-        <div data-record-folder-empty>請先完成案件時間與車輛選擇。</div>
+        <div data-record-folder-empty>請先完成案件與車輛資料。</div>
         <ul data-record-folder-list></ul>
       </section>
       <div class="form-actions">
@@ -962,7 +994,7 @@
           const paths = Array.isArray(payload.paths) ? payload.paths : [];
           list.innerHTML = paths.map((path) => `<li>${escapeHtml(path)}</li>`).join("");
           empty.hidden = paths.length > 0;
-          if (!paths.length) empty.textContent = payload.detail || "請先完成案件時間與車輛選擇。";
+          if (!paths.length) empty.textContent = payload.detail || "請先完成案件與車輛資料。";
         } catch (error) {
           list.innerHTML = "";
           empty.hidden = false;

@@ -1239,7 +1239,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(app_module.app.config["TEMPLATES_AUTO_RELOAD"])
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("SinpoSmart - 救災救護Worker", body)
+        self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertIn("救護車設定", body)
         self.assertNotIn('href="/admin/public-pc"', body)
         self.assertNotIn('href="/admin/sinposmart"', body)
@@ -1341,16 +1341,40 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertEqual(200, response.status_code)
+        self.assertIn('<html lang="zh-Hant" data-ui="task-console">', body)
         self.assertIn("救災登打", body)
         self.assertIn('href="/app/disaster"', body)
         self.assertIn("救護登打", body)
         self.assertIn('href="/app"', body)
+        self.assertIn("工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材", body)
+
+    def test_task_entry_only_shows_back_button_on_nas(self):
+        nas_body = html.unescape(
+            self.client.get("/task-entry", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
+        )
+        local_body = html.unescape(
+            self.client.get("/task-entry", headers={"Host": "127.0.0.1:8090"}).data.decode("utf-8")
+        )
+
+        self.assertIn('<a class="button secondary" href="/">返回上一頁</a>', nas_body)
+        self.assertNotIn('<a class="button secondary" href="/">返回上一頁</a>', local_body)
+
+    def test_ems_and_disaster_pages_use_service_specific_worker_titles(self):
+        ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn("<title>SinpoSmart - 救護Worker</title>", ems_body)
+        self.assertIn("<h1>SinpoSmart - 救護Worker</h1>", ems_body)
+        self.assertIn("<title>SinpoSmart - 救災Worker</title>", disaster_body)
+        self.assertIn("<h1>SinpoSmart - 救災Worker</h1>", disaster_body)
 
     def test_disaster_page_uses_approved_layout_and_dynamic_vehicle_cards(self):
         response = self.client.get("/app/disaster")
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertEqual(200, response.status_code)
+        self.assertIn('<html lang="zh-Hant" data-ui="task-console">', body)
+        self.assertIn('<a class="button secondary" href="/task-entry">返回上一頁</a>', body)
         self.assertLess(body.index("案件地址"), body.index("案件時間"))
         self.assertLess(body.index("案件時間"), body.index("案件類型"))
         self.assertLess(body.index("出動車輛"), body.index("工作紀錄"))
@@ -1490,7 +1514,10 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/app")
         body = html.unescape(response.data.decode("utf-8"))
 
+        for site_key in ("work-record", "mileage", "fuel", "consumables", "disinfection"):
+            self.assertIn(f'data-site-card="{site_key}"', body)
         self.assertIn('id="record-folder-preview"', body)
+        self.assertIn('class="site-card record-folder-preview"', body)
         self.assertIn('data-fuel-total', body)
         self.assertIn('/api/record-folder-preview', body)
         self.assertIn('action="/tasks"', body)
@@ -1527,7 +1554,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("SinpoSmart - 救災救護Worker", body)
+        self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertNotIn("救護車設定", body)
         self.assertNotIn('href="/admin/vehicles"', body)
 
@@ -1790,7 +1817,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("救護後台", body)
         self.assertNotIn("值班後台", body)
         self.assertIn('class="header-actions"', body)
-        self.assertIn('href="/">返回首頁</a>', body)
+        self.assertIn('href="/task-entry">返回上一頁</a>', body)
 
     def test_nas_app_page_shows_home_button_only_on_nas(self):
         nas_body = html.unescape(
@@ -1800,8 +1827,8 @@ class WebAppTests(unittest.TestCase):
             self.client.get("/app", headers={"Host": "127.0.0.1:8090"}).data.decode("utf-8")
         )
 
-        self.assertIn('<a class="button secondary" href="/">返回首頁</a>', nas_body)
-        self.assertNotIn('<a class="button secondary" href="/">返回首頁</a>', local_body)
+        self.assertIn('<a class="button secondary" href="/task-entry">返回上一頁</a>', nas_body)
+        self.assertNotIn('<a class="button secondary" href="/task-entry">返回上一頁</a>', local_body)
 
     def test_app_page_recent_task_does_not_show_delete_button(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
@@ -1940,7 +1967,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("SinpoSmart - 救災救護Worker - 編輯狀態", body)
+        self.assertIn("SinpoSmart - 救護Worker - 編輯狀態", body)
         self.assertNotIn('formaction="/cases/clear"', body)
         self.assertNotIn(">清除</button>", body)
 
@@ -5936,7 +5963,7 @@ class WebAppTests(unittest.TestCase):
         edit_response = self.client.get(f"/tasks/{task_id}/edit")
         edit_body = html.unescape(edit_response.data.decode("utf-8"))
         self.assertEqual(edit_response.status_code, 200)
-        self.assertIn("SinpoSmart - 救災救護Worker - 編輯狀態", edit_body)
+        self.assertIn("SinpoSmart - 救護Worker - 編輯狀態", edit_body)
         self.assertNotIn("勤務案件", edit_body)
         self.assertNotIn("救護車設定", edit_body)
         self.assertNotIn("SinpoSmart - 救災救護Worker 後台", edit_body)

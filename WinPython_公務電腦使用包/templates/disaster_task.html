@@ -1,28 +1,104 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" data-ui="task-console">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SinpoSmart - 救災登打</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <title>SinpoSmart - 救災Worker</title>
   <style>
-    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif; color: #202522; background: #fafaf8; --accent:#b86b5b; --line:#ded9d0; }
-    * { box-sizing: border-box; } body { margin:0; } main { max-width:1080px; margin:auto; padding:24px 16px 48px; }
-    header { display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:18px; } h1 { margin:0; }
-    a { color:var(--accent); } .panel { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
-    h2 { margin:0 0 14px; font-size:21px; } .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-    .full { grid-column:1/-1; } label { display:grid; gap:6px; font-weight:700; } input,select,textarea,button { min-height:46px; border:1px solid var(--line); border-radius:8px; padding:9px 11px; font:inherit; }
-    textarea { min-height:110px; resize:vertical; } button { cursor:pointer; font-weight:800; background:#fff; } button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
-    .time-field { display:grid; grid-template-columns:1fr 48px; gap:6px; } .vehicle-card { border:1px solid var(--line); border-radius:10px; padding:14px; margin-top:10px; }
-    .section-head { display:flex; align-items:center; justify-content:space-between; gap:10px; } .package-buttons { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
-    .package-buttons button { min-height:38px; padding:7px 10px; } .preview { white-space:pre-wrap; background:#f7f4ef; border-radius:8px; padding:12px; min-height:64px; }
-    .errors { color:#a33; font-weight:700; } .fuel-fields[hidden], [hidden] { display:none !important; } .form-actions { margin-top:16px; display:grid; }
-    .remove-vehicle { color:#a33; } .folder-preview ul { margin:6px 0 0; padding-left:22px; overflow-wrap:anywhere; }
-    @media(max-width:700px){ .grid{grid-template-columns:1fr}.full{grid-column:auto} }
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
+      color: #202522;
+      background: #fafaf8;
+      --bg: #fafaf8;
+      --bg-top: #fff8f2;
+      --bg-line: rgba(184, 107, 91, .045);
+      --surface: #ffffff;
+      --ink: #202522;
+      --muted: #6f7772;
+      --line: #e8e4dc;
+      --line-strong: #d8d2c7;
+      --accent: #b86b5b;
+      --accent-soft: #f6e9e5;
+      --failed: #b75c55;
+      --failed-bg: #fae9e7;
+      --idle-bg: #f3f1ed;
+      --shadow: 0 16px 36px rgba(39, 49, 43, .07);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, var(--bg-top) 0, var(--bg) 310px),
+        repeating-linear-gradient(135deg, var(--bg-line) 0 1px, transparent 1px 18px);
+      background-attachment: fixed;
+      color: var(--ink);
+      font-size: 17px;
+      line-height: 1.45;
+    }
+    main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 52px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+    h1 { margin: 0; font-size: 31px; line-height: 1.25; font-weight: 800; }
+    h2 { margin: 0 0 12px; font-size: 19px; line-height: 1.35; font-weight: 760; }
+    h3 { margin: 18px 0 8px; font-size: 17px; }
+    .panel { margin-bottom: 16px; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+    label { display: block; min-width: 0; margin: 0 0 15px; color: var(--ink); font-size: 18px; font-weight: 780; }
+    input, select, textarea {
+      width: 100%; min-width: 0; min-height: 52px; margin-top: 6px; padding: 14px 16px;
+      border: 1px solid var(--line-strong); border-radius: 10px; background: #fff; color: var(--ink); font: inherit;
+    }
+    input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    textarea { min-height: 120px; resize: vertical; }
+    button, .button {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 50px; max-width: 100%;
+      border: 1px solid transparent; border-radius: 999px; padding: 0 16px; background: var(--accent); color: #fff;
+      font: inherit; font-weight: 760; text-decoration: none; box-shadow: 0 8px 18px rgba(184, 107, 91, .18); cursor: pointer;
+    }
+    button:hover, .button:hover { filter: brightness(.98); }
+    .secondary { background: transparent; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .full { grid-column: 1 / -1; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .section-head h2 { margin-bottom: 0; }
+    .lookup form { display: flex; align-items: center; padding: 0; border: 0; background: transparent; box-shadow: none; }
+    .vehicle-card { margin-top: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    .vehicle-card > .section-head { margin-bottom: 14px; }
+    .time-field { display: grid; grid-template-columns: minmax(0, 1fr) 52px; gap: 10px; align-items: end; }
+    .time-field button { width: 52px; min-width: 52px; min-height: 52px; margin-top: 6px; padding: 0; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; }
+    .fuel-toggle { width: 20px; height: 20px; min-height: 20px; margin: 0; accent-color: var(--accent); }
+    label > span { display: flex; align-items: center; gap: 10px; }
+    .fuel-fields { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .fuel-total { color: var(--accent); font-weight: 800; }
+    .package-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .package-buttons button { min-height: 42px; padding: 0 12px; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; font-size: 15px; }
+    .preview, .folder-preview { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); }
+    .preview { min-height: 68px; white-space: pre-wrap; }
+    .errors { color: #8f3934; font-weight: 720; background: var(--failed-bg); }
+    .remove-vehicle { background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
+    .folder-preview ul { margin: 6px 0 0; padding-left: 22px; overflow-wrap: anywhere; }
+    .fuel-fields[hidden], [hidden] { display: none !important; }
+    .form-actions { display: grid; margin-top: 8px; }
+    .form-actions button { width: 100%; min-height: 58px; font-size: 19px; }
+    @media (max-width: 700px) {
+      main { padding: 22px 16px 40px; }
+      header { align-items: center; }
+      h1 { font-size: 25px; }
+      .header-actions { flex-wrap: wrap; max-width: 62%; }
+      .header-actions .button { min-height: 38px; padding: 0 12px; font-size: 15px; }
+      .grid { grid-template-columns: 1fr; gap: 8px; }
+      .full { grid-column: auto; }
+      .section-head { align-items: stretch; flex-direction: column; }
+      .section-head button { width: 100%; }
+      .vehicle-card > .section-head { align-items: center; flex-direction: row; }
+      .vehicle-card > .section-head button { width: auto; }
+    }
   </style>
 </head>
 <body>
 <main>
-  <header><div><h1>救災登打</h1><a href="/task-entry">返回救災救護入口</a></div><a href="/admin/disaster-vehicles">救災車設定</a></header>
+  <header><h1>SinpoSmart - 救災Worker</h1><div class="header-actions"><a class="button secondary" href="/task-entry">返回上一頁</a><a class="button secondary" href="/admin/disaster-vehicles">救災車設定</a></div></header>
   {% if form_errors %}<section class="panel errors">{% for error in form_errors %}<div>{{ error }}</div>{% endfor %}</section>{% endif %}
   <section class="panel lookup">
     <div class="section-head">
