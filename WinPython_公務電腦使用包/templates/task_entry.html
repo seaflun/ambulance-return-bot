@@ -46,7 +46,6 @@
     .entry-card:hover { border-color: var(--accent); transform: translateY(-1px); }
     .entry-card strong { font-size: 27px; }
     .entry-card span { color: var(--muted); }
-    .entry-card-action { align-self: flex-start; display: inline-flex; align-items: center; min-height: 42px; border-radius: 999px; padding: 0 16px; background: var(--accent); color: #fff !important; font-weight: 760; }
     @media (max-width: 620px) {
       main { padding: 22px 16px 40px; }
       header { align-items: center; }
@@ -61,12 +60,12 @@
   <main>
     <header>
       <h1>救災救護登打</h1>
-      {% if show_nas_home_button() %}<div class="header-actions"><a class="button secondary" href="/">返回上一頁</a></div>{% endif %}
+      {% if show_nas_home_button() %}<div class="header-actions"><a class="button secondary" href="/">返回首頁</a></div>{% endif %}
     </header>
     <p>請選擇本次勤務類型。</p>
     <nav class="entries" aria-label="登打類型">
-      <a class="entry-card" href="/app/disaster"><strong>救災登打</strong><span>工作紀錄、車輛里程、加油紀錄</span><span class="entry-card-action">進入救災登打</span></a>
-      <a class="entry-card" href="/app"><strong>救護登打</strong><span>工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材</span><span class="entry-card-action">進入救護登打</span></a>
+      <a class="entry-card" href="/app/disaster"><strong>救災登打</strong><span>工作紀錄、車輛里程、加油紀錄</span></a>
+      <a class="entry-card" href="/app"><strong>救護登打</strong><span>工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材</span></a>
     </nav>
   </main>
 </body>

@@ -559,7 +559,7 @@
             <input name="fuel_unit_price" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ primary_fuel.unit_price or '' }}">
           </label>
         </div>
-        <div class="fuel-total" data-fuel-total="1">最終總價：0.00</div>
+        <div class="fuel-total" data-fuel-total="1">最終總價：0</div>
       </section>
       </section>
 
@@ -709,7 +709,7 @@
               <input name="fuel_unit_price_2" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ second_fuel.unit_price or '' }}">
             </label>
           </div>
-          <div class="fuel-total" data-fuel-total="2">最終總價：0.00</div>
+          <div class="fuel-total" data-fuel-total="2">最終總價：0</div>
         </section>
         </section>
         <section class="site-card consumables" data-site-card="consumables-2">
@@ -975,7 +975,7 @@
         const quantity = Number(document.querySelector(`input[name="fuel_quantity${suffix}"]`)?.value || 0);
         const price = Number(document.querySelector(`input[name="fuel_unit_price${suffix}"]`)?.value || 0);
         const output = document.querySelector(`[data-fuel-total="${number}"]`);
-        if (output) output.textContent = `最終總價：${(quantity * price).toFixed(2)}`;
+        if (output) output.textContent = `最終總價：${Math.round(quantity * price)}`;
       });
     }
 

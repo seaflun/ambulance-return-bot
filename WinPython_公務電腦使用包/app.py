@@ -4202,6 +4202,8 @@ def validate_disaster_task_form(task_request) -> list[str]:
         errors.append("請填寫正確返隊時間")
     if not task_request.case_address.strip():
         errors.append("請填寫案件地址")
+    if task_request.summary_type not in {"火災", "災害搶救", "其他"}:
+        errors.append("請選擇正確案件類型")
     if task_request.case_reason not in DISASTER_REASON_OPTIONS:
         errors.append("請選擇正確事由")
     if task_request.case_reason == "其他" and not task_request.reason_other.strip():
