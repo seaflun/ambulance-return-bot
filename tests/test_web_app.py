@@ -1355,6 +1355,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材", body)
         self.assertNotIn("entry-card-action", body)
 
+    def test_task_entry_cards_use_same_portal_card_height_as_home(self):
+        body = html.unescape(self.client.get("/task-entry").data.decode("utf-8"))
+
+        self.assertEqual(2, body.count('class="choice-card portal-card'))
+
     def test_shared_ui_stylesheet_supports_touch_and_accessibility_states(self):
         response = self.client.get("/static/sinposmart-ui.css")
         try:
@@ -1368,6 +1373,20 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         finally:
             response.close()
+
+    def test_mobile_headers_keep_eyebrows_visible(self):
+        css = self.client.get("/static/sinposmart-ui.css").data.decode("utf-8")
+        headers = {"Host": "100.114.126.58:8080"}
+        ems_settings = html.unescape(
+            self.client.get("/admin/vehicles", headers=headers).data.decode("utf-8")
+        )
+        disaster_settings = html.unescape(
+            self.client.get("/admin/disaster-vehicles", headers=headers).data.decode("utf-8")
+        )
+
+        self.assertNotIn(".app-header__eyebrow {\n    display: none;", css)
+        self.assertIn('<p class="workspace-eyebrow">救護車輛設定</p>', ems_settings)
+        self.assertIn('<p class="workspace-eyebrow">救災車輛設定</p>', disaster_settings)
 
     def test_home_portal_cards_use_destination_colors(self):
         response = self.client.get("/static/sinposmart-ui.css")
@@ -1420,6 +1439,19 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('<p class="workspace-eyebrow">值班任務管理</p>', duty_body)
         self.assertIn('<p class="workspace-eyebrow">救護勤務登打中心</p>', ems_body)
         self.assertIn('<p class="workspace-eyebrow">救災勤務登打中心</p>', disaster_body)
+
+    def test_workspace_header_navigation_uses_shared_apple_material_style(self):
+        headers = {"Host": "100.114.126.58:8080"}
+        duty_body = html.unescape(self.client.get("/admin/sinposmart", headers=headers).data.decode("utf-8"))
+        ems_body = html.unescape(self.client.get("/app", headers=headers).data.decode("utf-8"))
+        disaster_body = html.unescape(self.client.get("/app/disaster", headers=headers).data.decode("utf-8"))
+        css = self.client.get("/static/sinposmart-workspace.css").data.decode("utf-8")
+
+        self.assertIn('class="button secondary header-navigation-button" href="/">返回首頁</a>', duty_body)
+        self.assertEqual(2, ems_body.count("header-navigation-button"))
+        self.assertEqual(2, disaster_body.count("header-navigation-button"))
+        self.assertIn(".workspace-page main > header .header-navigation-button {", css)
+        self.assertIn("backdrop-filter: blur(18px) saturate(150%);", css)
 
     def test_workspace_stylesheet_separates_date_selection_and_pads_duty_cards(self):
         response = self.client.get("/static/sinposmart-workspace.css")
@@ -1748,7 +1780,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("main { max-width: 960px;", body)
         self.assertIn("repeating-linear-gradient", body)
         self.assertIn('class="vehicle-row header-row"', body)
-        self.assertIn('class="button secondary"', body)
+        self.assertIn('class="button secondary header-navigation-button"', body)
 
         response = self.client.post(
             "/admin/disaster-vehicles",
@@ -2274,8 +2306,9 @@ class WebAppTests(unittest.TestCase):
             self.client.get("/app", headers={"Host": "127.0.0.1:8090"}).data.decode("utf-8")
         )
 
-        self.assertIn('<a class="button secondary" href="/task-entry">返回上一頁</a>', nas_body)
-        self.assertNotIn('<a class="button secondary" href="/task-entry">返回上一頁</a>', local_body)
+        navigation = '<a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>'
+        self.assertIn(navigation, nas_body)
+        self.assertNotIn(navigation, local_body)
 
     def test_app_page_recent_task_does_not_show_delete_button(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
@@ -2361,7 +2394,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(f'href="/tasks/{disaster["task"]["task_id"]}"', disaster_body)
         self.assertNotIn(f'href="/tasks/{ems["task"]["task_id"]}"', disaster_body)
 
-    def test_app_page_recent_tasks_keeps_only_completed_last_48_hours(self):
+    def test_public_pc_recent_tasks_hide_all_statuses_after_48_hours(self):
         now = datetime.now()
         for task_id, age_hours, completed in (
             ("completed-49-hours", 49, True),
@@ -2393,7 +2426,80 @@ class WebAppTests(unittest.TestCase):
 
         self.assertNotIn('href="/tasks/completed-49-hours"', body)
         self.assertIn('href="/tasks/completed-47-hours"', body)
-        self.assertIn('href="/tasks/waiting-49-hours"', body)
+        self.assertNotIn('href="/tasks/waiting-49-hours"', body)
+
+    def test_nas_recent_tasks_merge_public_pc_reports_as_read_only_by_service(self):
+        fixture_store = JsonTaskStore(Path(self.tmp.name) / "public-pc-report-fixtures")
+        ems_report = fixture_store.create(
+            AmbulanceReturnRequest(
+                task_id="public-pc-ems-recent",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="ems",
+                vehicle="新坡91",
+                case_reason="公務電腦救護案件",
+                case_address="桃園市觀音區救護路1號",
+            )
+        )
+        disaster_report = fixture_store.create(
+            AmbulanceReturnRequest(
+                task_id="public-pc-disaster-recent",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                vehicle="新坡11",
+                case_reason="公務電腦救災案件",
+                case_address="桃園市觀音區救災路1號",
+            )
+        )
+        app_module.write_json_atomic(
+            app_module.public_pc_report_file(),
+            {"tasks": [ems_report, disaster_report]},
+        )
+        headers = {"Host": "100.114.126.58:8080"}
+
+        ems_body = html.unescape(self.client.get("/app", headers=headers).data.decode("utf-8"))
+        disaster_body = html.unescape(self.client.get("/app/disaster", headers=headers).data.decode("utf-8"))
+
+        self.assertIn("公務電腦救護案件", ems_body)
+        self.assertNotIn("公務電腦救災案件", ems_body)
+        self.assertNotIn('href="/tasks/public-pc-ems-recent"', ems_body)
+        self.assertIn("公務電腦建立", ems_body)
+        self.assertIn("NAS 僅查看", ems_body)
+        self.assertIn("公務電腦救災案件", disaster_body)
+        self.assertNotIn("公務電腦救護案件", disaster_body)
+        self.assertNotIn('href="/tasks/public-pc-disaster-recent"', disaster_body)
+        self.assertIn("公務電腦建立", disaster_body)
+        self.assertIn("NAS 僅查看", disaster_body)
+
+    def test_nas_recent_tasks_prefer_nas_task_when_public_pc_report_has_same_id(self):
+        task_id = "shared-recent-task"
+        nas_payload = self.store.create(
+            AmbulanceReturnRequest(
+                task_id=task_id,
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="ems",
+                vehicle="新坡91",
+                case_reason="NAS 原始案件",
+                case_address="桃園市觀音區去重路1號",
+            )
+        )
+        report_payload = json.loads(json.dumps(nas_payload, ensure_ascii=False))
+        report_payload["task"]["case_reason"] = "公務電腦重複案件"
+        app_module.write_json_atomic(
+            app_module.public_pc_report_file(),
+            {"tasks": [report_payload]},
+        )
+
+        body = html.unescape(
+            self.client.get("/app", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
+        )
+
+        self.assertEqual(1, body.count(f'href="/tasks/{task_id}"'))
+        self.assertIn("NAS 原始案件", body)
+        self.assertNotIn("公務電腦重複案件", body)
+        self.assertIn("NAS建立", body)
 
     def test_task_delete_route_rejects_windows_path_traversal(self):
         cases_dir = app_module.artifacts_dir / "cases"

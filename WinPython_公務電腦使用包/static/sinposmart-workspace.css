@@ -177,6 +177,23 @@ body.workspace-page--ems-settings {
   box-shadow: 0 8px 22px rgba(29, 29, 31, .08);
 }
 
+.workspace-page main > header .header-navigation-button {
+  min-height: 44px;
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .76);
+  color: var(--accent);
+  box-shadow: 0 8px 24px rgba(29, 29, 31, .07), inset 0 1px 0 rgba(255, 255, 255, .82);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+
+.workspace-page main > header .header-navigation-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .workspace-page button:focus-visible,
 .workspace-page .button:focus-visible,
 .workspace-page input:focus-visible,
@@ -267,6 +284,34 @@ body.workspace-page--ems-settings {
   border-color: var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, .92);
+}
+
+.workspace-page .recent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.workspace-page .recent-origin,
+.workspace-page .recent-read-only {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 7%, white);
+  color: var(--accent);
+  font-size: .75rem;
+  font-weight: 720;
+  line-height: 1;
+}
+
+.workspace-page .recent-read-only {
+  border-color: var(--line);
+  background: var(--surface-muted);
+  color: var(--muted);
 }
 
 .workspace-page .status {

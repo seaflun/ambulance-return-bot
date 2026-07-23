@@ -422,7 +422,7 @@ h1 {
   }
 
   .app-header__eyebrow {
-    display: none;
+    font-size: .68rem;
   }
 
   .choice-card {

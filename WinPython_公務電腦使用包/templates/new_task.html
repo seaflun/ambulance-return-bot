@@ -363,10 +363,10 @@
       {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button()) %}
         <div class="header-actions">
           {% if show_nas_home_button() %}
-            <a class="button secondary" href="/task-entry">返回上一頁</a>
+            <a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>
           {% endif %}
           {% if show_vehicle_settings_button() %}
-            <a class="button secondary" href="/admin/vehicles">救護車設定</a>
+            <a class="button secondary header-navigation-button" href="/admin/vehicles">救護車設定</a>
           {% endif %}
         </div>
       {% endif %}
@@ -779,22 +779,7 @@
     </section>
     {% endif %}
 
-    {% if recent_tasks %}
-    <section class="panel recent">
-      <h2>最近任務</h2>
-      <div class="recent-list">
-        {% for item in recent_tasks %}
-          <div class="recent-card">
-            <div class="recent-main">
-              <a class="recent-title" href="/tasks/{{ item.task.task_id }}">{{ task_title(item.task) }}{% for entry in task_vehicle_display_entries(item.task) if entry.vehicle %}{{ ' - ' if loop.first else '、' }}{{ entry.vehicle }}{% endfor %}</a>
-              <div class="recent-progress">{{ task_progress_summary(item) }}</div>
-            </div>
-            <span class="status {{ status_class(effective_task_status(item)) }}">{{ status_label(effective_task_status(item)) }}</span>
-          </div>
-        {% endfor %}
-      </div>
-    </section>
-    {% endif %}
+    {% include "_recent_tasks.html" %}
   </main>
   {% set auto_refresh = case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
   <script>

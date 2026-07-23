@@ -171,8 +171,8 @@
     </div>
     {% if show_nas_home_button() or show_vehicle_settings_button() %}
       <div class="header-actions">
-        {% if show_nas_home_button() %}<a class="button secondary" href="/task-entry">返回上一頁</a>{% endif %}
-        {% if show_vehicle_settings_button() %}<a class="button secondary" href="/admin/disaster-vehicles">救災車設定</a>{% endif %}
+        {% if show_nas_home_button() %}<a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>{% endif %}
+        {% if show_vehicle_settings_button() %}<a class="button secondary header-navigation-button" href="/admin/disaster-vehicles">救災車設定</a>{% endif %}
       </div>
     {% endif %}
   </header>
@@ -278,22 +278,7 @@
     <p>請先從上方案件按「帶入」，下方輸入欄位才會開啟。</p>
   </section>
   {% endif %}
-  {% if recent_tasks %}
-  <section class="panel recent">
-    <h2>最近任務</h2>
-    <div class="recent-list">
-      {% for item in recent_tasks %}
-        <div class="recent-card">
-          <div class="recent-main">
-            <a class="recent-title" href="/tasks/{{ item.task.task_id }}">{{ task_title(item.task) }}{% for entry in task_vehicle_display_entries(item.task) if entry.vehicle %}{{ ' - ' if loop.first else '、' }}{{ entry.vehicle }}{% endfor %}</a>
-            <div class="recent-progress">{{ task_progress_summary(item) }}</div>
-          </div>
-          <span class="status {{ status_class(effective_task_status(item)) }}">{{ status_label(effective_task_status(item)) }}</span>
-        </div>
-      {% endfor %}
-    </div>
-  </section>
-  {% endif %}
+  {% include "_recent_tasks.html" %}
 </main>
 <script>
   const lookupForm=document.getElementById('lookup-form');

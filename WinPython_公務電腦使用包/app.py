@@ -3583,19 +3583,61 @@ def task_form_recent_task_timestamp(payload: dict) -> datetime | None:
 def recent_tasks_for_task_form(service_type: str = "ems") -> list[dict]:
     normalized_service = "disaster" if str(service_type).strip().lower() == "disaster" else "ems"
     cutoff = datetime.now() - timedelta(hours=TASK_FORM_COMPLETED_HISTORY_HOURS)
+    local_view = request_is_local_host()
     incomplete_tasks: list[dict] = []
     recent_completed_tasks: list[dict] = []
-    for payload in refresh_recent_tasks(store.list_recent(limit=TASK_FORM_RECENT_TASK_SCAN_LIMIT)):
+    known_task_ids: set[str] = set()
+
+    def add_recent_task(
+        payload: dict,
+        *,
+        origin: str,
+        origin_label: str,
+        read_only: bool,
+        expire_all_statuses: bool,
+    ) -> None:
         task = dict(payload.get("task") or {})
-        task_service = "disaster" if str(task.get("service_type") or "ems").strip().lower() == "disaster" else "ems"
+        task_service = (
+            "disaster"
+            if str(task.get("service_type") or "ems").strip().lower() == "disaster"
+            else "ems"
+        )
         if task_service != normalized_service:
-            continue
-        if status_class(effective_task_status(payload)) != "complete":
-            incomplete_tasks.append(payload)
-            continue
+            return
+        task_id = str(task.get("task_id") or payload.get("task_id") or "").strip()
+        if not task_id or task_id in known_task_ids:
+            return
+        completed = status_class(effective_task_status(payload)) == "complete"
         updated_at = task_form_recent_task_timestamp(payload)
-        if updated_at is None or updated_at >= cutoff:
-            recent_completed_tasks.append(payload)
+        if updated_at is not None and updated_at < cutoff and (expire_all_statuses or completed):
+            return
+        recent_payload = dict(payload)
+        recent_payload["recent_origin"] = origin
+        recent_payload["recent_origin_label"] = origin_label
+        recent_payload["recent_read_only"] = read_only
+        known_task_ids.add(task_id)
+        if completed:
+            recent_completed_tasks.append(recent_payload)
+        else:
+            incomplete_tasks.append(recent_payload)
+
+    for payload in refresh_recent_tasks(store.list_recent(limit=TASK_FORM_RECENT_TASK_SCAN_LIMIT)):
+        add_recent_task(
+            payload,
+            origin="public_pc" if local_view else "nas",
+            origin_label="公務電腦建立" if local_view else "NAS建立",
+            read_only=False,
+            expire_all_statuses=local_view,
+        )
+    if not local_view:
+        for payload in public_pc_reports():
+            add_recent_task(
+                payload,
+                origin="public_pc",
+                origin_label="公務電腦建立",
+                read_only=True,
+                expire_all_statuses=True,
+            )
     completed_capacity = max(0, TASK_FORM_RECENT_TASK_LIMIT - len(incomplete_tasks))
     return incomplete_tasks + recent_completed_tasks[:completed_capacity]
 
