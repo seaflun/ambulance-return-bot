@@ -62,8 +62,14 @@ def create_chrome_driver_with_retry(options: Options, label: str = "Chrome") -> 
             if not _is_chrome_startup_error(exc):
                 break
             print(f"[chrome] {label} start attempt {attempt} failed: {_short_error(exc)}", flush=True)
-            cleanup_worker_chrome_residue(options, label)
-            cleanup_runtime_profiles_for_startup_failure(_worker_user_data_paths(options))
+            try:
+                cleanup_worker_chrome_residue(options, label)
+            except OSError as cleanup_exc:
+                print(f"[chrome] {label} residue cleanup skipped: {_short_error(cleanup_exc)}", flush=True)
+            try:
+                cleanup_runtime_profiles_for_startup_failure(_worker_user_data_paths(options))
+            except OSError as cleanup_exc:
+                print(f"[chrome] {label} profile cleanup skipped: {_short_error(cleanup_exc)}", flush=True)
             if attempt >= attempts:
                 break
             time.sleep(delay_seconds)

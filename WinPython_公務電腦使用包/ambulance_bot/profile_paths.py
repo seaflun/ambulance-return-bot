@@ -49,7 +49,10 @@ def runtime_profile_root() -> Path:
 
 def runtime_profile_dir(profile_name: str) -> Path:
     name = str(profile_name or "").strip() or WORKER_BROWSER_PROFILE_NAME
-    cleanup_stale_runtime_profiles()
+    try:
+        cleanup_stale_runtime_profiles()
+    except OSError as exc:
+        print(f"[profiles] profile cleanup unavailable: {_short_error(exc)}", flush=True)
     path = runtime_profile_root() / name
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -68,20 +71,25 @@ def cleanup_stale_runtime_profiles(
     if os.getenv("SELENIUM_PROFILE_CLEANUP_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
         return []
     root = Path(profile_root) if profile_root is not None else runtime_profile_root()
-    if not root.exists():
+    try:
+        if not root.exists():
+            return []
+        paths = list(root.iterdir())
+    except OSError as exc:
+        print(f"[profiles] profile cleanup unavailable: {_short_error(exc)}", flush=True)
         return []
     max_age = _profile_cleanup_max_age_hours() if max_age_hours is None else max_age_hours
     cutoff = time.time() - max(float(max_age), 0.0) * 3600
     skip_names = set(skip_profile_names or set())
     removed: list[Path] = []
-    for path in root.iterdir():
+    for path in paths:
         if path.name in skip_names:
             continue
         if not _is_generated_runtime_profile(path.name):
             continue
-        if not path.is_dir() or path.is_symlink() or _profile_has_active_lock(path):
-            continue
         try:
+            if not path.is_dir() or path.is_symlink() or _profile_has_active_lock(path):
+                continue
             if path.stat().st_mtime > cutoff:
                 continue
             shutil.rmtree(path)

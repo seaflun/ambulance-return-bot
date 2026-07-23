@@ -11,6 +11,43 @@ import ambulance_bot.profile_paths as profile_paths
 
 
 class ProfilePathTests(unittest.TestCase):
+    def test_runtime_profile_dir_continues_when_stale_cleanup_hits_invalid_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            previous_root = os.environ.get("SELENIUM_PROFILE_ROOT")
+            output = io.StringIO()
+            try:
+                os.environ["SELENIUM_PROFILE_ROOT"] = str(root)
+                with mock.patch.object(
+                    profile_paths,
+                    "cleanup_stale_runtime_profiles",
+                    side_effect=OSError(22, "Invalid argument"),
+                ):
+                    with contextlib.redirect_stdout(output):
+                        profile = profile_paths.runtime_profile_dir("duty_work_log_profile_task1")
+            finally:
+                if previous_root is None:
+                    os.environ.pop("SELENIUM_PROFILE_ROOT", None)
+                else:
+                    os.environ["SELENIUM_PROFILE_ROOT"] = previous_root
+
+            self.assertEqual(profile, root / "duty_work_log_profile_task1")
+            self.assertTrue(profile.is_dir())
+            self.assertIn("profile cleanup unavailable", output.getvalue())
+            self.assertIn("Invalid argument", output.getvalue())
+
+    def test_cleanup_stale_runtime_profiles_skips_invalid_profile_root_iteration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = io.StringIO()
+            with mock.patch.object(Path, "iterdir", side_effect=OSError(22, "Invalid argument")):
+                with contextlib.redirect_stdout(output):
+                    removed = profile_paths.cleanup_stale_runtime_profiles(root)
+
+            self.assertEqual(removed, [])
+            self.assertIn("profile cleanup unavailable", output.getvalue())
+            self.assertIn("Invalid argument", output.getvalue())
+
     def test_runtime_profile_dir_cleans_stale_generated_residue(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "profiles"
