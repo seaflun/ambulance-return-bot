@@ -123,6 +123,17 @@
     .fuel-fields[hidden], [hidden] { display: none !important; }
     .form-actions { display: grid; margin-top: 8px; }
     .form-actions button { width: 100%; min-height: 58px; font-size: 19px; }
+    .recent { margin-top: 18px; }
+    .recent-list { display: grid; gap: 8px; }
+    .recent-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    .recent-main { display: grid; gap: 4px; min-width: 0; }
+    .recent-title { color: inherit; font-weight: 780; overflow-wrap: anywhere; text-decoration: none; }
+    .recent-progress { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .status { min-width: 62px; padding: 5px 10px; border-radius: 999px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 760; text-align: center; }
+    .status.complete { background: var(--complete-bg); color: var(--complete); }
+    .status.failed { background: var(--failed-bg); color: var(--failed); }
+    .status.running { background: var(--running-bg); color: var(--running); }
+    .status.waiting { background: var(--waiting-bg); color: var(--waiting); }
     @media (max-width: 700px) {
       main { padding: 22px 16px 40px; }
       header { align-items: center; }
@@ -144,6 +155,8 @@
       .section-head button { width: 100%; }
       .vehicle-card > .section-head { align-items: center; flex-direction: row; }
       .vehicle-card > .section-head button { width: auto; }
+      .recent-card { grid-template-columns: minmax(0, 1fr); }
+      .recent-card .status { justify-self: start; }
     }
   </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
@@ -263,6 +276,22 @@
   <section class="panel task-form-locked" role="status" aria-live="polite">
     {% if form_errors %}<div class="form-errors" role="alert"><ul>{% for error in form_errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}
     <p>請先從上方案件按「帶入」，下方輸入欄位才會開啟。</p>
+  </section>
+  {% endif %}
+  {% if recent_tasks %}
+  <section class="panel recent">
+    <h2>最近任務</h2>
+    <div class="recent-list">
+      {% for item in recent_tasks %}
+        <div class="recent-card">
+          <div class="recent-main">
+            <a class="recent-title" href="/tasks/{{ item.task.task_id }}">{{ task_title(item.task) }}{% for entry in task_vehicle_display_entries(item.task) if entry.vehicle %}{{ ' - ' if loop.first else '、' }}{{ entry.vehicle }}{% endfor %}</a>
+            <div class="recent-progress">{{ task_progress_summary(item) }}</div>
+          </div>
+          <span class="status {{ status_class(effective_task_status(item)) }}">{{ status_label(effective_task_status(item)) }}</span>
+        </div>
+      {% endfor %}
+    </div>
   </section>
   {% endif %}
 </main>
@@ -431,7 +460,7 @@
   updateFolderPreview();
   updateRequiredHints();
   {% endif %}
-  {% if case_lookup.is_running %}
+  {% if case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
   window.setTimeout(()=>{ if(!document.querySelector('form:focus-within')) window.location.reload(); },2000);
   {% endif %}
 </script>

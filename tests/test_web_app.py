@@ -2329,6 +2329,38 @@ class WebAppTests(unittest.TestCase):
             body,
         )
 
+    def test_task_entry_pages_show_only_matching_service_recent_tasks(self):
+        ems = self.store.create(
+            AmbulanceReturnRequest(
+                task_id="recent-ems-task",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="ems",
+                vehicle="新坡91",
+                case_reason="救護最近任務",
+            )
+        )
+        disaster = self.store.create(
+            AmbulanceReturnRequest(
+                task_id="recent-disaster-task",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                vehicle="新坡11",
+                case_reason="救災最近任務",
+            )
+        )
+
+        ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn("最近任務", ems_body)
+        self.assertIn(f'href="/tasks/{ems["task"]["task_id"]}"', ems_body)
+        self.assertNotIn(f'href="/tasks/{disaster["task"]["task_id"]}"', ems_body)
+        self.assertIn("最近任務", disaster_body)
+        self.assertIn(f'href="/tasks/{disaster["task"]["task_id"]}"', disaster_body)
+        self.assertNotIn(f'href="/tasks/{ems["task"]["task_id"]}"', disaster_body)
+
     def test_app_page_recent_tasks_keeps_only_completed_last_48_hours(self):
         now = datetime.now()
         for task_id, age_hours, completed in (

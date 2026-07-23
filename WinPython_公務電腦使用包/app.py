@@ -235,7 +235,7 @@ def new_task():
         form_action=url_for("create_task"),
         submit_label="建立任務",
         cancel_url="",
-        recent_tasks=recent_tasks_for_task_form(),
+        recent_tasks=recent_tasks_for_task_form("ems"),
         case_lookup=prepared_case_lookup(),
         selected_case=selected_case,
         vehicle_options=effective_ems_vehicle_options(),
@@ -261,6 +261,7 @@ def disaster_task():
         "disaster_task.html",
         form_action=url_for("create_disaster_task"),
         selected_case=selected_case,
+        recent_tasks=recent_tasks_for_task_form("disaster"),
         case_lookup=prepared_case_lookup(),
         person_options=person_options,
         vehicle_options=effective_disaster_vehicle_options(),
@@ -352,7 +353,7 @@ def create_task():
             form_action=url_for("create_task"),
             submit_label="建立任務",
             cancel_url="",
-            recent_tasks=recent_tasks_for_task_form(),
+            recent_tasks=recent_tasks_for_task_form("ems"),
             case_lookup=prepared_case_lookup(),
             form_errors=errors,
             baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
@@ -376,6 +377,7 @@ def create_disaster_task():
             "disaster_task.html",
             form_action=url_for("create_disaster_task"),
             selected_case=task_form_values(task_request.to_dict()),
+            recent_tasks=recent_tasks_for_task_form("disaster"),
             case_lookup=prepared_case_lookup(),
             person_options=person_options_from_personnel(task_request.personnel),
             vehicle_options=effective_disaster_vehicle_options(),
@@ -398,6 +400,7 @@ def create_disaster_task():
             "disaster_task.html",
             form_action=url_for("create_disaster_task"),
             selected_case=task_form_values(task_request.to_dict()),
+            recent_tasks=recent_tasks_for_task_form("disaster"),
             case_lookup=prepared_case_lookup(),
             person_options=person_options_from_personnel(task_request.personnel),
             vehicle_options=effective_disaster_vehicle_options(),
@@ -3577,11 +3580,16 @@ def task_form_recent_task_timestamp(payload: dict) -> datetime | None:
     return timestamp
 
 
-def recent_tasks_for_task_form() -> list[dict]:
+def recent_tasks_for_task_form(service_type: str = "ems") -> list[dict]:
+    normalized_service = "disaster" if str(service_type).strip().lower() == "disaster" else "ems"
     cutoff = datetime.now() - timedelta(hours=TASK_FORM_COMPLETED_HISTORY_HOURS)
     incomplete_tasks: list[dict] = []
     recent_completed_tasks: list[dict] = []
     for payload in refresh_recent_tasks(store.list_recent(limit=TASK_FORM_RECENT_TASK_SCAN_LIMIT)):
+        task = dict(payload.get("task") or {})
+        task_service = "disaster" if str(task.get("service_type") or "ems").strip().lower() == "disaster" else "ems"
+        if task_service != normalized_service:
+            continue
         if status_class(effective_task_status(payload)) != "complete":
             incomplete_tasks.append(payload)
             continue
