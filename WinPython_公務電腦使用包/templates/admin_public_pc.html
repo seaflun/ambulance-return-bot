@@ -4,7 +4,7 @@
 {% block eyebrow %}{% if service_filter == 'disaster' %}救災任務管理{% elif service_filter == 'ems' %}救護任務管理{% else %}救災救護任務管理{% endif %}{% endblock %}
 {% block page_heading %}{{ admin_page_title }}{% endblock %}
 {% block extra_head %}<link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-admin.css') }}">{% endblock %}
-{% block header_actions %}<div class="header-actions"><a class="button secondary" href="/">返回首頁</a></div>{% endblock %}
+{% block header_actions %}<div class="header-actions"><a class="button secondary header-home-button" href="/">返回首頁</a></div>{% endblock %}
 
 <!doctype html>
 <html lang="zh-Hant">

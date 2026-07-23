@@ -1412,6 +1412,35 @@ class WebAppTests(unittest.TestCase):
         finally:
             response.close()
 
+    def test_workspace_headers_show_service_specific_eyebrows(self):
+        duty_body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+        ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn('<p class="workspace-eyebrow">值班任務管理</p>', duty_body)
+        self.assertIn('<p class="workspace-eyebrow">救護勤務登打中心</p>', ems_body)
+        self.assertIn('<p class="workspace-eyebrow">救災勤務登打中心</p>', disaster_body)
+
+    def test_workspace_stylesheet_separates_date_selection_and_pads_duty_cards(self):
+        response = self.client.get("/static/sinposmart-workspace.css")
+        try:
+            css = response.data.decode("utf-8")
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(
+                ".workspace-page .day-link {\n"
+                "  min-height: 40px;\n"
+                "  border-color: transparent;\n"
+                "  background: transparent;\n"
+                "  color: var(--ink);",
+                css,
+            )
+            self.assertIn(".workspace-page--duty .section {\n  padding: 20px;", css)
+            self.assertIn(".workspace-page--duty .event-title {\n  overflow-wrap: anywhere;", css)
+            self.assertIn(".workspace-page--duty .section {\n    padding: 16px;", css)
+        finally:
+            response.close()
+
     def test_workspace_secondary_controls_restore_visible_foreground_colors(self):
         response = self.client.get("/static/sinposmart-workspace.css")
         try:
@@ -1433,8 +1462,38 @@ class WebAppTests(unittest.TestCase):
             self.client.get("/task-entry", headers={"Host": "127.0.0.1:8090"}).data.decode("utf-8")
         )
 
-        self.assertIn('<a class="button secondary" href="/">返回首頁</a>', nas_body)
-        self.assertNotIn('<a class="button secondary" href="/">返回首頁</a>', local_body)
+        self.assertIn('<a class="button secondary header-home-button" href="/">返回首頁</a>', nas_body)
+        self.assertNotIn('<a class="button secondary header-home-button" href="/">返回首頁</a>', local_body)
+
+    def test_admin_filters_and_home_links_use_apple_control_styles(self):
+        task_entry_body = html.unescape(
+            self.client.get("/task-entry", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
+        )
+        disaster_body = html.unescape(self.client.get("/admin/disaster").data.decode("utf-8"))
+        ems_body = html.unescape(self.client.get("/admin/ems").data.decode("utf-8"))
+
+        for body in (task_entry_body, disaster_body, ems_body):
+            self.assertIn('class="button secondary header-home-button"', body)
+
+        ui_response = self.client.get("/static/sinposmart-ui.css")
+        admin_response = self.client.get("/static/sinposmart-admin.css")
+        ui_css = ui_response.data.decode("utf-8")
+        admin_css = admin_response.data.decode("utf-8")
+        self.assertIn(".app-header .header-home-button {", ui_css)
+        self.assertIn("backdrop-filter: blur(18px) saturate(150%);", ui_css)
+        self.assertIn(".result-filters {\n  display: flex;\n  flex-wrap: wrap;\n  width: fit-content;", admin_css)
+        self.assertIn("gap: 4px;\n  margin-bottom: 14px;\n  padding: 5px;", admin_css)
+        self.assertIn(".result-filter {\n  min-height: 40px;", admin_css)
+        self.assertIn("border-color: transparent;\n  border-radius: 11px;\n  background: transparent;", admin_css)
+        self.assertIn(
+            '.result-filters[aria-label="執行結果分類"] {\n'
+            "    display: grid;\n"
+            "    width: 100%;\n"
+            "    grid-template-columns: repeat(2, minmax(0, 1fr));",
+            admin_css,
+        )
+        ui_response.close()
+        admin_response.close()
 
     def test_ems_and_disaster_pages_use_service_specific_worker_titles(self):
         ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))

@@ -24,6 +24,10 @@
   color: var(--admin-accent);
 }
 
+.admin-report-page .header-home-button {
+  --home-accent: var(--admin-accent);
+}
+
 .admin-report-page .app-content {
   font-size: 15px;
 }
@@ -265,16 +269,33 @@
 .result-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  gap: 4px;
   margin-bottom: 14px;
+  padding: 5px;
+  border: 1px solid var(--separator);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .68);
+  box-shadow: 0 8px 24px rgba(29, 29, 31, .06), inset 0 1px 0 rgba(255, 255, 255, .78);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
 }
 
 .result-filter {
-  min-height: 42px;
+  min-height: 40px;
   padding: 0 15px;
-  border-color: var(--separator);
-  background: rgba(255, 255, 255, .78);
-  color: var(--label);
+  border-color: transparent;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--secondary-label);
+  box-shadow: none;
+}
+
+.result-filter:hover {
+  border-color: transparent;
+  background: var(--admin-accent-soft);
+  color: var(--admin-accent);
   box-shadow: none;
 }
 
@@ -283,6 +304,10 @@
   background: var(--admin-accent);
   color: #fff;
   box-shadow: 0 8px 20px color-mix(in srgb, var(--admin-accent) 20%, transparent);
+}
+
+.result-filter.active:hover {
+  color: #fff;
 }
 
 .task-list {
@@ -536,6 +561,7 @@
 
   .result-filters[aria-label="執行結果分類"] {
     display: grid;
+    width: 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

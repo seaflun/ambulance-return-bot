@@ -356,7 +356,10 @@
 <body class="workspace-page workspace-page--task workspace-page--ems-task">
   <main>
     <header>
-      <h1>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</h1>
+      <div class="workspace-header-copy">
+        <p class="workspace-eyebrow">救護勤務登打中心</p>
+        <h1>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</h1>
+      </div>
       {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button()) %}
         <div class="header-actions">
           {% if show_nas_home_button() %}
