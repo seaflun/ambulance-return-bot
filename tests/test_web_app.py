@@ -1410,7 +1410,8 @@ class WebAppTests(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             self.assertIn(".workspace-page main", css)
             self.assertIn("max-width: 1120px", css)
-            self.assertIn("backdrop-filter: blur(24px) saturate(160%)", css)
+            self.assertIn(".workspace-page .page-chrome", css)
+            self.assertNotIn(".workspace-page main > header", css)
             self.assertIn(".workspace-page .panel", css)
             self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         finally:
@@ -1428,6 +1429,10 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("body.workspace-page--ems-task,\nbody.workspace-page--ems-settings {\n  --accent: #1677d2;", css)
             self.assertIn("--page-tint: #f1f7ff;", css)
             self.assertIn("linear-gradient(180deg, var(--page-tint) 0, #f5f5f7 34rem)", css)
+            self.assertIn(
+                "padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(56px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));",
+                css,
+            )
         finally:
             response.close()
 
@@ -1495,6 +1500,28 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".workspace-page .page-chrome h1 {\n  margin: 0;\n  color: var(--accent);", css)
         self.assertIn(".workspace-page .page-chrome__actions .button.secondary {", css)
         self.assertIn("backdrop-filter: blur(18px) saturate(150%);", css)
+
+    def test_workspace_package_controls_are_compact_and_keep_selected_state(self):
+        css = self.client.get("/static/sinposmart-workspace.css").data.decode("utf-8")
+        self.import_case_for_form(
+            {
+                "case_id": "package-visual-state",
+                "case_date": "2026/07/24",
+                "case_time": "0915",
+                "return_time": "1000",
+                "address": "桃園市觀音區中山路1號",
+                "personnel": ["甲"],
+            }
+        )
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn(".workspace-page .package-buttons button {\n  min-height: 36px;", css)
+        self.assertIn("font-size: .8125rem;", css)
+        self.assertIn(".workspace-page .package-buttons .package-button.is-active,", css)
+        self.assertIn('data-action-text="現場待命"', disaster_body)
+        self.assertNotIn('data-action-text="現場待命" aria-pressed=', disaster_body)
+        self.assertNotIn("syncActionPackageButtons", disaster_body)
+        self.assertIn("SinpoSmart - 值班後台", html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8")))
 
     def test_workspace_stylesheet_separates_date_selection_and_pads_duty_cards(self):
         response = self.client.get("/static/sinposmart-workspace.css")

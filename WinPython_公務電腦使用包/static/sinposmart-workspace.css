@@ -77,28 +77,10 @@ body.workspace-page--ems-settings {
 }
 
 .workspace-page main {
-  width: min(100%, var(--workspace-max-width));
-  max-width: 1120px;
+  width: min(var(--workspace-max-width), 100%);
+  max-width: none;
   margin: 0 auto;
-  padding: 24px 18px 56px;
-}
-
-.workspace-page main > header {
-  position: relative;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 76px;
-  margin: 0 0 20px;
-  padding: 14px 18px;
-  border: 1px solid rgba(255, 255, 255, .72);
-  border-radius: var(--workspace-radius-large);
-  background: rgba(255, 255, 255, .76);
-  box-shadow: 0 12px 36px rgba(29, 29, 31, .07);
-  backdrop-filter: blur(24px) saturate(160%);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(56px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
 }
 
 .workspace-page .page-chrome {
@@ -231,6 +213,41 @@ body.workspace-page--ems-settings {
   box-shadow: 0 8px 22px rgba(29, 29, 31, .08);
 }
 
+.workspace-page .package-group-label {
+  min-height: 32px;
+  font-size: .8125rem;
+  font-weight: 700;
+}
+
+.workspace-page .package-buttons {
+  gap: 6px;
+}
+
+.workspace-page .package-buttons button {
+  min-height: 36px;
+  padding: 0 10px;
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: rgba(255, 255, 255, .82);
+  color: var(--accent);
+  font-size: .8125rem;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.workspace-page .package-buttons button:hover {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line));
+  background: #fff;
+  box-shadow: 0 5px 14px rgba(var(--accent-rgb), .12);
+}
+
+.workspace-page .package-buttons .package-button.is-active,
+.workspace-page .package-buttons .package-button[aria-pressed="true"] {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(29, 29, 31, .16);
+}
+
 .workspace-page .page-chrome__actions .button.secondary {
   border-color: color-mix(in srgb, var(--accent) 18%, var(--line));
   background: rgba(255, 255, 255, .76);
@@ -244,7 +261,7 @@ body.workspace-page--ems-settings {
   box-shadow: 0 10px 28px rgba(var(--accent-rgb), .12);
 }
 
-.workspace-page main > header .header-navigation-button {
+.workspace-page .page-chrome__actions .header-navigation-button {
   min-height: 44px;
   border-color: color-mix(in srgb, var(--accent) 18%, var(--line));
   border-radius: 14px;
@@ -255,7 +272,7 @@ body.workspace-page--ems-settings {
   -webkit-backdrop-filter: blur(18px) saturate(150%);
 }
 
-.workspace-page main > header .header-navigation-button:hover {
+.workspace-page .page-chrome__actions .header-navigation-button:hover {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
   background: rgba(255, 255, 255, .94);
   box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 12%, transparent);
@@ -497,19 +514,10 @@ body.workspace-page--ems-settings {
 
 @media (max-width: 720px) {
   .workspace-page main {
-    padding: 14px 12px 38px;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   }
 
-  .workspace-page main > header {
-    align-items: stretch;
-    flex-direction: column;
-    min-height: 0;
-    padding: 15px;
-    border-radius: 20px;
-  }
-
-  .workspace-page .page-chrome__actions .button,
-  .workspace-page main > header > .button {
+  .workspace-page .page-chrome__actions .button {
     width: 100%;
     min-height: 44px;
   }
@@ -543,7 +551,6 @@ body.workspace-page--ems-settings {
 }
 
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
-  .workspace-page main > header,
   .workspace-page .panel,
   .workspace-page .site-card,
   .workspace-page .section,
