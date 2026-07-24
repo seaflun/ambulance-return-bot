@@ -119,9 +119,26 @@ DISASTER_REASON_OPTIONS = [
     "山林", "工廠及倉庫(含石化工業設備設施)", "爆炸",
 ]
 DISASTER_RESCUE_REASON_OPTIONS = [
-    "輸電線路災害",
-    "溺水",
+    "地震",
+    "淹水",
+    "土石流",
+    "房屋損毀",
+    "公路事故",
+    "鐵路事故",
+    "風災",
+    "沙洲受困",
     "公用氣體及油類管路災害",
+    "輻射災害",
+    "輸電線路災害",
+    "墜樓或高處墜落",
+    "空難",
+    "海難",
+    "山域事故",
+    "爆炸(物理性爆炸)",
+    "化學災害(洩漏)",
+    "其他",
+    "溺水",
+    "誤(謊)報",
 ]
 DISASTER_REASON_OPTIONS_BY_TYPE = {
     "火災": DISASTER_REASON_OPTIONS,
@@ -290,6 +307,7 @@ class FuelRecord:
 @dataclass(slots=True)
 class VehicleEntry:
     vehicle: str = ""
+    mileage_system_name: str = ""
     driver: str = ""
     mileage: str = ""
     return_date: str = ""
@@ -308,6 +326,7 @@ class VehicleEntry:
             return cls()
         return cls(
             vehicle=str(payload.get("vehicle") or "").strip(),
+            mileage_system_name=str(payload.get("mileage_system_name") or "").strip(),
             driver=str(payload.get("driver") or "").strip(),
             mileage=str(payload.get("mileage") or "").strip(),
             return_date=normalize_case_date(str(payload.get("return_date") or "")),
@@ -333,6 +352,7 @@ class AmbulanceReturnRequest:
     raw_text: str
     service_type: str = "ems"
     vehicle: str = ""
+    mileage_system_name: str = ""
     driver: str = ""
     mileage: str = ""
     case_id: str = ""
@@ -359,6 +379,7 @@ class AmbulanceReturnRequest:
     reason_other: str = ""
     recorder_category: str = ""
     recorder_subcategory: str = ""
+    firecam_people: list[str] = field(default_factory=list)
 
     @property
     def consumable_summary(self) -> str:
@@ -502,6 +523,7 @@ class AmbulanceReturnRequest:
     def primary_vehicle_entry(self) -> VehicleEntry:
         return VehicleEntry(
             vehicle=self.vehicle,
+            mileage_system_name=self.mileage_system_name,
             driver=self.driver,
             mileage=self.mileage,
             return_date=self.return_date,
@@ -537,6 +559,7 @@ class AmbulanceReturnRequest:
                 replace(
                     self,
                     vehicle=entry.vehicle,
+                    mileage_system_name=entry.mileage_system_name,
                     driver=entry.driver,
                     mileage=entry.mileage,
                     return_date=entry.return_date,
@@ -549,7 +572,7 @@ class AmbulanceReturnRequest:
                     two_vehicle=False,
                     vehicle_entries=[],
                 )
-            )
+        )
         return requests
 
     def has_fuel_record(self) -> bool:
@@ -604,6 +627,7 @@ class AmbulanceReturnRequest:
             raw_text=str(payload.get("raw_text") or ""),
             service_type=str(payload.get("service_type") or "ems"),
             vehicle=str(payload.get("vehicle") or ""),
+            mileage_system_name=str(payload.get("mileage_system_name") or ""),
             driver=str(payload.get("driver") or ""),
             mileage=str(payload.get("mileage") or ""),
             case_id=str(payload.get("case_id") or ""),
@@ -630,7 +654,33 @@ class AmbulanceReturnRequest:
             reason_other=str(payload.get("reason_other") or ""),
             recorder_category=str(payload.get("recorder_category") or ""),
             recorder_subcategory=str(payload.get("recorder_subcategory") or ""),
+            firecam_people=parse_list(payload.get("firecam_people") or []),
         )
+
+
+def apply_disaster_vehicle_mileage_system_names(
+    request: AmbulanceReturnRequest,
+    vehicle_records: list[dict[str, str]],
+) -> bool:
+    if request.service_type != "disaster":
+        return False
+    names = {
+        str(record.get("label") or "").strip(): str(record.get("ppe_name") or "").strip()
+        for record in vehicle_records
+        if str(record.get("label") or "").strip() and str(record.get("ppe_name") or "").strip()
+    }
+    changed = False
+    for entry in request.vehicle_entries:
+        mileage_system_name = names.get(entry.vehicle, "")
+        if mileage_system_name and not entry.mileage_system_name:
+            entry.mileage_system_name = mileage_system_name
+            changed = True
+    primary_entry = request.vehicle_entries[0] if request.vehicle_entries else None
+    primary_name = primary_entry.mileage_system_name if primary_entry is not None else names.get(request.vehicle, "")
+    if primary_name and not request.mileage_system_name:
+        request.mileage_system_name = primary_name
+        changed = True
+    return changed
 
 
 def new_task_id() -> str:
@@ -892,6 +942,7 @@ def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         reason_other=str(form.get("reason_other") or "").strip(),
         recorder_category=recorder_category,
         recorder_subcategory=recorder_subcategory,
+        firecam_people=parse_list(_form_values(form, "firecam_person")),
     )
 
 

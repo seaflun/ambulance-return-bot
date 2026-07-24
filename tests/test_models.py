@@ -6,8 +6,8 @@ from pathlib import Path
 import tempfile
 from werkzeug.datastructures import MultiDict
 
-from ambulance_bot.models import clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_disaster_form, request_from_form
-from ambulance_bot.models import AmbulanceReturnRequest
+from ambulance_bot.models import apply_disaster_vehicle_mileage_system_names, clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_disaster_form, request_from_form
+from ambulance_bot.models import AmbulanceReturnRequest, VehicleEntry
 from ambulance_bot.models import delete_vehicle_record, load_vehicle_records, save_vehicle_record, vehicle_options, vehicle_ppe_names
 
 
@@ -67,6 +67,74 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(["新坡11", "新坡15"], [item.vehicle for item in request.vehicle_entries])
         self.assertEqual(["1300", "1310"], [item.return_time for item in request.vehicle_entries])
         self.assertEqual(["duty_work_log", "vehicle_mileage"], request.active_site_keys())
+
+    def test_disaster_form_keeps_selected_firecam_people(self):
+        request = request_from_disaster_form(
+            MultiDict(
+                [
+                    ("case_id", "CASE-FIRECAM"),
+                    ("firecam_person", "甲"),
+                    ("firecam_person", "乙"),
+                ]
+            )
+        )
+
+        self.assertEqual(["甲", "乙"], request.firecam_people)
+
+    def test_disaster_vehicle_requests_keep_each_mileage_system_name(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-disaster-mileage-names",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            vehicle_entries=[
+                VehicleEntry(vehicle="新坡11", mileage_system_name="KEC-2608"),
+                VehicleEntry(vehicle="新坡15", mileage_system_name="KES-5922"),
+            ],
+        )
+
+        self.assertEqual(
+            ["KEC-2608", "KES-5922"],
+            [item.mileage_system_name for item in request.vehicle_requests()],
+        )
+
+    def test_disaster_vehicle_settings_apply_to_any_task_vehicle(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-disaster-new-vehicle",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            vehicle_entries=[VehicleEntry(vehicle="新坡99")],
+        )
+
+        changed = apply_disaster_vehicle_mileage_system_names(
+            request,
+            [{"label": "新坡99", "ppe_name": "NEW-9900", "recorder_code": "99"}],
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual("NEW-9900", request.vehicle_entries[0].mileage_system_name)
+        self.assertEqual("NEW-9900", request.mileage_system_name)
+        self.assertEqual("NEW-9900", request.vehicle_requests()[0].mileage_system_name)
+
+    def test_disaster_vehicle_settings_do_not_replace_existing_task_snapshot(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-disaster-snapshot",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            mileage_system_name="KEC-2608",
+            vehicle_entries=[VehicleEntry(vehicle="新坡11", mileage_system_name="KEC-2608")],
+        )
+
+        changed = apply_disaster_vehicle_mileage_system_names(
+            request,
+            [{"label": "新坡11", "ppe_name": "KEC-9999", "recorder_code": "11"}],
+        )
+
+        self.assertFalse(changed)
+        self.assertEqual("KEC-2608", request.vehicle_entries[0].mileage_system_name)
+        self.assertEqual("KEC-2608", request.mileage_system_name)
 
     def test_disaster_work_log_login_prefers_15_then_11_then_other_personnel(self):
         request = AmbulanceReturnRequest(

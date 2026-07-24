@@ -1251,6 +1251,10 @@ def _open_vehicle_mileage_page(
     return detail
 
 
+def vehicle_mileage_record_label(request: AmbulanceReturnRequest, artifacts_dir: Path) -> str:
+    return str(request.mileage_system_name or "").strip() or vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
+
+
 def _ensure_ppe_vehicle_mileage_session(driver: webdriver.Chrome, request: AmbulanceReturnRequest | None = None) -> bool:
     return _ensure_ppe_session(
         driver,
@@ -1740,7 +1744,7 @@ def _prepare_vehicle_mileage_form(
             "automatic delete/add is disabled to prevent data loss"
         )
 
-    vehicle_label = vehicle_ppe_names(artifacts_dir).get(request.vehicle, request.vehicle)
+    vehicle_label = vehicle_mileage_record_label(request, artifacts_dir)
     _select_vehicle_record(driver, vehicle_label)
     time.sleep(1)
     current_matches = _vehicle_mileage_matching_row_indices(driver, request)
@@ -3822,7 +3826,7 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
         return_time_hhmm: hhmm(cells[2] || ''),
         category,
         reason,
-        address: cells[4] || '',
+        address: chooseParts[8] || cells[4] || '',
         choose_id: choose ? (choose.id || '') : '',
         choose_name: choose ? (choose.name || '') : '',
         case_date: chooseParts[1] || '',

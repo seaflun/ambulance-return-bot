@@ -1386,7 +1386,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertNotIn(".app-header__eyebrow {\n    display: none;", css)
         self.assertIn('<p class="page-chrome__eyebrow">救護車輛設定</p>', ems_settings)
-        self.assertIn('<p class="page-chrome__eyebrow">救災車輛設定</p>', disaster_settings)
+        self.assertIn('<p class="page-chrome__eyebrow">車輛及工作設定</p>', disaster_settings)
 
     def test_home_portal_cards_use_destination_colors(self):
         response = self.client.get("/static/sinposmart-ui.css")
@@ -1451,7 +1451,7 @@ class WebAppTests(unittest.TestCase):
             ("/app", "ems", "救護勤務登打中心"),
             ("/app/disaster", "disaster", "救災勤務登打中心"),
             ("/admin/vehicles", "ems", "救護車輛設定"),
-            ("/admin/disaster-vehicles", "disaster", "救災車輛設定"),
+            ("/admin/disaster-vehicles", "disaster", "車輛及工作設定"),
         )
 
         for path, accent, eyebrow in pages:
@@ -1865,7 +1865,7 @@ class WebAppTests(unittest.TestCase):
         for case_id, summary_type, reason in (("RESCUE-TYPE", "災害搶救", "輸電線路災害"), ("EMS-TYPE", "救護", "特殊救護事由")):
             with self.subTest(summary_type=summary_type):
                 data = MultiDict(base + [("case_id", case_id), ("summary_type", summary_type), ("case_reason", reason)])
-                with mock.patch.object(app_module, "ensure_disaster_record_folders", return_value=[]):
+                with mock.patch.object(app_module, "ensure_disaster_media_folders", return_value=[]):
                     response = self.client.post("/tasks/disaster", data=data, follow_redirects=False)
                 self.assertEqual(302, response.status_code)
 
@@ -2042,7 +2042,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertIn("救護車設定", body)
         self.assertIn('href="/admin/vehicles"', body)
-        self.assertIn("救災車設定", disaster_body)
+        self.assertIn("車輛及工作設定", disaster_body)
         self.assertIn('href="/admin/disaster-vehicles"', disaster_body)
 
     def test_nas_task_headers_keep_back_link_before_vehicle_settings(self):
@@ -2053,7 +2053,7 @@ class WebAppTests(unittest.TestCase):
         )
 
         self.assertLess(ems_body.index("返回上一頁"), ems_body.index("救護車設定"))
-        self.assertLess(disaster_body.index("返回上一頁"), disaster_body.index("救災車設定"))
+        self.assertLess(disaster_body.index("返回上一頁"), disaster_body.index("車輛及工作設定"))
 
     def test_local_entry_and_task_forms_hide_nas_navigation_and_vehicle_settings(self):
         headers = {"Host": "127.0.0.1:8090"}
@@ -2091,6 +2091,86 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertIn("新坡91", [item["label"] for item in payload["ems_vehicles"]])
         self.assertIn("新坡11", [item["label"] for item in payload["disaster_vehicles"]])
+        self.assertIn("現場待命", payload["disaster_action_packages"])
+
+    def test_disaster_task_defaults_to_newpo_11_and_15_and_uses_nas_action_packages(self):
+        self.import_case_for_form(
+            {
+                "case_id": "FIRE-DEFAULTS",
+                "case_date": "2026/07/24",
+                "case_time": "1437",
+                "address": "桃園市觀音區廣大路102號",
+                "personnel": ["甲", "乙"],
+                "summary_type": "火災",
+            }
+        )
+        app_module.save_disaster_action_packages(["先鋒搶救", "現場待命"], Path(self.tmp.name))
+
+        response = self.client.get("/app/disaster")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn('option value="新坡11" selected', body)
+        self.assertIn('option value="新坡15" selected', body)
+        self.assertIn('data-action-text="先鋒搶救"', body)
+        self.assertIn('name="firecam_person" value="甲"', body)
+
+    def test_disaster_task_shows_last_mileage_for_each_selected_vehicle(self):
+        task = AmbulanceReturnRequest(
+            task_id="disaster-last-mileage",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            case_id="FIRE-LAST-MILEAGE",
+            case_date="20260724",
+            case_time="1437",
+            return_time="1522",
+            case_address="桃園市觀音區廣大路102號",
+            vehicle_entries=[
+                {"vehicle": "新坡11", "driver": "甲", "mileage": "12345", "return_time": "1522"}
+            ],
+        )
+        self.store.create(task)
+        self.import_case_for_form(
+            {
+                "case_id": "FIRE-NEXT-MILEAGE",
+                "case_date": "2026/07/24",
+                "case_time": "1600",
+                "address": "桃園市觀音區",
+                "personnel": ["甲", "乙"],
+                "summary_type": "火災",
+            }
+        )
+
+        response = self.client.get("/app/disaster")
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        compact_body = body.replace(" ", "")
+        self.assertIn("上次該車輛登打的里程", body)
+        self.assertIn('data-last-mileage-for="vehicle"', body)
+        self.assertIn(".mileage-hint-panel { grid-column: 2;", body)
+        self.assertIn(
+            json.dumps({"新坡11": "12345"}, ensure_ascii=True, separators=(",", ":")),
+            compact_body,
+        )
+
+    def test_disaster_case_import_derives_address_from_selected_case_description(self):
+        self.import_case_for_form(
+            {
+                "case_id": "FIRE-ADDRESS",
+                "case_date": "2026/07/24",
+                "case_time": "1437",
+                "address": "",
+                "description": "119案件\n地點：桃園市觀音區廣大路102號",
+                "personnel": ["甲"],
+                "summary_type": "火災",
+            }
+        )
+
+        response = self.client.get("/app/disaster")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn('name="case_address" value="桃園市觀音區廣大路102號"', body)
 
     def test_local_task_pages_fetch_vehicle_settings_from_nas_each_time(self):
         os.environ["WORKER_SERVER_URL"] = "http://nas.test:8080"
@@ -2101,6 +2181,7 @@ class WebAppTests(unittest.TestCase):
             "disaster_vehicles": [
                 {"label": "NAS救災11", "ppe_name": "NAS-FIRE", "recorder_code": "NAS11"}
             ],
+            "disaster_action_packages": ["NAS 現場待命"],
         }
         fake_response = mock.MagicMock()
         fake_response.__enter__.return_value.read.return_value = json.dumps(remote_payload).encode("utf-8")
@@ -2695,7 +2776,7 @@ class WebAppTests(unittest.TestCase):
         ])
         folder_results = [mock.Mock(vehicle="新坡11", path=Path("X:/one"), status="created")]
 
-        with mock.patch.object(app_module, "ensure_disaster_record_folders", return_value=folder_results) as folders:
+        with mock.patch.object(app_module, "ensure_disaster_media_folders", return_value=folder_results) as folders:
             first = self.client.post("/tasks/disaster", data=data, follow_redirects=False)
             second = self.client.post("/tasks/disaster", data=data, follow_redirects=False)
 
@@ -2705,6 +2786,86 @@ class WebAppTests(unittest.TestCase):
         payload = self.store.list_recent()[0]
         self.assertEqual("disaster", payload["task"]["service_type"])
         self.assertEqual(2, len(payload["task"]["vehicle_entries"]))
+
+    def test_create_disaster_task_snapshots_each_nas_mileage_system_name(self):
+        data = MultiDict([
+            ("case_id", "FIRE-MILEAGE-NAMES"), ("case_date", "2026/07/22"), ("case_time", "1207"),
+            ("return_time", "1300"), ("case_address", "桃園市觀音區金華路31號"),
+            ("summary_type", "火災"), ("case_reason", "一般(集合)住宅"),
+            ("personnel", "甲,乙,丙"), ("personnel_accounts", "TYFD-A,TYFD-B,TYFD-C"),
+            ("commander", "丙"), ("action_note", "現場待命"), ("recorder_category", "轄內A3"),
+            ("vehicle", "新坡11"), ("driver", "甲"), ("vehicle_return_time", "1300"), ("mileage", "100"),
+            ("vehicle", "新坡99"), ("driver", "乙"), ("vehicle_return_time", "1310"), ("mileage", "200"),
+        ])
+        vehicle_records = [
+            {"label": "新坡11", "ppe_name": "KEC-2608", "recorder_code": "11"},
+            {"label": "新坡99", "ppe_name": "NEW-9900", "recorder_code": "99"},
+        ]
+
+        with mock.patch.object(app_module, "ensure_disaster_media_folders", return_value=[]), mock.patch.object(
+            app_module, "effective_disaster_vehicle_records", return_value=vehicle_records
+        ):
+            response = self.client.post("/tasks/disaster", data=data, follow_redirects=False)
+
+        self.assertEqual(302, response.status_code)
+        task = self.store.list_recent()[0]["task"]
+        self.assertEqual(
+            ["KEC-2608", "NEW-9900"],
+            [entry["mileage_system_name"] for entry in task["vehicle_entries"]],
+        )
+
+    def test_legacy_disaster_task_is_hydrated_before_retry(self):
+        task_id = "legacy-disaster-mileage-names"
+        payload = self.store.create(
+            AmbulanceReturnRequest(
+                task_id=task_id,
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                vehicle="新坡11",
+                vehicle_entries=[
+                    {"vehicle": "新坡11", "driver": "甲"},
+                    {"vehicle": "新坡15", "driver": "乙"},
+                ],
+            )
+        )
+        vehicle_records = [
+            {"label": "新坡11", "ppe_name": "KEC-2608", "recorder_code": "11"},
+            {"label": "新坡15", "ppe_name": "KES-5922", "recorder_code": "15"},
+        ]
+
+        with mock.patch.object(app_module, "effective_disaster_vehicle_records", return_value=vehicle_records):
+            hydrated = app_module.hydrate_disaster_task_mileage_system_names(task_id, payload)
+
+        self.assertEqual(
+            ["KEC-2608", "KES-5922"],
+            [entry["mileage_system_name"] for entry in hydrated["task"]["vehicle_entries"]],
+        )
+        self.assertEqual("KEC-2608", hydrated["task"]["mileage_system_name"])
+
+    def test_disaster_mileage_retry_hydrates_legacy_task_before_starting(self):
+        task_id = "legacy-disaster-mileage-retry"
+        self.store.create(
+            AmbulanceReturnRequest(
+                task_id=task_id,
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                vehicle="新坡11",
+                vehicle_entries=[{"vehicle": "新坡11", "driver": "甲"}],
+            )
+        )
+
+        with mock.patch.object(
+            app_module,
+            "effective_disaster_vehicle_records",
+            return_value=[{"label": "新坡11", "ppe_name": "KEC-2608", "recorder_code": "11"}],
+        ), mock.patch.object(app_module, "effective_task_execution_mode", return_value="desktop_fast"):
+            response = self.client.post(f"/tasks/{task_id}/sites/vehicle_mileage/run", follow_redirects=False)
+
+        self.assertEqual(302, response.status_code)
+        self.assertEqual([(task_id, "vehicle_mileage")], app_module.desktop_runner.started_sites)
+        self.assertEqual("KEC-2608", self.store.get(task_id)["task"]["mileage_system_name"])
 
     def test_create_disaster_task_requires_commander_from_case_personnel(self):
         data = MultiDict([

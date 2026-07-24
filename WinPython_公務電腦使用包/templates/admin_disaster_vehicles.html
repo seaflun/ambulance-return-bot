@@ -54,7 +54,7 @@
       box-shadow: var(--shadow);
     }
     label { display: block; margin: 0 0 13px; font-weight: 720; }
-    input {
+    input, textarea {
       width: 100%;
       min-width: 0;
       margin-top: 6px;
@@ -65,7 +65,8 @@
       background: #fff;
       color: var(--ink);
     }
-    input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    textarea { width: 100%; min-height: 148px; margin-top: 6px; padding: 12px; resize: vertical; font: inherit; }
     button, .button {
       display: inline-flex;
       align-items: center;
@@ -130,7 +131,7 @@
 </head>
 <body class="workspace-page workspace-page--settings workspace-page--disaster-settings">
   <main>
-    {% call page_chrome('救災車輛設定', '救災車設定', 'disaster') %}
+    {% call page_chrome('車輛及工作設定', '車輛及工作設定', 'disaster') %}
       <a class="button secondary header-navigation-button" href="/app/disaster">返回救災登打</a>
     {% endcall %}
 
@@ -182,6 +183,14 @@
         {% endfor %}
       </div>
     </section>
+
+    <form method="post" action="/admin/disaster-vehicles/action-packages">
+      <h2>處理情形套餐</h2>
+      <label>每行一個套餐內容
+        <textarea name="action_packages" autocomplete="off">{{ action_packages | join('\n') }}</textarea>
+      </label>
+      <button type="submit">儲存套餐</button>
+    </form>
   </main>
 </body>
 </html>

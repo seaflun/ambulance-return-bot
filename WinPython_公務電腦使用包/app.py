@@ -36,7 +36,9 @@ from ambulance_bot.disaster_settings import (
     delete_disaster_vehicle_record,
     disaster_vehicle_options,
     disaster_vehicle_recorder_codes,
+    load_disaster_action_packages,
     load_disaster_vehicle_records,
+    save_disaster_action_packages,
     save_disaster_vehicle_record,
 )
 from ambulance_bot.duty_credentials import (
@@ -58,11 +60,11 @@ from ambulance_bot.models import (
     COMMAND_PREFIX,
     DEFAULT_DISINFECTION_ITEMS,
     DEFAULT_CONSUMABLES,
-    DISASTER_ACTION_PACKAGES,
     DISASTER_REASON_OPTIONS,
     DISASTER_REASON_OPTIONS_BY_TYPE,
     DISINFECTION_ITEM_OPTIONS,
     PERSON_OPTIONS,
+    apply_disaster_vehicle_mileage_system_names,
     example_command,
     clean_case_address,
     delete_vehicle_record,
@@ -81,7 +83,8 @@ from ambulance_bot.record_folders import (
     RecordFolderError,
     disaster_folder_plan,
     ems_record_relative_paths,
-    ensure_disaster_record_folders,
+    ensure_disaster_media_folders,
+    firecam_folder_plan,
 )
 from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, SITE_STAGE_DEFINITIONS, merge_diagnostic_fields
 from ambulance_bot.sinposmart_backend import (
@@ -257,6 +260,17 @@ def new_task():
 def disaster_task():
     selected_case = pop_selected_case()
     person_options = selected_case.get("person_options") or person_options_from_personnel(selected_case.get("personnel") or [])
+    nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
+    vehicle_options = (
+        [record["label"] for record in nas_settings["disaster_vehicles"]]
+        if nas_settings is not None
+        else [record["label"] for record in load_disaster_vehicle_records(artifacts_dir)]
+    )
+    action_packages = (
+        list(nas_settings["disaster_action_packages"])
+        if nas_settings is not None
+        else load_disaster_action_packages(artifacts_dir)
+    )
     return render_template(
         "disaster_task.html",
         form_action=url_for("create_disaster_task"),
@@ -264,10 +278,11 @@ def disaster_task():
         recent_tasks=recent_tasks_for_task_form("disaster"),
         case_lookup=prepared_case_lookup(),
         person_options=person_options,
-        vehicle_options=effective_disaster_vehicle_options(),
+        vehicle_options=vehicle_options,
         disaster_reason_options=DISASTER_REASON_OPTIONS,
         disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
-        disaster_action_packages=DISASTER_ACTION_PACKAGES,
+        disaster_action_packages=action_packages,
+        last_vehicle_mileages=last_vehicle_mileages(),
         form_errors=[],
     )
 
@@ -313,6 +328,7 @@ def record_folder_preview():
                     effective_disaster_vehicle_recorder_codes(),
                 )
             ]
+            paths.extend(entry.path.as_posix() for entry in firecam_folder_plan(task_request, Path()))
         else:
             task_request = request_from_form(request.form)
             paths = [path.as_posix() for path in ems_record_relative_paths(task_request)]
@@ -371,6 +387,7 @@ def create_task():
 @app.post("/tasks/disaster")
 def create_disaster_task():
     task_request = request_from_disaster_form(request.form)
+    apply_disaster_vehicle_mileage_system_names(task_request, effective_disaster_vehicle_records())
     errors = validate_disaster_task_form(task_request)
     if errors:
         return render_template(
@@ -383,7 +400,8 @@ def create_disaster_task():
             vehicle_options=effective_disaster_vehicle_options(),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
             disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
-            disaster_action_packages=DISASTER_ACTION_PACKAGES,
+            disaster_action_packages=effective_disaster_action_packages(),
+            last_vehicle_mileages=last_vehicle_mileages(),
             form_errors=errors,
         ), 400
     existing = existing_disaster_task_for_case(task_request.case_id)
@@ -391,7 +409,7 @@ def create_disaster_task():
         existing_task_id = str(dict(existing.get("task") or {}).get("task_id") or "")
         return redirect(url_for("task_detail", task_id=existing_task_id))
     try:
-        folder_results = ensure_disaster_record_folders(
+        folder_results = ensure_disaster_media_folders(
             task_request,
             recorder_codes=effective_disaster_vehicle_recorder_codes(),
         )
@@ -406,7 +424,8 @@ def create_disaster_task():
             vehicle_options=effective_disaster_vehicle_options(),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
             disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
-            disaster_action_packages=DISASTER_ACTION_PACKAGES,
+            disaster_action_packages=effective_disaster_action_packages(),
+            last_vehicle_mileages=last_vehicle_mileages(),
             form_errors=[f"行車紀錄器資料夾建立失敗：{exc}"],
         ), 400
     payload = store.create(task_request)
@@ -547,6 +566,7 @@ def run_task(task_id: str):
         return redirect(url_for("task_detail", task_id=task_id))
     if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
         return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
+    payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
         report_public_pc_task_event(payload, f"按下{task_site_count_label(payload.get('task') or {})}登打")
@@ -583,6 +603,7 @@ def run_task_site(task_id: str, site_key: str):
         return redirect(url_for("task_detail", task_id=task_id))
     if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
         return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
+    payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
         report_public_pc_task_event(payload, f"按下單站登打：{site_display_name(site_key)}")
@@ -824,10 +845,20 @@ def delete_disaster_vehicle_option():
     return render_disaster_vehicle_settings(message=f"已刪除 {label}")
 
 
+@app.post("/admin/disaster-vehicles/action-packages")
+def save_disaster_action_package_options():
+    if request_is_local_host():
+        abort(404)
+    values = str(request.form.get("action_packages") or "").splitlines()
+    save_disaster_action_packages(values, artifacts_dir)
+    return render_disaster_vehicle_settings(message="已儲存處理情形套餐")
+
+
 def render_disaster_vehicle_settings(*, errors: list[str] | None = None, message: str = ""):
     return render_template(
         "admin_disaster_vehicles.html",
         vehicles=load_disaster_vehicle_records(artifacts_dir),
+        action_packages=load_disaster_action_packages(artifacts_dir),
         errors=errors or [],
         message=message,
     )
@@ -1000,6 +1031,7 @@ def worker_vehicle_settings():
             "ok": True,
             "ems_vehicles": vehicle_admin_records(),
             "disaster_vehicles": load_disaster_vehicle_records(artifacts_dir),
+            "disaster_action_packages": load_disaster_action_packages(artifacts_dir),
         }
     )
 
@@ -2711,7 +2743,7 @@ def public_pc_report_server_url() -> str:
     return server_url
 
 
-def fetch_nas_vehicle_settings() -> dict[str, list[dict[str, str]]] | None:
+def fetch_nas_vehicle_settings() -> dict[str, object] | None:
     server_url = nas_vehicle_settings_server_url()
     if not server_url:
         return None
@@ -2729,9 +2761,14 @@ def fetch_nas_vehicle_settings() -> dict[str, list[dict[str, str]]] | None:
         return None
     ems_vehicles = clean_remote_vehicle_records(payload.get("ems_vehicles"), disaster=False)
     disaster_vehicles = clean_remote_vehicle_records(payload.get("disaster_vehicles"), disaster=True)
-    if ems_vehicles is None or disaster_vehicles is None:
+    disaster_action_packages = clean_remote_disaster_action_packages(payload.get("disaster_action_packages"))
+    if ems_vehicles is None or disaster_vehicles is None or disaster_action_packages is None:
         return None
-    return {"ems_vehicles": ems_vehicles, "disaster_vehicles": disaster_vehicles}
+    return {
+        "ems_vehicles": ems_vehicles,
+        "disaster_vehicles": disaster_vehicles,
+        "disaster_action_packages": disaster_action_packages,
+    }
 
 
 def nas_vehicle_settings_server_url() -> str:
@@ -2761,6 +2798,17 @@ def clean_remote_vehicle_records(value: object, *, disaster: bool) -> list[dict[
     return records
 
 
+def clean_remote_disaster_action_packages(value: object) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    packages: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in packages:
+            packages.append(text)
+    return packages
+
+
 def effective_ems_vehicle_options() -> list[str]:
     if request_is_local_host():
         settings = fetch_nas_vehicle_settings()
@@ -2769,16 +2817,24 @@ def effective_ems_vehicle_options() -> list[str]:
     return vehicle_options(artifacts_dir)
 
 
-def effective_disaster_vehicle_records() -> list[dict[str, str]]:
-    if request_is_local_host():
+def effective_disaster_vehicle_records(settings: dict[str, object] | None = None) -> list[dict[str, str]]:
+    if settings is None and request_is_local_host():
         settings = fetch_nas_vehicle_settings()
-        if settings is not None:
-            return settings["disaster_vehicles"]
+    if settings is not None:
+        return list(settings["disaster_vehicles"])
     return load_disaster_vehicle_records(artifacts_dir)
 
 
-def effective_disaster_vehicle_options() -> list[str]:
-    return [record["label"] for record in effective_disaster_vehicle_records()]
+def effective_disaster_vehicle_options(settings: dict[str, object] | None = None) -> list[str]:
+    return [record["label"] for record in effective_disaster_vehicle_records(settings)]
+
+
+def effective_disaster_action_packages(settings: dict[str, object] | None = None) -> list[str]:
+    if settings is None and request_is_local_host():
+        settings = fetch_nas_vehicle_settings()
+    if settings is not None:
+        return list(settings["disaster_action_packages"])
+    return load_disaster_action_packages(artifacts_dir)
 
 
 def effective_disaster_vehicle_recorder_codes() -> dict[str, str]:
@@ -2787,6 +2843,15 @@ def effective_disaster_vehicle_recorder_codes() -> dict[str, str]:
         for record in effective_disaster_vehicle_records()
         if record.get("recorder_code")
     }
+
+
+def hydrate_disaster_task_mileage_system_names(task_id: str, payload: dict) -> dict:
+    task_request = AmbulanceReturnRequest.from_dict(dict(payload.get("task") or {}))
+    if not apply_disaster_vehicle_mileage_system_names(task_request, effective_disaster_vehicle_records()):
+        return payload
+    payload["task"] = task_request.to_dict()
+    store.save_payload(task_id, payload)
+    return payload
 
 
 def current_public_pc_user_label() -> str:
@@ -4145,7 +4210,7 @@ def write_selected_case_from_lookup(case_id: str) -> bool:
             break
     if selected is None:
         return False
-    selected["address"] = clean_case_address(str(selected.get("address") or ""))
+    selected["address"] = display_case_address(selected)
     category_text = " ".join(
         str(selected.get(key) or "")
         for key in ("category", "case_type", "title", "summary_type")

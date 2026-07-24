@@ -63,6 +63,22 @@ from ambulance_bot.duty_credentials import DutyCredential
 
 
 class SeleniumLocalTests(unittest.TestCase):
+    def test_vehicle_mileage_prefers_task_mileage_system_name(self):
+        request = AmbulanceReturnRequest(
+            task_id="task-disaster-mileage-system-name",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            vehicle="新坡11",
+            mileage_system_name="KEC-2608",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                "KEC-2608",
+                selenium_local_module.vehicle_mileage_record_label(request, Path(tmp)),
+            )
+
     def test_saved_duty_edit_returns_manual_update_required_before_driver_start(self):
         request = AmbulanceReturnRequest(
             task_id="duty-update",
@@ -2839,6 +2855,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(cases[0]["reason"], "火災")
         self.assertIn("includes('火災')", driver.script)
         self.assertIn("summary_type:", driver.script)
+        self.assertIn("address: chooseParts[8] || cells[4] || ''", driver.script)
 
     def test_extract_emergency_cases_includes_disaster_rescue_cases(self):
         class FakeDriver:

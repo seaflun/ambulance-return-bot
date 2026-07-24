@@ -7,6 +7,8 @@ import threading
 from typing import Any
 from uuid import uuid4
 
+from .models import DISASTER_ACTION_PACKAGES
+
 
 DEFAULT_DISASTER_VEHICLES = [
     {"label": "新坡11", "ppe_name": "", "recorder_code": "11"},
@@ -65,6 +67,7 @@ def write_disaster_vehicle_settings(settings: dict[str, Any], base_dir: Path | N
     payload = {
         "vehicles": clean_disaster_vehicle_records(settings.get("vehicles")),
         "deleted": [str(label).strip() for label in settings.get("deleted", []) if str(label).strip()],
+        "action_packages": clean_disaster_action_packages(settings.get("action_packages")),
     }
     with _SETTINGS_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,3 +144,27 @@ def disaster_vehicle_recorder_codes(base_dir: Path | None = None) -> dict[str, s
 
 def disaster_vehicle_ppe_names(base_dir: Path | None = None) -> dict[str, str]:
     return {record["label"]: record["ppe_name"] for record in load_disaster_vehicle_records(base_dir) if record["ppe_name"]}
+
+
+def clean_disaster_action_packages(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    packages: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in packages:
+            packages.append(text)
+    return packages
+
+
+def load_disaster_action_packages(base_dir: Path | None = None) -> list[str]:
+    settings = read_disaster_vehicle_settings(base_dir)
+    packages = clean_disaster_action_packages(settings.get("action_packages"))
+    return packages or list(DISASTER_ACTION_PACKAGES)
+
+
+def save_disaster_action_packages(values: list[str], base_dir: Path | None = None) -> None:
+    with _SETTINGS_LOCK:
+        settings = read_disaster_vehicle_settings(base_dir)
+        settings["action_packages"] = clean_disaster_action_packages(values)
+        write_disaster_vehicle_settings(settings, base_dir)

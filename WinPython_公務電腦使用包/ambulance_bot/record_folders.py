@@ -7,7 +7,8 @@ import re
 
 
 DEFAULT_EMS_RECORD_ROOT = Path(r"W:\救護硬碟\救護密錄器及行車紀錄器")
-DEFAULT_DISASTER_RECORD_ROOT = Path(r"\\100.114.126.58\nas\搶救災害硬碟\救災行車紀錄器")
+DEFAULT_DISASTER_RECORD_ROOT = Path(r"W:\搶救災害硬碟\救災行車紀錄器")
+DEFAULT_FIRECAM_RECORD_ROOT = Path(r"W:\搶救災害硬碟\fire cam")
 
 REASON_SHORT_LABELS = {
     "商店(量販店)": "商店",
@@ -52,6 +53,11 @@ def disaster_record_root() -> Path:
     return Path(configured) if configured else DEFAULT_DISASTER_RECORD_ROOT
 
 
+def firecam_record_root() -> Path:
+    configured = str(os.getenv("FIRECAM_RECORD_ROOT") or "").strip()
+    return Path(configured) if configured else DEFAULT_FIRECAM_RECORD_ROOT
+
+
 def safe_folder_component(value: object) -> str:
     text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(value or "")).strip().rstrip(". ")
     if not text:
@@ -79,6 +85,17 @@ def disaster_folder_plan(
     recorder_codes: dict[str, str] | None = None,
 ) -> list[FolderPlanEntry]:
     root = Path(root) if root is not None else disaster_record_root()
+    path_parts, base_name = disaster_folder_base_parts(request)
+    return [
+        FolderPlanEntry(
+            entry.vehicle,
+            root.joinpath(*path_parts, f"{base_name}-{recorder_vehicle_code(entry.vehicle, recorder_codes)}"),
+        )
+        for entry in request.effective_vehicle_entries()
+    ]
+
+
+def disaster_folder_base_parts(request) -> tuple[list[str], str]:
     case_date = request.service_case_date()
     if case_date.year <= 1911:
         raise RecordFolderError("案件年份無法轉換為民國年份")
@@ -99,12 +116,15 @@ def disaster_folder_plan(
         raise RecordFolderError("案件時間格式需為 HHmm")
     address = safe_folder_component(request.case_address)
     base_name = safe_folder_component(f"{case_date:%Y%m%d}{hhmm}{address}({name_label})")
+    return path_parts, base_name
+
+
+def firecam_folder_plan(request, root: Path | None = None) -> list[FolderPlanEntry]:
+    root = Path(root) if root is not None else firecam_record_root()
+    path_parts, base_name = disaster_folder_base_parts(request)
     return [
-        FolderPlanEntry(
-            entry.vehicle,
-            root.joinpath(*path_parts, f"{base_name}-{recorder_vehicle_code(entry.vehicle, recorder_codes)}"),
-        )
-        for entry in request.effective_vehicle_entries()
+        FolderPlanEntry(person, root.joinpath(*path_parts, f"{base_name}-{safe_folder_component(person)}"))
+        for person in request.firecam_people
     ]
 
 
@@ -113,7 +133,25 @@ def ensure_disaster_record_folders(
     root: Path | None = None,
     recorder_codes: dict[str, str] | None = None,
 ) -> list[FolderResult]:
-    plan = disaster_folder_plan(request, root, recorder_codes)
+    return ensure_folder_plan(disaster_folder_plan(request, root, recorder_codes))
+
+
+def ensure_firecam_record_folders(request, root: Path | None = None) -> list[FolderResult]:
+    return ensure_folder_plan(firecam_folder_plan(request, root))
+
+
+def ensure_disaster_media_folders(
+    request,
+    disaster_root: Path | None = None,
+    firecam_root: Path | None = None,
+    recorder_codes: dict[str, str] | None = None,
+) -> list[FolderResult]:
+    plan = disaster_folder_plan(request, disaster_root, recorder_codes)
+    plan.extend(firecam_folder_plan(request, firecam_root))
+    return ensure_folder_plan(plan)
+
+
+def ensure_folder_plan(plan: list[FolderPlanEntry]) -> list[FolderResult]:
     for entry in plan:
         if entry.path.exists() and not entry.path.is_dir():
             raise RecordFolderError(f"同名物件不是資料夾：{entry.path}")

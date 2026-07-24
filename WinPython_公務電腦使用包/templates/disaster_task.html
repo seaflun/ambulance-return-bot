@@ -113,6 +113,8 @@
     label > span { display: flex; align-items: center; gap: 10px; }
     .fuel-fields { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .fuel-total { color: var(--accent); font-weight: 800; }
+    .mileage-hint-panel { grid-column: 2; margin: -4px 0 2px; }
+    .mileage-hint { margin: 0; color: var(--muted); font-size: var(--text-sm); font-weight: 650; }
     .package-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
     .package-buttons button { min-height: 42px; padding: 0 12px; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; font-size: 15px; }
     .preview, .folder-preview-output { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); }
@@ -120,6 +122,9 @@
     .remove-vehicle { background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
     .folder-preview-output { grid-column: 1 / -1; }
     .folder-preview-output ul { margin: 6px 0 0; padding-left: 22px; overflow-wrap: anywhere; }
+    fieldset { margin: 0; min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+    legend { padding: 0 5px; color: var(--muted); font-size: var(--text-sm); font-weight: 760; }
+    .check-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; }
     .fuel-fields[hidden], [hidden] { display: none !important; }
     .form-actions { display: grid; margin-top: 8px; }
     .form-actions button { width: 100%; min-height: 58px; font-size: 19px; }
@@ -139,6 +144,7 @@
       header { align-items: center; }
       h1 { font-size: 25px; }
       .grid { grid-template-columns: 1fr; gap: 8px; }
+      .mileage-hint-panel { grid-column: auto; }
       .case-time-field { grid-template-columns: 1fr; }
       .full { grid-column: auto; }
       .address-row { grid-column: auto; grid-template-columns: minmax(0, 1fr) 84px; }
@@ -165,7 +171,7 @@
   {% call page_chrome('救災勤務登打中心', 'SinpoSmart - 救災Worker', 'disaster') %}
     {% if show_nas_home_button() or show_vehicle_settings_button() %}
       {% if show_nas_home_button() %}<a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>{% endif %}
-      {% if show_vehicle_settings_button() %}<a class="button secondary header-navigation-button" href="/admin/disaster-vehicles">救災車設定</a>{% endif %}
+      {% if show_vehicle_settings_button() %}<a class="button secondary header-navigation-button" href="/admin/disaster-vehicles">車輛及工作設定</a>{% endif %}
     {% endif %}
   {% endcall %}
   <section class="panel lookup">
@@ -197,7 +203,8 @@
   </section>
   {% set task_form_enabled = selected_case.case_id %}
   {% if task_form_enabled %}
-  {% set disaster_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [{}] %}
+      {% set default_disaster_entries = [{'vehicle': '新坡11'}, {'vehicle': '新坡15'}] %}
+      {% set disaster_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else default_disaster_entries %}
   {% set selected_summary_type = selected_case.summary_type if selected_case.summary_type in disaster_reason_options_by_type else '火災' %}
   {% set selected_reason = selected_case.reason or selected_case.case_reason or '' %}
   {% set selected_reason_options = disaster_reason_options_by_type[selected_summary_type] %}
@@ -239,6 +246,7 @@
             <label class="field-visual{% if not entry.driver %} is-pending{% endif %}" data-required-message="請選擇司機"><span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span><select name="driver" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not (entry.return_time or selected_return_time_input(selected_case)) %} is-pending{% endif %}" data-required-message="請填寫正確返隊時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><input name="vehicle_return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ entry.return_time or selected_return_time_input(selected_case) }}" required></label>
             <label class="field-visual{% if not entry.mileage %} is-pending{% endif %}" data-required-message="請填寫數字里程"><span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span><input name="mileage" inputmode="numeric" pattern="\d+" value="{{ entry.mileage or '' }}" required></label>
+            <div class="mileage-hint-panel" hidden><p class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></p></div>
             <label class="check-item fuel-record-toggle full"><input type="checkbox" class="fuel-toggle" name="fuel_enabled" value="{{ loop.index0 }}"{% if fuel.enabled %} checked{% endif %}><span>登打加油紀錄</span></label>
             <div class="fuel-fields full grid"{% if not fuel.enabled %} hidden{% endif %}><label class="field-visual" data-required-message="請填寫加油日期"><span class="field-label-title">加油日期<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_date" value="{{ fuel.date or selected_case_date_input(selected_case) }}"></label><label class="field-visual" data-required-message="請填寫加油時間"><span class="field-label-title">加油時間<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ fuel.time or '' }}"></label><label class="field-visual" data-required-message="請填寫數字油量"><span class="field-label-title">油量<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_quantity" inputmode="decimal" pattern="\d+(?:\.\d+)?" value="{{ fuel.quantity or '' }}"></label><label class="field-visual" data-required-message="請填寫數字單價"><span class="field-label-title">單價<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_unit_price" inputmode="decimal" pattern="\d+(?:\.\d+)?" value="{{ fuel.unit_price or '' }}"></label><div class="full fuel-total">最終總價：0</div></div>
           </div>
@@ -259,6 +267,7 @@
         <label class="field-visual{% if not selected_case.recorder_category %} is-pending{% endif %}" data-required-message="請選擇行車紀錄器分類"><span class="field-label-title">行車紀錄器分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_category" id="recorder-category" required><option value="">請選擇</option>{% for category in ['轄內A2','轄內A3','轄內其他案件','支援他轄'] %}<option value="{{ category }}"{% if selected_case.recorder_category == category %} selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
         <label class="field-visual{% if selected_case.recorder_category == '轄內其他案件' and not selected_case.recorder_subcategory %} is-pending{% endif %}" id="subcategory-field" data-required-message="請選擇轄內其他案件子分類"{% if selected_case.recorder_category != '轄內其他案件' %} hidden{% endif %}><span class="field-label-title">子分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_subcategory"><option value="">請選擇</option>{% for subcategory in ['其他','誤報','溺水','破門','警報器誤動作','車禍救助','輸電線災害','電梯受困','電線桿災害'] %}<option value="{{ subcategory }}"{% if selected_case.recorder_subcategory == subcategory %} selected{% endif %}>{{ subcategory }}</option>{% endfor %}</select></label>
         <input type="hidden" name="recorder_subcategory" id="locked-recorder-subcategory" value="誤報" disabled>
+        <fieldset class="full"><legend>Firecam（可複選）</legend><div class="check-grid">{% for value,label in person_options %}<label class="check-item"><input type="checkbox" name="firecam_person" value="{{ label }}"{% if label in (selected_case.firecam_people or []) %} checked{% endif %}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>
         <div class="folder-preview-output"><div data-folder-empty>請先完成案件與車輛資料。</div><ul data-folder-list></ul></div>
       </div>
     </section>
@@ -291,6 +300,7 @@
   const category = document.getElementById('recorder-category');
   const reason = document.getElementById('case-reason');
   const reasonOptionsByType = {{ disaster_reason_options_by_type | tojson }};
+  const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
   const lockedSubcategory = document.getElementById('locked-recorder-subcategory');
   const folderPreview = document.getElementById('disaster-folder-preview');
   const clientFormErrors = document.getElementById('client-form-errors');
@@ -337,9 +347,18 @@
     updateFuelTotal(card);
     updateRequiredHints();
   }
+  function updateLastMileageHint(card){
+    const vehicle=card.querySelector('[name="vehicle"]');
+    const hint=card.querySelector('[data-last-mileage-for="vehicle"]');
+    if(!vehicle||!hint) return;
+    const mileage=lastVehicleMileages[vehicle.value]||'';
+    hint.textContent=mileage?`上次該車輛登打的里程：${mileage}`:'';
+    hint.closest('.mileage-hint-panel').hidden=!mileage;
+  }
   function bindCard(card){
     if(card.dataset.bound==='1') return;
     card.dataset.bound='1';
+    card.querySelector('[name="vehicle"]').addEventListener('change',()=>updateLastMileageHint(card));
     card.querySelector('.fuel-toggle').addEventListener('change',()=>updateFuelFields(card));
     card.querySelectorAll('[name="fuel_quantity"],[name="fuel_unit_price"]').forEach(input=>input.addEventListener('input',()=>updateFuelTotal(card)));
     card.querySelector('.remove-vehicle').addEventListener('click',()=>{ if(list.children.length<=1) return; card.remove(); reindexCards(); updatePreview(); updateFolderPreview(); });
@@ -351,6 +370,7 @@
       card.querySelector('.remove-vehicle').hidden=list.children.length<=1;
       bindCard(card);
       updateFuelFields(card);
+      updateLastMileageHint(card);
     });
     updateRequiredHints();
   }
