@@ -8,6 +8,7 @@
   --running: #176fa6;
   --running-bg: #edf7ff;
   --idle-bg: #f2f2f7;
+  font-size: 16px;
 }
 
 .admin-report-page--disaster {
@@ -20,16 +21,16 @@
   --admin-accent-soft: var(--ems-soft);
 }
 
-.admin-report-page .app-header__eyebrow {
+.admin-report-page .page-chrome__eyebrow {
   color: var(--admin-accent);
 }
 
-.admin-report-page .header-home-button {
-  --home-accent: var(--admin-accent);
+.admin-report-page .page-chrome {
+  --page-accent: var(--admin-accent);
 }
 
 .admin-report-page .app-content {
-  font-size: 15px;
+  font-size: 1rem;
 }
 
 .admin-report-page h2,

@@ -1,3 +1,4 @@
+{% from "_page_chrome.html" import page_chrome %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -130,13 +131,9 @@
 </head>
 <body class="workspace-page workspace-page--settings workspace-page--ems-settings">
   <main>
-    <header>
-      <div class="workspace-header-copy">
-        <p class="workspace-eyebrow">救護車輛設定</p>
-        <h1>救護車設定</h1>
-      </div>
+    {% call page_chrome('救護車輛設定', '救護車設定', 'ems') %}
       <a class="button secondary header-navigation-button" href="/app">返回救護登打</a>
-    </header>
+    {% endcall %}
 
     <form method="post" action="/admin/vehicles">
       <h2>新增救護車</h2>

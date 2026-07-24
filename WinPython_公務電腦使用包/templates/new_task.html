@@ -1,3 +1,4 @@
+{% from "_page_chrome.html" import page_chrome %}
 <!doctype html>
 <html lang="zh-Hant" data-ui="task-console">
 <head>
@@ -51,7 +52,6 @@
     }
     main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 52px; }
     header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
-    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
     h1 {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
@@ -311,8 +311,6 @@
       h1 { font-size: 25px; }
       header { align-items: center; flex-direction: row; }
       header h1 { flex: 1 1 auto; min-width: 0; }
-      .header-actions { flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; max-width: 58%; }
-      .header-actions .button { flex: 0 0 auto; min-height: 38px; padding: 0 12px; font-size: var(--text-sm); }
       .lookup-head { align-items: stretch; flex-direction: column; }
       .lookup-form { display: grid; grid-template-columns: 1fr; gap: 8px; width: 100%; }
       .lookup-status.is-visible { justify-self: start; }
@@ -355,22 +353,16 @@
 </head>
 <body class="workspace-page workspace-page--task workspace-page--ems-task">
   <main>
-    <header>
-      <div class="workspace-header-copy">
-        <p class="workspace-eyebrow">救護勤務登打中心</p>
-        <h1>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</h1>
-      </div>
+    {% call page_chrome('救護勤務登打中心', 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker', 'ems') %}
       {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button()) %}
-        <div class="header-actions">
-          {% if show_nas_home_button() %}
-            <a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>
-          {% endif %}
-          {% if show_vehicle_settings_button() %}
-            <a class="button secondary header-navigation-button" href="/admin/vehicles">救護車設定</a>
-          {% endif %}
-        </div>
+        {% if show_nas_home_button() %}
+          <a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>
+        {% endif %}
+        {% if show_vehicle_settings_button() %}
+          <a class="button secondary header-navigation-button" href="/admin/vehicles">救護車設定</a>
+        {% endif %}
       {% endif %}
-    </header>
+    {% endcall %}
 
     {% if not cancel_url %}
       <section class="panel lookup">

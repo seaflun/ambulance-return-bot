@@ -1,11 +1,13 @@
 # AGENTS.md
 
-## Superpowers Skills
+## Engineering Skills
 
-- This repository vendors Superpowers skills under `project_skills/superpowers/`.
-- At the start of work in this repository, prefer the `using-superpowers` skill to decide whether another Superpowers skill should be used.
-- For planning, debugging, testing, branch finishing, code review, or completion verification, use the matching Superpowers skill when applicable.
-- Superpowers skills do not override this `AGENTS.md` or direct user instructions; repository rules and user instructions remain higher priority.
+- This project uses Matt Pocock engineering skills and no longer uses the Superpowers workflow. If the process is unclear, start with `ask-matt`.
+- Use `implement` for clear, single-session work; use `tdd` for each testable public behavior as a small Red-Green vertical slice.
+- Use `grill-with-docs` for unclear requirements in this codebase. Use `to-spec` and `to-tickets` for large, multi-session work; use `diagnosing-bugs` for difficult, intermittent, or performance problems.
+- Before completion, run the relevant full verification and use `code-review` against an explicit commit, branch, tag, or merge-base.
+- Priority order is: direct user instructions; this `AGENTS.md`, safety, deployment, and data-governance rules; project-specific skills; Matt Pocock engineering skills; then general development habits. Commit, release, deployment, deletion, and production changes still require the applicable project rules and user authorization.
+- Historical `docs/superpowers/` documents are retained as records only. Do not restore or depend on the removed `project_skills/superpowers/` skill bundle.
 
 ## Project
 

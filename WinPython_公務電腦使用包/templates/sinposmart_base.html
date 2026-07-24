@@ -1,3 +1,4 @@
+{% from "_page_chrome.html" import page_chrome %}
 <!doctype html>
 <html lang="zh-Hant" data-ui="task-console">
 <head>
@@ -10,13 +11,9 @@
 </head>
 <body class="{% block body_class %}{% endblock %}">
   <main class="app-shell">
-    <header class="app-header">
-      <div class="app-header__copy">
-        <p class="app-header__eyebrow">{% block eyebrow %}SinpoSmart{% endblock %}</p>
-        <h1>{% block page_heading %}SinpoSmart{% endblock %}</h1>
-      </div>
+    {% call page_chrome(self.eyebrow(), self.page_heading(), page_accent|default('brand')) %}
       {% block header_actions %}{% endblock %}
-    </header>
+    {% endcall %}
     <section class="app-content">
       {% block content %}{% endblock %}
     </section>

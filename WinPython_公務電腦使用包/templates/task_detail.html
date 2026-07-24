@@ -1,3 +1,4 @@
+{% from "_page_chrome.html" import page_chrome %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -337,6 +338,8 @@
       .event-time { grid-column: 2; }
     }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
 </head>
 {% macro manual_confirmation_forms(task_id, site_key, site, task_active) -%}
   {% if not task_active and site_waits_for_confirmation(site.status) %}
@@ -361,16 +364,11 @@
     {% endif %}
   {% endif %}
 {%- endmacro %}
-<body>
+<body class="workspace-page workspace-page--task workspace-page--{{ payload.task.service_type }}-task">
   <main>
-    <header class="page-head">
-      <div class="page-title">
-        <h1>{{ task_title(payload.task) }}</h1>
-      </div>
-      <div class="head-actions">
-        <a class="button secondary" href="{{ '/app/disaster' if payload.task.service_type == 'disaster' else '/app' }}">返回首頁</a>
-      </div>
-    </header>
+    {% call page_chrome('任務明細', task_title(payload.task), 'disaster' if payload.task.service_type == 'disaster' else 'ems', 'page-head', 'head-actions') %}
+      <a class="button secondary" href="{{ '/app/disaster' if payload.task.service_type == 'disaster' else '/app' }}">返回首頁</a>
+    {% endcall %}
 
     <section class="task-section" aria-label="任務內容">
       {% set task_active = task_payload_is_active(payload) %}

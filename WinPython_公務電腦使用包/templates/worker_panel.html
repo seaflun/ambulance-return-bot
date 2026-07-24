@@ -1,3 +1,4 @@
+{% from "_page_chrome.html" import page_chrome %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -120,10 +121,12 @@
       button { font-size: 17px; }
     }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
 </head>
-<body>
+<body class="workspace-page workspace-page--worker">
   <main>
-    <h1>SinpoSmart - 救災救護Worker 面板</h1>
+    {{ page_chrome('公務電腦控制台', 'SinpoSmart - 救災救護Worker 面板', 'brand') }}
     <p class="sub">這個面板只開啟五站入口與顯示 worker 狀態，不會按最後儲存或送出。</p>
 
     <section class="panel">

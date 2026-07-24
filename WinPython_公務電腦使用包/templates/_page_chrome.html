@@ -1,0 +1,11 @@
+{% macro page_chrome(eyebrow, title, accent, extra_class='', actions_class='') -%}
+  <header class="page-chrome{% if extra_class %} {{ extra_class }}{% endif %}" data-page-accent="{{ accent }}">
+    <div class="page-chrome__copy">
+      <p class="page-chrome__eyebrow">{{ eyebrow }}</p>
+      <h1>{{ title }}</h1>
+    </div>
+    {% if caller is defined %}
+      <div class="page-chrome__actions{% if actions_class %} {{ actions_class }}{% endif %}">{{ caller() }}</div>
+    {% endif %}
+  </header>
+{%- endmacro %}

@@ -1368,8 +1368,8 @@ class WebAppTests(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             self.assertIn("--control-height: 48px", css)
             self.assertIn(".button:active", css)
-            self.assertIn(".app-header {\n    align-items: stretch;\n    flex-direction: column;", css)
-            self.assertIn(".header-actions .button {\n    width: 100%;", css)
+            self.assertIn(".page-chrome {\n    align-items: stretch;\n    flex-direction: column;", css)
+            self.assertIn(".page-chrome__actions .button {\n    width: 100%;", css)
             self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         finally:
             response.close()
@@ -1385,8 +1385,8 @@ class WebAppTests(unittest.TestCase):
         )
 
         self.assertNotIn(".app-header__eyebrow {\n    display: none;", css)
-        self.assertIn('<p class="workspace-eyebrow">救護車輛設定</p>', ems_settings)
-        self.assertIn('<p class="workspace-eyebrow">救災車輛設定</p>', disaster_settings)
+        self.assertIn('<p class="page-chrome__eyebrow">救護車輛設定</p>', ems_settings)
+        self.assertIn('<p class="page-chrome__eyebrow">救災車輛設定</p>', disaster_settings)
 
     def test_home_portal_cards_use_destination_colors(self):
         response = self.client.get("/static/sinposmart-ui.css")
@@ -1436,9 +1436,50 @@ class WebAppTests(unittest.TestCase):
         ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
         disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
-        self.assertIn('<p class="workspace-eyebrow">值班任務管理</p>', duty_body)
-        self.assertIn('<p class="workspace-eyebrow">救護勤務登打中心</p>', ems_body)
-        self.assertIn('<p class="workspace-eyebrow">救災勤務登打中心</p>', disaster_body)
+        self.assertIn('<p class="page-chrome__eyebrow">值班任務管理</p>', duty_body)
+        self.assertIn('<p class="page-chrome__eyebrow">救護勤務登打中心</p>', ems_body)
+        self.assertIn('<p class="page-chrome__eyebrow">救災勤務登打中心</p>', disaster_body)
+
+    def test_primary_workspace_pages_share_semantic_chrome_and_entry_theme(self):
+        headers = {"Host": "100.114.126.58:8080"}
+        pages = (
+            ("/app", "ems", "救護勤務登打中心"),
+            ("/app/disaster", "disaster", "救災勤務登打中心"),
+            ("/admin/vehicles", "ems", "救護車輛設定"),
+            ("/admin/disaster-vehicles", "disaster", "救災車輛設定"),
+        )
+
+        for path, accent, eyebrow in pages:
+            with self.subTest(path=path):
+                body = html.unescape(self.client.get(path, headers=headers).data.decode("utf-8"))
+                self.assertIn(f'<header class="page-chrome" data-page-accent="{accent}">', body)
+                self.assertIn(f'<p class="page-chrome__eyebrow">{eyebrow}</p>', body)
+
+    def test_base_pages_share_page_chrome(self):
+        headers = {"Host": "100.114.126.58:8080"}
+
+        for path in ("/", "/task-entry", "/admin/public-pc"):
+            with self.subTest(path=path):
+                body = html.unescape(self.client.get(path, headers=headers).data.decode("utf-8"))
+                self.assertIn('<header class="page-chrome" data-page-accent="brand">', body)
+
+    def test_service_filtered_admin_pages_keep_their_entry_theme(self):
+        headers = {"Host": "100.114.126.58:8080"}
+
+        for path, accent in (("/admin/disaster", "disaster"), ("/admin/ems", "ems")):
+            with self.subTest(path=path):
+                body = html.unescape(self.client.get(path, headers=headers).data.decode("utf-8"))
+                self.assertIn(f'<header class="page-chrome" data-page-accent="{accent}">', body)
+
+    def test_page_chrome_keeps_mobile_and_accessibility_treatments(self):
+        css = self.client.get("/static/sinposmart-ui.css").data.decode("utf-8")
+
+        self.assertIn("@media (max-width: 760px)", css)
+        self.assertIn(".page-chrome {\n    align-items: stretch;\n    flex-direction: column;", css)
+        self.assertIn(".page-chrome__actions .button {\n    width: 100%;", css)
+        self.assertIn(".page-chrome h1 {\n  margin: 0;\n  color: var(--page-accent);", css)
+        self.assertIn("@media (prefers-reduced-transparency: reduce)", css)
+        self.assertIn(".page-chrome,\n  .choice-card {", css)
 
     def test_workspace_header_navigation_uses_shared_apple_material_style(self):
         headers = {"Host": "100.114.126.58:8080"}
@@ -1450,7 +1491,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="button secondary header-navigation-button" href="/">返回首頁</a>', duty_body)
         self.assertEqual(2, ems_body.count("header-navigation-button"))
         self.assertEqual(2, disaster_body.count("header-navigation-button"))
-        self.assertIn(".workspace-page main > header .header-navigation-button {", css)
+        self.assertIn(".workspace-page .page-chrome__actions .header-navigation-button {", css)
+        self.assertIn(".workspace-page .page-chrome h1 {\n  margin: 0;\n  color: var(--accent);", css)
+        self.assertIn(".workspace-page .page-chrome__actions .button.secondary {", css)
         self.assertIn("backdrop-filter: blur(18px) saturate(150%);", css)
 
     def test_workspace_stylesheet_separates_date_selection_and_pads_duty_cards(self):
@@ -1511,7 +1554,7 @@ class WebAppTests(unittest.TestCase):
         admin_response = self.client.get("/static/sinposmart-admin.css")
         ui_css = ui_response.data.decode("utf-8")
         admin_css = admin_response.data.decode("utf-8")
-        self.assertIn(".app-header .header-home-button {", ui_css)
+        self.assertIn(".page-chrome__actions .button.secondary {", ui_css)
         self.assertIn("backdrop-filter: blur(18px) saturate(150%);", ui_css)
         self.assertIn(".result-filters {\n  display: flex;\n  flex-wrap: wrap;\n  width: fit-content;", admin_css)
         self.assertIn("gap: 4px;\n  margin-bottom: 14px;\n  padding: 5px;", admin_css)
@@ -2295,7 +2338,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('href="/admin/sinposmart"', body)
         self.assertNotIn("救護後台", body)
         self.assertNotIn("值班後台", body)
-        self.assertIn('class="header-actions"', body)
+        self.assertIn('class="page-chrome__actions"', body)
         self.assertIn('href="/task-entry">返回上一頁</a>', body)
 
     def test_nas_app_page_shows_home_button_only_on_nas(self):
@@ -4996,8 +5039,9 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/app")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertIn("header { align-items: center; flex-direction: row; }", body)
-        self.assertIn(".header-actions .button { flex: 0 0 auto;", body)
+        css = self.client.get("/static/sinposmart-ui.css").data.decode("utf-8")
+        self.assertIn(".page-chrome {\n    align-items: stretch;\n    flex-direction: column;", css)
+        self.assertIn(".page-chrome__actions .button {\n    width: 100%;", css)
         self.assertIn(".lookup-form { display: grid; grid-template-columns: 1fr; gap: 8px; width: 100%; }", body)
         self.assertIn(".time-field { grid-template-columns: 1fr; }", body)
         self.assertIn('.return-time-field input[name="return_date"] { grid-column: 1 / -1; }', body)
@@ -6586,6 +6630,8 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
         header = body.split('aria-label="任務內容"', 1)[0]
 
+        self.assertIn('class="page-chrome page-head" data-page-accent="ems"', header)
+        self.assertIn('<p class="page-chrome__eyebrow">任務明細</p>', header)
         self.assertIn("返回首頁", header)
         self.assertNotIn("回到上一頁", header)
         self.assertIn(".page-head { align-items: stretch; flex-direction: column; }", body)

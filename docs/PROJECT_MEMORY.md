@@ -56,6 +56,7 @@ This file records project decisions that another computer or another coding agen
 
 ## Agent Operating Rules
 
+- Use Matt Pocock engineering skills for implementation flow. Do not use the removed Superpowers bundle; `project_skills/` contains project-specific operational constraints, which take priority over the engineering flow.
 - After code changes and tests, restart the worker and state clearly whether it was restarted.
 - Always list every changed file in the final response.
 - Use UTF-8 for Traditional Chinese text. If PowerShell output is garbled, verify with an explicit UTF-8 read before editing.
