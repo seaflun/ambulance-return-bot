@@ -1468,6 +1468,17 @@ class WebAppTests(unittest.TestCase):
                 body = html.unescape(self.client.get(path, headers=headers).data.decode("utf-8"))
                 self.assertIn('<header class="page-chrome" data-page-accent="brand">', body)
 
+    def test_page_chrome_navigation_uses_one_shared_style_and_stable_scrollbar_gutter(self):
+        headers = {"Host": "100.114.126.58:8080"}
+        css = self.client.get("/static/sinposmart-ui.css").data.decode("utf-8")
+
+        self.assertIn("scrollbar-gutter: stable;", css)
+        self.assertIn(".page-chrome__actions .header-navigation-button {", css)
+        for path in ("/task-entry", "/admin/disaster", "/admin/ems", "/admin/sinposmart"):
+            with self.subTest(path=path):
+                body = html.unescape(self.client.get(path, headers=headers).data.decode("utf-8"))
+                self.assertIn('class="button secondary header-navigation-button"', body)
+
     def test_service_filtered_admin_pages_keep_their_entry_theme(self):
         headers = {"Host": "100.114.126.58:8080"}
 
@@ -1491,15 +1502,32 @@ class WebAppTests(unittest.TestCase):
         duty_body = html.unescape(self.client.get("/admin/sinposmart", headers=headers).data.decode("utf-8"))
         ems_body = html.unescape(self.client.get("/app", headers=headers).data.decode("utf-8"))
         disaster_body = html.unescape(self.client.get("/app/disaster", headers=headers).data.decode("utf-8"))
-        css = self.client.get("/static/sinposmart-workspace.css").data.decode("utf-8")
+        base_css = self.client.get("/static/sinposmart-ui.css").data.decode("utf-8")
+        workspace_css = self.client.get("/static/sinposmart-workspace.css").data.decode("utf-8")
 
         self.assertIn('class="button secondary header-navigation-button" href="/">返回首頁</a>', duty_body)
         self.assertEqual(2, ems_body.count("header-navigation-button"))
         self.assertEqual(2, disaster_body.count("header-navigation-button"))
-        self.assertIn(".workspace-page .page-chrome__actions .header-navigation-button {", css)
-        self.assertIn(".workspace-page .page-chrome h1 {\n  margin: 0;\n  color: var(--accent);", css)
-        self.assertIn(".workspace-page .page-chrome__actions .button.secondary {", css)
-        self.assertIn("backdrop-filter: blur(18px) saturate(150%);", css)
+        self.assertIn(
+            ".page-chrome .page-chrome__actions .header-navigation-button {\n"
+            "  min-height: var(--control-height);\n"
+            "  padding: 0 18px;\n"
+            "  border-radius: 999px;",
+            base_css,
+        )
+        self.assertIn(
+            ".page-chrome .page-chrome__actions .header-navigation-button {\n"
+            "    min-height: 44px;\n"
+            "    padding: 0 14px;",
+            base_css,
+        )
+        self.assertNotIn(
+            ".workspace-page .page-chrome__actions .header-navigation-button {",
+            workspace_css,
+        )
+        self.assertIn(".workspace-page .page-chrome h1 {\n  margin: 0;\n  color: var(--accent);", workspace_css)
+        self.assertIn(".workspace-page .page-chrome__actions .button.secondary {", workspace_css)
+        self.assertIn("backdrop-filter: blur(18px) saturate(150%);", base_css)
 
     def test_workspace_package_controls_are_compact_and_keep_selected_state(self):
         css = self.client.get("/static/sinposmart-workspace.css").data.decode("utf-8")
@@ -1564,8 +1592,8 @@ class WebAppTests(unittest.TestCase):
             self.client.get("/task-entry", headers={"Host": "127.0.0.1:8090"}).data.decode("utf-8")
         )
 
-        self.assertIn('<a class="button secondary header-home-button" href="/">返回首頁</a>', nas_body)
-        self.assertNotIn('<a class="button secondary header-home-button" href="/">返回首頁</a>', local_body)
+        self.assertIn('<a class="button secondary header-navigation-button" href="/">返回首頁</a>', nas_body)
+        self.assertNotIn('<a class="button secondary header-navigation-button" href="/">返回首頁</a>', local_body)
 
     def test_admin_filters_and_home_links_use_apple_control_styles(self):
         task_entry_body = html.unescape(
@@ -1575,7 +1603,7 @@ class WebAppTests(unittest.TestCase):
         ems_body = html.unescape(self.client.get("/admin/ems").data.decode("utf-8"))
 
         for body in (task_entry_body, disaster_body, ems_body):
-            self.assertIn('class="button secondary header-home-button"', body)
+            self.assertIn('class="button secondary header-navigation-button"', body)
 
         ui_response = self.client.get("/static/sinposmart-ui.css")
         admin_response = self.client.get("/static/sinposmart-admin.css")

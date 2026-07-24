@@ -367,7 +367,7 @@
 <body class="workspace-page workspace-page--task workspace-page--{{ payload.task.service_type }}-task">
   <main>
     {% call page_chrome('任務明細', task_title(payload.task), 'disaster' if payload.task.service_type == 'disaster' else 'ems', 'page-head', 'head-actions') %}
-      <a class="button secondary" href="{{ '/app/disaster' if payload.task.service_type == 'disaster' else '/app' }}">返回首頁</a>
+      <a class="button secondary header-navigation-button" href="{{ '/app/disaster' if payload.task.service_type == 'disaster' else '/app' }}">返回首頁</a>
     {% endcall %}
 
     <section class="task-section" aria-label="任務內容">

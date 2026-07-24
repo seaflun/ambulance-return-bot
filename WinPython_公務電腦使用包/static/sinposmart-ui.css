@@ -37,6 +37,7 @@
 html {
   min-height: 100%;
   background: var(--page-background);
+  scrollbar-gutter: stable;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -137,6 +138,12 @@ a {
   border-color: color-mix(in srgb, var(--page-accent) 35%, var(--separator));
   background: rgba(255, 255, 255, .94);
   box-shadow: 0 10px 28px color-mix(in srgb, var(--page-accent) 12%, transparent);
+}
+
+.page-chrome .page-chrome__actions .header-navigation-button {
+  min-height: var(--control-height);
+  padding: 0 18px;
+  border-radius: 999px;
 }
 
 h1 {
@@ -409,6 +416,11 @@ h1 {
     min-height: 44px;
     padding: 0 14px;
     font-size: .9rem;
+  }
+
+  .page-chrome .page-chrome__actions .header-navigation-button {
+    min-height: 44px;
+    padding: 0 14px;
   }
 
   .choice-grid {

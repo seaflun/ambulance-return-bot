@@ -22,6 +22,7 @@
 }
 
 .admin-report-page .page-chrome__eyebrow {
+  margin: 0 0 2px;
   color: var(--admin-accent);
 }
 
