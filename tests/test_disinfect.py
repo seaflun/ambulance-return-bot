@@ -82,6 +82,17 @@ class DisinfectionCredentialTests(unittest.TestCase):
             ],
         )
 
+    def test_login_error_page_is_not_treated_as_logged_in(self):
+        class ErrorPageDriver:
+            current_url = "https://emsdt.tyfd.gov.tw/EmmWeb/Error.aspx"
+
+            def execute_script(self, script):
+                if "return document.body ? document.body.innerText : '';" in script:
+                    return "帳號、密碼、驗證碼錯誤或帳號不存在!"
+                return True
+
+        self.assertFalse(disinfect._is_logged_in(ErrorPageDriver()))
+
     def test_login_failure_captures_task_and_vehicle_evidence_before_optional_quit(self):
         class FakeDriver:
             def set_page_load_timeout(self, _seconds):

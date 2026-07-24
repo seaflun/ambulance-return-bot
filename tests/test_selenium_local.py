@@ -2810,6 +2810,28 @@ class SeleniumLocalTests(unittest.TestCase):
         assert selected is not None
         self.assertEqual(selected.id_number, "B123017532")
 
+    def test_ppe_login_error_page_is_not_treated_as_login_result(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                if "document.body" in script:
+                    return "帳密錯誤"
+                return False
+
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                self.driver = driver
+
+            def until(self, predicate):
+                return predicate(self.driver)
+
+        with patch.object(selenium_local_module, "WebDriverWait", FakeWait):
+            self.assertFalse(selenium_local_module._wait_for_ppe_login_result(FakeDriver(), timeout=1))
+
+    def test_ppe_login_error_text_accepts_common_credential_failure_variants(self):
+        for message in ("帳密錯誤", "帳號或密碼錯誤", "帳號、密碼錯誤或帳號不存在"):
+            with self.subTest(message=message):
+                self.assertTrue(selenium_local_module._is_ppe_login_error_text(message))
+
     def test_duty_login_tries_next_candidate_after_failure(self):
         class FakeDriver:
             def get(self, url):

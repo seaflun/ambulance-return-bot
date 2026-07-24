@@ -2114,6 +2114,28 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-action-text="先鋒搶救"', body)
         self.assertIn('name="firecam_person" value="甲"', body)
 
+    def test_disaster_task_renders_compact_horizontal_firecam_selector(self):
+        self.import_case_for_form(
+            {
+                "case_id": "FIRE-FIRECAM-SELECTOR",
+                "case_date": "2026/07/24",
+                "case_time": "1437",
+                "address": "桃園市觀音區廣大路102號",
+                "personnel": ["曾彥綸", "王治任"],
+                "summary_type": "火災",
+            }
+        )
+
+        response = self.client.get("/app/disaster")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn('class="full firecam-selector"', body)
+        self.assertIn('.firecam-selector .check-grid { gap: 8px; margin: 0; }', body)
+        self.assertIn('#disaster-form .firecam-selector .check-item input { width: 18px;', body)
+        self.assertIn('.firecam-selector .check-item span { display: inline; white-space: nowrap; }', body)
+        self.assertIn('.firecam-selector .check-item:has(input:checked)', body)
+        self.assertNotIn('.firecam-selector .check-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: #8f4436; }', body)
+
     def test_disaster_task_shows_last_mileage_for_each_selected_vehicle(self):
         task = AmbulanceReturnRequest(
             task_id="disaster-last-mileage",

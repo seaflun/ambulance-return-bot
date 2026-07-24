@@ -206,6 +206,8 @@ def _is_login_page(driver: webdriver.Chrome) -> bool:
 
 
 def _is_logged_in(driver: webdriver.Chrome) -> bool:
+    if _is_disinfection_login_error_page(driver):
+        return False
     return bool(
         driver.execute_script(
             """
@@ -220,6 +222,17 @@ def _is_logged_in(driver: webdriver.Chrome) -> bool:
                 || text.includes('消毒紀錄')
                 || text.includes('登出')
                 || text.includes('功能選單');
+            """
+        )
+    )
+
+
+def _is_disinfection_login_error_page(driver: webdriver.Chrome) -> bool:
+    return bool(
+        driver.execute_script(
+            """
+            const text = (document.body ? document.body.innerText : '').replace(/\\s+/g, '');
+            return /帳號.*密碼.*驗證碼.*(?:錯誤|不存在)/.test(text);
             """
         )
     )

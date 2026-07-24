@@ -111,6 +111,11 @@
     .check-item { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 46px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
     #disaster-form .fuel-record-toggle input { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; transform: scale(1.2); accent-color: var(--accent); }
     label > span { display: flex; align-items: center; gap: 10px; }
+    .firecam-selector .check-grid { gap: 8px; margin: 0; }
+    .firecam-selector .check-item { min-height: 40px; padding: 6px 10px; border-radius: 999px; font-size: var(--text-sm); font-weight: 700; }
+    #disaster-form .firecam-selector .check-item input { width: 18px; height: 18px; min-height: 18px; margin: 0; padding: 0; flex: 0 0 auto; transform: none; accent-color: var(--accent); }
+    .firecam-selector .check-item span { display: inline; white-space: nowrap; }
+    .firecam-selector .check-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
     .fuel-fields { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .fuel-total { color: var(--accent); font-weight: 800; }
     .mileage-hint-panel { grid-column: 2; margin: -4px 0 2px; }
@@ -267,7 +272,7 @@
         <label class="field-visual{% if not selected_case.recorder_category %} is-pending{% endif %}" data-required-message="請選擇行車紀錄器分類"><span class="field-label-title">行車紀錄器分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_category" id="recorder-category" required><option value="">請選擇</option>{% for category in ['轄內A2','轄內A3','轄內其他案件','支援他轄'] %}<option value="{{ category }}"{% if selected_case.recorder_category == category %} selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
         <label class="field-visual{% if selected_case.recorder_category == '轄內其他案件' and not selected_case.recorder_subcategory %} is-pending{% endif %}" id="subcategory-field" data-required-message="請選擇轄內其他案件子分類"{% if selected_case.recorder_category != '轄內其他案件' %} hidden{% endif %}><span class="field-label-title">子分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_subcategory"><option value="">請選擇</option>{% for subcategory in ['其他','誤報','溺水','破門','警報器誤動作','車禍救助','輸電線災害','電梯受困','電線桿災害'] %}<option value="{{ subcategory }}"{% if selected_case.recorder_subcategory == subcategory %} selected{% endif %}>{{ subcategory }}</option>{% endfor %}</select></label>
         <input type="hidden" name="recorder_subcategory" id="locked-recorder-subcategory" value="誤報" disabled>
-        <fieldset class="full"><legend>Firecam（可複選）</legend><div class="check-grid">{% for value,label in person_options %}<label class="check-item"><input type="checkbox" name="firecam_person" value="{{ label }}"{% if label in (selected_case.firecam_people or []) %} checked{% endif %}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>
+        <fieldset class="full firecam-selector"><legend>Firecam（可複選）</legend><div class="check-grid">{% for value,label in person_options %}<label class="check-item"><input type="checkbox" name="firecam_person" value="{{ label }}"{% if label in (selected_case.firecam_people or []) %} checked{% endif %}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>
         <div class="folder-preview-output"><div data-folder-empty>請先完成案件與車輛資料。</div><ul data-folder-list></ul></div>
       </div>
     </section>

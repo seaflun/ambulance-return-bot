@@ -1716,11 +1716,27 @@ def _wait_for_ppe_fuel_record_detail_page(driver: webdriver.Chrome, timeout: int
 def _wait_for_ppe_login_result(driver: webdriver.Chrome, timeout: int = 12) -> bool:
     try:
         WebDriverWait(driver, timeout).until(
-            lambda current: _is_ppe_vehicle_mileage_page(current) or not _is_ppe_login_page(current)
+            lambda current: _is_ppe_login_error_page(current)
+            or _is_ppe_vehicle_mileage_page(current)
+            or not _is_ppe_login_page(current)
         )
     except TimeoutException:
         return False
-    return not _is_ppe_login_page(driver)
+    return not _is_ppe_login_error_page(driver) and not _is_ppe_login_page(driver)
+
+
+def _is_ppe_login_error_page(driver: webdriver.Chrome) -> bool:
+    try:
+        return _is_ppe_login_error_text(
+            driver.execute_script("return document.body ? document.body.innerText : ''; ")
+        )
+    except WebDriverException:
+        return False
+
+
+def _is_ppe_login_error_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    return bool(re.search(r"(?:帳密|帳號.*密碼).*(?:錯誤|不存在)", normalized))
 
 
 def _prepare_vehicle_mileage_form(
