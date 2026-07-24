@@ -314,13 +314,13 @@ def record_folder_preview():
     if service_type == "disaster":
         required_preview_values.append(request.form.get("case_address"))
     if not all(str(value or "").strip() for value in required_preview_values):
-        return jsonify({"ok": True, "paths": [], "detail": "請先完成案件與車輛資料。"})
+        return jsonify({"ok": True, "paths": [], "recorder_paths": [], "firecam_paths": [], "detail": "請先完成案件與車輛資料。"})
     if not any(str(value or "").strip() for value in request.form.getlist("vehicle")):
-        return jsonify({"ok": True, "paths": [], "detail": "請先完成案件與車輛資料。"})
+        return jsonify({"ok": True, "paths": [], "recorder_paths": [], "firecam_paths": [], "detail": "請先完成案件與車輛資料。"})
     try:
         if service_type == "disaster":
             task_request = request_from_disaster_form(request.form)
-            paths = [
+            recorder_paths = [
                 entry.path.as_posix()
                 for entry in disaster_folder_plan(
                     task_request,
@@ -328,13 +328,16 @@ def record_folder_preview():
                     effective_disaster_vehicle_recorder_codes(),
                 )
             ]
-            paths.extend(entry.path.as_posix() for entry in firecam_folder_plan(task_request, Path()))
+            firecam_paths = [entry.path.as_posix() for entry in firecam_folder_plan(task_request, Path())]
+            paths = recorder_paths + firecam_paths
         else:
             task_request = request_from_form(request.form)
             paths = [path.as_posix() for path in ems_record_relative_paths(task_request)]
+            recorder_paths = paths
+            firecam_paths = []
     except (OSError, RecordFolderError, ValueError) as exc:
-        return jsonify({"ok": False, "paths": [], "detail": str(exc)}), 400
-    return jsonify({"ok": True, "paths": paths})
+        return jsonify({"ok": False, "paths": [], "recorder_paths": [], "firecam_paths": [], "detail": str(exc)}), 400
+    return jsonify({"ok": True, "paths": paths, "recorder_paths": recorder_paths, "firecam_paths": firecam_paths})
 
 
 @app.post("/cases/import")
@@ -608,6 +611,11 @@ def run_task_site(task_id: str, site_key: str):
     if mode == "desktop_fast":
         report_public_pc_task_event(payload, f"按下單站登打：{site_display_name(site_key)}")
         desktop_runner.start_site(task_id, site_key)
+    elif mode == "worker_queue":
+        try:
+            queue_task_for_worker(task_id, run_site_key=site_key)
+        except WorkerClaimConflictError as exc:
+            return exc.detail, 409
     else:
         store.set_overall_status(
             task_id,
@@ -3453,6 +3461,13 @@ def task_has_waiting_confirmation(site_statuses: dict) -> bool:
     )
 
 
+def task_has_failed_site(site_statuses: dict) -> bool:
+    return any(
+        status_class(str(dict(site or {}).get("status") or "")) == "failed"
+        for site in dict(site_statuses or {}).values()
+    )
+
+
 def task_edit_is_locked(payload: dict) -> bool:
     return task_payload_is_active_for_edit(payload) or task_has_waiting_confirmation(
         dict(payload.get("site_statuses") or {})
@@ -4145,6 +4160,7 @@ def template_helpers() -> dict:
         "status_label": status_label,
         "task_datetime_display": task_datetime_display,
         "task_has_waiting_confirmation": task_has_waiting_confirmation,
+        "task_has_failed_site": task_has_failed_site,
         "task_payload_is_active": task_payload_is_active,
         "task_payload_is_active_for_edit": task_payload_is_active_for_edit,
         "task_edit_is_locked": task_edit_is_locked,
@@ -4181,12 +4197,17 @@ def should_auto_queue_task_on_create() -> bool:
     return effective_task_execution_mode() == "worker_queue" and not request_is_local_host()
 
 
-def queue_task_for_worker(task_id: str) -> None:
+def queue_task_for_worker(task_id: str, run_site_key: str = "") -> None:
     request_payload = store.request_for(task_id)
     payload = store.get(task_id)
     site_statuses = dict(payload.get("site_statuses") or {})
+    target_site_keys = set(request_payload.active_site_keys())
+    if run_site_key:
+        target_site_keys = {run_site_key}
+        if run_site_key in {"vehicle_mileage", "fuel_record"} and request_payload.has_fuel_record():
+            target_site_keys.update({"vehicle_mileage", "fuel_record"})
     for adapter in default_adapters():
-        if adapter.key not in request_payload.active_site_keys():
+        if adapter.key not in target_site_keys:
             continue
         site = dict(site_statuses.get(adapter.key) or {})
         status = str(site.get("status") or "")
@@ -4198,7 +4219,7 @@ def queue_task_for_worker(task_id: str) -> None:
         )
         if should_prepare:
             store.update_site_result(task_id, adapter.run(request_payload))
-    store.queue_for_worker(task_id)
+    store.queue_for_worker(task_id, run_site_key=run_site_key)
 
 
 def write_selected_case_from_lookup(case_id: str) -> bool:

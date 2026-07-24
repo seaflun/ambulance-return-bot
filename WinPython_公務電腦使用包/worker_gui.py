@@ -2000,7 +2000,7 @@ def local_web_base_url() -> str:
 
 
 def local_web_url() -> str:
-    return f"{local_web_base_url()}/app"
+    return f"{local_web_base_url()}/task-entry"
 
 
 def terminate_package_local_web_processes() -> int:

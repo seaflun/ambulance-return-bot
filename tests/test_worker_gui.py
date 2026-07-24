@@ -909,7 +909,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
             os.environ["DESKTOP_WEB_HOST"] = "127.0.0.1"
             os.environ["DESKTOP_WEB_PORT"] = "8099"
 
-            self.assertEqual(worker_gui.local_web_url(), "http://127.0.0.1:8099/app")
+            self.assertEqual(worker_gui.local_web_url(), "http://127.0.0.1:8099/task-entry")
         finally:
             if old_host is None:
                 os.environ.pop("DESKTOP_WEB_HOST", None)

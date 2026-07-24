@@ -1941,6 +1941,8 @@ class WebAppTests(unittest.TestCase):
             ["115年/轄內A3/202607211207桃園市觀音區金華路31號(住宅火警)-11"],
             disaster.get_json()["paths"],
         )
+        self.assertEqual(disaster.get_json()["paths"], disaster.get_json()["recorder_paths"])
+        self.assertEqual([], disaster.get_json()["firecam_paths"])
 
     def test_disaster_task_detail_hides_ems_cards_and_shows_commander_and_processing(self):
         task = AmbulanceReturnRequest(
@@ -2055,7 +2057,7 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(ems_body.index("返回上一頁"), ems_body.index("救護車設定"))
         self.assertLess(disaster_body.index("返回上一頁"), disaster_body.index("車輛及工作設定"))
 
-    def test_local_entry_and_task_forms_hide_nas_navigation_and_vehicle_settings(self):
+    def test_local_task_forms_show_back_navigation_but_hide_vehicle_settings(self):
         headers = {"Host": "127.0.0.1:8090"}
         entry_body = html.unescape(self.client.get("/task-entry", headers=headers).data.decode("utf-8"))
         ems_body = html.unescape(self.client.get("/app", headers=headers).data.decode("utf-8"))
@@ -2065,7 +2067,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertNotIn("返回首頁", entry_body)
         for body in (ems_body, disaster_body):
-            self.assertNotIn("返回上一頁", body)
+            self.assertIn('href="/task-entry">返回上一頁</a>', body)
             self.assertNotIn("救護車設定", body)
             self.assertNotIn("救災車設定", body)
             self.assertNotIn('href="/admin/vehicles"', body)
@@ -2129,12 +2131,15 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/app/disaster")
         body = html.unescape(response.data.decode("utf-8"))
 
-        self.assertIn('class="full firecam-selector"', body)
+        self.assertIn('<div class="full firecam-selector">', body)
+        self.assertNotIn('<fieldset class="full firecam-selector">', body)
         self.assertIn('.firecam-selector .check-grid { gap: 8px; margin: 0; }', body)
         self.assertIn('#disaster-form .firecam-selector .check-item input { width: 18px;', body)
         self.assertIn('.firecam-selector .check-item span { display: inline; white-space: nowrap; }', body)
         self.assertIn('.firecam-selector .check-item:has(input:checked)', body)
         self.assertNotIn('.firecam-selector .check-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: #8f4436; }', body)
+        self.assertIn('data-folder-recorder-group', body)
+        self.assertIn('data-folder-firecam-group', body)
 
     def test_disaster_task_shows_last_mileage_for_each_selected_vehicle(self):
         task = AmbulanceReturnRequest(
@@ -2170,7 +2175,9 @@ class WebAppTests(unittest.TestCase):
         compact_body = body.replace(" ", "")
         self.assertIn("上次該車輛登打的里程", body)
         self.assertIn('data-last-mileage-for="vehicle"', body)
-        self.assertIn(".mileage-hint-panel { grid-column: 2;", body)
+        self.assertIn(".mileage-hint-panel { display: grid; grid-column: 2;", body)
+        self.assertIn("border: 1px solid var(--line);", body)
+        self.assertIn("min-height: 46px;", body)
         self.assertIn(
             json.dumps({"新坡11": "12345"}, ensure_ascii=True, separators=(",", ":")),
             compact_body,
@@ -2499,7 +2506,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="page-chrome__actions"', body)
         self.assertIn('href="/task-entry">返回上一頁</a>', body)
 
-    def test_nas_app_page_shows_home_button_only_on_nas(self):
+    def test_app_page_shows_back_navigation_on_nas_and_local_worker(self):
         nas_body = html.unescape(
             self.client.get("/app", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
         )
@@ -2509,7 +2516,7 @@ class WebAppTests(unittest.TestCase):
 
         navigation = '<a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>'
         self.assertIn(navigation, nas_body)
-        self.assertNotIn(navigation, local_body)
+        self.assertIn(navigation, local_body)
 
     def test_app_page_recent_task_does_not_show_delete_button(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
@@ -6809,7 +6816,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(app_module.desktop_runner.started_sites, [(task_id, "disinfection")])
         self.assertEqual(self.store.get(task_id)["overall_status"], "desktop_fast_running")
 
-    def test_remote_single_site_run_does_not_call_desktop_runner(self):
+    def test_remote_single_site_run_queues_the_selected_site_for_public_pc_worker(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
@@ -6822,7 +6829,32 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(app_module.desktop_runner.started_sites, [])
-        self.assertEqual(self.store.get(task_id)["overall_status"], "desktop_fast_unavailable")
+        queued = self.store.get(task_id)
+        self.assertEqual(queued["overall_status"], "queued_for_worker")
+        self.assertEqual(queued["worker_queue"]["run_site_key"], "disinfection")
+
+    def test_nas_failed_task_shows_public_pc_retry_controls(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "disinfection",
+                "消毒",
+                "disinfection_failed",
+                "save button missing",
+            ),
+        )
+
+        response = self.client.get(
+            f"/tasks/{task_id}",
+            base_url="http://100.114.126.58:8080",
+        )
+        body = html.unescape(response.get_data(as_text=True))
+
+        self.assertIn("四站登打啟動", body)
+        self.assertIn(f"/tasks/{task_id}/sites/disinfection/run", body)
+        self.assertIn("單獨登打", body)
 
     def test_task_detail_shows_chinese_statuses_without_raw_statuses(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -7279,7 +7311,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);", body)
         self.assertIn(".mileage-hint-panel { min-width: 0; }", body)
         self.assertIn(".mileage-hint-spacer { min-height: 1.45em; visibility: hidden; }", body)
-        self.assertIn(".mileage-hint { min-height: 46px; margin: 6px 0 0;", body)
+        self.assertIn(".mileage-hint { min-height: 46px; margin: 0;", body)
         self.assertIn(".mileage-hint { margin-top: 0; }", body)
         self.assertIn(".fuel-required.is-pending .field-error-mark", body)
         self.assertIn("#task-form input,", body)

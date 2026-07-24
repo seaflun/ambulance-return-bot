@@ -200,7 +200,7 @@
     .mileage-row .field-visual { margin: 0; }
     .mileage-hint-panel { min-width: 0; }
     .mileage-hint-spacer { min-height: 1.45em; visibility: hidden; }
-    .mileage-hint { min-height: 46px; margin: 6px 0 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
+    .mileage-hint { min-height: 46px; margin: 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
     .mileage-hint:empty { display: none; }
     .fuel-record-row { margin: 4px 0 14px; }
     .fuel-record-toggle { width: fit-content; margin: 0 0 14px; }
@@ -354,8 +354,8 @@
 <body class="workspace-page workspace-page--task workspace-page--ems-task">
   <main>
     {% call page_chrome('救護勤務登打中心', 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker', 'ems') %}
-      {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button()) %}
-        {% if show_nas_home_button() %}
+      {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button() or show_task_entry_controls()) %}
+        {% if show_nas_home_button() or show_task_entry_controls() %}
           <a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>
         {% endif %}
         {% if show_vehicle_settings_button() %}

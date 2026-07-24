@@ -515,7 +515,7 @@ class JsonTaskStore:
                     break
             return recent
 
-    def queue_for_worker(self, task_id: str) -> dict[str, Any]:
+    def queue_for_worker(self, task_id: str, run_site_key: str = "") -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)
             if task_has_waiting_confirmation(payload):
@@ -549,6 +549,7 @@ class JsonTaskStore:
                     "completed_at": "",
                     "worker_id": "",
                     "last_error": "",
+                    "run_site_key": str(run_site_key or "").strip(),
                 }
             )
             payload["worker_queue"] = queue_state
@@ -1855,6 +1856,7 @@ def initial_worker_queue_state() -> dict[str, str]:
         "completed_at": "",
         "worker_id": "",
         "last_error": "",
+        "run_site_key": "",
     }
 
 

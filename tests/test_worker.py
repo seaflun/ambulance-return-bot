@@ -3089,11 +3089,12 @@ class WorkerTests(unittest.TestCase):
         response = {
             "ok": True,
             "task": {"task_id": "claimed-task", "created_at": "2026-07-13T08:00:00"},
-            "worker_queue": {"claim_id": "claim-2", "worker_id": "PC-01"},
+            "worker_queue": {"claim_id": "claim-2", "worker_id": "PC-01", "run_site_key": "disinfection"},
         }
         with mock.patch.object(worker_module, "request_json", return_value=response):
             task = worker_module.fetch_next_task("http://nas", "PC-01")
         self.assertIsNotNone(task)
+        self.assertEqual(task["_worker_queue"]["run_site_key"], "disinfection")
 
         def fake_urlopen(request, timeout):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
@@ -3104,6 +3105,67 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(captured["payload"]["claim_id"], "claim-2")
         self.assertEqual(captured["payload"]["worker_id"], "PC-01")
+
+    def test_run_queued_task_runs_only_requested_site(self):
+        task = {"task_id": "queued-single-site", "_worker_queue": {"run_site_key": "disinfection"}}
+        with mock.patch.object(worker_module, "run_all_sites_task") as run_all, mock.patch.object(
+            worker_module,
+            "run_selected_sites_task",
+        ) as run_selected:
+            worker_module.run_queued_task("http://nas", "worker-a", task, Path("artifacts"))
+
+        run_all.assert_not_called()
+        run_selected.assert_called_once_with(
+            "http://nas",
+            "worker-a",
+            task,
+            Path("artifacts"),
+            "disinfection",
+        )
+
+    def test_selected_site_worker_does_not_run_other_sites(self):
+        task = AmbulanceReturnRequest(
+            task_id="queued-disinfection-only",
+            created_at=__import__("datetime").datetime(2026, 7, 24, 23, 40),
+            raw_text="",
+            vehicle="新坡92",
+        ).to_dict()
+        payload = {
+            "task": task,
+            "site_statuses": {
+                "duty_work_log": {"status": "not_started"},
+                "vehicle_mileage": {"status": "not_started"},
+                "consumables": {"status": "not_started"},
+                "disinfection": {"status": "disinfection_failed"},
+            },
+        }
+        result = SimpleNamespace(ok=True, status="disinfection_saved", detail="saved")
+        with mock.patch.object(worker_module, "fetch_task_payload", return_value=payload), mock.patch.object(
+            worker_module,
+            "post_status",
+        ), mock.patch.object(
+            worker_module,
+            "run_disinfection_worker_task",
+            return_value=result,
+        ) as run_disinfection, mock.patch.object(worker_module, "run_task") as run_duty, mock.patch.object(
+            worker_module,
+            "run_vehicle_task",
+        ) as run_mileage, mock.patch.object(worker_module, "run_consumables_worker_task") as run_consumables, mock.patch.object(
+            worker_module,
+            "maximize_worker_site_windows",
+        ):
+            worker_module.run_selected_sites_task(
+                "http://nas",
+                "worker-a",
+                task,
+                Path("artifacts"),
+                "disinfection",
+            )
+
+        run_disinfection.assert_called_once()
+        run_duty.assert_not_called()
+        run_mileage.assert_not_called()
+        run_consumables.assert_not_called()
 
     def test_run_disinfection_posts_site_failure_when_selenium_raises(self):
         original_run = worker_module.run_disinfection_task

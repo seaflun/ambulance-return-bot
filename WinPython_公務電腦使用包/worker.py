@@ -160,7 +160,7 @@ def main() -> None:
                                     busy_reason="running assigned task",
                                     request_id=task_id,
                                 )
-                                run_all_sites_task(server_url, worker_id, task, artifacts_dir)
+                                run_queued_task(server_url, worker_id, task, artifacts_dir)
                                 if run_once:
                                     return
                                 continue
@@ -980,6 +980,9 @@ def fetch_next_task(server_url: str, worker_id: str) -> dict[str, object] | None
     if not isinstance(worker_queue, dict):
         worker_queue = task.get("worker_queue")
     _remember_task_claim(task, worker_queue, fallback_worker_id=worker_id)
+    task = dict(task)
+    if isinstance(worker_queue, dict):
+        task["_worker_queue"] = dict(worker_queue)
     return task
 
 
@@ -1662,6 +1665,50 @@ def run_all_sites_task(
         _unregister_task_cancellation_event(task_id, cancellation_event)
 
 
+def run_queued_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+) -> object | None:
+    queue_state = task.get("_worker_queue")
+    queue = dict(queue_state) if isinstance(queue_state, dict) else {}
+    run_site_key = str(queue.get("run_site_key") or "").strip()
+    if run_site_key:
+        return run_selected_sites_task(server_url, worker_id, task, artifacts_dir, run_site_key)
+    return run_all_sites_task(server_url, worker_id, task, artifacts_dir)
+
+
+def run_selected_sites_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+    run_site_key: str,
+) -> object | None:
+    request = AmbulanceReturnRequest.from_dict(task)
+    selected_site_keys = {str(run_site_key or "").strip()}
+    if run_site_key in {"vehicle_mileage", "fuel_record"} and request.has_fuel_record():
+        selected_site_keys.update({"vehicle_mileage", "fuel_record"})
+    task_id = request.task_id
+    cancellation_event = threading.Event()
+    _register_task_cancellation_event(task_id, cancellation_event)
+    stop_heartbeat = _start_worker_claim_heartbeat(server_url, task_id, worker_id)
+    try:
+        return _run_all_sites_task_impl(
+            server_url,
+            worker_id,
+            task,
+            artifacts_dir,
+            cancellation_event=cancellation_event,
+            only_site_keys=selected_site_keys,
+            execution_label="里程+加油" if selected_site_keys == {"vehicle_mileage", "fuel_record"} else SITE_NAMES.get(run_site_key, run_site_key),
+        )
+    finally:
+        stop_heartbeat()
+        _unregister_task_cancellation_event(task_id, cancellation_event)
+
+
 def _run_all_sites_task_impl(
     server_url: str,
     worker_id: str,
@@ -1669,10 +1716,12 @@ def _run_all_sites_task_impl(
     artifacts_dir: Path,
     *,
     cancellation_event: threading.Event,
+    only_site_keys: set[str] | None = None,
+    execution_label: str = "",
 ) -> object | None:
     request = AmbulanceReturnRequest.from_dict(task)
     profile_suffix = request.task_id.replace("-", "_")
-    site_count_label = task_site_count_label(request)
+    site_count_label = execution_label or task_site_count_label(request)
     post_status(server_url, request.task_id, "desktop_fast_running", f"公務電腦 worker {site_count_label}登打已啟動。")
     try:
         payload = fetch_task_payload(server_url, request.task_id)
@@ -1782,6 +1831,12 @@ def _run_all_sites_task_impl(
                 ),
             ),
         )
+    if only_site_keys is not None:
+        site_groups = [
+            [entry for entry in site_group if entry[0] in only_site_keys]
+            for site_group in site_groups
+        ]
+        site_groups = [site_group for site_group in site_groups if site_group]
     last_result = None
     failed_results = []
     group_results: list[tuple[object | None, list[object]] | None] = [None] * len(site_groups)
