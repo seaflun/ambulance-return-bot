@@ -1816,6 +1816,21 @@ class WebAppTests(unittest.TestCase):
                     self.assertIn('id="case-reason-required-mark" aria-hidden="true" hidden', body)
                     self.assertIn('name="case_reason" id="case-reason" disabled', body)
 
+    def test_ems_template_remains_renderable_during_controller_restart_gap(self):
+        real_render_template = app_module.render_template
+
+        def render_with_pre_duty_item_controller(template_name, **context):
+            context.pop("duty_item_options", None)
+            context.pop("duty_item_reason_options", None)
+            return real_render_template(template_name, **context)
+
+        with mock.patch.object(app_module, "render_template", side_effect=render_with_pre_duty_item_controller):
+            response = self.client.get("/app")
+
+        self.assertEqual(200, response.status_code)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn("const reasonOptionsByDutyItem = {", body)
+
     def test_disaster_form_shows_full_case_date_and_type_specific_reasons(self):
         self.import_case_for_form(
             {

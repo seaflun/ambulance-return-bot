@@ -1,4 +1,6 @@
 {% from "_page_chrome.html" import page_chrome %}
+{% set available_duty_item_options = duty_item_options | default(['救護', '火警', '其他類災害'], true) %}
+{% set available_duty_item_reason_options = duty_item_reason_options | default({'救護': case_reason_options, '火警': [], '其他類災害': []}, true) %}
 <!doctype html>
 <html lang="zh-Hant" data-ui="task-console">
 <head>
@@ -498,7 +500,7 @@
         <label class="field-visual" data-field-name="duty_item">
           <span class="field-label-title">勤務項目<span class="field-error-mark" aria-hidden="true">*</span></span>
           <select name="duty_item" id="duty-item">
-            {% for duty_item in duty_item_options %}
+            {% for duty_item in available_duty_item_options %}
               <option value="{{ duty_item }}"{% if selected_duty_item == duty_item %} selected{% endif %}>{{ duty_item }}</option>
             {% endfor %}
           </select>
@@ -507,10 +509,10 @@
           <span class="field-label-title">事由<span class="field-error-mark" id="case-reason-required-mark" aria-hidden="true"{% if selected_duty_item == '其他類災害' %} hidden{% endif %}>*</span></span>
           <select name="case_reason" id="case-reason"{% if selected_duty_item == '其他類災害' %} disabled{% else %} required{% endif %}>
             <option value="">請選擇</option>
-            {% for reason in duty_item_reason_options.get(selected_duty_item, []) %}
+            {% for reason in available_duty_item_reason_options.get(selected_duty_item, []) %}
               <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
             {% endfor %}
-            {% if selected_case.reason and selected_case.reason not in duty_item_reason_options.get(selected_duty_item, []) %}
+            {% if selected_case.reason and selected_case.reason not in available_duty_item_reason_options.get(selected_duty_item, []) %}
               <option value="{{ selected_case.reason }}" selected>{{ selected_case.reason }}</option>
             {% endif %}
           </select>
@@ -897,7 +899,7 @@
     const dutyItem = document.getElementById("duty-item");
     const caseReason = document.getElementById("case-reason");
     const caseReasonRequiredMark = document.getElementById("case-reason-required-mark");
-    const reasonOptionsByDutyItem = {{ duty_item_reason_options | tojson }};
+    const reasonOptionsByDutyItem = {{ available_duty_item_reason_options | tojson }};
     const requiredTaskFields = [
       { name: "case_time", label: "案件時間", selector: 'input[name="case_time"]' },
       { name: "return_time", label: "返隊時間", selector: 'input[name="return_time"]' },
