@@ -63,6 +63,7 @@ from ambulance_bot.models import (
     DISASTER_REASON_OPTIONS,
     DISASTER_REASON_OPTIONS_BY_TYPE,
     DISINFECTION_ITEM_OPTIONS,
+    DUTY_ITEM_OPTIONS,
     PERSON_OPTIONS,
     apply_disaster_vehicle_mileage_system_names,
     example_command,
@@ -244,6 +245,8 @@ def new_task():
         vehicle_options=effective_ems_vehicle_options(),
         person_options=person_options,
         case_reason_options=CASE_REASON_OPTIONS,
+        duty_item_options=DUTY_ITEM_OPTIONS,
+        duty_item_reason_options=duty_item_reason_options(),
         consumable_options=consumable_inventory_options(),
         default_consumables=DEFAULT_CONSUMABLES if selected_case else {},
         baseline_consumables_loaded=bool(selected_case),
@@ -472,6 +475,8 @@ def edit_task(task_id: str):
         vehicle_options=effective_ems_vehicle_options(),
         person_options=PERSON_OPTIONS,
         case_reason_options=CASE_REASON_OPTIONS,
+        duty_item_options=DUTY_ITEM_OPTIONS,
+        duty_item_reason_options=duty_item_reason_options(),
         consumable_options=consumable_inventory_options(),
         default_consumables=dict(task.get("consumables") or {}),
         baseline_consumables_loaded=False,
@@ -4245,10 +4250,13 @@ def write_selected_case_from_lookup(case_id: str) -> bool:
     )
     if "災害搶救" in category_text or "其他-打撈浮屍" in category_text:
         selected["summary_type"] = "災害搶救"
+        selected["duty_item"] = "其他類災害"
     elif "火災" in category_text:
         selected["summary_type"] = "火災"
+        selected["duty_item"] = "火警"
     elif "救護" in category_text:
         selected["summary_type"] = "救護"
+        selected["duty_item"] = "救護"
 
     output_dir = artifacts_dir / "cases"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -4321,6 +4329,14 @@ def task_form_values(task: dict) -> dict:
     return values
 
 
+def duty_item_reason_options() -> dict[str, list[str]]:
+    return {
+        "救護": CASE_REASON_OPTIONS,
+        "火警": DISASTER_REASON_OPTIONS,
+        "其他類災害": [],
+    }
+
+
 def prepared_case_lookup() -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
@@ -4386,6 +4402,10 @@ def validate_task_form(task_request) -> list[str]:
         errors.append("請填寫案件時間")
     if not task_request.case_address.strip():
         errors.append("請填寫案發地址")
+    if task_request.duty_item not in DUTY_ITEM_OPTIONS:
+        errors.append("請選擇勤務項目")
+    elif task_request.duty_item != "其他類災害" and not task_request.case_reason.strip():
+        errors.append("請選擇事由")
 
     if task_request.two_vehicle:
         vehicle_requests = task_request.vehicle_requests()
@@ -4588,6 +4608,8 @@ def render_task_form_from_request(
         vehicle_options=effective_ems_vehicle_options(),
         person_options=person_options,
         case_reason_options=CASE_REASON_OPTIONS,
+        duty_item_options=DUTY_ITEM_OPTIONS,
+        duty_item_reason_options=duty_item_reason_options(),
         consumable_options=consumable_inventory_options(),
         default_consumables=dict(task_request.consumables or {}),
         baseline_consumables_loaded=baseline_consumables_loaded,

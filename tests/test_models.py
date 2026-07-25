@@ -269,6 +269,16 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.case_id, "20260602011652012")
         self.assertEqual(request.disinfection_items, ["\u6551\u8b77\u8eca\u9ad4", "\u64d4\u67b6\u5e8a", "\u81ea\u8a02\u9805\u76ee"])
 
+    def test_request_from_form_keeps_selected_duty_item(self):
+        request = request_from_form(
+            {
+                "case_id": "20260725115356012",
+                "duty_item": "其他類災害",
+            }
+        )
+
+        self.assertEqual(request.duty_item, "其他類災害")
+
     def test_request_from_form_keeps_empty_consumables_and_disinfection_items(self):
         request = request_from_form({"vehicle": "\u65b0\u576191", "consumables": ""})
 

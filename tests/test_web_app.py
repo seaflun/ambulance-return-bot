@@ -1785,6 +1785,37 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual("/app/disaster#disaster-form", imported.headers["Location"])
 
+    def test_ems_import_maps_case_category_to_duty_item(self):
+        cases = (
+            ("緊急救護-急病", "救護"),
+            ("火災-雜草火警", "火警"),
+            ("災害搶救-水域搜救", "其他類災害"),
+        )
+        for index, (category, duty_item) in enumerate(cases, start=1):
+            with self.subTest(category=category):
+                self.import_case_for_form(
+                    {
+                        "case_id": f"duty-item-{index}",
+                        "case_date": "2026/07/25",
+                        "case_time_hhmm": "1153",
+                        "return_time_hhmm": "1306",
+                        "address": "桃園市觀音區",
+                        "category": category,
+                        "reason": "急病",
+                        "personnel": ["甲"],
+                    }
+                )
+
+                body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+
+                self.assertIn(
+                    f'<option value="{duty_item}" selected>{duty_item}</option>',
+                    body,
+                )
+                if duty_item == "其他類災害":
+                    self.assertIn('id="case-reason-required-mark" aria-hidden="true" hidden', body)
+                    self.assertIn('name="case_reason" id="case-reason" disabled', body)
+
     def test_disaster_form_shows_full_case_date_and_type_specific_reasons(self):
         self.import_case_for_form(
             {

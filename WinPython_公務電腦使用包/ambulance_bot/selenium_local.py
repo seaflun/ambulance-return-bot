@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
@@ -1414,10 +1414,42 @@ def _case_date_key(value: object) -> str:
     return ""
 
 
+def _work_log_summary_with_return_time(summary: str, return_line: str) -> str:
+    if not return_line:
+        return summary
+    lines = str(summary or "").splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip().startswith("返隊時間:"):
+            continue
+        if line.split(":", 1)[1].strip():
+            return "\n".join(lines)
+        lines[index] = return_line
+        return "\n".join(lines)
+    if len(lines) >= 2:
+        lines.insert(2, return_line)
+    else:
+        lines.append(return_line)
+    return "\n".join(lines)
+
+
 def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
     status_text = request.duty_status_text
-    item_missing = driver.execute_script(
-        """
+    duty_item = request.duty_item or ("火警" if request.service_type == "disaster" else "救護")
+    preserve_summary = duty_item == "其他類災害"
+    imported_summary = ""
+    if preserve_summary:
+        imported_summary = str(
+            driver.execute_script(
+                """
+                const el = document.getElementById('_areDescription');
+                return String(el.value || '');
+                """
+            )
+            or ""
+        )
+    try:
+        item_missing = driver.execute_script(
+            """
         const value = arguments[0];
         function writable(el) {
           if (!el || el.disabled || el.readOnly) return false;
@@ -1450,10 +1482,58 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
           if (reloadButton) reloadButton.click();
         }
         return selected ? [] : ['勤務項目'];
-        """,
-        request.duty_item or ("火警" if request.service_type == "disaster" else "救護"),
-    )
-    if not item_missing:
+            """,
+            duty_item,
+        )
+    except UnexpectedAlertPresentException:
+        if not preserve_summary:
+            raise
+        item_missing = []
+    if preserve_summary and not item_missing:
+        _accept_alert_if_present(driver, timeout=4)
+        try:
+            WebDriverWait(driver, 6).until(
+                lambda current: current.execute_script(
+                    "return document.readyState === 'complete' && !!document.getElementById('_areDescription');"
+                )
+            )
+        except TimeoutException:
+            time.sleep(1)
+        selected_duty_item = bool(
+            driver.execute_script(
+                """
+                const value = arguments[0];
+                const select = document.getElementById('_selList');
+                const option = select && select.options[select.selectedIndex];
+                const text = String(option?.text || '').trim();
+                const raw = String(option?.value || '').trim();
+                return text === value || raw === value;
+                """,
+                duty_item,
+            )
+        )
+        if not selected_duty_item:
+            item_missing = list(item_missing or []) + ["勤務項目"]
+        if imported_summary and selected_duty_item:
+            imported_summary = _work_log_summary_with_return_time(
+                imported_summary,
+                request.return_time_description_line,
+            )
+            summary_restored = driver.execute_script(
+                """
+                const value = arguments[0];
+                const el = document.getElementById('_areDescription');
+                if (!el || el.disabled || el.readOnly) return false;
+                el.value = value;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+                """,
+                imported_summary,
+            )
+            if not summary_restored:
+                item_missing = list(item_missing or []) + ["工作概述"]
+    if not item_missing and not preserve_summary:
         try:
             WebDriverWait(driver, 6).until(
                 lambda current: len(current.find_elements(By.CSS_SELECTOR, "#_selList2 option")) > 1
@@ -1461,7 +1541,7 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
         except TimeoutException:
             time.sleep(1)
 
-    reason_missing = driver.execute_script(
+    reason_missing = [] if preserve_summary else driver.execute_script(
         """
         const value = arguments[0];
         function writable(el) {

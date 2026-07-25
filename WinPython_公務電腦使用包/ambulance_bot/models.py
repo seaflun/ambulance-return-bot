@@ -112,6 +112,8 @@ CASE_REASON_OPTIONS = [
     "\u8aa4(\u8b0a)\u5831",
     "\u5176\u4ed6",
 ]
+DUTY_ITEM_OPTIONS = ["\u6551\u8b77", "\u706b\u8b66", "\u5176\u4ed6\u985e\u707d\u5bb3"]
+
 DISASTER_REASON_OPTIONS = [
     "商店(量販店)", "公共場所(機場、車站)", "隧道", "航空器、火車等大眾運輸工具", "船舶",
     "汽機車", "雜草(含廢棄物、墓地)", "誤(謊)報", "其他", "一般(集合)住宅", "高層(超高)建築物",
@@ -835,6 +837,9 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
                 fuel_record=fuel_record_from_form(form, suffix="_2", default_date=case_date, default_driver=second_driver),
             ),
         ]
+    duty_item = str(form.get("duty_item") or "\u6551\u8b77").strip() or "\u6551\u8b77"
+    if duty_item not in DUTY_ITEM_OPTIONS:
+        duty_item = "\u6551\u8b77"
     return AmbulanceReturnRequest(
         task_id=new_task_id(),
         created_at=datetime.now(),
@@ -851,7 +856,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         return_time=str(form.get("return_time") or "").strip(),
         case_address=clean_case_address(str(form.get("case_address") or "")),
         patient_summary=str(form.get("patient_summary") or "").strip(),
-        case_reason=str(form.get("case_reason") or "").strip() or "\u6025\u75c5",
+        case_reason=str(form.get("case_reason") or "").strip(),
         disinfection=str(form.get("disinfection") or "").strip()
         or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
         disinfection_items=disinfection_items,
@@ -861,6 +866,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         two_vehicle=two_vehicle,
         vehicle_entries=vehicle_entries,
         fuel_record=FuelRecord.from_dict(primary_vehicle.fuel_record),
+        duty_item=duty_item,
     )
 
 

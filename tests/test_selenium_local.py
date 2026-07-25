@@ -891,6 +891,107 @@ class SeleniumLocalTests(unittest.TestCase):
         accept_alert.assert_called_once_with(driver, timeout=2)
         self.assertEqual(result["alert"], "權限不足")
 
+    def test_connect_existing_chrome_falls_back_when_debugger_is_unavailable(self):
+        with patch.object(
+            selenium_local_module.webdriver,
+            "Chrome",
+            side_effect=selenium_local_module.WebDriverException("connection refused"),
+        ):
+            driver = selenium_local_module._connect_existing_chrome(9223)
+
+        self.assertIsNone(driver)
+
+    def test_other_disaster_propagates_non_alert_duty_item_failure(self):
+        request = AmbulanceReturnRequest(
+            task_id="other-disaster-selection-error",
+            created_at=datetime.now(),
+            raw_text="",
+            duty_item="其他類災害",
+        )
+
+        class FakeDriver:
+            def execute_script(self, script, *_args):
+                if "return String(el.value || '')" in script:
+                    return "119案件\n災害搶救"
+                if "return selected ? [] : ['勤務項目'];" in script:
+                    raise selenium_local_module.WebDriverException("duty item selector missing")
+                return True
+
+        with self.assertRaises(selenium_local_module.WebDriverException):
+            selenium_local_module._fill_duty_work_log_values(FakeDriver(), request)
+
+    def test_other_disaster_restores_imported_summary_after_accepting_duty_item_alert(self):
+        request = AmbulanceReturnRequest(
+            task_id="other-disaster-work-log",
+            created_at=datetime.now(),
+            raw_text="",
+            duty_item="其他類災害",
+            case_reason="水域搜救",
+            case_date="2026/07/25",
+            return_date="2026/07/25",
+            return_time="1306",
+        )
+
+        class Alert:
+            text = "您目前所輸入的工作概述將會被取代"
+
+            def __init__(self):
+                self.accepted = False
+
+            def accept(self):
+                self.accepted = True
+
+        class FakeDriver:
+            def __init__(self):
+                self.alert = Alert()
+                self.switch_to = SimpleNamespace(alert=self.alert)
+                self.scripts = []
+
+            def execute_script(self, script, *args):
+                self.scripts.append((script, args))
+                if "return String(el.value || '')" in script:
+                    return "119案件\n災害搶救\n地點：桃園市觀音區"
+                if "return selected ? [] : ['勤務項目'];" in script:
+                    return []
+                if "const select = document.getElementById('_selList');" in script:
+                    return True
+                if "el.value = value;" in script:
+                    return True
+                if "return missing;" in script:
+                    return []
+                return None
+
+            def find_elements(self, *_args):
+                return [object(), object()]
+
+        driver = FakeDriver()
+        with patch.object(selenium_local_module.time, "sleep"), patch.object(
+            selenium_local_module,
+            "WebDriverWait",
+            side_effect=lambda *_args, **_kwargs: SimpleNamespace(until=lambda condition: condition(driver)),
+        ):
+            missing = selenium_local_module._fill_duty_work_log_values(driver, request)
+
+        self.assertEqual([], missing)
+        self.assertTrue(driver.alert.accepted)
+        self.assertFalse(any("_selList2" in script for script, _args in driver.scripts))
+        self.assertTrue(
+            any(
+                args and args[0] == "119案件\n災害搶救\n返隊時間:2026/07/25 13:06:00\n地點：桃園市觀音區"
+                for _script, args in driver.scripts
+            )
+        )
+
+    def test_work_log_summary_keeps_populated_return_time(self):
+        summary = "119案件\n災害搶救\n返隊時間:2026/07/25 13:05:00\n地點：桃園市觀音區"
+
+        updated = selenium_local_module._work_log_summary_with_return_time(
+            summary,
+            "返隊時間:2026/07/25 13:06:00",
+        )
+
+        self.assertEqual(summary, updated)
+
     def test_operation_failure_after_driver_creation_is_not_chrome_start_failed(self):
         request = AmbulanceReturnRequest(
             task_id="operation-failed",
