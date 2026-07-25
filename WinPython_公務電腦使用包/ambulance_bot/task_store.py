@@ -78,7 +78,7 @@ SUCCESS_SITE_STATUSES = {
     "consumables_saved",
 }
 SITE_RUN_ORDER = tuple(site.key for site in SITE_DEFINITIONS)
-COMPLETED_TASK_HISTORY_HOURS = 24 * 7
+TASK_HISTORY_HOURS = 24 * 14
 WORKER_CLAIM_LEASE_SECONDS = 15 * 60
 RECENT_STATUS_EVENT_ID_LIMIT = 256
 
@@ -1531,25 +1531,20 @@ class JsonTaskStore:
             event.update({str(key): str(value) for key, value in extra.items()})
         payload.setdefault("events", []).append(event)
 
-    def cleanup(self, max_age_hours: int = 24, completed_max_age_hours: int = COMPLETED_TASK_HISTORY_HOURS) -> None:
-        # Unfinished work is an operational queue and audit trail, not a cache.
-        # Never remove it merely because the public-duty PC was offline for a day.
+    def cleanup(self, max_age_hours: int = 24, task_max_age_hours: int = TASK_HISTORY_HOURS) -> None:
+        # Remove every task after the configured audit-retention window.
         # The legacy max_age_hours argument remains for caller compatibility.
         _ = max_age_hours
-        completed_cutoff = datetime.now() - timedelta(hours=completed_max_age_hours)
+        task_cutoff = datetime.now() - timedelta(hours=task_max_age_hours)
         for path in self.tasks_dir.glob("*.json"):
             payload = self._read_payload_or_quarantine(path)
             if payload is None:
                 continue
-            report_marker = payload.get("legacy_silent_save_report")
-            if isinstance(report_marker, dict) and report_marker.get("pending") is True:
-                continue
             try:
-                fully_done = self._is_fully_done(payload)
-                expired = self._is_expired(payload, completed_cutoff)
+                expired = self._is_expired(payload, task_cutoff)
             except (AttributeError, KeyError, TypeError, ValueError):
                 continue
-            if fully_done and expired:
+            if expired:
                 try:
                     path.unlink()
                 except OSError:

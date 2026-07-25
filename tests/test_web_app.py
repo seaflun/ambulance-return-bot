@@ -1944,6 +1944,24 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(disaster.get_json()["paths"], disaster.get_json()["recorder_paths"])
         self.assertEqual([], disaster.get_json()["firecam_paths"])
 
+        missing_category = self.client.post(
+            "/api/record-folder-preview",
+            data=MultiDict(
+                [
+                    ("service_type", "disaster"),
+                    ("case_date", "2026/07/21"),
+                    ("case_time", "1207"),
+                    ("case_address", "桃園市觀音區金華路31號"),
+                    ("case_reason", "火災"),
+                    ("vehicle", "新坡11"),
+                    ("driver", "甲"),
+                ]
+            ),
+        )
+        self.assertEqual(200, missing_category.status_code)
+        self.assertEqual([], missing_category.get_json()["paths"])
+        self.assertEqual("請選擇行車紀錄器分類。", missing_category.get_json()["detail"])
+
     def test_disaster_task_detail_hides_ems_cards_and_shows_commander_and_processing(self):
         task = AmbulanceReturnRequest(
             task_id="disaster-detail",
@@ -2136,6 +2154,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('.firecam-selector .check-grid { gap: 8px; margin: 0; }', body)
         self.assertIn('#disaster-form .firecam-selector .check-item input { width: 18px;', body)
         self.assertIn('.firecam-selector .check-item span { display: inline; white-space: nowrap; }', body)
+        self.assertIn('.firecam-selector-title { font-size: var(--text-label); font-weight: 780; }', body)
         self.assertIn('.firecam-selector .check-item:has(input:checked)', body)
         self.assertNotIn('.firecam-selector .check-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: #8f4436; }', body)
         self.assertIn('data-folder-recorder-group', body)
@@ -2433,6 +2452,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("\u4e0a\u6b21\u8a72\u8eca\u8f1b\u767b\u6253\u7684\u91cc\u7a0b", body)
         self.assertIn('data-last-mileage-for="vehicle"', body)
         self.assertIn('data-last-mileage-for="vehicle_2"', body)
+        self.assertIn(".mileage-hint-panel { min-width: 0; }", body)
+        self.assertIn(".mileage-hint-spacer { min-height: calc(1.45em + 6px); visibility: hidden; }", body)
         self.assertIn('"\\u65b0\\u576191":"11111"', compact_body)
         self.assertIn('"\\u65b0\\u576193":"12000"', compact_body)
         self.assertIn('"\\u65b0\\u576192":"22222"', compact_body)
@@ -4295,7 +4316,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("最後任務回報版本：TASK-2026.07.14", body)
         self.assertNotIn("目前版本：", body)
 
-    def test_public_pc_reports_keep_all_statuses_for_seven_days(self):
+    def test_public_pc_reports_keep_all_statuses_for_fourteen_days(self):
         now = datetime(2026, 7, 10, 18, 0, 0)
         path = app_module.public_pc_report_file()
         app_module.write_json_atomic(
@@ -4304,18 +4325,23 @@ class WebAppTests(unittest.TestCase):
                 "tasks": [
                     {
                         "task_id": "recent-success",
-                        "updated_at": (now - timedelta(days=6, hours=23)).isoformat(timespec="seconds"),
+                        "updated_at": (now - timedelta(days=13, hours=23)).isoformat(timespec="seconds"),
                         "overall_status": "desktop_fast_completed",
                     },
                     {
                         "task_id": "recent-failed",
-                        "updated_at": (now - timedelta(days=2)).isoformat(timespec="seconds"),
+                        "updated_at": (now - timedelta(days=13, hours=22)).isoformat(timespec="seconds"),
                         "overall_status": "desktop_fast_completed_with_errors",
                     },
                     {
-                        "task_id": "expired-running",
-                        "updated_at": (now - timedelta(days=8)).isoformat(timespec="seconds"),
+                        "task_id": "expired-success",
+                        "updated_at": (now - timedelta(days=14, minutes=1)).isoformat(timespec="seconds"),
                         "overall_status": "desktop_fast_running",
+                    },
+                    {
+                        "task_id": "expired-failed",
+                        "updated_at": (now - timedelta(days=15)).isoformat(timespec="seconds"),
+                        "overall_status": "desktop_fast_completed_with_errors",
                     },
                 ]
             },
@@ -4324,6 +4350,12 @@ class WebAppTests(unittest.TestCase):
         reports = app_module.public_pc_reports(now=now)
 
         self.assertEqual([report["task_id"] for report in reports], ["recent-failed", "recent-success"])
+        for report_path in (path, app_module.public_pc_report_backup_file()):
+            stored = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [report["task_id"] for report in stored["tasks"]],
+                ["recent-success", "recent-failed"],
+            )
 
     def test_public_pc_reports_do_not_truncate_recent_history(self):
         for index in range(101):
@@ -4845,8 +4877,8 @@ class WebAppTests(unittest.TestCase):
         recent = root / "recent.png"
         old.write_bytes(b"\x89PNG\r\n\x1a\nold")
         recent.write_bytes(b"\x89PNG\r\n\x1a\nrecent")
-        old_time = datetime(2026, 7, 10, 12, 0).timestamp()
-        recent_time = datetime(2026, 7, 20, 12, 0).timestamp()
+        old_time = datetime(2026, 7, 5, 12, 0).timestamp()
+        recent_time = datetime(2026, 7, 6, 16, 0).timestamp()
         os.utime(old, (old_time, old_time))
         os.utime(recent, (recent_time, recent_time))
 
@@ -7310,7 +7342,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="mileage-row"', body)
         self.assertIn(".mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);", body)
         self.assertIn(".mileage-hint-panel { min-width: 0; }", body)
-        self.assertIn(".mileage-hint-spacer { min-height: 1.45em; visibility: hidden; }", body)
+        self.assertIn(".mileage-hint-spacer { min-height: calc(1.45em + 6px); visibility: hidden; }", body)
         self.assertIn(".mileage-hint { min-height: 46px; margin: 0;", body)
         self.assertIn(".mileage-hint { margin-top: 0; }", body)
         self.assertIn(".fuel-required.is-pending .field-error-mark", body)

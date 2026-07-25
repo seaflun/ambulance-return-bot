@@ -222,6 +222,19 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("尚未在救護平板結案", payload["failure_reason"])
         self.assertIn("請先去救護平板結案", payload["next_action"])
 
+    def test_disinfection_empty_query_with_login_prefix_points_to_tablet_closure(self):
+        payload = diagnostic_payload(
+            "disinfection",
+            "disinfection_failed",
+            "緊急救護消毒: 登入帳號：消毒=任務司機。消毒紀錄操作失敗：Message: "
+            "missing disinfection detail: query returned no data",
+        )
+
+        self.assertEqual(payload["exception_type"], "case_not_closed")
+        self.assertEqual(payload["failure_stage"], "開啟消毒紀錄")
+        self.assertIn("尚未在救護平板結案", payload["failure_reason"])
+        self.assertIn("請先去救護平板結案", payload["next_action"])
+
     def test_consumable_empty_readback_points_to_tablet_closure(self):
         payload = diagnostic_payload(
             "consumables",

@@ -126,7 +126,7 @@ _public_pc_report_lock = threading.Lock()
 _public_pc_pending_report_lock = threading.RLock()
 _credential_sync_relay_lock = threading.RLock()
 _case_lookup_start_error = ""
-PUBLIC_PC_REPORT_RETENTION_DAYS = 7
+PUBLIC_PC_REPORT_RETENTION_DAYS = 14
 PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024
 PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT = 5
 PUBLIC_PC_FAILURE_REPORT_MAX_BYTES = 15 * 1024 * 1024
@@ -317,6 +317,8 @@ def record_folder_preview():
         return jsonify({"ok": True, "paths": [], "recorder_paths": [], "firecam_paths": [], "detail": "請先完成案件與車輛資料。"})
     if not any(str(value or "").strip() for value in request.form.getlist("vehicle")):
         return jsonify({"ok": True, "paths": [], "recorder_paths": [], "firecam_paths": [], "detail": "請先完成案件與車輛資料。"})
+    if service_type == "disaster" and not str(request.form.get("recorder_category") or "").strip():
+        return jsonify({"ok": True, "paths": [], "recorder_paths": [], "firecam_paths": [], "detail": "請選擇行車紀錄器分類。"})
     try:
         if service_type == "disaster":
             task_request = request_from_disaster_form(request.form)
@@ -1978,7 +1980,12 @@ def _recent_public_pc_reports(reports: list[dict], now: datetime) -> list[dict]:
 
 
 def _public_pc_reports_unlocked(now: datetime) -> list[dict]:
-    reports = _recent_public_pc_reports(_load_public_pc_reports(), now)
+    stored_reports = _load_public_pc_reports()
+    reports = _recent_public_pc_reports(stored_reports, now)
+    if len(reports) != len(stored_reports):
+        output = {"tasks": reports}
+        write_json_atomic(public_pc_report_file(), output)
+        write_json_atomic(public_pc_report_backup_file(), output)
     return sorted(reports, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
 

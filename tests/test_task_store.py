@@ -1759,12 +1759,12 @@ class JsonTaskStoreTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 store.get("delete-me")
 
-    def test_cleanup_keeps_old_unfinished_tasks(self):
+    def test_cleanup_keeps_unfinished_tasks_within_fourteen_day_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
             request = AmbulanceReturnRequest(task_id="old-task", created_at=datetime.now(), raw_text="")
             payload = store.create(request)
-            payload["updated_at"] = (datetime.now() - timedelta(days=8)).isoformat(timespec="seconds")
+            payload["updated_at"] = (datetime.now() - timedelta(days=13, hours=23)).isoformat(timespec="seconds")
             store.path_for("old-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
 
             recent = store.list_recent()
@@ -1772,6 +1772,17 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(len(recent), 1)
             self.assertEqual(recent[0]["task"]["task_id"], "old-task")
             self.assertTrue((Path(tmp) / "old-task.json").exists())
+
+    def test_cleanup_removes_expired_unfinished_tasks_after_fourteen_days(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(task_id="unfinished-expired-task", created_at=datetime.now(), raw_text="")
+            payload = store.create(request)
+            payload["updated_at"] = (datetime.now() - timedelta(days=14, minutes=1)).isoformat(timespec="seconds")
+            store.path_for(request.task_id).write_text(json.dumps(payload), encoding="utf-8")
+
+            self.assertEqual(store.list_recent(), [])
+            self.assertFalse(store.path_for(request.task_id).exists())
 
     def test_cleanup_keeps_fully_done_tasks_until_expired(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1792,7 +1803,7 @@ class JsonTaskStoreTests(unittest.TestCase):
             payload = store.create(request)
             for site in payload["site_statuses"].values():
                 site["status"] = "completed_by_user"
-            payload["updated_at"] = (datetime.now() - timedelta(days=6, hours=23)).isoformat(timespec="seconds")
+            payload["updated_at"] = (datetime.now() - timedelta(days=13, hours=23)).isoformat(timespec="seconds")
             store.path_for("done-history-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
 
             self.assertEqual(len(store.list_recent()), 1)
@@ -2224,20 +2235,20 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(site["status"], "fuel_record_saved")
             self.assertNotIn("新坡93: 等待回報", site["detail"])
 
-    def test_cleanup_removes_fully_done_tasks_after_seven_day_history_window(self):
+    def test_cleanup_removes_fully_done_tasks_after_fourteen_day_history_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
             request = AmbulanceReturnRequest(task_id="done-expired-task", created_at=datetime.now(), raw_text="")
             payload = store.create(request)
             for site in payload["site_statuses"].values():
                 site["status"] = "completed_by_user"
-            payload["updated_at"] = (datetime.now() - timedelta(days=8)).isoformat(timespec="seconds")
+            payload["updated_at"] = (datetime.now() - timedelta(days=14, minutes=1)).isoformat(timespec="seconds")
             store.path_for("done-expired-task").write_text(__import__("json").dumps(payload), encoding="utf-8")
 
             self.assertEqual(store.list_recent(), [])
             self.assertFalse((Path(tmp) / "done-expired-task.json").exists())
 
-    def test_cleanup_keeps_expired_completed_task_with_pending_reconciliation_report(self):
+    def test_cleanup_removes_expired_task_with_pending_reconciliation_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
             request = AmbulanceReturnRequest(
@@ -2257,10 +2268,8 @@ class JsonTaskStoreTests(unittest.TestCase):
             payload["updated_at"] = (datetime.now() - timedelta(days=15)).isoformat(timespec="seconds")
             store.path_for(request.task_id).write_text(json.dumps(payload), encoding="utf-8")
 
-            recent = store.list_recent()
-
-            self.assertEqual([item["task"]["task_id"] for item in recent], [request.task_id])
-            self.assertTrue(store.path_for(request.task_id).exists())
+            self.assertEqual(store.list_recent(), [])
+            self.assertFalse(store.path_for(request.task_id).exists())
 
 
 if __name__ == "__main__":

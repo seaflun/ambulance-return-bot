@@ -2498,6 +2498,8 @@ def _wait_for_disinfection_query_completed(driver: webdriver.Chrome, timeout: fl
     deadline = time.time() + timeout
     while time.time() < deadline:
         text = driver.execute_script("return document.body ? document.body.innerText : '';") or ""
+        if "查無資料" in str(text):
+            raise WebDriverException("missing disinfection detail: query returned no data")
         if "查詢完成" in str(text):
             return
         time.sleep(0.2)

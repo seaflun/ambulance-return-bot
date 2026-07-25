@@ -320,6 +320,17 @@ class SeleniumLocalTests(unittest.TestCase):
             ):
                 wait_function(FakeDriver(), timeout=0)
 
+    def test_disinfection_empty_query_is_reported_as_missing_case_detail(self):
+        class FakeDriver:
+            def execute_script(self, _script):
+                return "查無資料。"
+
+        with self.assertRaisesRegex(
+            selenium_local_module.WebDriverException,
+            "missing disinfection detail: query returned no data",
+        ):
+            selenium_local_module._wait_for_disinfection_query_completed(FakeDriver(), timeout=0.1)
+
     def test_disinfection_partial_item_update_stops_before_save(self):
         request = AmbulanceReturnRequest(
             task_id="partial-disinfection",
