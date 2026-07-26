@@ -3782,13 +3782,24 @@ def task_title(task: dict) -> str:
     reason = str(task.get("case_reason") or "救護").strip()
     address = display_case_address(task).strip()
     if address:
-        prefix = "救災" if str(task.get("service_type") or "ems") == "disaster" else "緊急救護"
-        return f"{prefix}-{reason} - {address}"
+        is_disaster = str(task.get("service_type") or "ems").strip().lower() == "disaster"
+        prefix = str(task.get("summary_type") or "救災").strip() if is_disaster else "緊急救護"
+        timestamp = task_short_case_timestamp(task)
+        display_address = f"{address} {timestamp}".strip()
+        return f"{prefix}-{reason} - {display_address}"
     vehicle = str(task.get("vehicle") or "").strip()
     driver = str(task.get("driver") or "").strip()
     if vehicle or driver:
         return f"{vehicle} {driver}".strip()
     return str(task.get("task_id") or "未命名任務")
+
+
+def task_short_case_timestamp(task: dict) -> str:
+    case_date = parse_case_date(str(task.get("case_date") or ""))
+    case_time = normalize_hhmm(str(task.get("case_time") or ""))
+    if case_date is None or len(case_time) != 4:
+        return ""
+    return f"{case_date:%m%d}{case_time}"
 
 
 def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:

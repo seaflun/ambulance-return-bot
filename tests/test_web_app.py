@@ -1595,6 +1595,12 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('<a class="button secondary header-navigation-button" href="/">返回首頁</a>', nas_body)
         self.assertNotIn('<a class="button secondary header-navigation-button" href="/">返回首頁</a>', local_body)
 
+    def test_task_entry_explains_that_both_workflows_create_nas_folders(self):
+        body = html.unescape(self.client.get("/task-entry").data.decode("utf-8"))
+
+        self.assertIn("工作紀錄、車輛里程、加油紀錄、NAS 資料夾建立", body)
+        self.assertIn("工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材、NAS 資料夾建立", body)
+
     def test_admin_filters_and_home_links_use_apple_control_styles(self):
         task_entry_body = html.unescape(
             self.client.get("/task-entry", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
@@ -2608,6 +2614,8 @@ class WebAppTests(unittest.TestCase):
                     case_id="case-single-vehicle-title",
                     case_reason="空跑",
                     case_address=address,
+                    case_date="2026-07-26",
+                    case_time="2300",
                     vehicle="新坡92",
                 )
             )
@@ -2618,6 +2626,8 @@ class WebAppTests(unittest.TestCase):
                     case_id="case-two-vehicle-title",
                     case_reason="空跑",
                     case_address=address,
+                    case_date="2026-07-26",
+                    case_time="2300",
                     vehicle="新坡92",
                     two_vehicle="1",
                     vehicle_2="新坡93",
@@ -2632,13 +2642,36 @@ class WebAppTests(unittest.TestCase):
 
         body = html.unescape(self.client.get("/app").data.decode("utf-8"))
 
-        title = f"緊急救護-空跑 - {address}"
+        title = f"緊急救護-空跑 - {address} 07262300"
         self.assertIn(
             f'<a class="recent-title" href="/tasks/{single["task"]["task_id"]}">{title} - 新坡92</a>',
             body,
         )
         self.assertIn(
             f'<a class="recent-title" href="/tasks/{double["task"]["task_id"]}">{title} - 新坡92、新坡93</a>',
+            body,
+        )
+
+    def test_disaster_recent_task_title_uses_the_actual_case_type_and_short_timestamp(self):
+        task = self.store.create(
+            AmbulanceReturnRequest(
+                task_id="recent-disaster-case-title",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                summary_type="火災",
+                case_reason="建築物火災",
+                case_address="桃園市觀音區火災路1號",
+                case_date="2026-07-26",
+                case_time="2300",
+                vehicle="新坡11",
+            )
+        )
+
+        body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn(
+            f'<a class="recent-title" href="/tasks/{task["task"]["task_id"]}">火災-建築物火災 - 桃園市觀音區火災路1號 07262300 - 新坡11</a>',
             body,
         )
 
@@ -4881,6 +4914,19 @@ class WebAppTests(unittest.TestCase):
 
         report_text = app_module.public_pc_report_file().read_text(encoding="utf-8")
         self.assertNotIn(base64.b64encode(png).decode("ascii"), report_text)
+
+    def test_admin_failure_screenshot_keeps_the_full_image_visible(self):
+        response = self.client.get("/static/sinposmart-admin.css")
+        try:
+            css = response.data.decode("utf-8")
+            template = Path("WinPython_公務電腦使用包/templates/admin_public_pc.html").read_text(encoding="utf-8")
+
+            self.assertIn("max-height: none;", css)
+            self.assertIn("object-fit: contain;", css)
+            self.assertIn("max-height: none;", template)
+            self.assertIn("object-fit: contain;", template)
+        finally:
+            response.close()
 
     def test_admin_public_pc_rejects_invalid_screenshot_and_shows_capture_reason(self):
         os.environ["WORKER_TOKEN"] = "test-token"
