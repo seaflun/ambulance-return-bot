@@ -147,6 +147,23 @@ DISASTER_REASON_OPTIONS_BY_TYPE = {
     "災害搶救": DISASTER_RESCUE_REASON_OPTIONS,
     "救護": CASE_REASON_OPTIONS,
 }
+DUTY_ITEM_BY_SUMMARY_TYPE = {
+    "火災": "火警",
+    "災害搶救": "其他類災害",
+    "救護": "救護",
+}
+
+
+def duty_item_for_summary_type(summary_type: object, fallback: str = "救護") -> str:
+    return DUTY_ITEM_BY_SUMMARY_TYPE.get(str(summary_type or "").strip(), fallback)
+
+
+def summary_type_for_duty_item(duty_item: object, fallback: str = "救護") -> str:
+    return {
+        "火警": "火災",
+        "其他類災害": "災害搶救",
+        "救護": "救護",
+    }.get(str(duty_item or "").strip(), fallback)
 DISASTER_ACTION_PACKAGES = [
     "中途取消", "到場不需支援", "誤報／警報器誤動作", "到達現場時火勢已熄滅", "到達現場未發現火煙",
     "出一水線執行滅火攻擊", "執行殘火處理", "現場待命", "協助布署／收拾水帶", "水源供給／中繼",
@@ -837,9 +854,10 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
                 fuel_record=fuel_record_from_form(form, suffix="_2", default_date=case_date, default_driver=second_driver),
             ),
         ]
-    duty_item = str(form.get("duty_item") or "\u6551\u8b77").strip() or "\u6551\u8b77"
-    if duty_item not in DUTY_ITEM_OPTIONS:
-        duty_item = "\u6551\u8b77"
+    summary_type = str(form.get("summary_type") or "").strip()
+    if summary_type not in DISASTER_REASON_OPTIONS_BY_TYPE:
+        summary_type = summary_type_for_duty_item(form.get("duty_item"))
+    duty_item = duty_item_for_summary_type(summary_type)
     return AmbulanceReturnRequest(
         task_id=new_task_id(),
         created_at=datetime.now(),
@@ -867,11 +885,13 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         vehicle_entries=vehicle_entries,
         fuel_record=FuelRecord.from_dict(primary_vehicle.fuel_record),
         duty_item=duty_item,
+        summary_type=summary_type,
     )
 
 
 def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
     case_date = normalize_case_date(str(form.get("case_date") or ""))
+    case_return_date = normalize_case_date(str(form.get("return_date") or "")) or case_date
     case_return_time = str(form.get("return_time") or "").strip()
     vehicles = _form_values(form, "vehicle", preserve_empty=True)
     drivers = _form_values(form, "driver", preserve_empty=True)
@@ -896,7 +916,7 @@ def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
                 vehicle=vehicle,
                 driver=driver,
                 mileage=item(mileages, index),
-                return_date=normalize_case_date(item(return_dates, index) or case_date),
+                return_date=normalize_case_date(item(return_dates, index) or case_return_date),
                 return_time=item(return_times, index) or case_return_time,
                 patient_summary="無",
                 disinfection_items=[],
@@ -941,7 +961,7 @@ def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         consumables={},
         vehicle_entries=entries,
         fuel_record=FuelRecord.from_dict(primary.fuel_record),
-        duty_item=str(form.get("duty_item") or "火警").strip() or "火警",
+        duty_item=duty_item_for_summary_type(summary_type, fallback="火警"),
         summary_type=summary_type,
         commander=str(form.get("commander") or "").strip(),
         action_note=str(form.get("action_note") or "").strip(),

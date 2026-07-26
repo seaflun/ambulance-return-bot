@@ -1432,6 +1432,14 @@ def _work_log_summary_with_return_time(summary: str, return_line: str) -> str:
     return "\n".join(lines)
 
 
+def _work_log_summary_with_disaster_reason(summary: str, reason: str) -> str:
+    value = str(summary or "")
+    suffix = str(reason or "").strip()
+    if not suffix:
+        return value
+    return value.replace("災害搶救", f"災害搶救-{suffix}")
+
+
 def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
     status_text = request.duty_status_text
     duty_item = request.duty_item or ("火警" if request.service_type == "disaster" else "救護")
@@ -1519,6 +1527,11 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
                 imported_summary,
                 request.return_time_description_line,
             )
+            if request.summary_type == "災害搶救":
+                imported_summary = _work_log_summary_with_disaster_reason(
+                    imported_summary,
+                    request.case_reason,
+                )
             summary_restored = driver.execute_script(
                 """
                 const value = arguments[0];

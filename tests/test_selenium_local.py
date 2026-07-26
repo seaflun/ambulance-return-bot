@@ -926,7 +926,8 @@ class SeleniumLocalTests(unittest.TestCase):
             created_at=datetime.now(),
             raw_text="",
             duty_item="其他類災害",
-            case_reason="水域搜救",
+            summary_type="災害搶救",
+            case_reason="溺水",
             case_date="2026/07/25",
             return_date="2026/07/25",
             return_time="1306",
@@ -977,7 +978,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertFalse(any("_selList2" in script for script, _args in driver.scripts))
         self.assertTrue(
             any(
-                args and args[0] == "119案件\n災害搶救\n返隊時間:2026/07/25 13:06:00\n地點：桃園市觀音區"
+                args and args[0] == "119案件\n災害搶救-溺水\n返隊時間:2026/07/25 13:06:00\n地點：桃園市觀音區"
                 for _script, args in driver.scripts
             )
         )

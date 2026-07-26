@@ -110,7 +110,10 @@ def disaster_folder_base_parts(request) -> tuple[list[str], str]:
     else:
         reason = str(request.case_reason or "").strip()
         reason_label = REASON_SHORT_LABELS.get(reason)
-        name_label = f"{reason_label or safe_folder_component(reason)}火警"
+        if request.summary_type == "火災" and request.duty_item == "火警":
+            name_label = f"{reason_label or safe_folder_component(reason)}火警"
+        else:
+            name_label = reason_label or safe_folder_component(reason)
     hhmm = re.sub(r"\D", "", str(request.case_time or ""))[:4]
     if len(hhmm) != 4:
         raise RecordFolderError("案件時間格式需為 HHmm")

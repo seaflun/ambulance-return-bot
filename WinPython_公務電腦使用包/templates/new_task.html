@@ -1,6 +1,5 @@
 {% from "_page_chrome.html" import page_chrome %}
-{% set available_duty_item_options = duty_item_options | default(['救護', '火警', '其他類災害'], true) %}
-{% set available_duty_item_reason_options = duty_item_reason_options | default({'救護': case_reason_options, '火警': [], '其他類災害': []}, true) %}
+{% set available_summary_type_options = disaster_reason_options_by_type | default({'火災': [], '災害搶救': [], '救護': case_reason_options}, true) %}
 <!doctype html>
 <html lang="zh-Hant" data-ui="task-console">
 <head>
@@ -496,23 +495,23 @@
         </label>
       </div>
       <div class="grid">
-        {% set selected_duty_item = selected_case.duty_item or '救護' %}
-        <label class="field-visual" data-field-name="duty_item">
-          <span class="field-label-title">勤務項目<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <select name="duty_item" id="duty-item">
-            {% for duty_item in available_duty_item_options %}
-              <option value="{{ duty_item }}"{% if selected_duty_item == duty_item %} selected{% endif %}>{{ duty_item }}</option>
+        {% set selected_summary_type = selected_case.summary_type or '救護' %}
+        <label class="field-visual" data-field-name="summary_type">
+          <span class="field-label-title">案件類型<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <select name="summary_type" id="summary-type">
+            {% for summary_type in ['火災', '災害搶救', '救護'] %}
+              <option value="{{ summary_type }}"{% if selected_summary_type == summary_type %} selected{% endif %}>{{ summary_type }}</option>
             {% endfor %}
           </select>
         </label>
         <label class="field-visual" data-field-name="case_reason">
-          <span class="field-label-title">事由<span class="field-error-mark" id="case-reason-required-mark" aria-hidden="true"{% if selected_duty_item == '其他類災害' %} hidden{% endif %}>*</span></span>
-          <select name="case_reason" id="case-reason"{% if selected_duty_item == '其他類災害' %} disabled{% else %} required{% endif %}>
+          <span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <select name="case_reason" id="case-reason" required>
             <option value="">請選擇</option>
-            {% for reason in available_duty_item_reason_options.get(selected_duty_item, []) %}
+            {% for reason in available_summary_type_options.get(selected_summary_type, []) %}
               <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
             {% endfor %}
-            {% if selected_case.reason and selected_case.reason not in available_duty_item_reason_options.get(selected_duty_item, []) %}
+            {% if selected_case.reason and selected_case.reason not in available_summary_type_options.get(selected_summary_type, []) %}
               <option value="{{ selected_case.reason }}" selected>{{ selected_case.reason }}</option>
             {% endif %}
           </select>
@@ -896,16 +895,15 @@
     const taskForm = document.getElementById("task-form");
     const recordFolderPreview = document.getElementById("record-folder-preview");
     const clientFormErrors = document.getElementById("client-form-errors");
-    const dutyItem = document.getElementById("duty-item");
+    const summaryType = document.getElementById("summary-type");
     const caseReason = document.getElementById("case-reason");
-    const caseReasonRequiredMark = document.getElementById("case-reason-required-mark");
-    const reasonOptionsByDutyItem = {{ available_duty_item_reason_options | tojson }};
+    const reasonOptionsByType = {{ available_summary_type_options | tojson }};
     const requiredTaskFields = [
       { name: "case_time", label: "案件時間", selector: 'input[name="case_time"]' },
       { name: "return_time", label: "返隊時間", selector: 'input[name="return_time"]' },
       { name: "vehicle", label: "出動車輛", selector: 'select[name="vehicle"]' },
       { name: "driver", label: "司機", selector: 'select[name="driver"]' },
-      { name: "duty_item", label: "勤務項目", selector: 'select[name="duty_item"]' },
+      { name: "summary_type", label: "案件類型", selector: 'select[name="summary_type"]' },
       { name: "case_reason", label: "事由", selector: 'select[name="case_reason"]' },
       { name: "patient_summary", label: "傷病患", selector: 'select[name="patient_summary"]' },
       { name: "mileage", label: "里程", selector: 'input[name="mileage"]' }
@@ -914,7 +912,7 @@
       "請填寫返隊時間": { name: "return_time", message: "請填寫返隊時間" },
       "請選擇出動車輛": { name: "vehicle", message: "請選擇出動車輛" },
       "請選擇司機": { name: "driver", message: "請選擇司機" },
-      "請選擇勤務項目": { name: "duty_item", message: "請選擇勤務項目" },
+      "請選擇案件類型": { name: "summary_type", message: "請選擇案件類型" },
       "請選擇事由": { name: "case_reason", message: "請選擇事由" },
       "請選擇傷病患": { name: "patient_summary", message: "請選擇傷病患" },
       "請填寫里程": { name: "mileage", message: "請填寫里程" },
@@ -958,20 +956,18 @@
       hint.textContent = mileage ? `上次該車輛登打的里程：${mileage}` : "";
     }
 
-    function updateReasonOptionsForDutyItem() {
-      if (!dutyItem || !caseReason) return;
-      const dutyItemValue = dutyItem.value;
+    function updateReasonOptionsForSummaryType() {
+      if (!summaryType || !caseReason) return;
+      const summaryTypeValue = summaryType.value;
       const currentReason = caseReason.value;
-      const options = reasonOptionsByDutyItem[dutyItemValue] || [];
-      caseReason.disabled = dutyItemValue === "其他類災害";
-      caseReason.required = dutyItemValue !== "其他類災害";
-      if (caseReasonRequiredMark) caseReasonRequiredMark.hidden = dutyItemValue === "其他類災害";
+      const options = reasonOptionsByType[summaryTypeValue] || [];
+      caseReason.disabled = false;
+      caseReason.required = true;
       caseReason.innerHTML = '<option value="">請選擇</option>' + options.map((value) => {
         const escaped = escapeHtml(value);
         return `<option value="${escaped}">${escaped}</option>`;
       }).join("");
       if (options.includes(currentReason)) caseReason.value = currentReason;
-      if (dutyItemValue === "其他類災害") caseReason.value = "";
       updateFieldVisualHints();
     }
 
@@ -1165,7 +1161,6 @@
     }
 
     function taskFieldValid(fieldName) {
-      if (fieldName === "case_reason" && dutyItem?.value === "其他類災害") return true;
       const value = taskFieldValue(fieldName);
       if (!value) return false;
       if (fieldName === "mileage") return /^\d+$/.test(value);
@@ -1892,7 +1887,7 @@
       });
     }
 
-    if (dutyItem) dutyItem.addEventListener("change", updateReasonOptionsForDutyItem);
+    if (summaryType) summaryType.addEventListener("change", updateReasonOptionsForSummaryType);
 
     Object.entries(defaultConsumables).forEach(([name, qty]) => addConsumableRow(name, qty));
     Object.entries(defaultConsumables2).forEach(([name, qty]) => addConsumableRow2(name, qty));

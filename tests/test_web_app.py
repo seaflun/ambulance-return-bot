@@ -1785,13 +1785,13 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual("/app/disaster#disaster-form", imported.headers["Location"])
 
-    def test_ems_import_maps_case_category_to_duty_item(self):
+    def test_ems_import_uses_case_type_and_keeps_reason_selectable(self):
         cases = (
             ("緊急救護-急病", "救護"),
-            ("火災-雜草火警", "火警"),
-            ("災害搶救-水域搜救", "其他類災害"),
+            ("火災-雜草火警", "火災"),
+            ("災害搶救-水域搜救", "災害搶救"),
         )
-        for index, (category, duty_item) in enumerate(cases, start=1):
+        for index, (category, summary_type) in enumerate(cases, start=1):
             with self.subTest(category=category):
                 self.import_case_for_form(
                     {
@@ -1809,27 +1809,30 @@ class WebAppTests(unittest.TestCase):
                 body = html.unescape(self.client.get("/app").data.decode("utf-8"))
 
                 self.assertIn(
-                    f'<option value="{duty_item}" selected>{duty_item}</option>',
+                    f'<option value="{summary_type}" selected>{summary_type}</option>',
                     body,
                 )
-                if duty_item == "其他類災害":
-                    self.assertIn('id="case-reason-required-mark" aria-hidden="true" hidden', body)
-                    self.assertIn('name="case_reason" id="case-reason" disabled', body)
+                self.assertIn('<select name="summary_type" id="summary-type"', body)
+                self.assertIn('name="case_reason" id="case-reason" required', body)
+                self.assertNotIn('name="case_reason" id="case-reason" disabled', body)
 
     def test_ems_template_remains_renderable_during_controller_restart_gap(self):
         real_render_template = app_module.render_template
 
-        def render_with_pre_duty_item_controller(template_name, **context):
-            context.pop("duty_item_options", None)
-            context.pop("duty_item_reason_options", None)
+        def render_with_pre_case_type_controller(template_name, **context):
+            context.pop("disaster_reason_options_by_type", None)
             return real_render_template(template_name, **context)
 
-        with mock.patch.object(app_module, "render_template", side_effect=render_with_pre_duty_item_controller):
+        with mock.patch.object(app_module, "render_template", side_effect=render_with_pre_case_type_controller):
             response = self.client.get("/app")
 
         self.assertEqual(200, response.status_code)
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("const reasonOptionsByDutyItem = {", body)
+        self.assertIn("const reasonOptionsByType = {", body)
+
+    def test_duty_case_not_found_is_an_actionable_failure(self):
+        self.assertEqual("找不到案件", app_module.status_label("duty_case_not_found"))
+        self.assertEqual("failed", app_module.status_class("duty_case_not_found"))
 
     def test_disaster_form_shows_full_case_date_and_type_specific_reasons(self):
         self.import_case_for_form(
@@ -1849,6 +1852,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
         self.assertIn('name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="2026/07/22"', body)
+        self.assertIn('type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="2026/07/22"', body)
         self.assertIn('<option value="救護">救護</option>', body)
         summary_select = body[body.index('<select name="summary_type"'):]
         summary_select = summary_select[:summary_select.index("</select>")]
@@ -1976,6 +1980,7 @@ class WebAppTests(unittest.TestCase):
                     ("case_date", "2026/07/21"),
                     ("case_time", "1207"),
                     ("case_address", "桃園市觀音區金華路31號"),
+                    ("summary_type", "火災"),
                     ("case_reason", "一般(集合)住宅"),
                     ("recorder_category", "轄內A3"),
                     ("vehicle", "新坡11"),

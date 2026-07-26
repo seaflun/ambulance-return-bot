@@ -39,6 +39,8 @@ class RecordFolderTests(unittest.TestCase):
             "case_date": "2026/07/21",
             "case_time": "1207",
             "case_address": "桃園市觀音區金華路31號",
+            "summary_type": "火災",
+            "duty_item": "火警",
             "case_reason": "一般(集合)住宅",
             "recorder_category": "轄內A3",
             "vehicle_entries": [
@@ -115,6 +117,18 @@ class RecordFolderTests(unittest.TestCase):
             ],
             [item.path for item in plan],
         )
+
+    def test_disaster_rescue_folder_uses_reason_without_fire_suffix(self):
+        request = self.disaster_request(
+            summary_type="災害搶救",
+            duty_item="其他類災害",
+            case_reason="溺水",
+        )
+
+        path = disaster_folder_plan(request, Path("X:/records"))[0].path
+
+        self.assertTrue(path.name.endswith("(溺水)-11"))
+        self.assertNotIn("溺水火警", path.name)
 
     def test_disaster_folder_creation_preflights_all_targets_before_creating_any(self):
         with tempfile.TemporaryDirectory() as tmp:

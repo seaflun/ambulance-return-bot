@@ -45,8 +45,10 @@ class ModelParsingTests(unittest.TestCase):
                     ("case_id", "CASE-1"),
                     ("case_date", "2026/07/22"),
                     ("case_time", "1207"),
+                    ("return_date", "2026/07/23"),
                     ("return_time", "1300"),
                     ("case_address", "桃園市觀音區金華路31號"),
+                    ("summary_type", "災害搶救"),
                     ("case_reason", "一般(集合)住宅"),
                     ("commander", "王小明"),
                     ("action_note", "現場待命"),
@@ -54,10 +56,12 @@ class ModelParsingTests(unittest.TestCase):
                     ("vehicle", "新坡11"),
                     ("driver", "甲"),
                     ("mileage", "100"),
+                    ("vehicle_return_date", "2026/07/23"),
                     ("vehicle_return_time", "1300"),
                     ("vehicle", "新坡15"),
                     ("driver", "乙"),
                     ("mileage", "200"),
+                    ("vehicle_return_date", "2026/07/24"),
                     ("vehicle_return_time", "1310"),
                 ]
             )
@@ -65,8 +69,39 @@ class ModelParsingTests(unittest.TestCase):
 
         self.assertEqual("disaster", request.service_type)
         self.assertEqual(["新坡11", "新坡15"], [item.vehicle for item in request.vehicle_entries])
+        self.assertEqual("災害搶救", request.summary_type)
+        self.assertEqual("其他類災害", request.duty_item)
+        self.assertEqual(["2026/07/23", "2026/07/24"], [item.return_date for item in request.vehicle_entries])
         self.assertEqual(["1300", "1310"], [item.return_time for item in request.vehicle_entries])
         self.assertEqual(["duty_work_log", "vehicle_mileage"], request.active_site_keys())
+
+    def test_ems_form_maps_case_type_to_duty_item_and_keeps_reason(self):
+        request = request_from_form(
+            {
+                "summary_type": "災害搶救",
+                "case_reason": "溺水",
+            }
+        )
+
+        self.assertEqual("災害搶救", request.summary_type)
+        self.assertEqual("其他類災害", request.duty_item)
+        self.assertEqual("溺水", request.case_reason)
+
+    def test_disaster_form_uses_top_return_date_for_vehicle_default(self):
+        request = request_from_disaster_form(
+            MultiDict(
+                [
+                    ("case_date", "2026/07/22"),
+                    ("return_date", "2026/07/23"),
+                    ("return_time", "0030"),
+                    ("vehicle", "新坡11"),
+                    ("driver", "甲"),
+                    ("mileage", "100"),
+                ]
+            )
+        )
+
+        self.assertEqual("2026/07/23", request.vehicle_entries[0].return_date)
 
     def test_disaster_form_keeps_selected_firecam_people(self):
         request = request_from_disaster_form(
