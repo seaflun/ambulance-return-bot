@@ -546,6 +546,25 @@ def task_detail(task_id: str):
     return render_template("task_detail.html", payload=payload, site_can_run_individually=site_can_run_individually)
 
 
+@app.post("/tasks/<task_id>/confirm-case-closed")
+def confirm_ems_case_closed(task_id: str):
+    try:
+        payload = store.get(task_id)
+    except FileNotFoundError:
+        abort(404)
+    payload = refresh_stale_running_task(payload)
+    if str((payload.get("task") or {}).get("service_type") or "ems").strip().lower() == "disaster":
+        return "救災任務不需要救護結案確認。", 409
+    if task_payload_is_active(payload):
+        return "任務正在執行中，無法變更結案確認。", 409
+    if not payload.get("ems_case_closed_confirmed"):
+        payload["ems_case_closed_confirmed"] = True
+        store.add_event_to_payload(payload, "ems_case_closed_confirmed", "已確認救護案件結案")
+        store.save_payload(task_id, payload)
+        report_public_pc_task_event(payload, "確認救護案件已結案")
+    return redirect(url_for("task_detail", task_id=task_id))
+
+
 @app.post("/tasks/<task_id>/delete")
 def delete_task(task_id: str):
     try:
@@ -3406,8 +3425,11 @@ def site_update_contexts_for_task_edit(previous_task: dict, current_task: dict, 
     }
 
 
-def status_label(status: str) -> str:
+def status_label(status: str, detail: str = "") -> str:
     value = str(status or "")
+    detail_value = str(detail or "")
+    if "case not found" in detail_value.lower() or "找不到符合案件" in detail_value or "missing disinfection detail" in detail_value.lower():
+        return "找不到案件"
     if site_waits_for_confirmation(value):
         return "待人工確認"
     if value == "desktop_fast_running":
@@ -3784,9 +3806,7 @@ def task_title(task: dict) -> str:
     if address:
         is_disaster = str(task.get("service_type") or "ems").strip().lower() == "disaster"
         prefix = str(task.get("summary_type") or "救災").strip() if is_disaster else "緊急救護"
-        timestamp = task_short_case_timestamp(task)
-        display_address = f"{address} {timestamp}".strip()
-        return f"{prefix}-{reason} - {display_address}"
+        return f"{prefix}-{reason} - {address}"
     vehicle = str(task.get("vehicle") or "").strip()
     driver = str(task.get("driver") or "").strip()
     if vehicle or driver:
@@ -3800,6 +3820,19 @@ def task_short_case_timestamp(task: dict) -> str:
     if case_date is None or len(case_time) != 4:
         return ""
     return f"{case_date:%m%d}{case_time}"
+
+
+def task_detail_title(task: dict) -> str:
+    reason = str(task.get("case_reason") or "救護").strip()
+    is_disaster = str(task.get("service_type") or "ems").strip().lower() == "disaster"
+    prefix = str(task.get("summary_type") or "救災").strip() if is_disaster else "緊急救護"
+    return f"{prefix}-{reason}\n{display_case_address(task) or '未填地址'}"
+
+
+def task_time_range(task: dict) -> str:
+    start = task_datetime_display(task, "case_date", "case_time")
+    end = task_datetime_display(task, "return_date", "return_time")
+    return f"{start} - {end}" if end != "未填" else start
 
 
 def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
@@ -4196,6 +4229,8 @@ def template_helpers() -> dict:
         "task_has_active_fuel_site": task_has_active_fuel_site,
         "task_has_fuel_record": task_has_fuel_record,
         "task_site_count_label": task_site_count_label,
+        "task_detail_title": task_detail_title,
+        "task_time_range": task_time_range,
         "task_site_display_pairs": task_site_display_pairs,
         "task_title": task_title,
         "task_vehicle_display_entries": task_vehicle_display_entries,

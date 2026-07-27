@@ -153,6 +153,9 @@
       margin: 10px 0 20px;
     }
     .task-submit button, .task-submit .button { min-width: 190px; min-height: 56px; }
+    .page-head .page-chrome__copy h1 { white-space: pre-line; }
+    .case-closed-confirmation { display: flex; align-items: center; gap: 12px; color: var(--failed); font-weight: 800; }
+    .case-closed-confirmation button { min-width: 76px; }
     .completion-banner,
     .edit-impact-banner {
       margin-bottom: 14px;
@@ -366,7 +369,7 @@
 {%- endmacro %}
 <body class="workspace-page workspace-page--task workspace-page--{{ payload.task.service_type }}-task">
   <main>
-    {% call page_chrome('任務明細', task_title(payload.task), 'disaster' if payload.task.service_type == 'disaster' else 'ems', 'page-head', 'head-actions') %}
+    {% call page_chrome('任務明細', task_detail_title(payload.task), 'disaster' if payload.task.service_type == 'disaster' else 'ems', 'page-head', 'head-actions') %}
       <a class="button secondary header-navigation-button" href="{{ '/app/disaster' if payload.task.service_type == 'disaster' else '/app' }}">返回首頁</a>
     {% endcall %}
 
@@ -376,6 +379,7 @@
       {% set completion = task_completion_snapshot(payload) %}
       {% set can_retry_failed_sites = show_task_entry_controls() or task_has_failed_site(payload.site_statuses) %}
       {% set edit_impact = payload.pending_edit_impact or {} %}
+      {% set ems_case_closed_confirmed = payload.ems_case_closed_confirmed %}
       {% if completion.all_complete %}
         <div class="completion-banner">✓ {{ completion.site_count_label }}登打完成</div>
       {% elif edit_impact %}
@@ -391,7 +395,12 @@
             <button class="secondary" type="submit">中止登打</button>
           </form>
         {% endif %}
-        {% if can_retry_failed_sites and not task_active and not completion.all_complete and not task_has_waiting_confirmation(payload.site_statuses) %}
+        {% if payload.task.service_type != 'disaster' and not ems_case_closed_confirmed and not task_active and not completion.all_complete %}
+          <form class="case-closed-confirmation" method="post" action="/tasks/{{ payload.task.task_id }}/confirm-case-closed">
+            <strong>是否已結案?</strong>
+            <button type="submit">是</button>
+          </form>
+        {% elif can_retry_failed_sites and not task_active and not completion.all_complete and not task_has_waiting_confirmation(payload.site_statuses) %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
             <button type="submit">{{ task_site_count_label(payload.task, payload.site_statuses) }}登打啟動</button>
           </form>
@@ -489,7 +498,7 @@
                 </form>
               {% endif %}
               {{ manual_confirmation_forms(payload.task.task_id, 'consumables', consumables_site, task_active) }}
-              <span class="status {{ status_class(consumables_site.status) }}">{{ status_label(consumables_site.status) }}</span>
+              <span class="status {{ status_class(consumables_site.status) }}">{{ status_label(consumables_site.status, consumables_site.detail) }}</span>
             </div>
           </div>
           <ul class="line-list">
@@ -521,7 +530,7 @@
                 </form>
               {% endif %}
               {{ manual_confirmation_forms(payload.task.task_id, 'disinfection', disinfection_site, task_active) }}
-              <span class="status {{ status_class(disinfection_site.status) }}">{{ status_label(disinfection_site.status) }}</span>
+              <span class="status {{ status_class(disinfection_site.status) }}">{{ status_label(disinfection_site.status, disinfection_site.detail) }}</span>
             </div>
           </div>
           <ul class="line-list">

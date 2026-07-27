@@ -10,6 +10,7 @@
           {% else %}
             <a class="recent-title" href="/tasks/{{ item.task.task_id }}">{{ task_title(item.task) }}{% for entry in task_vehicle_display_entries(item.task) if entry.vehicle %}{{ ' - ' if loop.first else '、' }}{{ entry.vehicle }}{% endfor %}</a>
           {% endif %}
+          <div class="recent-time">{{ task_time_range(item.task) }}</div>
           <div class="recent-meta">
             <span class="recent-origin recent-origin--{{ item.recent_origin }}">{{ item.recent_origin_label }}</span>
             {% if item.recent_read_only %}<span class="recent-read-only">NAS 僅查看</span>{% endif %}

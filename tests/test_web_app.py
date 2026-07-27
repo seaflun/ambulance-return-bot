@@ -2642,7 +2642,7 @@ class WebAppTests(unittest.TestCase):
 
         body = html.unescape(self.client.get("/app").data.decode("utf-8"))
 
-        title = f"緊急救護-空跑 - {address} 07262300"
+        title = f"緊急救護-空跑 - {address}"
         self.assertIn(
             f'<a class="recent-title" href="/tasks/{single["task"]["task_id"]}">{title} - 新坡92</a>',
             body,
@@ -2651,6 +2651,7 @@ class WebAppTests(unittest.TestCase):
             f'<a class="recent-title" href="/tasks/{double["task"]["task_id"]}">{title} - 新坡92、新坡93</a>',
             body,
         )
+        self.assertIn('<div class="recent-time">07/26 2300 - 06/07 1119</div>', body)
 
     def test_disaster_recent_task_title_uses_the_actual_case_type_and_short_timestamp(self):
         task = self.store.create(
@@ -2671,7 +2672,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
         self.assertIn(
-            f'<a class="recent-title" href="/tasks/{task["task"]["task_id"]}">火災-建築物火災 - 桃園市觀音區火災路1號 07262300 - 新坡11</a>',
+            f'<a class="recent-title" href="/tasks/{task["task"]["task_id"]}">火災-建築物火災 - 桃園市觀音區火災路1號 - 新坡11</a>',
             body,
         )
 
@@ -5955,6 +5956,7 @@ class WebAppTests(unittest.TestCase):
         )
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
+        self.client.post(f"/tasks/{task_id}/confirm-case-closed")
         detail_response = self.client.get(f"/tasks/{task_id}")
         self.assertEqual(detail_response.status_code, 200)
         detail_body = html.unescape(detail_response.data.decode("utf-8"))
@@ -6287,6 +6289,7 @@ class WebAppTests(unittest.TestCase):
             ),
         )
 
+        self.client.post(f"/tasks/{task_id}/confirm-case-closed")
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
 
@@ -6975,6 +6978,7 @@ class WebAppTests(unittest.TestCase):
             ),
         )
 
+        self.client.post(f"/tasks/{task_id}/confirm-case-closed")
         response = self.client.get(
             f"/tasks/{task_id}",
             base_url="http://100.114.126.58:8080",
@@ -6998,6 +7002,7 @@ class WebAppTests(unittest.TestCase):
             ),
         )
 
+        self.client.post(f"/tasks/{task_id}/confirm-case-closed")
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
 
@@ -7025,6 +7030,7 @@ class WebAppTests(unittest.TestCase):
         )
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
+        self.client.post(f"/tasks/{task_id}/confirm-case-closed")
         response = self.client.get(f"/tasks/{task_id}")
         body = html.unescape(response.data.decode("utf-8"))
         header = body.split('aria-label="任務內容"', 1)[0]
@@ -7039,6 +7045,51 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("\u65b0\u576192 / \u5305\u83ef\u5148", header)
         self.assertNotIn("\u9001\u5230\u516c\u52d9\u96fb\u8166", header)
         self.assertLess(body.index("\u56db\u7ad9\u767b\u6253\u555f\u52d5"), body.index("\u8fd4\u56de\u7de8\u8f2f"))
+
+    def test_ems_task_detail_requires_case_closed_confirmation_before_showing_run_button(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+
+        before_confirmation = html.unescape(self.client.get(f"/tasks/{task_id}").data.decode("utf-8"))
+
+        self.assertIn("是否已結案?", before_confirmation)
+        self.assertIn(f'action="/tasks/{task_id}/confirm-case-closed"', before_confirmation)
+        self.assertNotIn("四站登打啟動", before_confirmation)
+
+        response = self.client.post(f"/tasks/{task_id}/confirm-case-closed", follow_redirects=True)
+        after_confirmation = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(200, response.status_code)
+        self.assertNotIn("是否已結案?", after_confirmation)
+        self.assertIn("四站登打啟動", after_confirmation)
+        self.assertTrue(self.store.get(task_id)["ems_case_closed_confirmed"])
+
+    def test_ems_task_detail_labels_missing_consumables_and_disinfection_cases(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "consumables",
+                "耗材",
+                "consumables_failed",
+                "耗材列表找不到符合案件的內容列",
+            ),
+        )
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "disinfection",
+                "消毒",
+                "disinfection_failed",
+                "missing disinfection detail: query returned no data",
+            ),
+        )
+
+        body = html.unescape(self.client.get(f"/tasks/{task_id}").data.decode("utf-8"))
+
+        self.assertEqual(2, body.count("找不到案件"))
+        self.assertNotIn('<span class="status failed">失敗</span>', body)
 
     def test_completed_task_hides_all_run_buttons_and_shows_four_site_completion(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -7106,6 +7157,7 @@ class WebAppTests(unittest.TestCase):
             "mileage_2": "220",
         }
         self.client.post(f"/tasks/{task_id}/edit", data=update_data)
+        self.client.post(f"/tasks/{task_id}/confirm-case-closed")
         body = html.unescape(
             self.client.get(f"/tasks/{task_id}").get_data(as_text=True)
         )
