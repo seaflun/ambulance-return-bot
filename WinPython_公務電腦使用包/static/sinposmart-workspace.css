@@ -377,6 +377,43 @@ body.workspace-page--ems-settings {
   color: var(--muted);
 }
 
+.workspace-page--task .case-card,
+.workspace-page--task .recent-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 14px 14px 16px;
+}
+
+.workspace-page--task .case-title,
+.workspace-page--task .recent-title {
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: 780;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.workspace-page--task .case-meta,
+.workspace-page--task .recent-time,
+.workspace-page--task .recent-progress {
+  color: var(--muted);
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.workspace-page--task .case-meta,
+.workspace-page--task .recent-main > * + * {
+  margin-top: 3px;
+}
+
+.workspace-page--task .recent-meta {
+  margin-top: 3px;
+}
+
 .workspace-page .status {
   border-radius: 999px;
   font-weight: 700;

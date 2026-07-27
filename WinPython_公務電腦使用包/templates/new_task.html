@@ -156,18 +156,7 @@
     .lookup-message.is-running { border-color: #c9dbe7; background: var(--running-bg); color: var(--running); }
     .lookup-message.is-empty { border-color: #eadbb9; background: var(--waiting-bg); color: #8a682e; }
     .case-list { display: grid; gap: 8px; }
-    .case-card {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 12px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 14px 14px 14px 16px;
-      background: #fff;
-    }
-    .case-title { font-weight: 780; line-height: 1.4; overflow-wrap: anywhere; }
-    .case-meta { color: var(--muted); font-size: var(--text-sm); margin-top: 3px; }
+    {% include "_task_card_styles.html" %}
     .case-card form { padding: 0; border: 0; box-shadow: none; background: transparent; }
     .case-card button { min-width: 88px; min-height: 50px; padding: 0 20px; box-shadow: none; }
     .case-card form { min-width: 0; }
@@ -262,23 +251,6 @@
     .form-actions button:only-child { grid-column: 1 / -1; }
     .recent { margin-top: 18px; }
     .recent-list { display: grid; gap: 8px; }
-    .recent-card {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 10px;
-      padding: 12px;
-      color: inherit;
-      text-decoration: none;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fff;
-    }
-    .recent-main {
-      display: grid;
-      gap: 4px;
-      min-width: 0;
-    }
     .recent-delete {
       width: 34px;
       margin: 0;
@@ -303,9 +275,6 @@
       border-color: var(--line-strong);
       box-shadow: none;
     }
-    .recent-title { color: inherit; font-weight: 780; overflow-wrap: anywhere; text-decoration: none; }
-    .recent-time { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
-    .recent-progress { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .status { min-width: 62px; text-align: center; border-radius: 999px; padding: 5px 10px; font-size: var(--text-sm); font-weight: 760; background: var(--idle-bg); color: var(--muted); }
     .status.complete { background: var(--complete-bg); color: var(--complete); }
     .status.failed { background: var(--failed-bg); color: var(--failed); }

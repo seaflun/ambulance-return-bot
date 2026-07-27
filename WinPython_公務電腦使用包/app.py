@@ -4571,6 +4571,8 @@ def validate_disaster_task_form(task_request) -> list[str]:
         errors.append("請選擇指揮官")
     elif task_request.commander not in task_request.personnel:
         errors.append("指揮官必須是本案服勤人員")
+    if task_request.team_leader.strip() and task_request.team_leader not in task_request.personnel:
+        errors.append("帶隊官必須是本案服勤人員")
     if not task_request.action_note.strip():
         errors.append("請填寫其他處理情形")
     categories = {"轄內A2", "轄內A3", "轄內其他案件", "支援他轄"}

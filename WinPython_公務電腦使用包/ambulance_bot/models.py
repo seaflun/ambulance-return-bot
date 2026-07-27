@@ -394,6 +394,7 @@ class AmbulanceReturnRequest:
     duty_item: str = ""
     summary_type: str = ""
     commander: str = ""
+    team_leader: str = ""
     action_note: str = ""
     reason_other: str = ""
     recorder_category: str = ""
@@ -514,10 +515,11 @@ class AmbulanceReturnRequest:
         entries = self.effective_vehicle_entries()
         if self.service_type == "disaster":
             vehicles = "、".join(
-                f"{entry.vehicle or '未填車輛'}:{entry.driver or '未填司機'}" for entry in entries
+                f"車輛:{entry.vehicle or '未填車輛'}／司機:{entry.driver or '未填司機'}" for entry in entries
             )
             commander = f"、指揮官:{self.commander}" if self.commander else ""
-            return f"1.{vehicles}{commander}\n2.{self.action_note}".rstrip()
+            team_leader = f"、帶隊官:{self.team_leader}" if self.team_leader else ""
+            return f"1.{vehicles}{commander}{team_leader}\n2.{self.action_note}".rstrip()
         if len(entries) > 1:
             vehicle_line = " ".join(_vehicle_driver_text(entry) for entry in entries if entry.vehicle or entry.driver).strip()
             patient_entries = [
@@ -669,6 +671,7 @@ class AmbulanceReturnRequest:
             duty_item=str(payload.get("duty_item") or ""),
             summary_type=str(payload.get("summary_type") or ""),
             commander=str(payload.get("commander") or ""),
+            team_leader=str(payload.get("team_leader") or ""),
             action_note=str(payload.get("action_note") or ""),
             reason_other=str(payload.get("reason_other") or ""),
             recorder_category=str(payload.get("recorder_category") or ""),
@@ -937,7 +940,8 @@ def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
     case_reason = str(form.get("case_reason") or "").strip()
     recorder_category = str(form.get("recorder_category") or "").strip()
     recorder_subcategory = str(form.get("recorder_subcategory") or "").strip()
-    if summary_type == "火災" and case_reason == "誤(謊)報" and recorder_category == "轄內其他案件":
+    if summary_type == "火災" and case_reason in {"誤報", "誤(謊)報"}:
+        recorder_category = "轄內其他案件"
         recorder_subcategory = "誤報"
     return AmbulanceReturnRequest(
         task_id=new_task_id(),
@@ -964,6 +968,7 @@ def request_from_disaster_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         duty_item=duty_item_for_summary_type(summary_type, fallback="火警"),
         summary_type=summary_type,
         commander=str(form.get("commander") or "").strip(),
+        team_leader=str(form.get("team_leader") or "").strip(),
         action_note=str(form.get("action_note") or "").strip(),
         reason_other=str(form.get("reason_other") or "").strip(),
         recorder_category=recorder_category,

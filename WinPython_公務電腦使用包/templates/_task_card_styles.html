@@ -1,0 +1,29 @@
+    .case-card,
+    .recent-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 14px 14px 16px;
+      background: #fff;
+    }
+    .case-title,
+    .recent-title {
+      color: var(--ink);
+      font-weight: 780;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    .recent-title { text-decoration: none; }
+    .recent-main { display: grid; gap: 3px; min-width: 0; }
+    .case-meta,
+    .recent-time,
+    .recent-meta,
+    .recent-progress {
+      color: var(--muted);
+      font-size: var(--text-sm);
+      overflow-wrap: anywhere;
+    }
+    .case-meta { margin-top: 3px; }

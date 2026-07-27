@@ -90,9 +90,7 @@
     .lookup-message.is-running { border-color: #c9dbe7; background: var(--running-bg); color: var(--running); }
     .lookup-message.is-empty { border-color: #eadbb9; background: var(--waiting-bg); color: #8a682e; }
     .case-list { display: grid; gap: 8px; }
-    .case-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 14px 14px 14px 16px; background: #fff; }
-    .case-title { font-weight: 780; line-height: 1.4; overflow-wrap: anywhere; }
-    .case-meta { color: var(--muted); font-size: var(--text-sm); margin-top: 3px; }
+    {% include "_task_card_styles.html" %}
     .case-card form { min-width: 0; padding: 0; border: 0; box-shadow: none; background: transparent; }
     .case-card button { min-width: 88px; min-height: 50px; padding: 0 20px; box-shadow: none; }
     .task-form-locked { color: var(--muted); font-weight: 720; }
@@ -106,8 +104,12 @@
     .vehicle-card { margin-top: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
     .vehicle-card > .section-head { margin-bottom: 14px; }
     .case-time-field { display: grid; grid-template-columns: minmax(0, 1fr) 108px; gap: 10px; align-items: end; }
-    .time-field { display: grid; grid-template-columns: minmax(0, 1fr) 52px; gap: 10px; align-items: end; }
-    .time-field button { width: 52px; min-width: 52px; min-height: 46px; margin-top: 6px; padding: 0; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; }
+    .time-field { display: grid; grid-template-columns: minmax(0, 1fr) 104px 52px; gap: 10px; align-items: end; }
+    .clock-button { width: 52px; min-width: 52px; min-height: 52px; margin-top: 6px; padding: 0; border: 1px solid var(--line-strong); background: #fff; color: var(--accent); box-shadow: none; }
+    .clock-glyph { width: 18px; height: 18px; border: 2px solid currentColor; border-radius: 50%; position: relative; display: inline-block; }
+    .clock-glyph::before { content: ""; position: absolute; left: 7px; top: 3px; width: 2px; height: 6px; background: currentColor; }
+    .clock-glyph::after { content: ""; position: absolute; left: 7px; top: 8px; width: 5px; height: 2px; background: currentColor; }
+    .vehicle-card [data-vehicle-title] { font-size: var(--text-lg); font-weight: 800; line-height: 1.3; }
     .check-item { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 46px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
     #disaster-form .fuel-record-toggle input { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; transform: scale(1.2); accent-color: var(--accent); }
     label > span { display: flex; align-items: center; gap: 10px; }
@@ -139,11 +141,6 @@
     .form-actions button { width: 100%; min-height: 58px; font-size: 19px; }
     .recent { margin-top: 18px; }
     .recent-list { display: grid; gap: 8px; }
-    .recent-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
-    .recent-main { display: grid; gap: 4px; min-width: 0; }
-    .recent-title { color: inherit; font-weight: 780; overflow-wrap: anywhere; text-decoration: none; }
-    .recent-time { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
-    .recent-progress { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .status { min-width: 62px; padding: 5px 10px; border-radius: 999px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 760; text-align: center; }
     .status.complete { background: var(--complete-bg); color: var(--complete); }
     .status.failed { background: var(--failed-bg); color: var(--failed); }
@@ -156,6 +153,10 @@
       .grid { grid-template-columns: 1fr; gap: 8px; }
       .mileage-hint-panel { grid-column: auto; }
       .case-time-field { grid-template-columns: 1fr; }
+      .return-time-field { grid-template-columns: minmax(0, 1fr) 44px; }
+      .return-time-field input[name="return_date"],
+      .return-time-field input[name="vehicle_return_date"] { grid-column: 1 / -1; }
+      .clock-button { width: 44px; min-width: 44px; }
       .full { grid-column: auto; }
       .address-row { grid-column: auto; grid-template-columns: minmax(0, 1fr) 84px; }
       .clear-button { padding: 0 12px; }
@@ -233,10 +234,11 @@
           <button class="clear-button" type="submit" formaction="/cases/clear" formmethod="post" formnovalidate>清除</button>
         </div>
         <label class="field-visual{% if not selected_case_date_input(selected_case) or not (selected_case.case_time_hhmm or selected_case.case_time) %} is-pending{% endif %}" data-required-message="請填寫正確案件日期與時間"><span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="case-time-field"><input type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_case_date_input(selected_case) }}" required><input name="case_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ selected_case.case_time_hhmm or selected_case.case_time or '' }}" required></div></label>
-        <label class="field-visual{% if not selected_return_time_input(selected_case) %} is-pending{% endif %}" data-required-message="請填寫正確返隊日期與時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field"><input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}" required><input name="return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ selected_return_time_input(selected_case) }}" required><button type="button" id="now-time" aria-label="帶入現在時間">◷</button></div></label>
+        <label class="field-visual{% if not selected_return_time_input(selected_case) %} is-pending{% endif %}" data-required-message="請填寫正確返隊日期與時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field return-time-field"><input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}" required><input name="return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ selected_return_time_input(selected_case) }}" required><button type="button" class="clock-button" id="now-time" aria-label="帶入現在時間"><span class="clock-glyph"></span></button></div></label>
         <label class="field-visual" data-required-message="請選擇正確案件類型"><span class="field-label-title">案件類型<span class="field-error-mark" aria-hidden="true">*</span></span><select name="summary_type" required><option value="火災"{% if selected_summary_type == '火災' %} selected{% endif %}>火災</option><option value="災害搶救"{% if selected_summary_type == '災害搶救' %} selected{% endif %}>災害搶救</option><option value="救護"{% if selected_summary_type == '救護' %} selected{% endif %}>救護</option></select></label>
         <label class="field-visual{% if not selected_reason %} is-pending{% endif %}" data-required-message="請選擇正確事由"><span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span><select name="case_reason" id="case-reason" required><option value="">請選擇</option>{% for reason in selected_reason_options %}<option value="{{ reason }}"{% if selected_reason == reason %} selected{% endif %}>{{ reason }}</option>{% endfor %}{% if selected_reason and selected_reason not in selected_reason_options %}<option value="{{ selected_reason }}" selected>{{ selected_reason }}</option>{% endif %}</select></label>
         <label class="field-visual{% if not selected_case.commander %} is-pending{% endif %}" data-required-message="請選擇指揮官"><span class="field-label-title">指揮官<span class="field-error-mark" aria-hidden="true">*</span></span><select name="commander" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if selected_case.commander == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label class="field-visual"><span class="field-label-title">帶隊官</span><select name="team_leader"><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if selected_case.team_leader == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
         <label class="field-visual full{% if selected_summary_type == '火災' and selected_reason == '其他' and not selected_case.reason_other %} is-pending{% endif %}" id="reason-other-field" data-required-message="事由選擇其他時請填寫說明"{% if selected_summary_type != '火災' or selected_reason != '其他' %} hidden{% endif %}><span class="field-label-title">其他事由說明<span class="field-error-mark" aria-hidden="true">*</span></span><input name="reason_other" value="{{ selected_case.reason_other or '' }}"></label>
       </div>
       <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
@@ -254,7 +256,7 @@
           <div class="grid">
             <label class="field-visual{% if not entry.vehicle %} is-pending{% endif %}" data-required-message="請選擇車輛"><span class="field-label-title">車輛<span class="field-error-mark" aria-hidden="true">*</span></span><select name="vehicle" required><option value="">請選擇</option>{% for vehicle in vehicle_options %}<option value="{{ vehicle }}"{% if entry.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not entry.driver %} is-pending{% endif %}" data-required-message="請選擇司機"><span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span><select name="driver" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
-            <label class="field-visual{% if not (entry.return_time or selected_return_time_input(selected_case)) %} is-pending{% endif %}" data-required-message="請填寫正確返隊日期與時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field"><input type="text" name="vehicle_return_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ entry.return_date or selected_return_date_input(selected_case) }}" required><input name="vehicle_return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ entry.return_time or selected_return_time_input(selected_case) }}" required></div></label>
+            <label class="field-visual{% if not (entry.return_time or selected_return_time_input(selected_case)) %} is-pending{% endif %}" data-required-message="請填寫正確返隊日期與時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field return-time-field"><input type="text" name="vehicle_return_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ entry.return_date or selected_return_date_input(selected_case) }}" required><input name="vehicle_return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ entry.return_time or selected_return_time_input(selected_case) }}" required><button type="button" class="clock-button" data-vehicle-return-now aria-label="帶入現在時間"><span class="clock-glyph"></span></button></div></label>
             <label class="field-visual{% if not entry.mileage %} is-pending{% endif %}" data-required-message="請填寫數字里程"><span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span><input name="mileage" inputmode="numeric" pattern="\d+" value="{{ entry.mileage or '' }}" required></label>
             <div class="mileage-hint-panel" hidden><span class="field-label-title mileage-hint-spacer" aria-hidden="true">&nbsp;</span><p class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></p></div>
             <label class="check-item fuel-record-toggle full"><input type="checkbox" class="fuel-toggle" name="fuel_enabled" value="{{ loop.index0 }}"{% if fuel.enabled %} checked{% endif %}><span>登打加油紀錄</span></label>
@@ -328,8 +330,9 @@
   function updateConditionalFields(){
     const subcategoryField=document.getElementById('subcategory-field');
     const subcategoryInput=subcategoryField.querySelector('select');
-    const localFalseAlarm=summaryType.value==='火災'&&reason.value==='誤(謊)報'&&category.value==='轄內其他案件';
+    const localFalseAlarm=summaryType.value==='火災'&&['誤報','誤(謊)報'].includes(reason.value);
     if(localFalseAlarm){
+      category.value='轄內其他案件';
       subcategoryInput.value='誤報';
       subcategoryInput.disabled=true;
       lockedSubcategory.disabled=false;
@@ -372,6 +375,7 @@
     if(card.dataset.bound==='1') return;
     card.dataset.bound='1';
     card.querySelector('[name="vehicle"]').addEventListener('change',()=>updateLastMileageHint(card));
+    card.querySelector('[data-vehicle-return-now]').addEventListener('click',()=>{ card.querySelector('[name="vehicle_return_date"]').value=dateNow(); card.querySelector('[name="vehicle_return_time"]').value=hhmmNow(); updateRequiredHints(); });
     card.querySelector('.fuel-toggle').addEventListener('change',()=>updateFuelFields(card));
     card.querySelectorAll('[name="fuel_quantity"],[name="fuel_unit_price"]').forEach(input=>input.addEventListener('input',()=>updateFuelTotal(card)));
     card.querySelector('.remove-vehicle').addEventListener('click',()=>{ if(list.children.length<=1) return; card.remove(); reindexCards(); updatePreview(); updateFolderPreview(); });
@@ -401,10 +405,12 @@
     updateFolderPreview();
   });
   function updatePreview(){
-    const assignments=Array.from(list.querySelectorAll('.vehicle-card')).map(card=>{ const vehicle=card.querySelector('[name="vehicle"]').value; const driver=card.querySelector('[name="driver"]').value; return vehicle&&driver?`${vehicle}:${driver}`:''; }).filter(Boolean);
+    const assignments=Array.from(list.querySelectorAll('.vehicle-card')).map(card=>{ const vehicle=card.querySelector('[name="vehicle"]').value; const driver=card.querySelector('[name="driver"]').value; return vehicle&&driver?`車輛:${vehicle}／司機:${driver}`:''; }).filter(Boolean);
     const commander=form.elements.commander.value;
+    const teamLeader=form.elements.team_leader.value;
     if(commander) assignments.push(`指揮官:${commander}`);
-    const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官';
+    if(teamLeader) assignments.push(`帶隊官:${teamLeader}`);
+    const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官／帶隊官';
     document.getElementById('processing-preview').textContent=`1.${assignmentText}\n2.${document.getElementById('action-note').value}`;
   }
   function escapeHtml(value){ return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }

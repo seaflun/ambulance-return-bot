@@ -1241,6 +1241,9 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(app_module.app.config["TEMPLATES_AUTO_RELOAD"])
         body = html.unescape(response.data.decode("utf-8"))
+        workspace_response = self.client.get("/static/sinposmart-workspace.css")
+        self.assertEqual(workspace_response.status_code, 200)
+        workspace_css = workspace_response.data.decode("utf-8")
         self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertNotIn("救護車設定", body)
         self.assertNotIn('href="/admin/public-pc"', body)
@@ -1281,6 +1284,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".check-item input { width: 20px; height: 20px; min-height: 20px; margin: 0; transform: scale(1.35);", body)
         self.assertIn(".disinfection-grid .check-item { min-height: 46px; padding: 8px 12px;", body)
         self.assertIn(".case-card button { min-width: 88px; min-height: 50px;", body)
+        self.assertIn(".case-card,\n    .recent-card {", body)
+        self.assertIn(".case-title,\n    .recent-title {\n      color: var(--ink);", body)
+        self.assertIn(".recent-main { display: grid; gap: 3px; min-width: 0; }", body)
+        self.assertIn(".case-meta,\n    .recent-time,\n    .recent-meta,\n    .recent-progress {\n      color: var(--muted);", body)
+        self.assertIn(".workspace-page--task .case-card,\n.workspace-page--task .recent-card {", workspace_css)
+        self.assertIn(".workspace-page--task .case-title,\n.workspace-page--task .recent-title {", workspace_css)
+        self.assertIn(".workspace-page--task .case-meta,\n.workspace-page--task .recent-time,\n.workspace-page--task .recent-progress {", workspace_css)
+        self.assertIn(".workspace-page--task .recent-main > * + * {", workspace_css)
         self.assertIn(".consumable-list { display: grid; gap: 10px; align-items: start; }", body)
         self.assertIn(".consumable-row { display: grid; grid-template-columns: 38px 142px minmax(0, 1fr) 196px 50px;", body)
         self.assertIn('<span class="consumable-index"></span>', body)
@@ -1672,6 +1683,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="field-error-mark" aria-hidden="true">*</span>', body)
         self.assertIn('id="client-form-errors"', body)
         self.assertNotIn("救災車設定", body)
+        self.assertIn('.time-field { display: grid; grid-template-columns: minmax(0, 1fr) 104px 52px;', body)
+        self.assertIn('class="clock-button" id="now-time" aria-label="帶入現在時間"', body)
+        self.assertIn('data-vehicle-return-now aria-label="帶入現在時間"', body)
+        self.assertIn('.vehicle-card [data-vehicle-title] { font-size: var(--text-lg); font-weight: 800;', body)
+        self.assertIn("card.querySelector('[data-vehicle-return-now]').addEventListener('click'", body)
 
     def test_disaster_page_hides_form_until_case_is_imported(self):
         body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
@@ -1700,6 +1716,10 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("#disaster-form select { min-height: 46px; padding: 10px 12px; }", body)
         self.assertIn(".lookup-form button { min-width: 148px; }", body)
         self.assertIn(".case-card button { min-width: 88px; min-height: 50px;", body)
+        self.assertIn(".case-card,\n    .recent-card {", body)
+        self.assertIn(".case-title,\n    .recent-title {\n      color: var(--ink);", body)
+        self.assertIn(".recent-main { display: grid; gap: 3px; min-width: 0; }", body)
+        self.assertIn(".case-meta,\n    .recent-time,\n    .recent-meta,\n    .recent-progress {\n      color: var(--muted);", body)
 
     def test_disaster_clear_and_ems_case_data_layout_use_compact_fuel_controls(self):
         self.import_case_for_form(
@@ -1887,7 +1907,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('<option value="救護" selected>救護</option>', body)
         self.assertIn('<option value="特殊救護事由" selected>特殊救護事由</option>', body)
 
-    def test_disaster_false_alarm_only_locks_false_alarm_subcategory_for_local_other_case(self):
+    def test_disaster_false_alarm_uses_false_alarm_recorder_folder(self):
         self.import_case_for_form(
             {
                 "case_id": "fire-false-alarm",
@@ -1905,10 +1925,11 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
         self.assertIn('<option value="誤報">誤報</option>', body)
-        self.assertIn("const localFalseAlarm=summaryType.value==='火災'&&reason.value==='誤(謊)報'&&category.value==='轄內其他案件';", body)
+        self.assertIn("const localFalseAlarm=summaryType.value==='火災'&&['誤報','誤(謊)報'].includes(reason.value);", body)
+        self.assertIn("category.value='轄內其他案件';", body)
         self.assertIn("subcategoryInput.value='誤報';", body)
         self.assertNotIn("\n      category.disabled=true;", body)
-        self.assertNotIn("category.value='轄內其他案件';", body)
+        self.assertIn('<select name="team_leader">', body)
 
     def test_disaster_task_accepts_rescue_and_ems_case_types(self):
         base = [

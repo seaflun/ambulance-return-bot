@@ -12,8 +12,8 @@ from ambulance_bot.models import delete_vehicle_record, load_vehicle_records, sa
 
 
 class ModelParsingTests(unittest.TestCase):
-    def test_fire_false_alarm_only_forces_false_alarm_subfolder_for_local_other_case(self):
-        local_request = request_from_disaster_form(
+    def test_fire_false_alarm_always_uses_false_alarm_recorder_folder(self):
+        false_alarm_request = request_from_disaster_form(
             MultiDict(
                 [
                     ("summary_type", "火災"),
@@ -23,20 +23,41 @@ class ModelParsingTests(unittest.TestCase):
                 ]
             )
         )
-        support_request = request_from_disaster_form(
+        self.assertEqual("轄內其他案件", false_alarm_request.recorder_category)
+        self.assertEqual("誤報", false_alarm_request.recorder_subcategory)
+
+    def test_disaster_work_record_includes_team_leader(self):
+        request = AmbulanceReturnRequest(
+            task_id="DISASTER-1",
+            created_at=datetime(2026, 7, 27, 9, 20),
+            raw_text="",
+            service_type="disaster",
+            vehicle_entries=[VehicleEntry(vehicle="新坡11", driver="甲")],
+            commander="乙",
+            team_leader="丙",
+            action_note="處理完成",
+        )
+
+        self.assertEqual(
+            "1.車輛:新坡11／司機:甲、指揮官:乙、帶隊官:丙\n2.處理完成",
+            request.duty_status_text,
+        )
+
+    def test_disaster_form_persists_team_leader(self):
+        request = request_from_disaster_form(
             MultiDict(
                 [
                     ("summary_type", "火災"),
-                    ("case_reason", "誤(謊)報"),
-                    ("recorder_category", "支援他轄"),
+                    ("case_reason", "汽機車"),
+                    ("commander", "甲"),
+                    ("team_leader", "乙"),
                 ]
             )
         )
 
-        self.assertEqual("轄內其他案件", local_request.recorder_category)
-        self.assertEqual("誤報", local_request.recorder_subcategory)
-        self.assertEqual("支援他轄", support_request.recorder_category)
-        self.assertEqual("", support_request.recorder_subcategory)
+        restored = AmbulanceReturnRequest.from_dict(request.to_dict())
+
+        self.assertEqual("乙", restored.team_leader)
 
     def test_disaster_form_parses_n_vehicle_entries_and_active_sites(self):
         request = request_from_disaster_form(
