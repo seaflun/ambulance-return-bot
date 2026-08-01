@@ -1367,39 +1367,13 @@ def _click_ppe_login(driver: webdriver.Chrome) -> None:
 
 
 def _match_case_for_request(cases: list[dict[str, str]], request: AmbulanceReturnRequest) -> dict[str, str] | None:
-    address = clean_case_address(request.case_address)
-    case_time = str(request.case_time or "").strip()
     case_id = str(request.case_id or "").strip()
-    case_date = _case_date_key(request.case_date) if request.case_date else ""
-    all_candidates = [dict(case) for case in cases]
-
-    def matching_metadata(source: list[dict[str, str]]) -> list[dict[str, str]]:
-        candidates = list(source)
-        if case_date:
-            candidates = [case for case in candidates if _case_date_key(case.get("case_date", "")) == case_date]
-        if case_time:
-            candidates = [case for case in candidates if str(case.get("case_time_hhmm") or "").strip() == case_time]
-        if address:
-            address_matches: list[dict[str, str]] = []
-            for case in candidates:
-                candidate_address = clean_case_address(case.get("address", ""))
-                if candidate_address and candidate_address == address:
-                    address_matches.append(case)
-            candidates = address_matches
-        return candidates
-
-    if case_id:
-        exact_id_matches = [
-            case for case in all_candidates if str(case.get("case_id") or "").strip() == case_id
-        ]
-        exact_metadata_matches = matching_metadata(exact_id_matches)
-        if len(exact_metadata_matches) == 1:
-            return exact_metadata_matches[0]
-        if len(exact_metadata_matches) > 1 or not (case_date and case_time and address):
-            return None
-
-    candidates = matching_metadata(all_candidates)
-    return candidates[0] if len(candidates) == 1 else None
+    if not case_id:
+        return None
+    exact_id_matches = [
+        dict(case) for case in cases if str(case.get("case_id") or "").strip() == case_id
+    ]
+    return exact_id_matches[0] if len(exact_id_matches) == 1 else None
 
 
 def _case_date_key(value: object) -> str:
@@ -1957,7 +1931,10 @@ def _prepare_fuel_record_form(
     current_period = _ensure_fuel_query_period(driver, target_period)
     if current_period and current_period != target_period:
         raise WebDriverException(f"fuel period mismatch: page={current_period} task={target_period}")
-    _click_fuel_card_register(driver, _fuel_card_labels(request.vehicle, artifacts_dir))
+    fuel_card_plates = _fuel_card_labels(request, artifacts_dir)
+    if not fuel_card_plates:
+        raise WebDriverException(f"missing fuel vehicle plate mapping: {request.vehicle}")
+    _click_fuel_card_register(driver, fuel_card_plates)
     if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):
         raise WebDriverException("fuel detail page did not open")
 
@@ -2069,13 +2046,11 @@ def _ensure_fuel_query_period(driver: webdriver.Chrome, target_period: str) -> s
     return latest_period
 
 
-def _fuel_card_labels(vehicle: str, artifacts_dir: Path | None = None) -> list[str]:
-    labels: list[str] = []
-    for label in (vehicle_ppe_names(artifacts_dir).get(vehicle, ""), vehicle):
-        label = str(label or "").strip()
-        if label and label not in labels:
-            labels.append(label)
-    return labels
+def _fuel_card_labels(request: AmbulanceReturnRequest, artifacts_dir: Path | None = None) -> list[str]:
+    plate = str(request.mileage_system_name or "").strip()
+    if not plate:
+        plate = str(vehicle_ppe_names(artifacts_dir).get(request.vehicle, "")).strip()
+    return [plate] if plate else []
 
 
 def _click_fuel_card_register(driver: webdriver.Chrome, vehicle_labels: str | list[str] | tuple[str, ...]) -> None:

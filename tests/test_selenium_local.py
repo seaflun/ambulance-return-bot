@@ -146,7 +146,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(result.status, "disinfection_waiting_confirmation")
         self.assertIn("人工", result.detail)
         create_driver.assert_not_called()
-    def test_work_log_case_match_prefers_exact_case_id_and_all_metadata(self):
+    def test_work_log_case_match_uses_exact_case_id_when_metadata_changes(self):
         request = AmbulanceReturnRequest(
             task_id="match-exact",
             created_at=datetime(2026, 7, 13, 9, 0),
@@ -160,14 +160,14 @@ class SeleniumLocalTests(unittest.TestCase):
             {
                 "case_id": "20260713080500001",
                 "case_date": "1150713",
-                "case_time_hhmm": "0805",
-                "address": "桃園市中壢區月桃路一段270巷52號",
+                "case_time_hhmm": "0955",
+                "address": "桃園市中壢區月桃路一段270巷52號後方",
             },
             {
                 "case_id": "20260713080500002",
                 "case_date": "1150713",
-                "case_time_hhmm": "0805",
-                "address": "桃園市中壢區月桃路一段270巷52號",
+                "case_time_hhmm": "0955",
+                "address": "桃園市中壢區月桃路一段270巷52號後方",
             },
         ]
 
@@ -176,7 +176,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIsNotNone(matched)
         self.assertEqual(matched["case_id"], request.case_id)
 
-    def test_work_log_case_match_falls_back_to_unique_date_time_address_when_explicit_case_id_is_absent(self):
+    def test_work_log_case_match_does_not_fallback_when_case_id_is_unavailable(self):
         request = AmbulanceReturnRequest(
             task_id="match-missing",
             created_at=datetime(2026, 7, 13, 9, 0),
@@ -197,10 +197,9 @@ class SeleniumLocalTests(unittest.TestCase):
 
         matched = selenium_local_module._match_case_for_request(cases, request)
 
-        self.assertIsNotNone(matched)
-        self.assertEqual(matched["case_id"], "20260713080500001")
+        self.assertIsNone(matched)
 
-    def test_work_log_case_match_ignores_existing_wrong_id_when_full_metadata_identifies_another_case(self):
+    def test_work_log_case_match_does_not_replace_explicit_case_id(self):
         request = AmbulanceReturnRequest(
             task_id="match-conflicting-id",
             created_at=datetime(2026, 7, 14, 9, 0),
@@ -228,9 +227,9 @@ class SeleniumLocalTests(unittest.TestCase):
         matched = selenium_local_module._match_case_for_request(cases, request)
 
         self.assertIsNotNone(matched)
-        self.assertEqual(matched["case_id"], "20260713224929003")
+        self.assertEqual(matched["case_id"], request.case_id)
 
-    def test_work_log_case_match_fails_closed_when_wrong_case_id_fallback_is_ambiguous(self):
+    def test_work_log_case_match_rejects_unavailable_case_id_when_candidates_are_ambiguous(self):
         request = AmbulanceReturnRequest(
             task_id="match-ambiguous",
             created_at=datetime(2026, 7, 13, 9, 0),
@@ -252,7 +251,7 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertIsNone(selenium_local_module._match_case_for_request(cases, request))
 
-    def test_work_log_case_match_rejects_missing_candidate_address_when_request_has_address(self):
+    def test_work_log_case_match_ignores_candidate_address_when_case_id_matches(self):
         request = AmbulanceReturnRequest(
             task_id="match-address",
             created_at=datetime(2026, 7, 13, 9, 0),
@@ -271,9 +270,12 @@ class SeleniumLocalTests(unittest.TestCase):
             }
         ]
 
-        self.assertIsNone(selenium_local_module._match_case_for_request(cases, request))
+        matched = selenium_local_module._match_case_for_request(cases, request)
 
-    def test_work_log_case_match_does_not_fallback_to_neighboring_house_number(self):
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["case_id"], request.case_id)
+
+    def test_work_log_case_match_ignores_neighboring_address_when_case_id_matches(self):
         request = AmbulanceReturnRequest(
             task_id="match-neighbor-address",
             created_at=datetime(2026, 7, 14, 9, 0),
@@ -298,7 +300,10 @@ class SeleniumLocalTests(unittest.TestCase):
             },
         ]
 
-        self.assertIsNone(selenium_local_module._match_case_for_request(cases, request))
+        matched = selenium_local_module._match_case_for_request(cases, request)
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["case_id"], request.case_id)
 
     def test_disinfection_selector_rejects_time_match_when_vehicle_mismatches(self):
         rows = [{"index": 0, "text": "2026/07/13 08:05:00 新坡93 明細"}]
@@ -2628,7 +2633,7 @@ class SeleniumLocalTests(unittest.TestCase):
             },
         }
 
-    def test_fuel_card_register_uses_plate_first_and_clicks_register_button(self):
+    def test_fuel_card_register_uses_ems_plate_only_and_clicks_register_button(self):
         class FakeDriver:
             def __init__(self):
                 self.labels = None
@@ -2640,12 +2645,31 @@ class SeleniumLocalTests(unittest.TestCase):
 
         driver = FakeDriver()
 
-        self.assertEqual(_fuel_card_labels("新坡91"), ["BGV-2310", "新坡91"])
-        _click_fuel_card_register(driver, _fuel_card_labels("新坡91"))
+        request = AmbulanceReturnRequest(
+            task_id="fuel-ems-plate",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡91",
+        )
 
-        self.assertEqual(driver.labels, ["BGV-2310", "新坡91"])
+        self.assertEqual(_fuel_card_labels(request), ["BGV-2310"])
+        _click_fuel_card_register(driver, _fuel_card_labels(request))
+
+        self.assertEqual(driver.labels, ["BGV-2310"])
         self.assertIn("登錄", driver.script)
         self.assertIn("送出審核", driver.script)
+
+    def test_fuel_card_register_uses_disaster_task_plate_only(self):
+        request = AmbulanceReturnRequest(
+            task_id="fuel-disaster-plate",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            vehicle="新坡11",
+            mileage_system_name="KEC-2608",
+        )
+
+        self.assertEqual(_fuel_card_labels(request), ["KEC-2608"])
 
     def test_fuel_query_period_switches_to_task_month(self):
         class FakeDriver:
