@@ -808,17 +808,19 @@ def credential_sync():
         sealed_payload = seal_credential_payload(data, credential_envelope_secret())
     except CredentialEnvelopeError as exc:
         return jsonify({"ok": False, "error": "credential_sealing_unavailable", "detail": str(exc)}), 503
-    write_credential_sync_relay(
-        {
-            "request_id": ack_id,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-            "status": "pending",
-            "source_host": request.host,
-            "account_count": len(accounts),
-            "sealed_payload": sealed_payload,
-        }
-    )
+    relay_record = {
+        "request_id": ack_id,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "pending",
+        "source_host": request.host,
+        "account_count": len(accounts),
+        "account_name": credential_sync_account_name(accounts),
+        "sealed_payload": sealed_payload,
+    }
+    with _credential_sync_relay_lock:
+        _write_credential_sync_relay_unlocked(relay_record)
+        _record_credential_sync_attempt_unlocked(relay_record)
     return jsonify({"ok": True, "ack_id": ack_id, "count": len(accounts), "queued": True})
 
 
@@ -1001,6 +1003,7 @@ def admin_sinposmart():
         selected_day=selected_day,
         selected_fire_day=selected_fire_day,
         version_info=sinposmart_admin_version_info(selected_day),
+        credential_sync_status=credential_sync_admin_view(),
     )
 
 
@@ -1453,6 +1456,98 @@ def credential_sync_relay_file() -> Path:
     return artifacts_dir / "credential_sync" / "pending.json"
 
 
+def credential_sync_status_file() -> Path:
+    return artifacts_dir / "credential_sync" / "worker_status.json"
+
+
+def credential_sync_account_name(accounts: list[dict[str, object]]) -> str:
+    account = next(
+        (
+            item
+            for item in accounts
+            if str(item.get("actor_no") or "").strip() == "8"
+            or str(item.get("user_id") or "").strip().lower() == "tyfd01510"
+        ),
+        None,
+    )
+    if account is None:
+        return ""
+    user_id = str(account.get("user_id") or "").strip()
+    name = str(account.get("name") or "").strip()
+    if not name:
+        display_name = str(account.get("display_name") or "").strip()
+        name = re.sub(r"^\s*\d+\s*番\s*", "", display_name).split(" - ", 1)[0].strip()
+    return "" if not name or name.casefold() == user_id.casefold() else name[:120]
+
+
+def _read_credential_sync_status_unlocked() -> dict:
+    path = credential_sync_status_file()
+    try:
+        if not path.exists() or path.stat().st_size > MAX_CREDENTIAL_RELAY_FILE_BYTES:
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_credential_sync_status_unlocked(payload: dict) -> None:
+    write_json_atomic(credential_sync_status_file(), payload)
+
+
+def credential_sync_admin_view() -> dict[str, str]:
+    with _credential_sync_relay_lock:
+        status = _read_credential_sync_status_unlocked()
+    last_status = str(status.get("last_attempt_status") or "").strip().lower()
+    labels = {
+        "pending": ("等待 Worker 回覆", "running"),
+        "saved": ("成功", "complete"),
+        "failed": ("失敗", "failed"),
+    }
+    status_label, status_class = labels.get(last_status, ("尚未同步", ""))
+    return {
+        "current_account_name": str(status.get("current_account_name") or "").strip(),
+        "current_stored_at": str(status.get("current_stored_at") or "").strip(),
+        "last_attempt_account_name": str(status.get("last_attempt_account_name") or "").strip(),
+        "last_attempt_requested_at": str(status.get("last_attempt_requested_at") or "").strip(),
+        "last_attempt_completed_at": str(status.get("last_attempt_completed_at") or "").strip(),
+        "status_label": status_label,
+        "status_class": status_class,
+        "last_attempt_status": last_status,
+    }
+
+
+def _record_credential_sync_attempt_unlocked(record: dict) -> None:
+    status = _read_credential_sync_status_unlocked()
+    status.update(
+        {
+            "last_attempt_account_name": str(record.get("account_name") or "").strip(),
+            "last_attempt_requested_at": str(record.get("created_at") or "").strip(),
+            "last_attempt_completed_at": "",
+            "last_attempt_status": "pending",
+        }
+    )
+    _write_credential_sync_status_unlocked(status)
+
+
+def _record_credential_sync_result_unlocked(record: dict, status: str) -> None:
+    current = _read_credential_sync_status_unlocked()
+    account_name = str(record.get("account_name") or "").strip()
+    completed_at = datetime.now().isoformat(timespec="seconds")
+    current.update(
+        {
+            "last_attempt_account_name": account_name,
+            "last_attempt_requested_at": str(record.get("created_at") or "").strip(),
+            "last_attempt_completed_at": completed_at,
+            "last_attempt_status": status,
+        }
+    )
+    if status == "saved" and account_name:
+        current["current_account_name"] = account_name
+        current["current_stored_at"] = completed_at
+    _write_credential_sync_status_unlocked(current)
+
+
 def sinposmart_store() -> SinpoSmartBackendStore:
     return SinpoSmartBackendStore(artifacts_dir / "sinposmart")
 
@@ -1600,7 +1695,9 @@ def ack_credential_sync_relay(request_id: str, *, status: str = "saved", detail:
             retained["last_attempt_at"] = datetime.now().isoformat(timespec="seconds")
             retained["updated_at"] = retained["last_attempt_at"]
             _write_credential_sync_relay_unlocked(retained)
+            _record_credential_sync_result_unlocked(record, "failed")
             return "retained"
+        _record_credential_sync_result_unlocked(record, "saved")
         try:
             path.unlink()
         except FileNotFoundError:

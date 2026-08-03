@@ -233,7 +233,7 @@ class WebAppTests(unittest.TestCase):
             "sync_code": "sync-test-1",
             "user_id": "user9",
             "accounts": [
-                {"actor_no": "8", "user_id": "user8", "password": "pass8"},
+                {"actor_no": "8", "name": "王小明", "user_id": "user8", "password": "pass8"},
                 {"actor_no": "9", "user_id": "user9", "password": "pass9"},
             ],
         }
@@ -3485,6 +3485,66 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("值班交接", body)
         self.assertNotIn("已登打值班交接。", body)
         self.assertNotIn("secret", body)
+
+    def test_sinposmart_admin_shows_worker_credential_sync_without_account_or_password(self):
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = worker_token
+        fire_day = datetime.now().date().isoformat()
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        login = self.client.post(
+            "/api/sinposmart/events",
+            headers=headers,
+            json={
+                "event_id": "evt-sync-card-login",
+                "occurred_at": f"{fire_day}T09:10:00",
+                "record_type": "login",
+                "status": "ok",
+                "actor_no": "8",
+                "display_name": "8番 王小明",
+            },
+        )
+        queued = self.client.post("/api/credential-sync", json=self.credential_sync_payload(), headers=headers)
+        saved = self.client.post(
+            "/worker/credential-sync/sync-test-1/ack",
+            json={"status": "saved", "detail": "saved"},
+            headers={"X-Worker-Token": worker_token},
+        )
+
+        self.assertEqual(login.status_code, 200)
+        self.assertEqual(queued.status_code, 200)
+        self.assertEqual(saved.status_code, 200)
+        status_text = app_module.credential_sync_status_file().read_text(encoding="utf-8")
+        success_page = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+        self.assertLess(success_page.index("登入狀態"), success_page.index("Worker 帳密同步"))
+        self.assertLess(success_page.index("Worker 帳密同步"), success_page.index("背景資料比對快照"))
+        self.assertIn("目前已儲存帳號：王小明", success_page)
+        self.assertIn("最後成功儲存：", success_page)
+        self.assertIn("成功", success_page)
+        self.assertNotIn("user8", success_page)
+        self.assertNotIn("pass8", success_page)
+        self.assertNotIn("user8", status_text)
+        self.assertNotIn("pass8", status_text)
+
+        failed_payload = self.credential_sync_payload() | {
+            "sync_code": "sync-test-2",
+            "accounts": [{"actor_no": "8", "name": "李大文", "user_id": "user8b", "password": "pass8b"}],
+        }
+        queued_again = self.client.post("/api/credential-sync", json=failed_payload, headers=headers)
+        failed = self.client.post(
+            "/worker/credential-sync/sync-test-2/ack",
+            json={"status": "failed", "detail": "disk busy"},
+            headers={"X-Worker-Token": worker_token},
+        )
+        failed_page = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        self.assertEqual(queued_again.status_code, 200)
+        self.assertEqual(failed.status_code, 200)
+        self.assertIn("目前已儲存帳號：王小明", failed_page)
+        self.assertIn("最後失敗同步：李大文", failed_page)
+        self.assertIn("失敗", failed_page)
+        self.assertNotIn("user8b", failed_page)
+        self.assertNotIn("pass8b", failed_page)
 
     def test_sinposmart_admin_lists_tool_started_events(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"

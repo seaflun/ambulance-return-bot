@@ -267,6 +267,9 @@
             {% if event.result_text %}
               <div class="event-detail">結果：{{ event.result_text }}</div>
             {% endif %}
+            {% if event.failure_stage_label %}
+              <div class="event-detail">失敗階段：{{ event.failure_stage_label }}</div>
+            {% endif %}
             {% if event.pause_reason %}
               <div class="pause-reason">暫停原因：{{ event.pause_reason }}</div>
             {% endif %}
@@ -315,6 +318,30 @@
         {% else %}
           <section class="empty">目前沒有登入紀錄。</section>
         {% endfor %}
+        </div>
+      </section>
+
+      <section class="section" aria-label="Worker 帳密同步">
+        <div class="section-head">
+          <h2 class="section-title">Worker 帳密同步</h2>
+          <div class="section-note">僅顯示姓名，不保存或顯示帳號與密碼</div>
+        </div>
+        <div class="event-list">
+          <article class="event-card">
+            <div class="event-head">
+              <time class="event-time">{{ credential_sync_status.last_attempt_completed_at or credential_sync_status.last_attempt_requested_at or '尚未收到同步' }}</time>
+              <div>
+                <h3 class="event-title">目前已儲存帳號：{{ credential_sync_status.current_account_name or '尚未取得' }}</h3>
+                <div class="event-meta">最後成功儲存：{{ credential_sync_status.current_stored_at or '尚未收到 Worker 成功回覆' }}</div>
+                {% if credential_sync_status.last_attempt_status == 'failed' and credential_sync_status.last_attempt_account_name %}
+                  <div class="event-detail">最後失敗同步：{{ credential_sync_status.last_attempt_account_name }}</div>
+                {% endif %}
+              </div>
+              <div class="event-badges">
+                <span class="status {{ credential_sync_status.status_class }}">{{ credential_sync_status.status_label }}</span>
+              </div>
+            </div>
+          </article>
         </div>
       </section>
 

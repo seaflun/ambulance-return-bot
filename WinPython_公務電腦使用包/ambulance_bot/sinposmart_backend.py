@@ -463,6 +463,37 @@ def sinposmart_tool_label(event: dict[str, Any]) -> str:
     return title or "未標示工具"
 
 
+def sinposmart_tool_failure_stage_label(event: dict[str, Any]) -> str:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    stage = re.sub(r"[^a-z0-9_]", "", str(snapshot.get("failure_stage") or "").lower())
+    labels = {
+        "preflight": "前置檢查",
+        "source_load": "資料來源讀取",
+        "config_load": "工具設定讀取",
+        "browser_start": "瀏覽器啟動",
+        "login": "網站登入",
+        "duty_form_open": "開啟勤務表頁面",
+        "duty_fill": "填寫勤務表",
+        "duty_save": "儲存勤務表",
+        "vehicle_form_open": "開啟車輛勤務頁面",
+        "vehicle_fill": "填寫車輛勤務",
+        "form_open": "開啟登打頁面",
+        "fill": "填寫資料",
+        "save": "儲存資料",
+        "process_start": "啟動車輛清點程序",
+        "process_running": "執行車輛清點程序",
+        "result_evaluation": "檢查車輛清點結果",
+        "maintenance_check": "車輛保養檢查",
+        "equipment_check": "車輛器材檢查",
+        "artifact_write": "儲存診斷資料",
+        "module_load": "載入行車紀錄器工具",
+        "offset_detection": "偵測影片時間偏移",
+        "classification": "分類行車紀錄器影片",
+        "report_write": "寫入分類報表",
+    }
+    return labels.get(stage, "")
+
+
 def sinposmart_admin_tool_event(tool_state: dict[str, dict[str, Any]]) -> dict[str, Any]:
     started_event = tool_state.get("started")
     finished_event = tool_state.get("finished")
@@ -471,6 +502,7 @@ def sinposmart_admin_tool_event(tool_state: dict[str, dict[str, Any]]) -> dict[s
     status_label = "失敗" if failed else "完成" if finished_event else "執行中"
     card = sinposmart_admin_event(base_event, status_label)
     card["item_title"] = sinposmart_tool_label(base_event)
+    card["failure_stage_label"] = sinposmart_tool_failure_stage_label(finished_event or {}) if failed else ""
     started_at = sinposmart_event_time(started_event) if started_event else ""
     finished_at = sinposmart_event_time(finished_event) if finished_event else ""
     steps: list[dict[str, str]] = []

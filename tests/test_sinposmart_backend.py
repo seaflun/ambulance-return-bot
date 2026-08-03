@@ -318,6 +318,29 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["tool_events"][0]["result_text"], "勤務表登打完成：115/06/19")
         self.assertEqual([step["label"] for step in view["tool_events"][0]["steps"]], ["開始執行", "結束執行"])
 
+    def test_admin_view_shows_safe_tool_failure_stage(self):
+        view = build_sinposmart_admin_view(
+            [
+                normalize_sinposmart_event(
+                    {
+                        "event_id": "evt-tool-failed",
+                        "occurred_at": "2026-08-02T10:00:00",
+                        "record_type": "tool_action_finished",
+                        "trigger_type": "tool_finish",
+                        "status": "failed",
+                        "snapshot": {
+                            "tool_name": "rest_time",
+                            "tool_label": "休息時間登打",
+                            "failure_stage": "browser_start",
+                        },
+                    },
+                    now=datetime(2026, 8, 2, 10, 0),
+                )
+            ]
+        )
+
+        self.assertEqual(view["tool_events"][0]["failure_stage_label"], "瀏覽器啟動")
+
     def test_admin_view_combines_queue_and_result_in_one_event(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = SinpoSmartBackendStore(Path(tmp))
