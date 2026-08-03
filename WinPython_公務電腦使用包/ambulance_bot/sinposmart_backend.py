@@ -494,6 +494,17 @@ def sinposmart_tool_failure_stage_label(event: dict[str, Any]) -> str:
     return labels.get(stage, "")
 
 
+def sinposmart_tool_failure_detail(event: dict[str, Any]) -> str:
+    """Return a short, non-sensitive detail for a failed public-PC tool."""
+
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    detail = sanitize_scalar(snapshot.get("failure_detail"), 600)
+    details = {
+        "browser_startup": "專用瀏覽器啟動或連線未完成；已清理過期暫存設定檔並重試一次。",
+    }
+    return details.get(detail, detail)
+
+
 def sinposmart_admin_tool_event(tool_state: dict[str, dict[str, Any]]) -> dict[str, Any]:
     started_event = tool_state.get("started")
     finished_event = tool_state.get("finished")
@@ -503,6 +514,7 @@ def sinposmart_admin_tool_event(tool_state: dict[str, dict[str, Any]]) -> dict[s
     card = sinposmart_admin_event(base_event, status_label)
     card["item_title"] = sinposmart_tool_label(base_event)
     card["failure_stage_label"] = sinposmart_tool_failure_stage_label(finished_event or {}) if failed else ""
+    card["failure_detail"] = sinposmart_tool_failure_detail(finished_event or {}) if failed else ""
     started_at = sinposmart_event_time(started_event) if started_event else ""
     finished_at = sinposmart_event_time(finished_event) if finished_event else ""
     steps: list[dict[str, str]] = []

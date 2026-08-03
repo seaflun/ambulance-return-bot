@@ -76,6 +76,29 @@
     .day-link.active { background: var(--accent); border-color: var(--accent); color: #fff; }
     .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
     .section { margin-top: 18px; }
+    details.section > summary.section-head {
+      min-height: 44px;
+      margin-bottom: 0;
+      padding: 8px 0;
+      align-items: center;
+      cursor: pointer;
+      list-style: none;
+    }
+    details.section > summary.section-head::-webkit-details-marker { display: none; }
+    details.section > summary.section-head::after {
+      content: "展開";
+      flex: 0 0 auto;
+      color: var(--accent);
+      font-size: var(--text-sm);
+      font-weight: 760;
+    }
+    details.section[open] > summary.section-head { margin-bottom: 10px; }
+    details.section[open] > summary.section-head::after { content: "收合"; }
+    details.section > summary.section-head:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 3px;
+      border-radius: 8px;
+    }
     .section-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 10px; }
     .section-title { font-size: 20px; font-weight: 840; }
     .section-note { color: var(--muted); font-size: var(--text-sm); }
@@ -189,11 +212,11 @@
         </div>
       </section>
 
-      <section class="section" aria-label="到點勤務">
-        <div class="section-head">
+      <details class="section" aria-label="到點勤務">
+        <summary class="section-head">
           <h2 class="section-title">到點勤務</h2>
           <div class="section-note">每一筆到點勤務顯示開始送出與完成結果</div>
-        </div>
+        </summary>
         <div class="event-list">
         {% for event in admin_view.action_events or [] %}
           {% set repeat_count = (event.repeat_count or 1) | int %}
@@ -233,13 +256,13 @@
           <section class="empty">目前沒有到點勤務。</section>
         {% endfor %}
         </div>
-      </section>
+      </details>
 
-      <section class="section" aria-label="使用工具">
-        <div class="section-head">
+      <details class="section" aria-label="使用工具">
+        <summary class="section-head">
           <h2 class="section-title">使用工具</h2>
           <div class="section-note">每日作業工具啟動紀錄</div>
-        </div>
+        </summary>
         <div class="event-list">
         {% for event in admin_view.tool_events or [] %}
           <article class="event-card">
@@ -264,11 +287,16 @@
                 {% endfor %}
               </div>
             {% endif %}
-            {% if event.result_text %}
+            {% if event.error %}
+              <div class="pause-reason">錯誤原因：{{ event.error }}</div>
+            {% elif event.result_text %}
               <div class="event-detail">結果：{{ event.result_text }}</div>
             {% endif %}
             {% if event.failure_stage_label %}
               <div class="event-detail">失敗階段：{{ event.failure_stage_label }}</div>
+            {% endif %}
+            {% if event.failure_detail %}
+              <div class="event-detail">錯誤詳情：{{ event.failure_detail }}</div>
             {% endif %}
             {% if event.pause_reason %}
               <div class="pause-reason">暫停原因：{{ event.pause_reason }}</div>
@@ -278,13 +306,13 @@
           <section class="empty">目前沒有工具使用紀錄。</section>
         {% endfor %}
         </div>
-      </section>
+      </details>
 
-      <section class="section" aria-label="登入狀態">
-        <div class="section-head">
+      <details class="section" aria-label="登入狀態">
+        <summary class="section-head">
           <h2 class="section-title">登入狀態</h2>
           <div class="section-note">每次登入、登入失效與登出都會保留紀錄</div>
-        </div>
+        </summary>
         <div class="event-list">
         {% for event in admin_view.login_events or [] %}
           <article class="event-card">
@@ -319,13 +347,13 @@
           <section class="empty">目前沒有登入紀錄。</section>
         {% endfor %}
         </div>
-      </section>
+      </details>
 
-      <section class="section" aria-label="Worker 帳密同步">
-        <div class="section-head">
+      <details class="section" aria-label="Worker 帳密同步">
+        <summary class="section-head">
           <h2 class="section-title">Worker 帳密同步</h2>
           <div class="section-note">顯示已傳送給 Worker 的帳號姓名；不保存或顯示帳號與密碼</div>
-        </div>
+        </summary>
         <div class="event-list">
           {% for account in credential_sync_status.accounts %}
           <article class="event-card">
@@ -345,13 +373,13 @@
           <section class="empty">尚未收到傳送給 Worker 的帳密同步資料。</section>
           {% endfor %}
         </div>
-      </section>
+      </details>
 
-      <section class="section" aria-label="背景資料比對快照">
-        <div class="section-head">
+      <details class="section" aria-label="背景資料比對快照">
+        <summary class="section-head">
           <h2 class="section-title">背景資料比對快照</h2>
           <div class="section-note">整日勤務與已登打資料只保留最後更新摘要</div>
-        </div>
+        </summary>
         <div class="event-list">
         {% for event in admin_view.background_updates or [] %}
           <article class="event-card">
@@ -370,7 +398,7 @@
           <section class="empty">目前沒有背景資料比對紀錄。</section>
         {% endfor %}
         </div>
-      </section>
+      </details>
     {% else %}
       <section class="empty">目前尚未收到 SinpoSmart 值班事件。</section>
     {% endif %}

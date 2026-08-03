@@ -3559,6 +3559,31 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("user8b", failed_page)
         self.assertNotIn("pass8b", failed_page)
 
+    def test_sinposmart_admin_sections_are_collapsed_by_default(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-collapsed-sections",
+                "occurred_at": f"{fire_day}T10:20:00",
+                "record_type": "login",
+                "status": "ok",
+                "actor_no": "8",
+                "display_name": "8番 王小明",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        for section_name in ("到點勤務", "使用工具", "登入狀態", "Worker 帳密同步", "背景資料比對快照"):
+            self.assertIn(f'<details class="section" aria-label="{section_name}">', body)
+        self.assertNotIn('<details class="section" aria-label="到點勤務" open>', body)
+        self.assertIn('details.section > summary.section-head', body)
+        self.assertIn('details.section[open] > summary.section-head::after', body)
+
     def test_sinposmart_admin_lists_tool_started_events(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()
@@ -3593,6 +3618,38 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("duty_sheet", body)
         self.assertNotIn("tool_label", body)
         self.assertNotIn("錯誤", body)
+
+    def test_sinposmart_admin_shows_tool_failure_reason_and_safe_detail(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-tool-failure-detail",
+                "occurred_at": f"{fire_day}T16:31:30",
+                "record_type": "tool_action_finished",
+                "trigger_type": "tool_finish",
+                "status": "failed",
+                "error": "Chrome session 建立失敗",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "snapshot": {
+                    "tool_name": "monthly_base",
+                    "tool_label": "勤務基準表登打",
+                    "failure_stage": "browser_start",
+                    "failure_detail": "browser_startup",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        self.assertIn("錯誤原因：Chrome session 建立失敗", body)
+        self.assertIn("失敗階段：瀏覽器啟動", body)
+        self.assertIn("錯誤詳情：專用瀏覽器啟動或連線未完成", body)
+        self.assertNotIn("browser_startup", body)
 
     def test_sinposmart_admin_combines_tool_start_finish_and_result(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"

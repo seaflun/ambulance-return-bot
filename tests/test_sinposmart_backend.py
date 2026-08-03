@@ -332,6 +332,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
                             "tool_name": "rest_time",
                             "tool_label": "休息時間登打",
                             "failure_stage": "browser_start",
+                            "failure_detail": "browser_startup",
                         },
                     },
                     now=datetime(2026, 8, 2, 10, 0),
@@ -340,6 +341,10 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         )
 
         self.assertEqual(view["tool_events"][0]["failure_stage_label"], "瀏覽器啟動")
+        self.assertEqual(
+            view["tool_events"][0]["failure_detail"],
+            "專用瀏覽器啟動或連線未完成；已清理過期暫存設定檔並重試一次。",
+        )
 
     def test_admin_view_combines_queue_and_result_in_one_event(self):
         with tempfile.TemporaryDirectory() as tmp:
