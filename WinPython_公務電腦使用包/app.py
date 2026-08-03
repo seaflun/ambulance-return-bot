@@ -815,7 +815,7 @@ def credential_sync():
         "status": "pending",
         "source_host": request.host,
         "account_count": len(accounts),
-        "account_name": credential_sync_account_name(accounts),
+        "account_names": credential_sync_account_names(accounts),
         "sealed_payload": sealed_payload,
     }
     with _credential_sync_relay_lock:
@@ -1460,24 +1460,16 @@ def credential_sync_status_file() -> Path:
     return artifacts_dir / "credential_sync" / "worker_status.json"
 
 
-def credential_sync_account_name(accounts: list[dict[str, object]]) -> str:
-    account = next(
-        (
-            item
-            for item in accounts
-            if str(item.get("actor_no") or "").strip() == "8"
-            or str(item.get("user_id") or "").strip().lower() == "tyfd01510"
-        ),
-        None,
-    )
-    if account is None:
-        return ""
-    user_id = str(account.get("user_id") or "").strip()
-    name = str(account.get("name") or "").strip()
-    if not name:
-        display_name = str(account.get("display_name") or "").strip()
-        name = re.sub(r"^\s*\d+\s*番\s*", "", display_name).split(" - ", 1)[0].strip()
-    return "" if not name or name.casefold() == user_id.casefold() else name[:120]
+def credential_sync_account_names(accounts: list[dict[str, object]]) -> list[str]:
+    names: list[str] = []
+    for account in accounts:
+        user_id = str(account.get("user_id") or "").strip()
+        name = str(account.get("name") or account.get("display_name") or "").strip()
+        name = re.sub(r"^\s*\d+\s*番\s*", "", name).split(" - ", 1)[0].strip()
+        if not name or name.casefold() == user_id.casefold() or name in names:
+            continue
+        names.append(name[:120])
+    return names
 
 
 def _read_credential_sync_status_unlocked() -> dict:
@@ -1495,56 +1487,99 @@ def _write_credential_sync_status_unlocked(payload: dict) -> None:
     write_json_atomic(credential_sync_status_file(), payload)
 
 
-def credential_sync_admin_view() -> dict[str, str]:
+def _credential_sync_status_accounts(status: dict) -> dict[str, dict[str, str]]:
+    rows: dict[str, dict[str, str]] = {}
+    raw_accounts = status.get("accounts")
+    if isinstance(raw_accounts, list):
+        for item in raw_accounts:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            rows[name] = {
+                "name": name,
+                "last_sent_at": str(item.get("last_sent_at") or "").strip(),
+                "last_completed_at": str(item.get("last_completed_at") or "").strip(),
+                "last_status": str(item.get("last_status") or "").strip().lower(),
+            }
+    if rows:
+        return rows
+    legacy_name = str(status.get("current_account_name") or status.get("last_attempt_account_name") or "").strip()
+    if not legacy_name:
+        return rows
+    rows[legacy_name] = {
+        "name": legacy_name,
+        "last_sent_at": str(status.get("last_attempt_requested_at") or "").strip(),
+        "last_completed_at": str(status.get("last_attempt_completed_at") or status.get("current_stored_at") or "").strip(),
+        "last_status": str(status.get("last_attempt_status") or "").strip().lower(),
+    }
+    return rows
+
+
+def _write_credential_sync_status_accounts(status: dict, rows: dict[str, dict[str, str]]) -> None:
+    status["accounts"] = [rows[name] for name in sorted(rows, key=str.casefold)]
+
+
+def _credential_sync_record_account_names(record: dict) -> list[str]:
+    names = [str(name).strip() for name in record.get("account_names") or [] if str(name).strip()]
+    if names:
+        return list(dict.fromkeys(names))
+    legacy_name = str(record.get("account_name") or "").strip()
+    return [legacy_name] if legacy_name else []
+
+
+def credential_sync_admin_view() -> dict[str, list[dict[str, str]]]:
     with _credential_sync_relay_lock:
         status = _read_credential_sync_status_unlocked()
-    last_status = str(status.get("last_attempt_status") or "").strip().lower()
     labels = {
         "pending": ("等待 Worker 回覆", "running"),
         "saved": ("成功", "complete"),
         "failed": ("失敗", "failed"),
     }
-    status_label, status_class = labels.get(last_status, ("尚未同步", ""))
-    return {
-        "current_account_name": str(status.get("current_account_name") or "").strip(),
-        "current_stored_at": str(status.get("current_stored_at") or "").strip(),
-        "last_attempt_account_name": str(status.get("last_attempt_account_name") or "").strip(),
-        "last_attempt_requested_at": str(status.get("last_attempt_requested_at") or "").strip(),
-        "last_attempt_completed_at": str(status.get("last_attempt_completed_at") or "").strip(),
-        "status_label": status_label,
-        "status_class": status_class,
-        "last_attempt_status": last_status,
-    }
+    accounts: list[dict[str, str]] = []
+    for account in _credential_sync_status_accounts(status).values():
+        last_status = account["last_status"]
+        status_label, status_class = labels.get(last_status, ("尚未收到 Worker 回覆", ""))
+        accounts.append(
+            {
+                **account,
+                "status_label": status_label,
+                "status_class": status_class,
+            }
+        )
+    accounts.sort(key=lambda account: (account["last_sent_at"], account["name"]), reverse=True)
+    return {"accounts": accounts}
 
 
 def _record_credential_sync_attempt_unlocked(record: dict) -> None:
     status = _read_credential_sync_status_unlocked()
-    status.update(
-        {
-            "last_attempt_account_name": str(record.get("account_name") or "").strip(),
-            "last_attempt_requested_at": str(record.get("created_at") or "").strip(),
-            "last_attempt_completed_at": "",
-            "last_attempt_status": "pending",
+    rows = _credential_sync_status_accounts(status)
+    sent_at = str(record.get("created_at") or "").strip()
+    for name in _credential_sync_record_account_names(record):
+        rows[name] = {
+            "name": name,
+            "last_sent_at": sent_at,
+            "last_completed_at": "",
+            "last_status": "pending",
         }
-    )
+    _write_credential_sync_status_accounts(status, rows)
     _write_credential_sync_status_unlocked(status)
 
 
 def _record_credential_sync_result_unlocked(record: dict, status: str) -> None:
     current = _read_credential_sync_status_unlocked()
-    account_name = str(record.get("account_name") or "").strip()
+    rows = _credential_sync_status_accounts(current)
     completed_at = datetime.now().isoformat(timespec="seconds")
-    current.update(
-        {
-            "last_attempt_account_name": account_name,
-            "last_attempt_requested_at": str(record.get("created_at") or "").strip(),
-            "last_attempt_completed_at": completed_at,
-            "last_attempt_status": status,
+    for name in _credential_sync_record_account_names(record):
+        previous = rows.get(name, {})
+        rows[name] = {
+            "name": name,
+            "last_sent_at": str(previous.get("last_sent_at") or record.get("created_at") or "").strip(),
+            "last_completed_at": completed_at,
+            "last_status": status,
         }
-    )
-    if status == "saved" and account_name:
-        current["current_account_name"] = account_name
-        current["current_stored_at"] = completed_at
+    _write_credential_sync_status_accounts(current, rows)
     _write_credential_sync_status_unlocked(current)
 
 

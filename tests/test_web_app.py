@@ -3504,7 +3504,13 @@ class WebAppTests(unittest.TestCase):
                 "display_name": "8番 王小明",
             },
         )
-        queued = self.client.post("/api/credential-sync", json=self.credential_sync_payload(), headers=headers)
+        sync_payload = self.credential_sync_payload() | {
+            "accounts": [
+                {"actor_no": "8", "name": "王小明", "user_id": "user8", "password": "pass8"},
+                {"actor_no": "26", "name": "楊紹文", "user_id": "user26", "password": "pass26"},
+            ],
+        }
+        queued = self.client.post("/api/credential-sync", json=sync_payload, headers=headers)
         saved = self.client.post(
             "/worker/credential-sync/sync-test-1/ack",
             json={"status": "saved", "detail": "saved"},
@@ -3518,13 +3524,18 @@ class WebAppTests(unittest.TestCase):
         success_page = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
         self.assertLess(success_page.index("登入狀態"), success_page.index("Worker 帳密同步"))
         self.assertLess(success_page.index("Worker 帳密同步"), success_page.index("背景資料比對快照"))
-        self.assertIn("目前已儲存帳號：王小明", success_page)
-        self.assertIn("最後成功儲存：", success_page)
+        self.assertIn("王小明", success_page)
+        self.assertIn("楊紹文", success_page)
+        self.assertIn("最後傳送日期：", success_page)
         self.assertIn("成功", success_page)
         self.assertNotIn("user8", success_page)
         self.assertNotIn("pass8", success_page)
+        self.assertNotIn("user26", success_page)
+        self.assertNotIn("pass26", success_page)
         self.assertNotIn("user8", status_text)
         self.assertNotIn("pass8", status_text)
+        self.assertNotIn("user26", status_text)
+        self.assertNotIn("pass26", status_text)
 
         failed_payload = self.credential_sync_payload() | {
             "sync_code": "sync-test-2",
@@ -3540,8 +3551,10 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(queued_again.status_code, 200)
         self.assertEqual(failed.status_code, 200)
-        self.assertIn("目前已儲存帳號：王小明", failed_page)
-        self.assertIn("最後失敗同步：李大文", failed_page)
+        self.assertIn("王小明", failed_page)
+        self.assertIn("楊紹文", failed_page)
+        self.assertIn("李大文", failed_page)
+        self.assertIn("最後傳送日期：", failed_page)
         self.assertIn("失敗", failed_page)
         self.assertNotIn("user8b", failed_page)
         self.assertNotIn("pass8b", failed_page)
