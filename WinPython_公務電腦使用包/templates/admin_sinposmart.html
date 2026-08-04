@@ -116,6 +116,16 @@
     .event-list { display: grid; gap: 10px; }
     .event-card { padding: 14px; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
     .event-card:hover { border-color: var(--line-strong); box-shadow: 0 18px 36px rgba(39, 49, 43, .09); }
+    .credential-sync-list { display: grid; gap: 6px; }
+    .credential-sync-row {
+      display: grid;
+      grid-template-columns: minmax(112px, .7fr) minmax(0, 1.6fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 12px;
+    }
+    .credential-sync-name { font-weight: 800; overflow-wrap: anywhere; }
+    .credential-sync-login { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .event-head { display: grid; grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; align-items: start; }
     .event-time { color: var(--muted); font-size: var(--text-sm); }
     .event-title { font-weight: 800; overflow-wrap: anywhere; }
@@ -150,6 +160,7 @@
       .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .event-head { grid-template-columns: 1fr; gap: 4px; }
       .event-step { grid-template-columns: 1fr; gap: 4px; align-items: start; }
+      .credential-sync-row { grid-template-columns: 1fr; gap: 4px; align-items: start; }
     }
     @media (prefers-reduced-motion: reduce) {
       .button, .event-card { transition: none; }
@@ -354,20 +365,12 @@
           <h2 class="section-title">Worker 帳密同步</h2>
           <div class="section-note">顯示已傳送給 Worker 的帳號姓名；不保存或顯示帳號與密碼</div>
         </summary>
-        <div class="event-list">
+        <div class="credential-sync-list">
           {% for account in credential_sync_status.accounts %}
-          <article class="event-card">
-            <div class="event-head">
-              <time class="event-time">{{ account.last_sent_at or '尚未記錄' }}</time>
-              <div>
-                <h3 class="event-title">{{ account.name }}</h3>
-                <div class="event-meta">最後傳送日期：{{ account.last_sent_at or '尚未記錄' }}</div>
-                <div class="event-detail">Worker 回覆時間：{{ account.last_completed_at or '等待回覆' }}</div>
-              </div>
-              <div class="event-badges">
-                <span class="status {{ account.status_class }}">{{ account.status_label }}</span>
-              </div>
-            </div>
+          <article class="event-card credential-sync-row">
+            <h3 class="credential-sync-name">{{ account.name }}</h3>
+            <div class="credential-sync-login">最後登入：{{ account.last_login_at or '近 7 個消防日無登入紀錄' }}</div>
+            <span class="status {{ account.status_class }}">{{ account.status_label }}</span>
           </article>
           {% else %}
           <section class="empty">尚未收到傳送給 Worker 的帳密同步資料。</section>

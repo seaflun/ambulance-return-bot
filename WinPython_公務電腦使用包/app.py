@@ -816,6 +816,7 @@ def credential_sync():
         "source_host": request.host,
         "account_count": len(accounts),
         "account_names": credential_sync_account_names(accounts),
+        "account_profiles": credential_sync_account_profiles(accounts),
         "sealed_payload": sealed_payload,
     }
     with _credential_sync_relay_lock:
@@ -1003,7 +1004,7 @@ def admin_sinposmart():
         selected_day=selected_day,
         selected_fire_day=selected_fire_day,
         version_info=sinposmart_admin_version_info(selected_day),
-        credential_sync_status=credential_sync_admin_view(),
+        credential_sync_status=credential_sync_admin_view(days),
     )
 
 
@@ -1460,16 +1461,27 @@ def credential_sync_status_file() -> Path:
     return artifacts_dir / "credential_sync" / "worker_status.json"
 
 
-def credential_sync_account_names(accounts: list[dict[str, object]]) -> list[str]:
-    names: list[str] = []
+def credential_sync_account_profiles(accounts: list[dict[str, object]]) -> list[dict[str, str]]:
+    profiles: list[dict[str, str]] = []
+    names: set[str] = set()
     for account in accounts:
         user_id = str(account.get("user_id") or "").strip()
         name = str(account.get("name") or account.get("display_name") or "").strip()
         name = re.sub(r"^\s*\d+\s*番\s*", "", name).split(" - ", 1)[0].strip()
         if not name or name.casefold() == user_id.casefold() or name in names:
             continue
-        names.append(name[:120])
-    return names
+        names.add(name)
+        profiles.append(
+            {
+                "name": name[:120],
+                "actor_no": str(account.get("actor_no") or "").strip()[:40],
+            }
+        )
+    return profiles
+
+
+def credential_sync_account_names(accounts: list[dict[str, object]]) -> list[str]:
+    return [profile["name"] for profile in credential_sync_account_profiles(accounts)]
 
 
 def _read_credential_sync_status_unlocked() -> dict:
@@ -1499,6 +1511,7 @@ def _credential_sync_status_accounts(status: dict) -> dict[str, dict[str, str]]:
                 continue
             rows[name] = {
                 "name": name,
+                "actor_no": str(item.get("actor_no") or "").strip(),
                 "last_sent_at": str(item.get("last_sent_at") or "").strip(),
                 "last_completed_at": str(item.get("last_completed_at") or "").strip(),
                 "last_status": str(item.get("last_status") or "").strip().lower(),
@@ -1510,6 +1523,7 @@ def _credential_sync_status_accounts(status: dict) -> dict[str, dict[str, str]]:
         return rows
     rows[legacy_name] = {
         "name": legacy_name,
+        "actor_no": "",
         "last_sent_at": str(status.get("last_attempt_requested_at") or "").strip(),
         "last_completed_at": str(status.get("last_attempt_completed_at") or status.get("current_stored_at") or "").strip(),
         "last_status": str(status.get("last_attempt_status") or "").strip().lower(),
@@ -1521,17 +1535,69 @@ def _write_credential_sync_status_accounts(status: dict, rows: dict[str, dict[st
     status["accounts"] = [rows[name] for name in sorted(rows, key=str.casefold)]
 
 
-def _credential_sync_record_account_names(record: dict) -> list[str]:
-    names = [str(name).strip() for name in record.get("account_names") or [] if str(name).strip()]
-    if names:
-        return list(dict.fromkeys(names))
+def _credential_sync_record_account_profiles(record: dict) -> list[dict[str, str]]:
+    profiles: list[dict[str, str]] = []
+    names: set[str] = set()
+    for item in record.get("account_profiles") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name or name in names:
+            continue
+        names.add(name)
+        profiles.append({"name": name, "actor_no": str(item.get("actor_no") or "").strip()})
+    if profiles:
+        return profiles
+    for name in record.get("account_names") or []:
+        cleaned_name = str(name).strip()
+        if not cleaned_name or cleaned_name in names:
+            continue
+        names.add(cleaned_name)
+        profiles.append({"name": cleaned_name, "actor_no": ""})
+    if profiles:
+        return profiles
     legacy_name = str(record.get("account_name") or "").strip()
-    return [legacy_name] if legacy_name else []
+    return [{"name": legacy_name, "actor_no": ""}] if legacy_name else []
 
 
-def credential_sync_admin_view() -> dict[str, list[dict[str, str]]]:
+def credential_sync_person_name(value: object) -> str:
+    name = str(value or "").strip().split(" - ", 1)[0].strip()
+    name = re.sub(r"^\s*\d+\s*番(?:\s*(?:隊員|同仁))?\s*", "", name)
+    return name.strip()
+
+
+def credential_sync_login_details_by_name(days: list[dict]) -> dict[str, dict[str, str]]:
+    latest: dict[str, dict[str, str]] = {}
+    for day in days:
+        for event in day.get("events") or []:
+            if not isinstance(event, dict) or str(event.get("record_type") or "") != "login":
+                continue
+            name = credential_sync_person_name(event.get("display_name"))
+            occurred_at = str(event.get("last_occurred_at") or event.get("occurred_at") or "").strip()
+            if not name or not occurred_at:
+                continue
+            previous = latest.get(name.casefold())
+            if previous is not None and previous["last_login_at"] >= occurred_at:
+                continue
+            latest[name.casefold()] = {
+                "last_login_at": occurred_at,
+                "actor_no": str(event.get("actor_no") or "").strip(),
+            }
+    return latest
+
+
+def credential_sync_actor_sort_key(actor_no: object) -> tuple[int, int, str]:
+    value = str(actor_no or "").strip()
+    match = re.search(r"\d+", value)
+    if match:
+        return (0, int(match.group()), value)
+    return (1, 0, value)
+
+
+def credential_sync_admin_view(days: list[dict] | None = None) -> dict[str, list[dict[str, str]]]:
     with _credential_sync_relay_lock:
         status = _read_credential_sync_status_unlocked()
+    login_details = credential_sync_login_details_by_name(days or [])
     labels = {
         "pending": ("等待 Worker 回覆", "running"),
         "saved": ("成功", "complete"),
@@ -1541,14 +1607,17 @@ def credential_sync_admin_view() -> dict[str, list[dict[str, str]]]:
     for account in _credential_sync_status_accounts(status).values():
         last_status = account["last_status"]
         status_label, status_class = labels.get(last_status, ("尚未收到 Worker 回覆", ""))
+        login_detail = login_details.get(credential_sync_person_name(account["name"]).casefold(), {})
         accounts.append(
             {
                 **account,
+                "last_login_at": str(login_detail.get("last_login_at") or ""),
+                "sort_actor_no": str(account.get("actor_no") or login_detail.get("actor_no") or ""),
                 "status_label": status_label,
                 "status_class": status_class,
             }
         )
-    accounts.sort(key=lambda account: (account["last_sent_at"], account["name"]), reverse=True)
+    accounts.sort(key=lambda account: (credential_sync_actor_sort_key(account["sort_actor_no"]), account["name"].casefold()))
     return {"accounts": accounts}
 
 
@@ -1556,9 +1625,11 @@ def _record_credential_sync_attempt_unlocked(record: dict) -> None:
     status = _read_credential_sync_status_unlocked()
     rows = _credential_sync_status_accounts(status)
     sent_at = str(record.get("created_at") or "").strip()
-    for name in _credential_sync_record_account_names(record):
+    for profile in _credential_sync_record_account_profiles(record):
+        name = profile["name"]
         rows[name] = {
             "name": name,
+            "actor_no": profile["actor_no"],
             "last_sent_at": sent_at,
             "last_completed_at": "",
             "last_status": "pending",
@@ -1571,10 +1642,12 @@ def _record_credential_sync_result_unlocked(record: dict, status: str) -> None:
     current = _read_credential_sync_status_unlocked()
     rows = _credential_sync_status_accounts(current)
     completed_at = datetime.now().isoformat(timespec="seconds")
-    for name in _credential_sync_record_account_names(record):
+    for profile in _credential_sync_record_account_profiles(record):
+        name = profile["name"]
         previous = rows.get(name, {})
         rows[name] = {
             "name": name,
+            "actor_no": str(profile["actor_no"] or previous.get("actor_no") or "").strip(),
             "last_sent_at": str(previous.get("last_sent_at") or record.get("created_at") or "").strip(),
             "last_completed_at": completed_at,
             "last_status": status,
@@ -3876,7 +3949,7 @@ def recent_tasks_for_task_form(service_type: str = "ems") -> list[dict]:
             origin="public_pc" if local_view else "nas",
             origin_label="公務電腦建立" if local_view else "NAS建立",
             read_only=False,
-            expire_all_statuses=local_view,
+            expire_all_statuses=True,
         )
     if not local_view:
         for payload in public_pc_reports():

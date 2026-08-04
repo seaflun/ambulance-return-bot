@@ -1727,8 +1727,7 @@ def _is_ppe_fuel_record_page(driver: webdriver.Chrome) -> bool:
             """
             if (!!document.getElementById('Account') && !!document.getElementById('Password')) return false;
             const path = String(location.pathname || '');
-            const text = document.body ? document.body.innerText : '';
-            return path.includes('/FUC04100') || text.includes('登打油耗里程') || text.includes('加油紀錄');
+            return path === '/FUC04100/Query' && !!document.getElementById('FuelUseYM');
             """
         )
     )
@@ -1929,12 +1928,17 @@ def _prepare_fuel_record_form(
             )
     target_period = f"{fuel.date[:4]}/{fuel.date[4:6]}"
     current_period = _ensure_fuel_query_period(driver, target_period)
-    if current_period and current_period != target_period:
+    if current_period != target_period:
         raise WebDriverException(f"fuel period mismatch: page={current_period} task={target_period}")
     fuel_card_plates = _fuel_card_labels(request, artifacts_dir)
     if not fuel_card_plates:
         raise WebDriverException(f"missing fuel vehicle plate mapping: {request.vehicle}")
-    _click_fuel_card_register(driver, fuel_card_plates)
+    try:
+        _click_fuel_card_register(driver, fuel_card_plates)
+    except WebDriverException as exc:
+        raise WebDriverException(
+            f"fuel vehicle validation failed after month query: period={target_period} vehicle={request.vehicle}; {exc}"
+        ) from exc
     if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):
         raise WebDriverException("fuel detail page did not open")
 
@@ -1980,70 +1984,114 @@ def _fuel_query_period(driver: webdriver.Chrome) -> str:
 
 
 def _ensure_fuel_query_period(driver: webdriver.Chrome, target_period: str) -> str:
-    current_period = _fuel_query_period(driver)
-    if not current_period or current_period == target_period:
-        return current_period
-
-    driver.execute_script(
-        """
-        const targetPeriod = arguments[0];
-        const compactTarget = targetPeriod.replace('/', '');
-        const el = document.getElementById('FuelUseYM');
-        const textOf = node => [node?.innerText, node?.value, node?.textContent, node?.title, node?.id, node?.name]
-          .map(value => String(value || '')).join(' ');
-        const dispatch = node => {
-          for (const type of ['input', 'change', 'blur']) {
-            node.dispatchEvent(new Event(type, {bubbles: true}));
-          }
-        };
-        const clickQuery = () => {
-          const controls = Array.from(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));
-          const target = controls.find(node => {
-            if (!node || node.disabled) return false;
-            const text = textOf(node);
-            return text.includes('查詢') || text.includes('Query') || text.includes('_btnQuery') || text.includes('btnQuery');
-          });
-          if (!target) return false;
-          target.scrollIntoView({block: 'center', inline: 'center'});
-          target.click();
-          return true;
-        };
-        if (!el) return {changed: false, clicked: false, value: ''};
-        if (el.tagName === 'SELECT') {
-          const option = Array.from(el.options || []).find(item => {
-            const text = [item.value, item.textContent].map(value => String(value || '')).join(' ');
-            return text.includes(targetPeriod) || text.includes(compactTarget);
-          });
-          if (option) el.value = option.value;
-        } else {
-          el.value = targetPeriod;
-        }
-        dispatch(el);
-        if (window.jQuery) {
-          try {
-            const field = window.jQuery(el);
-            field.val(targetPeriod).trigger('input').trigger('change').trigger('blur');
-            for (const widgetName of ['kendoDatePicker', 'kendoDateInput', 'kendoMaskedTextBox']) {
-              const widget = field.data(widgetName);
-              if (!widget || typeof widget.value !== 'function') continue;
-              try { widget.value(targetPeriod); } catch (_) {}
-              try { widget.value(new Date(Number(targetPeriod.slice(0, 4)), Number(targetPeriod.slice(5, 7)) - 1, 1)); } catch (_) {}
-              try { widget.trigger && widget.trigger('change'); } catch (_) {}
+    query_result = dict(
+        driver.execute_script(
+            """
+            const targetPeriod = arguments[0];
+            const compactTarget = targetPeriod.replace('/', '');
+            const el = document.getElementById('FuelUseYM');
+            const refreshStateKey = '__sinpoFuelQueryState';
+            const refreshStorageKey = '__sinpoFuelQueryPending';
+            const queryState = {targetPeriod, refreshed: false};
+            const markRefreshed = () => { queryState.refreshed = true; };
+            const bindOnce = (source, eventName) => {
+              if (!source) return;
+              try {
+                if (typeof source.one === 'function') {
+                  source.one(eventName, markRefreshed);
+                  return;
+                }
+                if (typeof source.bind !== 'function') return;
+                const listener = () => {
+                  markRefreshed();
+                  try { source.unbind(eventName, listener); } catch (_) {}
+                };
+                source.bind(eventName, listener);
+              } catch (_) {}
+            };
+            if (!el) return {changed: false, clicked: false, value: ''};
+            window[refreshStateKey] = queryState;
+            try {
+              sessionStorage.setItem(refreshStorageKey, JSON.stringify({targetPeriod, issuedAt: Date.now()}));
+            } catch (_) {}
+            const grid = window.jQuery ? window.jQuery('#grid').data('kendoGrid') : null;
+            bindOnce(grid, 'dataBound');
+            bindOnce(grid?.dataSource, 'change');
+            let changed = false;
+            if (window.jQuery) {
+              try {
+                const field = window.jQuery(el);
+                for (const widgetName of ['kendoDatePicker', 'kendoDateInput', 'kendoMaskedTextBox']) {
+                  const widget = field.data(widgetName);
+                  if (!widget || typeof widget.value !== 'function') continue;
+                  widget.value(new Date(Number(targetPeriod.slice(0, 4)), Number(targetPeriod.slice(5, 7)) - 1, 1));
+                  changed = true;
+                  break;
+                }
+              } catch (_) {}
             }
-          } catch (_) {}
-        }
-        return {changed: true, clicked: clickQuery(), value: String(el.value || '').trim()};
-        """,
-        target_period,
+            if (!changed) el.value = targetPeriod;
+            const value = String(el.value || '').trim();
+            if (value !== targetPeriod && value.replace(/\\D/g, '') !== compactTarget) {
+              return {changed: false, clicked: false, value};
+            }
+            if (typeof window.queryFCNo !== 'function') {
+              return {changed, clicked: false, value};
+            }
+            const originalMakeKendo = window.MakeKendo;
+            if (typeof originalMakeKendo === 'function') {
+              window.MakeKendo = function (...args) {
+                markRefreshed();
+                window.MakeKendo = originalMakeKendo;
+                return originalMakeKendo.apply(this, args);
+              };
+            }
+            window.queryFCNo();
+            return {changed, clicked: true, value};
+            """,
+            target_period,
+        )
+        or {}
     )
+    if not query_result.get("clicked"):
+        raise WebDriverException(f"fuel query control not found: period={target_period}")
     time.sleep(1)
 
     deadline = time.monotonic() + 8
     latest_period = _fuel_query_period(driver)
-    while latest_period != target_period and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if latest_period == target_period and _fuel_query_results_refreshed(driver, target_period):
+            return latest_period
         time.sleep(0.5)
         latest_period = _fuel_query_period(driver)
+    if latest_period == target_period:
+        raise WebDriverException(f"fuel query results did not refresh: period={target_period}")
     return latest_period
+
+
+def _fuel_query_results_refreshed(driver: webdriver.Chrome, target_period: str) -> bool:
+    try:
+        result = dict(
+            driver.execute_script(
+                """
+                const targetPeriod = arguments[0];
+                const state = window.__sinpoFuelQueryState;
+                const stateRefreshed = !!state && state.targetPeriod === targetPeriod && !!state.refreshed;
+                let pageReloaded = false;
+                try {
+                  const pending = JSON.parse(sessionStorage.getItem('__sinpoFuelQueryPending') || 'null');
+                  pageReloaded = !!pending && pending.targetPeriod === targetPeriod
+                    && Number(performance.timeOrigin || 0) >= Number(pending.issuedAt || Number.MAX_SAFE_INTEGER);
+                } catch (_) {}
+                return {refreshed: stateRefreshed || pageReloaded};
+                """,
+                target_period,
+            )
+            or {}
+        )
+        return bool(result.get("refreshed"))
+    except WebDriverException:
+        return False
 
 
 def _fuel_card_labels(request: AmbulanceReturnRequest, artifacts_dir: Path | None = None) -> list[str]:

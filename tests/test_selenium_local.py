@@ -29,6 +29,7 @@ from ambulance_bot.selenium_local import (
     _fuel_card_labels,
     _fuel_query_period,
     _id_number_from_cases_for_credential,
+    _is_ppe_fuel_record_page,
     lookup_synced_credential_id_number,
     _open_disinfection_detail_for_case,
     _ppe_option_names,
@@ -2680,10 +2681,12 @@ class SeleniumLocalTests(unittest.TestCase):
 
             def execute_script(self, script: str, *args):
                 self.scripts.append(script)
-                if "FuelUseYM" in script and "clickQuery" in script:
+                if "FuelUseYM" in script and "queryFCNo" in script:
                     self.period = args[0]
                     self.clicked_query = True
                     return {"changed": True, "clicked": True, "value": self.period}
+                if "__sinpoFuelQueryState" in script:
+                    return {"refreshed": True}
                 if "FuelUseYM" in script:
                     return self.period
                 return None
@@ -2698,15 +2701,59 @@ class SeleniumLocalTests(unittest.TestCase):
             def __init__(self):
                 self.period = "2026/07"
                 self.scripts: list[str] = []
+                self.clicked_query = False
 
             def execute_script(self, script: str, *args):
                 self.scripts.append(script)
+                if "FuelUseYM" in script and "queryFCNo" in script:
+                    self.period = args[0]
+                    self.clicked_query = True
+                    return {"changed": True, "clicked": True, "value": self.period}
+                if "__sinpoFuelQueryState" in script:
+                    return {"refreshed": True}
                 return self.period
 
         driver = FakeDriver()
 
         self.assertEqual(_ensure_fuel_query_period(driver, "2026/07"), "2026/07")
         self.assertEqual(_fuel_query_period(driver), "2026/07")
+        self.assertTrue(driver.clicked_query)
+
+    def test_fuel_record_query_page_requires_exact_route_and_month_control(self):
+        class FakeDriver:
+            def __init__(self, path: str, has_month_control: bool = True):
+                self.path = path
+                self.has_month_control = has_month_control
+                self.script = ""
+
+            def execute_script(self, script: str):
+                self.script = script
+                return self.path == "/FUC04100/Query" and self.has_month_control
+
+        fuel_query_driver = FakeDriver("/FUC04100/Query")
+        fuel_query_without_month = FakeDriver("/FUC04100/Query", has_month_control=False)
+        fuel_management_query_driver = FakeDriver("/FUC05000/Query")
+
+        self.assertTrue(_is_ppe_fuel_record_page(fuel_query_driver))
+        self.assertFalse(_is_ppe_fuel_record_page(fuel_query_without_month))
+        self.assertFalse(_is_ppe_fuel_record_page(fuel_management_query_driver))
+        self.assertIn("path === '/FUC04100/Query'", fuel_query_driver.script)
+        self.assertIn("document.getElementById('FuelUseYM')", fuel_query_driver.script)
+        self.assertNotIn("text.includes", fuel_query_driver.script)
+
+    def test_fuel_query_uses_page_specific_query_function_not_sidebar_link(self):
+        source = Path(selenium_local_module.__file__).read_text(encoding="utf-8")
+
+        self.assertIn("typeof window.queryFCNo !== 'function'", source)
+        self.assertIn("window.queryFCNo();", source)
+        self.assertNotIn("text.includes('查詢')", source)
+        self.assertNotIn("text.includes('Query')", source)
+
+    def test_disaster_fuel_record_uses_the_shared_fuel_record_flow(self):
+        source = Path(selenium_local_module.__file__).read_text(encoding="utf-8")
+
+        self.assertEqual(source.count("def _prepare_fuel_record_form("), 1)
+        self.assertIn("_prepare_fuel_record_form(", source)
 
     def test_fuel_record_detail_page_rejects_query_page(self):
         class FakeDriver:

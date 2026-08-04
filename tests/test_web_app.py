@@ -2763,6 +2763,31 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('href="/tasks/completed-47-hours"', body)
         self.assertNotIn('href="/tasks/waiting-49-hours"', body)
 
+    def test_nas_recent_tasks_hide_failed_statuses_after_48_hours(self):
+        task_time = datetime.now() - timedelta(hours=49)
+        payload = self.store.create(
+            AmbulanceReturnRequest(
+                task_id="nas-failed-49-hours",
+                created_at=task_time,
+                raw_text="",
+                vehicle="TEST-48",
+            )
+        )
+        payload["created_at"] = task_time.isoformat(timespec="seconds")
+        payload["updated_at"] = task_time.isoformat(timespec="seconds")
+        payload["site_statuses"]["duty_work_log"]["status"] = "duty_work_log_waiting_confirmation"
+        payload["overall_status"] = "desktop_fast_completed_with_errors"
+        self.store.path_for("nas-failed-49-hours").write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        body = html.unescape(
+            self.client.get("/app", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
+        )
+
+        self.assertNotIn('href="/tasks/nas-failed-49-hours"', body)
+
     def test_nas_recent_tasks_merge_public_pc_reports_as_read_only_by_service(self):
         fixture_store = JsonTaskStore(Path(self.tmp.name) / "public-pc-report-fixtures")
         ems_report = fixture_store.create(
@@ -3506,8 +3531,8 @@ class WebAppTests(unittest.TestCase):
         )
         sync_payload = self.credential_sync_payload() | {
             "accounts": [
-                {"actor_no": "8", "name": "王小明", "user_id": "user8", "password": "pass8"},
                 {"actor_no": "26", "name": "楊紹文", "user_id": "user26", "password": "pass26"},
+                {"actor_no": "8", "name": "王小明", "user_id": "user8", "password": "pass8"},
             ],
         }
         queued = self.client.post("/api/credential-sync", json=sync_payload, headers=headers)
@@ -3524,9 +3549,11 @@ class WebAppTests(unittest.TestCase):
         success_page = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
         self.assertLess(success_page.index("登入狀態"), success_page.index("Worker 帳密同步"))
         self.assertLess(success_page.index("Worker 帳密同步"), success_page.index("背景資料比對快照"))
+        self.assertLess(success_page.index("王小明"), success_page.index("楊紹文"))
         self.assertIn("王小明", success_page)
         self.assertIn("楊紹文", success_page)
-        self.assertIn("最後傳送日期：", success_page)
+        self.assertIn(f"最後登入：{fire_day}T09:10:00", success_page)
+        self.assertIn("近 7 個消防日無登入紀錄", success_page)
         self.assertIn("成功", success_page)
         self.assertNotIn("user8", success_page)
         self.assertNotIn("pass8", success_page)
@@ -3554,7 +3581,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("王小明", failed_page)
         self.assertIn("楊紹文", failed_page)
         self.assertIn("李大文", failed_page)
-        self.assertIn("最後傳送日期：", failed_page)
+        self.assertIn("最後登入：", failed_page)
         self.assertIn("失敗", failed_page)
         self.assertNotIn("user8b", failed_page)
         self.assertNotIn("pass8b", failed_page)
