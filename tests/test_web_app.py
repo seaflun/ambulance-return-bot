@@ -3611,6 +3611,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('details.section > summary.section-head', body)
         self.assertIn('details.section[open] > summary.section-head::after', body)
 
+    def test_sinposmart_admin_section_summaries_align_desktop_and_mobile_text(self):
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        self.assertIn("grid-template-columns: 160px minmax(0, 1fr) auto;", body)
+        self.assertIn("grid-template-columns: minmax(0, 1fr);", body)
+        self.assertIn("text-align: left;", body)
+        self.assertIn("justify-self: center;", body)
+
     def test_sinposmart_admin_lists_tool_started_events(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()

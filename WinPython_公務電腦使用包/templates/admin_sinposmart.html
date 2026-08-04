@@ -80,7 +80,7 @@
       min-height: 44px;
       margin-bottom: 0;
       padding: 8px 0;
-      align-items: center;
+      align-items: baseline;
       cursor: pointer;
       list-style: none;
     }
@@ -99,7 +99,13 @@
       outline-offset: 3px;
       border-radius: 8px;
     }
-    .section-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 10px; }
+    .section-head {
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr) auto;
+      gap: 16px;
+      margin-bottom: 10px;
+      text-align: left;
+    }
     .section-title { font-size: 20px; font-weight: 840; }
     .section-note { color: var(--muted); font-size: var(--text-sm); }
     .summary-card, .event-card, .empty {
@@ -158,6 +164,16 @@
       header { align-items: stretch; flex-direction: column; }
       .button { width: 100%; }
       .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      details.section > summary.section-head {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+        align-items: start;
+        text-align: left;
+      }
+      details.section > summary.section-head::after {
+        justify-self: center;
+        margin-top: 4px;
+      }
       .event-head { grid-template-columns: 1fr; gap: 4px; }
       .event-step { grid-template-columns: 1fr; gap: 4px; align-items: start; }
       .credential-sync-row { grid-template-columns: 1fr; gap: 4px; align-items: start; }
