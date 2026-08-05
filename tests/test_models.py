@@ -12,8 +12,8 @@ from ambulance_bot.models import delete_vehicle_record, load_vehicle_records, sa
 
 
 class ModelParsingTests(unittest.TestCase):
-    def test_fire_false_alarm_always_uses_false_alarm_recorder_folder(self):
-        false_alarm_request = request_from_disaster_form(
+    def test_fire_false_alarm_preserves_selected_recorder_category(self):
+        local_false_alarm_request = request_from_disaster_form(
             MultiDict(
                 [
                     ("summary_type", "火災"),
@@ -23,8 +23,21 @@ class ModelParsingTests(unittest.TestCase):
                 ]
             )
         )
-        self.assertEqual("轄內其他案件", false_alarm_request.recorder_category)
-        self.assertEqual("誤報", false_alarm_request.recorder_subcategory)
+        support_false_alarm_request = request_from_disaster_form(
+            MultiDict(
+                [
+                    ("summary_type", "火災"),
+                    ("case_reason", "誤(謊)報"),
+                    ("recorder_category", "支援他轄"),
+                    ("recorder_subcategory", "其他"),
+                ]
+            )
+        )
+
+        self.assertEqual("轄內其他案件", local_false_alarm_request.recorder_category)
+        self.assertEqual("誤報", local_false_alarm_request.recorder_subcategory)
+        self.assertEqual("支援他轄", support_false_alarm_request.recorder_category)
+        self.assertEqual("", support_false_alarm_request.recorder_subcategory)
 
     def test_disaster_work_record_includes_team_leader(self):
         request = AmbulanceReturnRequest(

@@ -450,7 +450,7 @@
           <select name="vehicle">
             <option value="">請選擇</option>
             {% for vehicle in vehicle_options %}
-              <option value="{{ vehicle }}"{% if selected_case.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}</option>
+              <option value="{{ vehicle }}"{% if selected_case.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}{% if vehicle_plate_names.get(vehicle) %} | {{ vehicle_plate_names[vehicle] }}{% endif %}</option>
             {% endfor %}
           </select>
         </label>
@@ -607,7 +607,7 @@
             <select name="vehicle_2">
               <option value="">請選擇</option>
               {% for vehicle in vehicle_options %}
-                <option value="{{ vehicle }}"{% if second_vehicle.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}</option>
+                <option value="{{ vehicle }}"{% if second_vehicle.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}{% if vehicle_plate_names.get(vehicle) %} | {{ vehicle_plate_names[vehicle] }}{% endif %}</option>
               {% endfor %}
             </select>
           </label>

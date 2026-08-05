@@ -110,7 +110,9 @@ def disaster_folder_base_parts(request) -> tuple[list[str], str]:
     else:
         reason = str(request.case_reason or "").strip()
         reason_label = REASON_SHORT_LABELS.get(reason)
-        if request.summary_type == "火災" and request.duty_item == "火警":
+        if category == "支援他轄" and request.summary_type == "火災" and reason in {"誤報", "誤(謊)報"}:
+            name_label = "誤報"
+        elif request.summary_type == "火災" and request.duty_item == "火警":
             name_label = f"{reason_label or safe_folder_component(reason)}火警"
         else:
             name_label = reason_label or safe_folder_component(reason)

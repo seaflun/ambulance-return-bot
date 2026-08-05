@@ -1245,7 +1245,8 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(workspace_response.status_code, 200)
         workspace_css = workspace_response.data.decode("utf-8")
         self.assertIn("SinpoSmart - 救護Worker", body)
-        self.assertNotIn("救護車設定", body)
+        self.assertIn("救護車設定", body)
+        self.assertIn('href="/admin/vehicles"', body)
         self.assertNotIn('href="/admin/public-pc"', body)
         self.assertNotIn('href="/admin/sinposmart"', body)
         self.assertNotIn("SinpoSmart - 救災救護Worker 後台", body)
@@ -1689,6 +1690,30 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('.vehicle-card [data-vehicle-title] { font-size: var(--text-lg); font-weight: 800;', body)
         self.assertIn("card.querySelector('[data-vehicle-return-now]').addEventListener('click'", body)
 
+    def test_disaster_processing_controls_keep_readable_text_and_setting_page_actions_horizontal(self):
+        self.import_case_for_form(
+            {
+                "case_id": "fire-processing-controls",
+                "case_date": "2026/07/22",
+                "case_time": "1207",
+                "address": "桃園市觀音區",
+                "personnel": ["甲"],
+            }
+        )
+
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+        settings_body = html.unescape(
+            self.client.get("/admin/disaster-vehicles", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
+        )
+
+        self.assertIn("#disaster-form .package-buttons button { min-height: 42px;", disaster_body)
+        self.assertIn("font-size: var(--text-md);", disaster_body)
+        self.assertIn('data-required-message="請填寫處理情形"', disaster_body)
+        self.assertIn("處理情形補充", disaster_body)
+        self.assertIn("textarea { width: 100%; min-height: 240px;", settings_body)
+        self.assertIn(".delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 36px;", settings_body)
+        self.assertIn("white-space: nowrap;", settings_body)
+
     def test_disaster_page_hides_form_until_case_is_imported(self):
         body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
@@ -1926,10 +1951,27 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn('<option value="誤報">誤報</option>', body)
         self.assertIn("const localFalseAlarm=summaryType.value==='火災'&&['誤報','誤(謊)報'].includes(reason.value);", body)
-        self.assertIn("category.value='轄內其他案件';", body)
+        self.assertIn("const falseAlarmCategories=new Set(['轄內其他案件','支援他轄']);", body)
+        self.assertIn("if(localFalseAlarm&&!falseAlarmCategories.has(category.value)) category.value='轄內其他案件';", body)
+        self.assertIn("const localFalseAlarmOther=localFalseAlarm&&category.value==='轄內其他案件';", body)
         self.assertIn("subcategoryInput.value='誤報';", body)
         self.assertNotIn("\n      category.disabled=true;", body)
         self.assertIn('<select name="team_leader">', body)
+
+    def test_disaster_false_alarm_rejects_categories_other_than_local_other_or_support(self):
+        task_request = AmbulanceReturnRequest(
+            task_id="false-alarm-category",
+            created_at=datetime.now(),
+            raw_text="",
+            service_type="disaster",
+            summary_type="火災",
+            case_reason="誤(謊)報",
+            recorder_category="轄內A3",
+        )
+
+        errors = app_module.validate_disaster_task_form(task_request)
+
+        self.assertIn("誤(謊)報僅可選擇轄內其他案件或支援他轄", errors)
 
     def test_disaster_task_accepts_rescue_and_ems_case_types(self):
         base = [
@@ -2021,6 +2063,49 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual(disaster.get_json()["paths"], disaster.get_json()["recorder_paths"])
         self.assertEqual([], disaster.get_json()["firecam_paths"])
+
+        false_alarm = self.client.post(
+            "/api/record-folder-preview",
+            data=MultiDict(
+                [
+                    ("service_type", "disaster"),
+                    ("case_date", "2026/07/21"),
+                    ("case_time", "1207"),
+                    ("case_address", "桃園市觀音區金華路31號"),
+                    ("summary_type", "火災"),
+                    ("case_reason", "誤(謊)報"),
+                    ("recorder_category", "轄內其他案件"),
+                    ("recorder_subcategory", "其他"),
+                    ("vehicle", "新坡11"),
+                    ("driver", "甲"),
+                ]
+            ),
+        )
+        self.assertEqual(
+            ["115年/轄內其他案件/誤報/202607211207桃園市觀音區金華路31號(誤報)-11"],
+            false_alarm.get_json()["paths"],
+        )
+
+        false_alarm_support = self.client.post(
+            "/api/record-folder-preview",
+            data=MultiDict(
+                [
+                    ("service_type", "disaster"),
+                    ("case_date", "2026/07/21"),
+                    ("case_time", "1207"),
+                    ("case_address", "桃園市觀音區金華路31號"),
+                    ("summary_type", "火災"),
+                    ("case_reason", "誤(謊)報"),
+                    ("recorder_category", "支援他轄"),
+                    ("vehicle", "新坡11"),
+                    ("driver", "甲"),
+                ]
+            ),
+        )
+        self.assertEqual(
+            ["115年/支援他轄/202607211207桃園市觀音區金華路31號(誤報)-11"],
+            false_alarm_support.get_json()["paths"],
+        )
 
         missing_category = self.client.post(
             "/api/record-folder-preview",
@@ -2130,7 +2215,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("portal-card--entry", body)
         self.assertIn("portal-card--vehicle", body)
 
-    def test_vehicle_settings_links_are_only_shown_on_nas_pages(self):
+    def test_vehicle_settings_links_are_shown_on_nas_pages(self):
         response = self.client.get("/app", headers={"Host": "100.114.126.58:8080"})
         disaster_response = self.client.get("/app/disaster", headers={"Host": "100.114.126.58:8080"})
 
@@ -2153,7 +2238,7 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(ems_body.index("返回上一頁"), ems_body.index("救護車設定"))
         self.assertLess(disaster_body.index("返回上一頁"), disaster_body.index("車輛及工作設定"))
 
-    def test_local_task_forms_show_back_navigation_but_hide_vehicle_settings(self):
+    def test_local_task_forms_show_back_navigation_and_vehicle_settings(self):
         headers = {"Host": "127.0.0.1:8090"}
         entry_body = html.unescape(self.client.get("/task-entry", headers=headers).data.decode("utf-8"))
         ems_body = html.unescape(self.client.get("/app", headers=headers).data.decode("utf-8"))
@@ -2164,16 +2249,16 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("返回首頁", entry_body)
         for body in (ems_body, disaster_body):
             self.assertIn('href="/task-entry">返回上一頁</a>', body)
-            self.assertNotIn("救護車設定", body)
-            self.assertNotIn("救災車設定", body)
-            self.assertNotIn('href="/admin/vehicles"', body)
-            self.assertNotIn('href="/admin/disaster-vehicles"', body)
+        self.assertIn("救護車設定", ems_body)
+        self.assertIn('href="/admin/vehicles"', ems_body)
+        self.assertIn("車輛及工作設定", disaster_body)
+        self.assertIn('href="/admin/disaster-vehicles"', disaster_body)
 
-    def test_local_vehicle_settings_routes_are_not_available(self):
+    def test_local_vehicle_settings_routes_are_available_for_synced_edits(self):
         for path in ("/admin/vehicles", "/admin/disaster-vehicles"):
             with self.subTest(path=path):
-                self.assertEqual(404, self.client.get(path).status_code)
-                self.assertEqual(404, self.client.post(path, data={}).status_code)
+                self.assertEqual(200, self.client.get(path).status_code)
+                self.assertEqual(400, self.client.post(path, data={}).status_code)
 
     def test_worker_vehicle_settings_api_requires_token_and_returns_both_services(self):
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -2190,6 +2275,128 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("新坡91", [item["label"] for item in payload["ems_vehicles"]])
         self.assertIn("新坡11", [item["label"] for item in payload["disaster_vehicles"]])
         self.assertIn("現場待命", payload["disaster_action_packages"])
+        self.assertRegex(payload["revision"], r"^[0-9a-f]{64}$")
+
+    def test_worker_vehicle_settings_update_requires_matching_revision(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        current = self.client.get("/worker/vehicle-settings", headers=headers).get_json()
+
+        updated = self.client.post(
+            "/worker/vehicle-settings",
+            headers=headers,
+            json={
+                "operation": "save_ems_vehicle",
+                "label": "新坡96",
+                "ppe_name": "BPE-5960",
+                "revision": current["revision"],
+            },
+        )
+        stale = self.client.post(
+            "/worker/vehicle-settings",
+            headers=headers,
+            json={
+                "operation": "save_ems_vehicle",
+                "label": "新坡97",
+                "ppe_name": "BPE-5970",
+                "revision": current["revision"],
+            },
+        )
+
+        self.assertEqual(200, updated.status_code)
+        updated_payload = updated.get_json()
+        self.assertIn("新坡96", [item["label"] for item in updated_payload["ems_vehicles"]])
+        self.assertNotEqual(current["revision"], updated_payload["revision"])
+        self.assertEqual(409, stale.status_code)
+        self.assertEqual("revision_conflict", stale.get_json()["error"])
+
+    def test_local_vehicle_setting_edit_writes_to_nas_and_keeps_nas_snapshot(self):
+        os.environ["WORKER_SERVER_URL"] = "http://nas.test:8080"
+        os.environ["WORKER_TOKEN"] = "test-token"
+        remote_settings = {
+            "ems_vehicles": [{"label": "NAS救護91", "ppe_name": "NAS-EMS", "is_custom": True}],
+            "disaster_vehicles": [{"label": "NAS救災11", "ppe_name": "NAS-FIRE", "recorder_code": "NAS11"}],
+            "disaster_action_packages": ["NAS 現場待命"],
+        }
+        remote_settings["revision"] = app_module.vehicle_settings_revision(remote_settings)
+        remote_payload = {"ok": True, **remote_settings}
+        fake_response = mock.MagicMock()
+        fake_response.__enter__.return_value.read.return_value = json.dumps(remote_payload).encode("utf-8")
+
+        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=fake_response) as urlopen:
+            response = self.client.post(
+                "/admin/vehicles",
+                headers={"Host": "127.0.0.1:8090"},
+                data={
+                    "label": "NAS救護91",
+                    "ppe_name": "NAS-EMS",
+                    "settings_revision": remote_settings["revision"],
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        post_request = next(call.args[0] for call in urlopen.call_args_list if call.args[0].method == "POST")
+        self.assertEqual("http://nas.test:8080/worker/vehicle-settings", post_request.full_url)
+        self.assertEqual("test-token", post_request.get_header("X-worker-token"))
+        self.assertEqual(
+            {
+                "operation": "save_ems_vehicle",
+                "label": "NAS救護91",
+                "ppe_name": "NAS-EMS",
+                "revision": remote_settings["revision"],
+            },
+            json.loads(post_request.data.decode("utf-8")),
+        )
+        self.assertIn("NAS 即時設定", html.unescape(response.data.decode("utf-8")))
+        self.assertFalse(app_module.pending_vehicle_settings_commands_path().exists())
+
+    def test_local_vehicle_setting_offline_change_waits_then_syncs_without_overwrite(self):
+        os.environ["WORKER_SERVER_URL"] = "http://nas.test:8080"
+        os.environ["WORKER_TOKEN"] = "test-token"
+        initial_settings = {
+            "ems_vehicles": [{"label": "NAS救護91", "ppe_name": "NAS-EMS", "is_custom": True}],
+            "disaster_vehicles": [{"label": "NAS救災11", "ppe_name": "NAS-FIRE", "recorder_code": "NAS11"}],
+            "disaster_action_packages": ["NAS 現場待命"],
+        }
+        initial_settings["revision"] = app_module.vehicle_settings_revision(initial_settings)
+        app_module.cache_nas_vehicle_settings(initial_settings)
+
+        with mock.patch.object(
+            app_module.urllib.request,
+            "urlopen",
+            side_effect=urllib.error.URLError("offline"),
+        ):
+            queued = self.client.post(
+                "/admin/vehicles",
+                headers={"Host": "127.0.0.1:8090"},
+                data={
+                    "label": "NAS救護92",
+                    "ppe_name": "NAS-EMS-2",
+                    "settings_revision": initial_settings["revision"],
+                },
+            )
+
+        pending = app_module.read_pending_vehicle_settings_commands()
+        expected_settings = app_module.apply_pending_vehicle_settings_command(initial_settings, pending[0])
+        get_response = mock.MagicMock()
+        get_response.__enter__.return_value.read.return_value = json.dumps({"ok": True, **initial_settings}).encode("utf-8")
+        post_response = mock.MagicMock()
+        post_response.__enter__.return_value.read.return_value = json.dumps({"ok": True, **expected_settings}).encode("utf-8")
+        with mock.patch.object(
+            app_module.urllib.request,
+            "urlopen",
+            side_effect=[get_response, post_response],
+        ) as urlopen:
+            recovered = self.client.get("/admin/vehicles", headers={"Host": "127.0.0.1:8090"})
+
+        self.assertEqual(200, queued.status_code)
+        self.assertIn("設定已暫存", html.unescape(queued.data.decode("utf-8")))
+        self.assertEqual("pending", pending[0]["state"])
+        self.assertEqual(200, recovered.status_code)
+        self.assertIn("已同步 1 筆公務電腦暫存設定到 NAS", html.unescape(recovered.data.decode("utf-8")))
+        self.assertEqual([], app_module.read_pending_vehicle_settings_commands())
+        post_request = next(call.args[0] for call in urlopen.call_args_list if call.args[0].method == "POST")
+        self.assertEqual(initial_settings["revision"], json.loads(post_request.data.decode("utf-8"))["revision"])
 
     def test_disaster_task_defaults_to_newpo_11_and_15_and_uses_nas_action_packages(self):
         self.import_case_for_form(
@@ -2334,8 +2541,8 @@ class WebAppTests(unittest.TestCase):
             )
             disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
-        self.assertIn('<option value="NAS救護91">NAS救護91</option>', ems_body)
-        self.assertIn('<option value="NAS救災11">NAS救災11</option>', disaster_body)
+        self.assertIn('<option value="NAS救護91">NAS救護91 | NAS-EMS</option>', ems_body)
+        self.assertIn('<option value="NAS救災11">NAS救災11 | NAS-FIRE</option>', disaster_body)
         self.assertEqual(2, urlopen.call_count)
         for call in urlopen.call_args_list:
             request_object = call.args[0]
@@ -3231,7 +3438,7 @@ class WebAppTests(unittest.TestCase):
         )
         app_response = self.client.get("/app")
         body = html.unescape(app_response.data.decode("utf-8"))
-        self.assertIn('<option value="新坡96">新坡96</option>', body)
+        self.assertIn('<option value="新坡96">新坡96 | BPE-5960</option>', body)
         self.assertIn("BPE-5960", html.unescape(response.data.decode("utf-8")))
 
     def test_admin_pages_share_layout_tokens(self):

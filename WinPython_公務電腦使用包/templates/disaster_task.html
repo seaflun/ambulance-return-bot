@@ -125,7 +125,7 @@
     .mileage-hint-spacer { min-height: 1.45em; visibility: hidden; }
     .mileage-hint { min-height: 46px; margin: 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
     .package-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-    .package-buttons button { min-height: 42px; padding: 0 12px; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; font-size: 15px; }
+    #disaster-form .package-buttons button { min-height: 42px; padding: 0 12px; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; font-size: var(--text-md); }
     .preview, .folder-preview-output { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); }
     .preview { min-height: 68px; white-space: pre-wrap; }
     .remove-vehicle { background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
@@ -254,7 +254,7 @@
         <article class="vehicle-card">
           <div class="section-head"><strong data-vehicle-title>{{ loop.index }}車</strong><button type="button" class="remove-vehicle">移除車輛</button></div>
           <div class="grid">
-            <label class="field-visual{% if not entry.vehicle %} is-pending{% endif %}" data-required-message="請選擇車輛"><span class="field-label-title">車輛<span class="field-error-mark" aria-hidden="true">*</span></span><select name="vehicle" required><option value="">請選擇</option>{% for vehicle in vehicle_options %}<option value="{{ vehicle }}"{% if entry.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}</option>{% endfor %}</select></label>
+            <label class="field-visual{% if not entry.vehicle %} is-pending{% endif %}" data-required-message="請選擇車輛"><span class="field-label-title">車輛<span class="field-error-mark" aria-hidden="true">*</span></span><select name="vehicle" required><option value="">請選擇</option>{% for vehicle in vehicle_options %}<option value="{{ vehicle }}"{% if entry.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}{% if vehicle_plate_names.get(vehicle) %} | {{ vehicle_plate_names[vehicle] }}{% endif %}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not entry.driver %} is-pending{% endif %}" data-required-message="請選擇司機"><span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span><select name="driver" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not (entry.return_time or selected_return_time_input(selected_case)) %} is-pending{% endif %}" data-required-message="請填寫正確返隊日期與時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field return-time-field"><input type="text" name="vehicle_return_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ entry.return_date or selected_return_date_input(selected_case) }}" required><input name="vehicle_return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ entry.return_time or selected_return_time_input(selected_case) }}" required><button type="button" class="clock-button" data-vehicle-return-now aria-label="帶入現在時間"><span class="clock-glyph"></span></button></div></label>
             <label class="field-visual{% if not entry.mileage %} is-pending{% endif %}" data-required-message="請填寫數字里程"><span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span><input name="mileage" inputmode="numeric" pattern="\d+" value="{{ entry.mileage or '' }}" required></label>
@@ -270,7 +270,7 @@
     <section class="panel">
       <h2>工作紀錄</h2>
       <h3>處理情形套餐</h3><div class="package-buttons">{% for text in disaster_action_packages %}<button type="button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
-      <label class="field-visual{% if not selected_case.action_note %} is-pending{% endif %}" data-required-message="請填寫其他處理情形"><span class="field-label-title">其他處理情形<span class="field-error-mark" aria-hidden="true">*</span></span><textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
+      <label class="field-visual{% if not selected_case.action_note %} is-pending{% endif %}" data-required-message="請填寫處理情形"><span class="field-label-title">處理情形補充<span class="field-error-mark" aria-hidden="true">*</span></span><textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
       <h3>處理情形預覽</h3><div class="preview" id="processing-preview"></div>
     </section>
     <section class="panel" id="disaster-folder-preview">
@@ -331,12 +331,20 @@
     const subcategoryField=document.getElementById('subcategory-field');
     const subcategoryInput=subcategoryField.querySelector('select');
     const localFalseAlarm=summaryType.value==='火災'&&['誤報','誤(謊)報'].includes(reason.value);
-    if(localFalseAlarm){
-      category.value='轄內其他案件';
+    const falseAlarmCategories=new Set(['轄內其他案件','支援他轄']);
+    Array.from(category.options).forEach(option=>{
+      const available=!localFalseAlarm||!option.value||falseAlarmCategories.has(option.value);
+      option.hidden=!available;
+      option.disabled=!available;
+    });
+    if(localFalseAlarm&&!falseAlarmCategories.has(category.value)) category.value='轄內其他案件';
+    const localFalseAlarmOther=localFalseAlarm&&category.value==='轄內其他案件';
+    if(localFalseAlarmOther){
       subcategoryInput.value='誤報';
       subcategoryInput.disabled=true;
       lockedSubcategory.disabled=false;
     }else{
+      if(localFalseAlarm) subcategoryInput.value='';
       subcategoryInput.disabled=false;
       lockedSubcategory.disabled=true;
     }

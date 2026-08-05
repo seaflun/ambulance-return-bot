@@ -60,6 +60,7 @@ from ambulance_bot.models import (
     COMMAND_PREFIX,
     DEFAULT_DISINFECTION_ITEMS,
     DEFAULT_CONSUMABLES,
+    DISASTER_ACTION_PACKAGES,
     DISASTER_REASON_OPTIONS,
     DISASTER_REASON_OPTIONS_BY_TYPE,
     DISINFECTION_ITEM_OPTIONS,
@@ -121,6 +122,7 @@ artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
 store = JsonTaskStore(artifacts_dir / "tasks")
 runner = TaskRunner(artifacts_dir, store=store)
 desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
+_vehicle_settings_sync_lock = threading.RLock()
 _local_case_lookup_thread_lock = threading.Lock()
 _local_case_lookup_thread: threading.Thread | None = None
 _public_pc_report_lock = threading.Lock()
@@ -234,6 +236,7 @@ def task_entry():
 def new_task():
     selected_case = pop_selected_case()
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
+    vehicle_records = effective_ems_vehicle_records()
     return render_template(
         "new_task.html",
         form_action=url_for("create_task"),
@@ -242,7 +245,8 @@ def new_task():
         recent_tasks=recent_tasks_for_task_form("ems"),
         case_lookup=prepared_case_lookup(),
         selected_case=selected_case,
-        vehicle_options=effective_ems_vehicle_options(),
+        vehicle_options=[record["label"] for record in vehicle_records],
+        vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
         person_options=person_options,
         case_reason_options=CASE_REASON_OPTIONS,
         disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
@@ -263,11 +267,8 @@ def disaster_task():
     selected_case = pop_selected_case()
     person_options = selected_case.get("person_options") or person_options_from_personnel(selected_case.get("personnel") or [])
     nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
-    vehicle_options = (
-        [record["label"] for record in nas_settings["disaster_vehicles"]]
-        if nas_settings is not None
-        else [record["label"] for record in load_disaster_vehicle_records(artifacts_dir)]
-    )
+    vehicle_records = effective_disaster_vehicle_records(nas_settings)
+    vehicle_options = [record["label"] for record in vehicle_records]
     action_packages = (
         list(nas_settings["disaster_action_packages"])
         if nas_settings is not None
@@ -281,6 +282,7 @@ def disaster_task():
         case_lookup=prepared_case_lookup(),
         person_options=person_options,
         vehicle_options=vehicle_options,
+        vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
         disaster_reason_options=DISASTER_REASON_OPTIONS,
         disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
         disaster_action_packages=action_packages,
@@ -397,6 +399,7 @@ def create_disaster_task():
     apply_disaster_vehicle_mileage_system_names(task_request, effective_disaster_vehicle_records())
     errors = validate_disaster_task_form(task_request)
     if errors:
+        vehicle_records = effective_disaster_vehicle_records()
         return render_template(
             "disaster_task.html",
             form_action=url_for("create_disaster_task"),
@@ -404,7 +407,8 @@ def create_disaster_task():
             recent_tasks=recent_tasks_for_task_form("disaster"),
             case_lookup=prepared_case_lookup(),
             person_options=person_options_from_personnel(task_request.personnel),
-            vehicle_options=effective_disaster_vehicle_options(),
+            vehicle_options=[record["label"] for record in vehicle_records],
+            vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
             disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
             disaster_action_packages=effective_disaster_action_packages(),
@@ -421,6 +425,7 @@ def create_disaster_task():
             recorder_codes=effective_disaster_vehicle_recorder_codes(),
         )
     except (OSError, RecordFolderError) as exc:
+        vehicle_records = effective_disaster_vehicle_records()
         return render_template(
             "disaster_task.html",
             form_action=url_for("create_disaster_task"),
@@ -428,7 +433,8 @@ def create_disaster_task():
             recent_tasks=recent_tasks_for_task_form("disaster"),
             case_lookup=prepared_case_lookup(),
             person_options=person_options_from_personnel(task_request.personnel),
-            vehicle_options=effective_disaster_vehicle_options(),
+            vehicle_options=[record["label"] for record in vehicle_records],
+            vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
             disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
             disaster_action_packages=effective_disaster_action_packages(),
@@ -463,6 +469,7 @@ def edit_task(task_id: str):
     if task_edit_is_locked(payload):
         return task_edit_lock_message(payload), 409
     selected_case = task_form_values(task)
+    vehicle_records = effective_ems_vehicle_records()
     return render_template(
         "new_task.html",
         form_action=url_for("update_task", task_id=task_id),
@@ -471,7 +478,8 @@ def edit_task(task_id: str):
         recent_tasks=[],
         case_lookup={"cases": [], "case_count": 0, "debug_artifacts": []},
         selected_case=selected_case,
-        vehicle_options=effective_ems_vehicle_options(),
+        vehicle_options=[record["label"] for record in vehicle_records],
+        vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
         person_options=PERSON_OPTIONS,
         case_reason_options=CASE_REASON_OPTIONS,
         duty_item_options=DUTY_ITEM_OPTIONS,
@@ -841,31 +849,37 @@ def sinposmart_events():
 @app.get("/admin/vehicles")
 def admin_vehicles():
     if request_is_local_host():
-        abort(404)
-    return render_template(
-        "admin_vehicles.html",
-        vehicles=vehicle_admin_records(),
-        errors=[],
-        message="",
-    )
+        return render_local_vehicle_settings()
+    return render_vehicle_settings()
 
 
 @app.get("/admin/disaster-vehicles")
 def admin_disaster_vehicles():
     if request_is_local_host():
-        abort(404)
+        return render_local_disaster_vehicle_settings()
     return render_disaster_vehicle_settings()
 
 
 @app.post("/admin/disaster-vehicles")
 def save_disaster_vehicle_option():
     if request_is_local_host():
-        abort(404)
+        command = {
+            "operation": "save_disaster_vehicle",
+            "label": str(request.form.get("label") or "").strip(),
+            "ppe_name": str(request.form.get("ppe_name") or "").strip(),
+            "recorder_code": str(request.form.get("recorder_code") or "").strip(),
+        }
+        return render_local_disaster_vehicle_command_result(
+            command,
+            form_values=command,
+            success_message=f"已將 {command['label'] or '救災車輛'} 同步到 NAS",
+        )
     label = str(request.form.get("label") or "").strip()
     ppe_name = str(request.form.get("ppe_name") or "").strip()
     recorder_code = str(request.form.get("recorder_code") or "").strip()
     try:
-        save_disaster_vehicle_record(label, ppe_name, recorder_code, artifacts_dir)
+        with _vehicle_settings_sync_lock:
+            save_disaster_vehicle_record(label, ppe_name, recorder_code, artifacts_dir)
     except ValueError as exc:
         return render_disaster_vehicle_settings(errors=[str(exc)]), 400
     return render_disaster_vehicle_settings(message=f"已儲存 {label}")
@@ -874,9 +888,15 @@ def save_disaster_vehicle_option():
 @app.post("/admin/disaster-vehicles/delete")
 def delete_disaster_vehicle_option():
     if request_is_local_host():
-        abort(404)
+        label = str(request.form.get("label") or "").strip()
+        return render_local_disaster_vehicle_command_result(
+            {"operation": "delete_disaster_vehicle", "label": label},
+            success_message=f"已從 NAS 刪除 {label}",
+        )
     label = str(request.form.get("label") or "").strip()
-    if not delete_disaster_vehicle_record(label, artifacts_dir):
+    with _vehicle_settings_sync_lock:
+        deleted = delete_disaster_vehicle_record(label, artifacts_dir)
+    if not deleted:
         return render_disaster_vehicle_settings(errors=["找不到要刪除的救災車輛"]), 400
     return render_disaster_vehicle_settings(message=f"已刪除 {label}")
 
@@ -884,19 +904,40 @@ def delete_disaster_vehicle_option():
 @app.post("/admin/disaster-vehicles/action-packages")
 def save_disaster_action_package_options():
     if request_is_local_host():
-        abort(404)
+        values = str(request.form.get("action_packages") or "").splitlines()
+        command = {"operation": "save_disaster_action_packages", "action_packages": values}
+        return render_local_disaster_vehicle_command_result(
+            command,
+            form_values={"action_packages": "\n".join(values)},
+            success_message="已將處理情形套餐同步到 NAS",
+        )
     values = str(request.form.get("action_packages") or "").splitlines()
-    save_disaster_action_packages(values, artifacts_dir)
+    with _vehicle_settings_sync_lock:
+        save_disaster_action_packages(values, artifacts_dir)
     return render_disaster_vehicle_settings(message="已儲存處理情形套餐")
 
 
-def render_disaster_vehicle_settings(*, errors: list[str] | None = None, message: str = ""):
+def render_disaster_vehicle_settings(
+    *,
+    vehicles: list[dict[str, object]] | None = None,
+    action_packages: list[str] | None = None,
+    errors: list[str] | None = None,
+    message: str = "",
+    settings_revision: str = "",
+    sync_source: str = "",
+    pending_sync_commands: list[dict[str, str]] | None = None,
+    form_values: Mapping[str, object] | None = None,
+):
     return render_template(
         "admin_disaster_vehicles.html",
-        vehicles=load_disaster_vehicle_records(artifacts_dir),
-        action_packages=load_disaster_action_packages(artifacts_dir),
+        vehicles=vehicles if vehicles is not None else load_disaster_vehicle_records(artifacts_dir),
+        action_packages=action_packages if action_packages is not None else load_disaster_action_packages(artifacts_dir),
         errors=errors or [],
         message=message,
+        settings_revision=settings_revision,
+        sync_source=sync_source,
+        pending_sync_commands=pending_sync_commands or [],
+        form_values=dict(form_values or {}),
     )
 
 
@@ -1011,43 +1052,39 @@ def admin_sinposmart():
 @app.post("/admin/vehicles")
 def create_vehicle_option():
     if request_is_local_host():
-        abort(404)
+        command = {
+            "operation": "save_ems_vehicle",
+            "label": str(request.form.get("label") or "").strip(),
+            "ppe_name": str(request.form.get("ppe_name") or "").strip().upper(),
+        }
+        return render_local_vehicle_command_result(
+            command,
+            form_values=command,
+            success_message=f"已將 {command['label'] or '救護車輛'} 同步到 NAS",
+        )
     label = str(request.form.get("label") or "").strip()
     ppe_name = str(request.form.get("ppe_name") or "").strip().upper()
     if not label:
-        return render_template(
-            "admin_vehicles.html",
-            vehicles=vehicle_admin_records(),
-            errors=["請輸入救護車代號"],
-            message="",
-        ), 400
-    save_vehicle_record(label, ppe_name, artifacts_dir)
-    return render_template(
-        "admin_vehicles.html",
-        vehicles=vehicle_admin_records(),
-        errors=[],
-        message=f"已新增或更新 {label}",
-    )
+        return render_vehicle_settings(errors=["請輸入救護車代號"]), 400
+    with _vehicle_settings_sync_lock:
+        save_vehicle_record(label, ppe_name, artifacts_dir)
+    return render_vehicle_settings(message=f"已新增或更新 {label}")
 
 
 @app.post("/admin/vehicles/delete")
 def delete_vehicle_option():
     if request_is_local_host():
-        abort(404)
+        label = str(request.form.get("label") or "").strip()
+        return render_local_vehicle_command_result(
+            {"operation": "delete_ems_vehicle", "label": label},
+            success_message=f"已從 NAS 刪除 {label}",
+        )
     label = str(request.form.get("label") or "").strip()
-    if not delete_vehicle_record(label, artifacts_dir):
-        return render_template(
-            "admin_vehicles.html",
-            vehicles=vehicle_admin_records(),
-            errors=["內建救護車不能刪除"],
-            message="",
-        ), 400
-    return render_template(
-        "admin_vehicles.html",
-        vehicles=vehicle_admin_records(),
-        errors=[],
-        message=f"已刪除 {label}",
-    )
+    with _vehicle_settings_sync_lock:
+        deleted = delete_vehicle_record(label, artifacts_dir)
+    if not deleted:
+        return render_vehicle_settings(errors=["內建救護車不能刪除"]), 400
+    return render_vehicle_settings(message=f"已刪除 {label}")
 
 
 @app.get("/worker/identity")
@@ -1063,14 +1100,45 @@ def worker_identity():
 def worker_vehicle_settings():
     if not worker_authorized():
         abort(403)
-    return jsonify(
-        {
-            "ok": True,
-            "ems_vehicles": vehicle_admin_records(),
-            "disaster_vehicles": load_disaster_vehicle_records(artifacts_dir),
-            "disaster_action_packages": load_disaster_action_packages(artifacts_dir),
-        }
-    )
+    return jsonify(vehicle_settings_api_payload())
+
+
+@app.post("/worker/vehicle-settings")
+def update_worker_vehicle_settings():
+    if not worker_authorized():
+        abort(403)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, Mapping):
+        return jsonify({"ok": False, "error": "invalid_json"}), 400
+    command = normalize_vehicle_settings_command(payload)
+    if command is None:
+        return jsonify({"ok": False, "error": "invalid_command"}), 400
+    base_revision = str(payload.get("revision") or "").strip()
+    with _vehicle_settings_sync_lock:
+        current = vehicle_settings_api_payload()
+        if not base_revision or not hmac.compare_digest(base_revision, str(current["revision"])):
+            current.update({"ok": False, "error": "revision_conflict"})
+            return jsonify(current), 409
+        try:
+            apply_vehicle_settings_command(command)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": "invalid_command", "detail": str(exc)}), 400
+        return jsonify(vehicle_settings_api_payload())
+
+
+@app.post("/admin/vehicle-settings/pending/delete")
+def delete_pending_vehicle_settings_command():
+    if not request_is_local_host():
+        abort(404)
+    command_id = str(request.form.get("command_id") or "").strip()
+    service_type = str(request.form.get("service_type") or "ems").strip().lower()
+    if not discard_pending_vehicle_settings_command(command_id):
+        message = "找不到要取消的暫存設定"
+    else:
+        message = "已取消暫存設定，NAS 未被修改"
+    if service_type == "disaster":
+        return render_local_disaster_vehicle_settings(message=message)
+    return render_local_vehicle_settings(message=message)
 
 
 @app.post("/worker/control")
@@ -2986,32 +3054,540 @@ def public_pc_report_server_url() -> str:
     return server_url
 
 
-def fetch_nas_vehicle_settings() -> dict[str, object] | None:
-    server_url = nas_vehicle_settings_server_url()
-    if not server_url:
-        return None
-    req = urllib.request.Request(
-        f"{server_url}/worker/vehicle-settings",
-        headers=worker_headers(),
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=2) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, UnicodeError, ValueError, urllib.error.URLError):
-        return None
-    if not isinstance(payload, dict) or payload.get("ok") is not True:
+def vehicle_settings_snapshot() -> dict[str, object]:
+    return {
+        "ems_vehicles": vehicle_admin_records(),
+        "disaster_vehicles": load_disaster_vehicle_records(artifacts_dir),
+        "disaster_action_packages": load_disaster_action_packages(artifacts_dir),
+    }
+
+
+def vehicle_settings_revision(settings: Mapping[str, object]) -> str:
+    payload = {
+        "ems_vehicles": [
+            {
+                "label": str(record.get("label") or "").strip(),
+                "ppe_name": str(record.get("ppe_name") or "").strip(),
+                "is_custom": bool(record.get("is_custom")),
+            }
+            for record in list(settings.get("ems_vehicles") or [])
+            if isinstance(record, Mapping) and str(record.get("label") or "").strip()
+        ],
+        "disaster_vehicles": [
+            {
+                "label": str(record.get("label") or "").strip(),
+                "ppe_name": str(record.get("ppe_name") or "").strip(),
+                "recorder_code": str(record.get("recorder_code") or "").strip(),
+            }
+            for record in list(settings.get("disaster_vehicles") or [])
+            if isinstance(record, Mapping) and str(record.get("label") or "").strip()
+        ],
+        "disaster_action_packages": [
+            str(value or "").strip()
+            for value in list(settings.get("disaster_action_packages") or [])
+            if str(value or "").strip()
+        ],
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -> dict[str, object]:
+    snapshot = dict(settings or vehicle_settings_snapshot())
+    return {
+        "ok": True,
+        "ems_vehicles": list(snapshot.get("ems_vehicles") or []),
+        "disaster_vehicles": list(snapshot.get("disaster_vehicles") or []),
+        "disaster_action_packages": list(snapshot.get("disaster_action_packages") or []),
+        "revision": vehicle_settings_revision(snapshot),
+    }
+
+
+def normalize_remote_vehicle_settings(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, Mapping):
         return None
     ems_vehicles = clean_remote_vehicle_records(payload.get("ems_vehicles"), disaster=False)
     disaster_vehicles = clean_remote_vehicle_records(payload.get("disaster_vehicles"), disaster=True)
     disaster_action_packages = clean_remote_disaster_action_packages(payload.get("disaster_action_packages"))
     if ems_vehicles is None or disaster_vehicles is None or disaster_action_packages is None:
         return None
-    return {
+    settings = {
         "ems_vehicles": ems_vehicles,
         "disaster_vehicles": disaster_vehicles,
         "disaster_action_packages": disaster_action_packages,
     }
+    revision = str(payload.get("revision") or "").strip() or vehicle_settings_revision(settings)
+    return {**settings, "revision": revision}
+
+
+def vehicle_settings_sync_cache_path() -> Path:
+    return artifacts_dir / "settings" / "nas_vehicle_settings_cache.json"
+
+
+def pending_vehicle_settings_commands_path() -> Path:
+    return artifacts_dir / "settings" / "nas_vehicle_settings_pending.json"
+
+
+def write_vehicle_settings_sync_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def cached_nas_vehicle_settings() -> dict[str, object] | None:
+    path = vehicle_settings_sync_cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return normalize_remote_vehicle_settings(payload)
+
+
+def cache_nas_vehicle_settings(settings: Mapping[str, object]) -> None:
+    payload = vehicle_settings_api_payload(settings)
+    write_vehicle_settings_sync_json(vehicle_settings_sync_cache_path(), payload)
+
+
+def normalize_vehicle_settings_command(payload: Mapping[str, object]) -> dict[str, object] | None:
+    operation = str(payload.get("operation") or "").strip()
+    label = str(payload.get("label") or "").strip()
+    if operation == "save_ems_vehicle":
+        return {
+            "operation": operation,
+            "label": label,
+            "ppe_name": str(payload.get("ppe_name") or "").strip().upper(),
+        }
+    if operation == "delete_ems_vehicle":
+        return {"operation": operation, "label": label}
+    if operation == "save_disaster_vehicle":
+        return {
+            "operation": operation,
+            "label": label,
+            "ppe_name": str(payload.get("ppe_name") or "").strip().upper(),
+            "recorder_code": str(payload.get("recorder_code") or "").strip(),
+        }
+    if operation == "delete_disaster_vehicle":
+        return {"operation": operation, "label": label}
+    if operation == "save_disaster_action_packages":
+        values = payload.get("action_packages")
+        if not isinstance(values, list):
+            return None
+        return {
+            "operation": operation,
+            "action_packages": [str(value or "").strip() for value in values],
+        }
+    return None
+
+
+def apply_vehicle_settings_command(command: Mapping[str, object]) -> None:
+    normalized = normalize_vehicle_settings_command(command)
+    if normalized is None:
+        raise ValueError("設定格式不正確")
+    operation = str(normalized["operation"])
+    label = str(normalized.get("label") or "").strip()
+    if operation == "save_ems_vehicle":
+        if not label:
+            raise ValueError("請輸入救護車代號")
+        save_vehicle_record(label, str(normalized.get("ppe_name") or ""), artifacts_dir)
+        return
+    if operation == "delete_ems_vehicle":
+        if not delete_vehicle_record(label, artifacts_dir):
+            raise ValueError("內建救護車不能刪除")
+        return
+    if operation == "save_disaster_vehicle":
+        save_disaster_vehicle_record(
+            label,
+            str(normalized.get("ppe_name") or ""),
+            str(normalized.get("recorder_code") or ""),
+            artifacts_dir,
+        )
+        return
+    if operation == "delete_disaster_vehicle":
+        if not delete_disaster_vehicle_record(label, artifacts_dir):
+            raise ValueError("找不到要刪除的救災車輛")
+        return
+    if operation == "save_disaster_action_packages":
+        save_disaster_action_packages(list(normalized["action_packages"]), artifacts_dir)
+        return
+    raise ValueError("不支援的設定操作")
+
+
+def read_pending_vehicle_settings_commands() -> list[dict[str, object]]:
+    path = pending_vehicle_settings_commands_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    commands: list[dict[str, object]] = []
+    for item in payload:
+        if not isinstance(item, Mapping):
+            continue
+        command = normalize_vehicle_settings_command(item)
+        command_id = str(item.get("id") or "").strip()
+        revision = str(item.get("revision") or "").strip()
+        if command is None or not command_id or not revision:
+            continue
+        commands.append(
+            {
+                **command,
+                "id": command_id,
+                "revision": revision,
+                "state": "conflict" if item.get("state") == "conflict" else "pending",
+            }
+        )
+    return commands
+
+
+def write_pending_vehicle_settings_commands(commands: list[Mapping[str, object]]) -> None:
+    payload = [dict(command) for command in commands]
+    write_vehicle_settings_sync_json(pending_vehicle_settings_commands_path(), payload)
+
+
+def queue_pending_vehicle_settings_command(command: Mapping[str, object], revision: str) -> None:
+    normalized = normalize_vehicle_settings_command(command)
+    if normalized is None or not revision:
+        raise ValueError("尚未取得 NAS 設定版本，無法安全暫存")
+    commands = read_pending_vehicle_settings_commands()
+    commands.append({**normalized, "id": uuid4().hex, "revision": revision, "state": "pending"})
+    write_pending_vehicle_settings_commands(commands)
+
+
+def discard_pending_vehicle_settings_command(command_id: str) -> bool:
+    command_id = str(command_id or "").strip()
+    if not command_id:
+        return False
+    commands = read_pending_vehicle_settings_commands()
+    remaining = [command for command in commands if command["id"] != command_id]
+    if len(remaining) == len(commands):
+        return False
+    write_pending_vehicle_settings_commands(remaining)
+    return True
+
+
+def vehicle_settings_command_label(command: Mapping[str, object]) -> str:
+    operation = str(command.get("operation") or "")
+    label = str(command.get("label") or "").strip()
+    labels = {
+        "save_ems_vehicle": f"新增或更新救護車：{label}",
+        "delete_ems_vehicle": f"刪除救護車：{label}",
+        "save_disaster_vehicle": f"新增或更新救災車：{label}",
+        "delete_disaster_vehicle": f"刪除救災車：{label}",
+        "save_disaster_action_packages": "更新處理情形套餐",
+    }
+    return labels.get(operation, "車輛設定異動")
+
+
+def pending_vehicle_settings_command_views() -> list[dict[str, str]]:
+    return [
+        {
+            "id": str(command["id"]),
+            "description": vehicle_settings_command_label(command),
+            "state_label": "版本衝突，尚未寫入 NAS" if command["state"] == "conflict" else "等待 NAS 同步",
+        }
+        for command in read_pending_vehicle_settings_commands()
+    ]
+
+
+def apply_pending_vehicle_settings_command(
+    settings: Mapping[str, object],
+    command: Mapping[str, object],
+) -> dict[str, object]:
+    current = normalize_remote_vehicle_settings(settings)
+    if current is None:
+        raise ValueError("設定快照不正確")
+    result = {
+        "ems_vehicles": [dict(record) for record in current["ems_vehicles"]],
+        "disaster_vehicles": [dict(record) for record in current["disaster_vehicles"]],
+        "disaster_action_packages": list(current["disaster_action_packages"]),
+    }
+    normalized = normalize_vehicle_settings_command(command)
+    if normalized is None:
+        raise ValueError("設定操作不正確")
+    operation = str(normalized["operation"])
+    label = str(normalized.get("label") or "").strip()
+    if operation == "save_ems_vehicle":
+        if not label:
+            raise ValueError("請輸入救護車代號")
+        existing = next((record for record in result["ems_vehicles"] if record["label"] == label), {})
+        result["ems_vehicles"] = [record for record in result["ems_vehicles"] if record["label"] != label]
+        result["ems_vehicles"].append(
+            {
+                "label": label,
+                "ppe_name": str(normalized.get("ppe_name") or ""),
+                "is_custom": bool(existing.get("is_custom", True)),
+            }
+        )
+    elif operation == "delete_ems_vehicle":
+        vehicle = next((record for record in result["ems_vehicles"] if record["label"] == label), None)
+        if vehicle is None or not vehicle.get("is_custom"):
+            raise ValueError("內建救護車不能刪除")
+        result["ems_vehicles"] = [record for record in result["ems_vehicles"] if record["label"] != label]
+    elif operation == "save_disaster_vehicle":
+        if not label or not str(normalized.get("recorder_code") or "").strip():
+            raise ValueError("請完整填寫救災車輛資料")
+        result["disaster_vehicles"] = [record for record in result["disaster_vehicles"] if record["label"] != label]
+        result["disaster_vehicles"].append(
+            {
+                "label": label,
+                "ppe_name": str(normalized.get("ppe_name") or ""),
+                "recorder_code": str(normalized.get("recorder_code") or ""),
+            }
+        )
+    elif operation == "delete_disaster_vehicle":
+        if label not in {record["label"] for record in result["disaster_vehicles"]}:
+            raise ValueError("找不到要刪除的救災車輛")
+        result["disaster_vehicles"] = [record for record in result["disaster_vehicles"] if record["label"] != label]
+    elif operation == "save_disaster_action_packages":
+        packages = clean_remote_disaster_action_packages(normalized.get("action_packages"))
+        result["disaster_action_packages"] = packages or list(DISASTER_ACTION_PACKAGES)
+    else:
+        raise ValueError("不支援的設定操作")
+    return {**result, "revision": vehicle_settings_revision(result)}
+
+
+def request_nas_vehicle_settings(command: Mapping[str, object] | None = None) -> dict[str, object]:
+    server_url = nas_vehicle_settings_server_url()
+    if not server_url:
+        return {"state": "unavailable", "detail": "尚未設定 NAS 連線位置"}
+    headers = worker_headers()
+    data = None
+    method = "GET"
+    if command is not None:
+        data = json.dumps(dict(command), ensure_ascii=False).encode("utf-8")
+        headers = {**headers, "Content-Type": "application/json"}
+        method = "POST"
+    req = urllib.request.Request(
+        f"{server_url}/worker/vehicle-settings",
+        data=data,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+        except (UnicodeError, ValueError):
+            payload = {}
+        settings = normalize_remote_vehicle_settings(payload)
+        if exc.code == 409 and settings is not None:
+            cache_nas_vehicle_settings(settings)
+            return {"state": "conflict", "settings": settings}
+        if exc.code in {401, 403}:
+            return {"state": "failed", "detail": "NAS 拒絕設定同步，請確認公務電腦授權"}
+        return {"state": "failed", "detail": "NAS 尚未提供雙向設定同步"}
+    except (OSError, UnicodeError, ValueError, urllib.error.URLError):
+        return {"state": "unavailable", "detail": "目前無法連線 NAS"}
+    if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+        return {"state": "failed", "detail": "NAS 回覆的設定資料不正確"}
+    settings = normalize_remote_vehicle_settings(payload)
+    if settings is None:
+        return {"state": "failed", "detail": "NAS 回覆的設定資料不完整"}
+    cache_nas_vehicle_settings(settings)
+    return {"state": "ok", "settings": settings}
+
+
+def flush_pending_nas_vehicle_settings(settings: Mapping[str, object]) -> tuple[dict[str, object], str, list[str]]:
+    current = normalize_remote_vehicle_settings(settings)
+    if current is None:
+        return dict(settings), "", []
+    commands = read_pending_vehicle_settings_commands()
+    if not commands:
+        return current, "", []
+    remaining: list[dict[str, object]] = []
+    synced_count = 0
+    errors: list[str] = []
+    for index, command in enumerate(commands):
+        if command["state"] == "conflict":
+            remaining.extend(commands[index:])
+            break
+        result = request_nas_vehicle_settings(
+            {key: value for key, value in command.items() if key not in {"id", "state"}}
+        )
+        if result["state"] == "ok":
+            current = dict(result["settings"])
+            synced_count += 1
+            continue
+        if result["state"] == "conflict":
+            current = dict(result["settings"])
+            remaining.append({**command, "state": "conflict"})
+            errors.append(f"{vehicle_settings_command_label(command)} 與 NAS 最新設定衝突，尚未覆寫")
+        else:
+            remaining.append(command)
+        remaining.extend(commands[index + 1 :])
+        break
+    write_pending_vehicle_settings_commands(remaining)
+    message = f"已同步 {synced_count} 筆公務電腦暫存設定到 NAS" if synced_count else ""
+    return current, message, errors
+
+
+def local_vehicle_settings_view() -> dict[str, object]:
+    remote = request_nas_vehicle_settings()
+    if remote["state"] == "ok":
+        settings, message, errors = flush_pending_nas_vehicle_settings(remote["settings"])
+        return {
+            "settings": settings,
+            "source": "NAS 即時設定",
+            "message": message,
+            "errors": errors,
+        }
+    cached = cached_nas_vehicle_settings()
+    if cached is not None:
+        settings = dict(cached)
+        for command in read_pending_vehicle_settings_commands():
+            if command["state"] != "pending":
+                continue
+            try:
+                settings = apply_pending_vehicle_settings_command(settings, command)
+            except ValueError:
+                continue
+        return {
+            "settings": settings,
+            "source": "本機暫存設定（NAS 目前無法連線）",
+            "message": "",
+            "errors": [],
+        }
+    return {
+        "settings": {**vehicle_settings_snapshot(), "revision": ""},
+        "source": "尚未取得 NAS 設定，暫時顯示本機舊設定",
+        "message": "",
+        "errors": ["第一次同步 NAS 設定前，無法安全修改車輛設定"],
+    }
+
+
+def submit_local_vehicle_settings_command(command: Mapping[str, object], revision: str) -> dict[str, object]:
+    normalized = normalize_vehicle_settings_command(command)
+    revision = str(revision or "").strip()
+    if normalized is None:
+        return {"state": "invalid", "detail": "設定格式不正確"}
+    if not revision:
+        return {"state": "invalid", "detail": "尚未取得 NAS 設定版本，請恢復連線後再修改"}
+    result = request_nas_vehicle_settings({**normalized, "revision": revision})
+    if result["state"] == "unavailable":
+        queue_pending_vehicle_settings_command(normalized, revision)
+        return {"state": "queued", "detail": "NAS 目前無法連線，設定已暫存並會在下次開啟設定頁時同步"}
+    return result
+
+
+def render_local_vehicle_settings(
+    *,
+    errors: list[str] | None = None,
+    message: str = "",
+    form_values: Mapping[str, object] | None = None,
+):
+    view = local_vehicle_settings_view()
+    settings = dict(view["settings"])
+    combined_errors = list(view["errors"]) + list(errors or [])
+    return render_vehicle_settings(
+        vehicles=[dict(record) for record in settings["ems_vehicles"]],
+        errors=combined_errors,
+        message=message or str(view["message"]),
+        settings_revision=str(settings.get("revision") or ""),
+        sync_source=str(view["source"]),
+        pending_sync_commands=pending_vehicle_settings_command_views(),
+        form_values=form_values,
+    )
+
+
+def render_local_disaster_vehicle_settings(
+    *,
+    errors: list[str] | None = None,
+    message: str = "",
+    form_values: Mapping[str, object] | None = None,
+):
+    view = local_vehicle_settings_view()
+    settings = dict(view["settings"])
+    combined_errors = list(view["errors"]) + list(errors or [])
+    return render_disaster_vehicle_settings(
+        vehicles=[dict(record) for record in settings["disaster_vehicles"]],
+        action_packages=list(settings["disaster_action_packages"]),
+        errors=combined_errors,
+        message=message or str(view["message"]),
+        settings_revision=str(settings.get("revision") or ""),
+        sync_source=str(view["source"]),
+        pending_sync_commands=pending_vehicle_settings_command_views(),
+        form_values=form_values,
+    )
+
+
+def render_local_vehicle_command_result(
+    command: Mapping[str, object],
+    *,
+    form_values: Mapping[str, object] | None = None,
+    success_message: str,
+):
+    result = submit_local_vehicle_settings_command(command, str(request.form.get("settings_revision") or ""))
+    if result["state"] == "ok":
+        return render_local_vehicle_settings(message=success_message)
+    if result["state"] == "queued":
+        return render_local_vehicle_settings(message=str(result["detail"]))
+    if result["state"] == "conflict":
+        return render_local_vehicle_settings(
+            errors=["NAS 設定已在另一端更新，請確認最新清單後重新送出"],
+            form_values=form_values,
+        ), 409
+    return render_local_vehicle_settings(errors=[str(result.get("detail") or "設定同步失敗")], form_values=form_values), 400
+
+
+def render_local_disaster_vehicle_command_result(
+    command: Mapping[str, object],
+    *,
+    form_values: Mapping[str, object] | None = None,
+    success_message: str,
+):
+    result = submit_local_vehicle_settings_command(command, str(request.form.get("settings_revision") or ""))
+    if result["state"] == "ok":
+        return render_local_disaster_vehicle_settings(message=success_message)
+    if result["state"] == "queued":
+        return render_local_disaster_vehicle_settings(message=str(result["detail"]))
+    if result["state"] == "conflict":
+        return render_local_disaster_vehicle_settings(
+            errors=["NAS 設定已在另一端更新，請確認最新清單後重新送出"],
+            form_values=form_values,
+        ), 409
+    return render_local_disaster_vehicle_settings(
+        errors=[str(result.get("detail") or "設定同步失敗")],
+        form_values=form_values,
+    ), 400
+
+
+def render_vehicle_settings(
+    *,
+    vehicles: list[dict[str, object]] | None = None,
+    errors: list[str] | None = None,
+    message: str = "",
+    settings_revision: str = "",
+    sync_source: str = "",
+    pending_sync_commands: list[dict[str, str]] | None = None,
+    form_values: Mapping[str, object] | None = None,
+):
+    return render_template(
+        "admin_vehicles.html",
+        vehicles=vehicles if vehicles is not None else vehicle_admin_records(),
+        errors=errors or [],
+        message=message,
+        settings_revision=settings_revision,
+        sync_source=sync_source,
+        pending_sync_commands=pending_sync_commands or [],
+        form_values=dict(form_values or {}),
+    )
+
+
+def fetch_nas_vehicle_settings() -> dict[str, object] | None:
+    result = request_nas_vehicle_settings()
+    if result["state"] != "ok":
+        return None
+    return dict(result["settings"])
 
 
 def nas_vehicle_settings_server_url() -> str:
@@ -3037,6 +3613,8 @@ def clean_remote_vehicle_records(value: object, *, disaster: bool) -> list[dict[
         }
         if disaster:
             record["recorder_code"] = str(item.get("recorder_code") or "").strip()
+        else:
+            record["is_custom"] = bool(item.get("is_custom"))
         records.append(record)
     return records
 
@@ -3052,12 +3630,24 @@ def clean_remote_disaster_action_packages(value: object) -> list[str] | None:
     return packages
 
 
-def effective_ems_vehicle_options() -> list[str]:
+def effective_ems_vehicle_records() -> list[dict[str, str]]:
     if request_is_local_host():
         settings = fetch_nas_vehicle_settings()
         if settings is not None:
-            return [record["label"] for record in settings["ems_vehicles"]]
-    return vehicle_options(artifacts_dir)
+            return list(settings["ems_vehicles"])
+    return vehicle_admin_records()
+
+
+def effective_ems_vehicle_options() -> list[str]:
+    return [record["label"] for record in effective_ems_vehicle_records()]
+
+
+def vehicle_option_plate_names(records: list[dict[str, str]]) -> dict[str, str]:
+    return {
+        record["label"]: record["ppe_name"]
+        for record in records
+        if record.get("label") and record.get("ppe_name")
+    }
 
 
 def effective_disaster_vehicle_records(settings: dict[str, object] | None = None) -> list[dict[str, str]]:
@@ -4452,7 +5042,7 @@ def show_nas_home_button() -> bool:
 
 
 def show_vehicle_settings_button() -> bool:
-    return not request_is_local_host()
+    return True
 
 
 def show_task_entry_controls() -> bool:
@@ -4779,10 +5369,12 @@ def validate_disaster_task_form(task_request) -> list[str]:
     if task_request.team_leader.strip() and task_request.team_leader not in task_request.personnel:
         errors.append("帶隊官必須是本案服勤人員")
     if not task_request.action_note.strip():
-        errors.append("請填寫其他處理情形")
+        errors.append("請填寫處理情形")
     categories = {"轄內A2", "轄內A3", "轄內其他案件", "支援他轄"}
     if task_request.recorder_category not in categories:
         errors.append("請選擇行車紀錄器分類")
+    elif task_request.summary_type == "火災" and task_request.case_reason in {"誤報", "誤(謊)報"} and task_request.recorder_category not in {"轄內其他案件", "支援他轄"}:
+        errors.append("誤(謊)報僅可選擇轄內其他案件或支援他轄")
     if task_request.recorder_category == "轄內其他案件" and not task_request.recorder_subcategory.strip():
         errors.append("請選擇轄內其他案件子分類")
     entries = task_request.effective_vehicle_entries()
@@ -4852,6 +5444,7 @@ def render_task_form_from_request(
 ) -> str:
     selected_case = task_form_values(asdict(task_request))
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
+    vehicle_records = effective_ems_vehicle_records()
     return render_template(
         "new_task.html",
         form_action=form_action,
@@ -4860,7 +5453,8 @@ def render_task_form_from_request(
         recent_tasks=recent_tasks,
         case_lookup=case_lookup,
         selected_case=selected_case,
-        vehicle_options=effective_ems_vehicle_options(),
+        vehicle_options=[record["label"] for record in vehicle_records],
+        vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
         person_options=person_options,
         case_reason_options=CASE_REASON_OPTIONS,
         disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,

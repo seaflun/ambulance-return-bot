@@ -66,7 +66,7 @@
       color: var(--ink);
     }
     input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
-    textarea { width: 100%; min-height: 148px; margin-top: 6px; padding: 12px; resize: vertical; font: inherit; }
+    textarea { width: 100%; min-height: 240px; margin-top: 6px; padding: 12px; resize: vertical; font: inherit; }
     button, .button {
       display: inline-flex;
       align-items: center;
@@ -95,7 +95,7 @@
     .vehicle-list { display: grid; gap: 8px; }
     .vehicle-row {
       display: grid;
-      grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) minmax(120px, 180px) 64px;
+      grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) minmax(120px, 180px) 76px;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -116,8 +116,15 @@
     .vehicle-row > * { min-width: 0; }
     .vehicle-label { font-weight: 780; overflow-wrap: anywhere; }
     .vehicle-plate, .vehicle-recorder { color: var(--muted); font-weight: 700; overflow-wrap: anywhere; }
-    .delete-form { padding: 0; border: 0; background: transparent; box-shadow: none; }
-    .delete-button { min-height: 34px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
+    .delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 36px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+    .delete-button { min-width: 64px; min-height: 36px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; white-space: nowrap; }
+    .sync-panel { margin-bottom: 16px; }
+    .sync-panel p { margin: 0; color: var(--muted); font-weight: 720; }
+    .pending-sync-list { display: grid; gap: 8px; margin-top: 12px; }
+    .pending-sync-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+    .pending-sync-item strong, .pending-sync-item span { display: block; }
+    .pending-sync-item span { color: var(--muted); font-size: var(--text-sm); }
+    .pending-sync-item .delete-form { flex: 0 0 auto; }
     form + .panel { margin-top: 16px; }
     @media (max-width: 560px) {
       header { align-items: stretch; flex-direction: column; }
@@ -135,6 +142,26 @@
       <a class="button secondary header-navigation-button" href="/app/disaster">返回救災登打</a>
     {% endcall %}
 
+    {% if sync_source or pending_sync_commands %}
+      <section class="panel sync-panel" aria-live="polite">
+        {% if sync_source %}<p>{{ sync_source }}</p>{% endif %}
+        {% if pending_sync_commands %}
+          <div class="pending-sync-list">
+            {% for command in pending_sync_commands %}
+              <div class="pending-sync-item">
+                <div><strong>{{ command.description }}</strong><span>{{ command.state_label }}</span></div>
+                <form class="delete-form" method="post" action="/admin/vehicle-settings/pending/delete">
+                  <input type="hidden" name="command_id" value="{{ command.id }}">
+                  <input type="hidden" name="service_type" value="disaster">
+                  <button class="delete-button" type="submit">取消暫存</button>
+                </form>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </section>
+    {% endif %}
+
     <form method="post" action="/admin/disaster-vehicles">
       <h2>新增或更新車輛</h2>
       {% if message %}
@@ -149,15 +176,16 @@
       {% endif %}
       <div class="grid">
         <label>車輛名稱
-          <input name="label" autocomplete="off" required>
+          <input name="label" autocomplete="off" value="{{ form_values.get('label', '') }}" required>
         </label>
         <label>車輛里程系統名稱
-          <input name="ppe_name" autocomplete="off">
+          <input name="ppe_name" autocomplete="off" value="{{ form_values.get('ppe_name', '') }}">
         </label>
         <label>行車紀錄器車號
-          <input name="recorder_code" autocomplete="off" required>
+          <input name="recorder_code" autocomplete="off" value="{{ form_values.get('recorder_code', '') }}" required>
         </label>
       </div>
+      <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
       <button type="submit">儲存設定</button>
     </form>
 
@@ -177,6 +205,7 @@
             <div class="vehicle-recorder">{{ vehicle.recorder_code }}</div>
             <form class="delete-form" method="post" action="/admin/disaster-vehicles/delete">
               <input type="hidden" name="label" value="{{ vehicle.label }}">
+              <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
               <button class="delete-button" type="submit">刪除</button>
             </form>
           </div>
@@ -187,8 +216,9 @@
     <form method="post" action="/admin/disaster-vehicles/action-packages">
       <h2>處理情形套餐</h2>
       <label>每行一個套餐內容
-        <textarea name="action_packages" autocomplete="off">{{ action_packages | join('\n') }}</textarea>
+        <textarea name="action_packages" autocomplete="off">{{ form_values.get('action_packages', action_packages | join('\n')) }}</textarea>
       </label>
+      <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
       <button type="submit">儲存套餐</button>
     </form>
   </main>
