@@ -109,7 +109,8 @@
     .clock-glyph { width: 18px; height: 18px; border: 2px solid currentColor; border-radius: 50%; position: relative; display: inline-block; }
     .clock-glyph::before { content: ""; position: absolute; left: 7px; top: 3px; width: 2px; height: 6px; background: currentColor; }
     .clock-glyph::after { content: ""; position: absolute; left: 7px; top: 8px; width: 5px; height: 2px; background: currentColor; }
-    .vehicle-card [data-vehicle-title] { font-size: var(--text-lg); font-weight: 800; line-height: 1.3; }
+    .workspace-page #disaster-form .vehicle-card [data-vehicle-title] { color: var(--accent); font-size: 1.5rem; font-weight: 800; line-height: 1.2; }
+    #disaster-form [data-required-message="請填寫處理情形"] .field-label-title { font-size: var(--text-label); font-weight: 780; }
     .check-item { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 46px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
     #disaster-form .fuel-record-toggle input { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; transform: scale(1.2); accent-color: var(--accent); }
     label > span { display: flex; align-items: center; gap: 10px; }
@@ -121,9 +122,9 @@
     .firecam-selector .check-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
     .fuel-fields { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .fuel-total { color: var(--accent); font-weight: 800; }
-    .mileage-hint-panel { display: grid; grid-column: 2; min-width: 0; margin: 0 0 2px; }
-    .mileage-hint-spacer { min-height: 1.45em; visibility: hidden; }
     .mileage-hint { min-height: 46px; margin: 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
+    .mileage-hint:empty { display: none; }
+    #disaster-form .field-visual .mileage-hint { margin-top: 8px; min-height: 42px; }
     .package-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
     #disaster-form .package-buttons button { min-height: 42px; padding: 0 12px; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; font-size: var(--text-md); }
     .preview, .folder-preview-output { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); }
@@ -151,7 +152,6 @@
       header { align-items: center; }
       h1 { font-size: 25px; }
       .grid { grid-template-columns: 1fr; gap: 8px; }
-      .mileage-hint-panel { grid-column: auto; }
       .case-time-field { grid-template-columns: 1fr; }
       .return-time-field { grid-template-columns: minmax(0, 1fr) 44px; }
       .return-time-field input[name="return_date"],
@@ -257,8 +257,7 @@
             <label class="field-visual{% if not entry.vehicle %} is-pending{% endif %}" data-required-message="請選擇車輛"><span class="field-label-title">車輛<span class="field-error-mark" aria-hidden="true">*</span></span><select name="vehicle" required><option value="">請選擇</option>{% for vehicle in vehicle_options %}<option value="{{ vehicle }}"{% if entry.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}{% if vehicle_plate_names.get(vehicle) %} | {{ vehicle_plate_names[vehicle] }}{% endif %}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not entry.driver %} is-pending{% endif %}" data-required-message="請選擇司機"><span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span><select name="driver" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not (entry.return_time or selected_return_time_input(selected_case)) %} is-pending{% endif %}" data-required-message="請填寫正確返隊日期與時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field return-time-field"><input type="text" name="vehicle_return_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ entry.return_date or selected_return_date_input(selected_case) }}" required><input name="vehicle_return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ entry.return_time or selected_return_time_input(selected_case) }}" required><button type="button" class="clock-button" data-vehicle-return-now aria-label="帶入現在時間"><span class="clock-glyph"></span></button></div></label>
-            <label class="field-visual{% if not entry.mileage %} is-pending{% endif %}" data-required-message="請填寫數字里程"><span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span><input name="mileage" inputmode="numeric" pattern="\d+" value="{{ entry.mileage or '' }}" required></label>
-            <div class="mileage-hint-panel" hidden><span class="field-label-title mileage-hint-spacer" aria-hidden="true">&nbsp;</span><p class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></p></div>
+            <label class="field-visual{% if not entry.mileage %} is-pending{% endif %}" data-required-message="請填寫數字里程"><span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span><input name="mileage" inputmode="numeric" pattern="\d+" value="{{ entry.mileage or '' }}" required><span class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></span></label>
             <label class="check-item fuel-record-toggle full"><input type="checkbox" class="fuel-toggle" name="fuel_enabled" value="{{ loop.index0 }}"{% if fuel.enabled %} checked{% endif %}><span>登打加油紀錄</span></label>
             <div class="fuel-fields full grid"{% if not fuel.enabled %} hidden{% endif %}><label class="field-visual" data-required-message="請填寫加油日期"><span class="field-label-title">加油日期<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_date" value="{{ fuel.date or selected_case_date_input(selected_case) }}"></label><label class="field-visual" data-required-message="請填寫加油時間"><span class="field-label-title">加油時間<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" value="{{ fuel.time or '' }}"></label><label class="field-visual" data-required-message="請填寫數字油量"><span class="field-label-title">油量<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_quantity" inputmode="decimal" pattern="\d+(?:\.\d+)?" value="{{ fuel.quantity or '' }}"></label><label class="field-visual" data-required-message="請填寫數字單價"><span class="field-label-title">單價<span class="field-error-mark" aria-hidden="true">*</span></span><input name="fuel_unit_price" inputmode="decimal" pattern="\d+(?:\.\d+)?" value="{{ fuel.unit_price or '' }}"></label><div class="full fuel-total">最終總價：0</div></div>
           </div>
@@ -377,7 +376,6 @@
     if(!vehicle||!hint) return;
     const mileage=lastVehicleMileages[vehicle.value]||'';
     hint.textContent=mileage?`上次該車輛登打的里程：${mileage}`:'';
-    hint.closest('.mileage-hint-panel').hidden=!mileage;
   }
   function bindCard(card){
     if(card.dataset.bound==='1') return;
@@ -413,12 +411,10 @@
     updateFolderPreview();
   });
   function updatePreview(){
-    const assignments=Array.from(list.querySelectorAll('.vehicle-card')).map(card=>{ const vehicle=card.querySelector('[name="vehicle"]').value; const driver=card.querySelector('[name="driver"]').value; return vehicle&&driver?`車輛:${vehicle}／司機:${driver}`:''; }).filter(Boolean);
+    const assignments=Array.from(list.querySelectorAll('.vehicle-card')).map(card=>{ const vehicle=card.querySelector('[name="vehicle"]').value; const driver=card.querySelector('[name="driver"]').value; return vehicle&&driver?`${vehicle}司機:${driver}`:''; }).filter(Boolean);
     const commander=form.elements.commander.value;
-    const teamLeader=form.elements.team_leader.value;
     if(commander) assignments.push(`指揮官:${commander}`);
-    if(teamLeader) assignments.push(`帶隊官:${teamLeader}`);
-    const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官／帶隊官';
+    const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官';
     document.getElementById('processing-preview').textContent=`1.${assignmentText}\n2.${document.getElementById('action-note').value}`;
   }
   function escapeHtml(value){ return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }

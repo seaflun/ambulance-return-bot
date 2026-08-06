@@ -1687,7 +1687,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('.time-field { display: grid; grid-template-columns: minmax(0, 1fr) 104px 52px;', body)
         self.assertIn('class="clock-button" id="now-time" aria-label="帶入現在時間"', body)
         self.assertIn('data-vehicle-return-now aria-label="帶入現在時間"', body)
-        self.assertIn('.vehicle-card [data-vehicle-title] { font-size: var(--text-lg); font-weight: 800;', body)
+        self.assertIn('.workspace-page #disaster-form .vehicle-card [data-vehicle-title] { color: var(--accent); font-size: 1.5rem; font-weight: 800;', body)
+        self.assertIn('#disaster-form [data-required-message="請填寫處理情形"] .field-label-title { font-size: var(--text-label); font-weight: 780; }', body)
+        self.assertIn("return vehicle&&driver?`${vehicle}司機:${driver}`:'';", body)
+        self.assertIn("const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官';", body)
+        self.assertNotIn("帶隊官:${teamLeader}", body)
         self.assertIn("card.querySelector('[data-vehicle-return-now]').addEventListener('click'", body)
 
     def test_disaster_processing_controls_keep_readable_text_and_setting_page_actions_horizontal(self):
@@ -2479,7 +2483,8 @@ class WebAppTests(unittest.TestCase):
         compact_body = body.replace(" ", "")
         self.assertIn("上次該車輛登打的里程", body)
         self.assertIn('data-last-mileage-for="vehicle"', body)
-        self.assertIn(".mileage-hint-panel { display: grid; grid-column: 2;", body)
+        self.assertIn("#disaster-form .field-visual .mileage-hint { margin-top: 8px; min-height: 42px; }", body)
+        self.assertNotIn("mileage-hint-panel", body)
         self.assertIn("border: 1px solid var(--line);", body)
         self.assertIn("min-height: 46px;", body)
         self.assertIn(
@@ -2635,6 +2640,8 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn('name="two_vehicle"', body)
+        self.assertIn('.workspace-page #task-form .vehicle-section-title { display: none; margin: 4px 0 14px; padding-top: 2px; color: var(--accent); font-size: 1.5rem; font-weight: 800;', body)
+        self.assertIn('.workspace-page #task-form .record-folder-preview strong { display: block; margin-bottom: 8px; font-size: 1.375rem; font-weight: 800; }', body)
         self.assertIn("\u5169\u8eca\u540c\u6642\u767b\u6253", body)
         self.assertIn("\u6b64\u52fe\u9078\u70ba\u5169\u8eca\u540c\u6642\u767b\u6253\uff0c\u82e5\u9700\u5206\u958b\u767b\u6253\u5247\u4e0d\u7528\u52fe\u9078", body)
         self.assertNotIn("2\u8eca\u51fa\u52e4", body)
