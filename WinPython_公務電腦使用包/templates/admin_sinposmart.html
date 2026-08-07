@@ -117,6 +117,12 @@
     .summary-card { padding: 14px; }
     .summary-label { color: var(--muted); font-size: var(--text-sm); }
     .summary-value { margin-top: 3px; font-size: 24px; font-weight: 820; }
+    .unreturned-return-card { margin-bottom: 14px; border-color: #e7b76b; background: #fffaf1; }
+    .unreturned-return-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .unreturned-return-title { font-size: 18px; font-weight: 840; }
+    .unreturned-return-list { display: grid; gap: 8px; margin-top: 10px; }
+    .unreturned-return-item { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .unreturned-return-meta { margin-top: 5px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .version-strip { margin-bottom: 14px; }
     .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
     .event-list { display: grid; gap: 10px; }
@@ -236,6 +242,41 @@
         <div class="summary-card">
           <div class="summary-label">失敗</div>
           <div class="summary-value">{{ summary.failed or 0 }}</div>
+        </div>
+      </section>
+
+      <section class="summary-card unreturned-return-card" aria-label="未返隊暫停">
+        <div class="unreturned-return-head">
+          <div>
+            <div class="summary-label">未返隊暫停</div>
+            <h2 class="unreturned-return-title">待處理 {{ summary.unreturned_returns or 0 }} 筆</h2>
+          </div>
+          <div class="section-note">公務電腦持久清單；此處僅顯示目前待處理狀態</div>
+        </div>
+        <div class="unreturned-return-list">
+        {% for event in admin_view.unreturned_return_events or [] %}
+          <article class="unreturned-return-item">
+            <div class="event-head">
+              <time class="event-time">暫停 {{ event.first_paused_at or event.last_occurred_at }}</time>
+              <div>
+                <h3 class="event-title">{{ event.item_title }}</h3>
+                <div class="event-meta">{{ event.target or event.person_label }}｜{{ event.record_label }}｜{{ event.trigger_label }}</div>
+              </div>
+              <div class="event-badges">
+                <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
+              </div>
+            </div>
+            <div class="unreturned-return-meta">
+              最近確認：{{ event.last_attempt_at or '尚未確認' }}
+              ｜下次重試：{{ event.next_retry_at or '等待登入' }}
+              ｜間隔：{{ event.retry_interval_minutes or 0 }} 分鐘
+              ｜到期：{{ event.expires_at or '未標示' }}
+              {% if event.owner_actor_no %}｜目前處理番號：{{ event.owner_actor_no }}{% endif %}
+            </div>
+          </article>
+        {% else %}
+          <div class="section-note">目前沒有未返隊暫停案件。</div>
+        {% endfor %}
         </div>
       </section>
 

@@ -783,6 +783,48 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["action_events"][0]["status_label"], "等待登打")
         self.assertNotIn("queued_for_worker", view["action_events"][0].values())
 
+    def test_admin_view_keeps_only_active_unreturned_return_records(self):
+        def event(event_id, occurred_at, status, queue_id, *, retry_minutes):
+            return normalize_sinposmart_event(
+                {
+                    "event_id": event_id,
+                    "occurred_at": occurred_at,
+                    "record_type": "unreturned_return",
+                    "trigger_type": "recovery",
+                    "status": status,
+                    "item_kind": "出入",
+                    "item_title": "出 / 退勤",
+                    "target": "08番 測試員",
+                    "target_time": "08:05",
+                    "snapshot": {
+                        "queue_id": queue_id,
+                        "first_paused_at": "2026-08-07T08:00:00",
+                        "last_attempt_at": occurred_at,
+                        "next_retry_at": "2026-08-07T08:15:00",
+                        "expires_at": "2026-08-08T02:00:00",
+                        "last_owner_actor_no": "11",
+                        "retry_interval_minutes": retry_minutes,
+                    },
+                },
+                now=datetime(2026, 8, 7, 8, 0),
+            )
+
+        view = build_sinposmart_admin_view(
+            [
+                event("evt-paused", "2026-08-07T08:00:00", "pending", "queue-resolved", retry_minutes=5),
+                event("evt-resolved", "2026-08-07T08:06:00", "resolved", "queue-resolved", retry_minutes=5),
+                event("evt-retrying", "2026-08-07T08:10:00", "retrying", "queue-active", retry_minutes=10),
+            ]
+        )
+
+        self.assertEqual(view["summary"]["unreturned_returns"], 1)
+        self.assertEqual(len(view["unreturned_return_events"]), 1)
+        card = view["unreturned_return_events"][0]
+        self.assertEqual(card["target"], "08番 測試員")
+        self.assertEqual(card["status_label"], "重新確認中")
+        self.assertEqual(card["retry_interval_minutes"], 10)
+        self.assertEqual(card["owner_actor_no"], "11")
+
 
 if __name__ == "__main__":
     unittest.main()

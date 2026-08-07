@@ -22,6 +22,7 @@ SINPOSMART_RECORD_TYPES = {
     "tool_action_finished",
     "schedule_snapshot",
     "comparison_snapshot",
+    "unreturned_return",
     "error",
 }
 SINPOSMART_LOGIN_RECORD_TYPES = {"login", "login_failed", "login_expired", "logout"}
@@ -99,6 +100,7 @@ def sinposmart_record_type_label(value: str) -> str:
         "tool_action_finished": "工具結果",
         "schedule_snapshot": "整日勤務",
         "comparison_snapshot": "已登打資料",
+        "unreturned_return": "未返隊暫停",
         "error": "錯誤",
     }
     return labels.get(str(value or ""), "事件")
@@ -108,6 +110,7 @@ def sinposmart_trigger_label(value: str) -> str:
     labels = {
         "manual": "手動",
         "due": "自動",
+        "recovery": "返隊確認",
         "login": "登入",
         "schedule": "勤務快照",
         "comparison": "比對快照",
@@ -224,6 +227,25 @@ def sinposmart_action_status_rank(value: str, record_type: str = "") -> int:
         "等待登打": 10,
     }
     return priorities.get(label, 0)
+
+
+def sinposmart_unreturned_return_status_label(value: str) -> str:
+    labels = {
+        "pending": "暫停待確認",
+        "retrying": "重新確認中",
+        "resolved": "已確認返隊",
+        "expired": "逾 18 小時移除",
+    }
+    return labels.get(str(value or "").strip().lower(), "未返隊暫停")
+
+
+def sinposmart_unreturned_return_status_class(value: str) -> str:
+    status = str(value or "").strip().lower()
+    if status == "resolved":
+        return "complete"
+    if status == "expired":
+        return "failed"
+    return "running"
 
 
 def sinposmart_action_status_class(label: str) -> str:
@@ -385,6 +407,27 @@ def sinposmart_admin_event(event: dict[str, Any], status_label: str | None = Non
         "target_time": str(event.get("target_time") or ""),
         "repeat_count": event_repeat_count(event),
     }
+
+
+def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str, Any]:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    card = sinposmart_admin_event(
+        event,
+        sinposmart_unreturned_return_status_label(str(event.get("status") or "")),
+    )
+    card["record_label"] = "未返隊暫停"
+    card["status_class"] = sinposmart_unreturned_return_status_class(str(event.get("status") or ""))
+    card["item_title"] = sinposmart_action_display_title(event)
+    card["first_paused_at"] = sanitize_scalar(snapshot.get("first_paused_at"), 80)
+    card["last_attempt_at"] = sanitize_scalar(snapshot.get("last_attempt_at"), 80)
+    card["next_retry_at"] = sanitize_scalar(snapshot.get("next_retry_at"), 80)
+    card["expires_at"] = sanitize_scalar(snapshot.get("expires_at"), 80)
+    card["owner_actor_no"] = sanitize_scalar(snapshot.get("last_owner_actor_no"), 40)
+    try:
+        card["retry_interval_minutes"] = max(0, int(snapshot.get("retry_interval_minutes") or 0))
+    except (TypeError, ValueError):
+        card["retry_interval_minutes"] = 0
+    return card
 
 
 def sinposmart_action_display_title(event: dict[str, Any]) -> str:
@@ -617,6 +660,7 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
     action_groups: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     tool_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     background_updates: dict[tuple[str, ...], dict[str, Any]] = {}
+    unreturned_return_events: dict[str, dict[str, Any]] = {}
     login_events: list[dict[str, Any]] = []
     compacted_events = compact_sinposmart_events(events)
     preferred_people = build_sinposmart_preferred_person_labels(compacted_events)
@@ -625,6 +669,14 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(event, dict):
             continue
         record_type = str(event.get("record_type") or "")
+        if record_type == "unreturned_return":
+            snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+            queue_id = sanitize_scalar(snapshot.get("queue_id"), 120) or str(event.get("event_id") or "")
+            unreturned_return_events[queue_id] = newer_sinposmart_event(
+                unreturned_return_events.get(queue_id),
+                event,
+            )
+            continue
         if record_type in {"action_queued", "action_result"}:
             key = sinposmart_action_group_key(event)
             action_state = action_groups.setdefault(key, {})
@@ -661,6 +713,13 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
     login_update_events = [sinposmart_admin_login_event(event, preferred_people) for event in login_events]
     login_update_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
 
+    unreturned_return_cards = [
+        sinposmart_admin_unreturned_return_event(event)
+        for event in unreturned_return_events.values()
+        if str(event.get("status") or "").strip().lower() in {"pending", "retrying"}
+    ]
+    unreturned_return_cards.sort(key=lambda item: str(item.get("next_retry_at") or ""))
+
     summary = {
         "actions": len(action_events),
         "submitted": sum(1 for event in action_events if event["status_label"] == "已登打"),
@@ -670,6 +729,7 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
         "tools": len(tool_update_events),
         "background_updates": len(background_update_events),
         "logins": len(login_update_events),
+        "unreturned_returns": len(unreturned_return_cards),
     }
     return {
         "summary": summary,
@@ -677,6 +737,7 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
         "tool_events": tool_update_events,
         "background_updates": background_update_events,
         "login_events": login_update_events,
+        "unreturned_return_events": unreturned_return_cards,
     }
 
 
@@ -813,6 +874,7 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
 def sinposmart_event_merge_key(event: dict[str, Any]) -> tuple[str, ...]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     tool_label = sanitize_scalar(snapshot.get("tool_label"), 120) if snapshot else ""
+    queue_id = sanitize_scalar(snapshot.get("queue_id"), 120) if snapshot else ""
     return (
         str(event.get("record_type") or ""),
         str(event.get("actor_no") or ""),
@@ -827,11 +889,12 @@ def sinposmart_event_merge_key(event: dict[str, Any]) -> tuple[str, ...]:
         str(event.get("target") or ""),
         str(event.get("target_time") or ""),
         tool_label,
+        queue_id,
     )
 
 
 def sinposmart_event_keeps_individual_record(event: dict[str, Any]) -> bool:
-    return sinposmart_is_login_event(event)
+    return sinposmart_is_login_event(event) or str(event.get("record_type") or "") == "unreturned_return"
 
 
 def event_repeat_count(event: dict[str, Any]) -> int:

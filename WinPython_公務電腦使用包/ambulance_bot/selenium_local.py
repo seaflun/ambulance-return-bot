@@ -3993,7 +3993,8 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
 def _extract_all_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
     seen: set[str] = set()
     results: list[dict[str, str]] = []
-    for _ in range(5):
+    total_pages = _case_lookup_total_pages(driver)
+    for _ in range(total_pages):
         for item in _extract_emergency_cases(driver):
             case_id = item.get("case_id", "")
             if case_id and case_id not in seen:
@@ -4005,16 +4006,51 @@ def _extract_all_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str
     return results
 
 
+def _case_lookup_total_pages(driver: webdriver.Chrome) -> int:
+    script = """
+    const pageText = document.querySelector('.page')?.innerText || document.body?.innerText || '';
+    const match = pageText.match(/共\\s*([0-9][0-9,]*)\\s*筆/);
+    if (!match) return 1;
+    const total = Number(match[1].replace(/,/g, ''));
+    return Number.isFinite(total) ? Math.max(1, Math.ceil(total / 10)) : 1;
+    """
+    try:
+        return max(1, int(driver.execute_script(script)))
+    except (TypeError, ValueError, WebDriverException):
+        return 1
+
+
 def _click_next_page_if_present(driver: webdriver.Chrome) -> bool:
     script = """
-    const controls = Array.from(document.querySelectorAll('input, button, a'));
+    const pageText = document.querySelector('.page')?.innerText || document.body?.innerText || '';
+    const totalMatch = pageText.match(/共\\s*([0-9][0-9,]*)\\s*筆/);
+    const total = totalMatch ? Number(totalMatch[1].replace(/,/g, '')) : NaN;
+    const totalPages = Number.isFinite(total) ? Math.max(1, Math.ceil(total / 10)) : 1;
+    const pageSelect = document.querySelector('select[name="pageSelect"]');
+    const pageField = document.getElementById('selectedPage');
+    const selectedPage = Number.parseInt(pageSelect?.value || '', 10);
+    const hiddenPage = Number.parseInt(pageField?.value || '', 10);
+    const currentPage = Number.isFinite(selectedPage) && selectedPage >= 1
+      ? selectedPage
+      : (Number.isFinite(hiddenPage) && hiddenPage >= 1 ? hiddenPage : 1);
+    const nextPage = currentPage + 1;
+    if (nextPage > totalPages) return false;
+    const controls = Array.from(document.querySelectorAll('input, button, a, label, [onclick]'));
     const target = controls.find(el => {
       const text = [el.value, el.innerText, el.title].map(x => String(x || '')).join(' ');
-      const disabled = el.disabled || String(el.className || '').includes('disabled');
-      return !disabled && text.includes('下一頁');
+      const handler = [el.getAttribute('onclick'), el.getAttribute('href')].map(x => String(x || '')).join(' ');
+      const pageMatch = handler.match(/pageSelect_1\\s*\\(\\s*['"]?(\\d+)/i);
+      const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true' || /\\bdisabled\\b/i.test(String(el.className || ''));
+      return !disabled && text.includes('下一頁') && pageMatch && Number(pageMatch[1]) === nextPage;
     });
-    if (!target) return false;
-    target.click();
+    if (target) {
+      target.click();
+      return true;
+    }
+    const option = pageSelect && Array.from(pageSelect.options).find(item => Number(item.value) === nextPage);
+    if (!option) return false;
+    pageSelect.value = String(nextPage);
+    pageSelect.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
     """
     try:

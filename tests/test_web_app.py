@@ -3726,6 +3726,47 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("已登打值班交接。", body)
         self.assertNotIn("secret", body)
 
+    def test_sinposmart_admin_shows_active_unreturned_return_card(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-unreturned-return-active",
+                "occurred_at": f"{fire_day}T09:10:00",
+                "record_type": "unreturned_return",
+                "actor_no": "11",
+                "display_name": "11番 測試員",
+                "trigger_type": "recovery",
+                "status": "retrying",
+                "item_kind": "出入",
+                "item_title": "出 / 退勤",
+                "target": "08番 外勤人員",
+                "target_time": "09:10",
+                "snapshot": {
+                    "queue_id": "queue-test-active",
+                    "first_paused_at": f"{fire_day}T08:00:00",
+                    "last_attempt_at": f"{fire_day}T09:10:00",
+                    "next_retry_at": f"{fire_day}T09:20:00",
+                    "expires_at": f"{fire_day}T23:00:00",
+                    "last_owner_actor_no": "11",
+                    "retry_interval_minutes": 10,
+                    "password": "secret",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        self.assertIn("未返隊暫停", body)
+        self.assertIn("待處理 1 筆", body)
+        self.assertIn("08番 外勤人員", body)
+        self.assertIn("重新確認中", body)
+        self.assertIn("間隔：10 分鐘", body)
+        self.assertNotIn("secret", body)
+
     def test_sinposmart_admin_shows_worker_credential_sync_without_account_or_password(self):
         worker_token = "0123456789abcdef0123456789abcdef"
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"

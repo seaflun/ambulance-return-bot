@@ -2356,6 +2356,56 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertTrue(calls["released"])
         self.assertTrue(calls["create_kwargs"]["headless"])
 
+    def test_case_lookup_total_pages_uses_the_portal_total_count(self):
+        class FakeDriver:
+            def execute_script(self, script: str):
+                self.script = script
+                return 3
+
+        driver = FakeDriver()
+
+        self.assertEqual(3, selenium_local_module._case_lookup_total_pages(driver))
+        self.assertIn("共", driver.script)
+        self.assertIn("Math.ceil(total / 10)", driver.script)
+
+    def test_case_lookup_pagination_targets_the_next_page_control(self):
+        class FakeDriver:
+            def execute_script(self, script: str):
+                self.script = script
+                return True
+
+        driver = FakeDriver()
+
+        self.assertTrue(selenium_local_module._click_next_page_if_present(driver))
+        self.assertIn("selectedPage", driver.script)
+        self.assertIn('select[name="pageSelect"]', driver.script)
+        self.assertIn("pageSelect_1", driver.script)
+        self.assertIn("下一頁", driver.script)
+        self.assertIn("dispatchEvent(new Event('change'", driver.script)
+        self.assertIn("totalPages", driver.script)
+
+    def test_extract_all_emergency_cases_continues_past_five_pages(self):
+        pages = [[{"case_id": f"case-{index}"}] for index in range(1, 7)]
+        state = {"page": 0}
+
+        class FakeDriver:
+            def execute_script(self, script: str):
+                return 6
+
+        def extract_page(_driver):
+            return pages[state["page"]]
+
+        def click_next_page(_driver):
+            state["page"] += 1
+            return state["page"] < len(pages)
+
+        with patch.object(selenium_local_module, "_extract_emergency_cases", side_effect=extract_page):
+            with patch.object(selenium_local_module, "_click_next_page_if_present", side_effect=click_next_page):
+                with patch.object(selenium_local_module.time, "sleep", return_value=None):
+                    cases = selenium_local_module._extract_all_emergency_cases(FakeDriver())
+
+        self.assertEqual([f"case-{index}" for index in range(1, 7)], [case["case_id"] for case in cases])
+
     def test_click_save_control_uses_script_result(self):
         class FakeDriver:
             def __init__(self, result: bool):
