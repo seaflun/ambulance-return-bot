@@ -3908,7 +3908,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("代碼", body)
         self.assertNotIn("duty_sheet", body)
         self.assertNotIn("tool_label", body)
-        self.assertNotIn("錯誤", body)
+        self.assertNotIn('class="pause-reason"', body)
 
     def test_sinposmart_admin_shows_tool_failure_reason_and_safe_detail(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
@@ -3981,6 +3981,32 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("結束執行", body)
         self.assertIn("結果：勤務表登打完成：115/06/19", body)
         self.assertNotIn("duty_sheet", body)
+
+    def test_sinposmart_admin_tool_start_shows_waiting_state_not_pause_reason(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-tool-waiting-web",
+                "occurred_at": f"{fire_day}T16:30:52",
+                "record_type": "tool_action_started",
+                "trigger_type": "tool_start",
+                "status": "started",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "snapshot": {"tool_name": "duty_sheet", "tool_label": "勤務表登打"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        self.assertIn("勤務表登打", body)
+        self.assertIn("執行中", body)
+        self.assertIn("等待狀態：已收到開始執行", body)
+        self.assertNotIn("暫停原因：尚未收到工具結束結果", body)
 
     def test_sinposmart_admin_merges_repeated_events_and_hides_raw_snapshot(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
@@ -4089,6 +4115,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("已登打", body)
         self.assertIn("整日勤務", body)
         self.assertIn("27番 隊員 林宏為", body)
+        self.assertIn("18:00｜出入｜值退 / 值退｜27 林宏為｜27番 林宏為", body)
+        self.assertNotIn("27番 林宏為（隊員）", body)
         self.assertNotIn("暫停原因", body)
         self.assertNotIn("加入佇列", body)
         self.assertNotIn("pending_write_automation", body)
@@ -4134,7 +4162,32 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("隔日整日勤務", body)
         self.assertNotIn("action_count", body)
 
-    def test_sinposmart_admin_waiting_event_shows_pause_reason(self):
+    def test_sinposmart_admin_shows_background_error_as_failed(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-background-error-web",
+                "occurred_at": f"{fire_day}T19:30:00",
+                "record_type": "error",
+                "trigger_type": "schedule",
+                "status": "failed",
+                "actor_no": "5",
+                "display_name": "5番 小隊長 張鴻志",
+                "error": "勤務表背景更新失敗",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        self.assertIn("背景資料比對快照", body)
+        self.assertIn("失敗", body)
+        self.assertIn("錯誤原因：勤務表背景更新失敗", body)
+
+    def test_sinposmart_admin_waiting_event_shows_waiting_state_not_pause_reason(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()
         response = self.client.post(
@@ -4161,8 +4214,9 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("到點勤務", body)
         self.assertIn("開始送出", body)
-        self.assertIn("等待登打", body)
-        self.assertIn("暫停原因：尚未收到完成結果", body)
+        self.assertIn("等待完成回傳", body)
+        self.assertIn("等待狀態：已收到開始送出", body)
+        self.assertNotIn("暫停原因：尚未收到完成結果", body)
         self.assertNotIn("pending_write_automation", body)
         self.assertNotIn("加入佇列", body)
 

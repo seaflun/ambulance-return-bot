@@ -32,6 +32,20 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(event["occurred_at"], "2026-07-13T08:00:00")
         self.assertEqual(event["fire_day"], "2026-07-13")
 
+    def test_normalize_records_server_received_time_instead_of_client_value(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-server-received-time",
+                "occurred_at": "2026-07-13T08:00:00",
+                "received_at": "2000-01-01T00:00:00",
+                "record_type": "action_queued",
+                "status": "pending_write_automation",
+            },
+            now=datetime(2026, 7, 13, 8, 1),
+        )
+
+        self.assertEqual(event["received_at"], "2026-07-13T08:01:00")
+
     def test_concurrent_store_instances_preserve_every_event(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -79,7 +93,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
 
             first = store.upsert_event(payload, now=datetime(2026, 6, 15, 10, 0))
             second = store.upsert_event(payload, now=datetime(2026, 6, 15, 10, 0))
-            day = store.read_day("2026-06-15")
+            day = store.read_day("2026-06-15", now=datetime(2026, 6, 15, 12, 10, 41))
 
             self.assertEqual(first["event_id"], "evt-1")
             self.assertEqual(second["event_id"], "evt-1")
@@ -269,7 +283,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
                 },
                 now=datetime(2026, 6, 15, 12, 10),
             )
-            day = store.read_day("2026-06-15")
+            day = store.read_day("2026-06-15", now=datetime(2026, 6, 15, 12, 10, 41))
 
             self.assertEqual(event["record_type"], "tool_action_started")
             self.assertEqual(event["item_title"], "開始勤務表登打")
@@ -278,6 +292,12 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             self.assertEqual(len(day["admin_view"]["tool_events"]), 1)
             self.assertEqual(day["admin_view"]["tool_events"][0]["record_label"], "工具開始")
             self.assertEqual(day["admin_view"]["tool_events"][0]["status_label"], "執行中")
+            self.assertEqual(day["admin_view"]["tool_events"][0]["waiting_age_seconds"], 41)
+            self.assertEqual(
+                day["admin_view"]["tool_events"][0]["waiting_reason"],
+                "已收到開始執行，已等待 41 秒，等待工具完成結果回傳。",
+            )
+            self.assertEqual(day["admin_view"]["tool_events"][0]["pause_reason"], "")
 
     def test_admin_view_combines_tool_start_and_finish_with_result(self):
         events = [
@@ -345,6 +365,31 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             view["tool_events"][0]["failure_detail"],
             "專用瀏覽器啟動或連線未完成；已清理過期暫存設定檔並重試一次。",
         )
+        self.assertEqual(view["tool_events"][0]["status_label"], "失敗")
+        self.assertEqual(view["tool_events"][0]["waiting_reason"], "")
+
+    def test_admin_view_marks_tool_waiting_as_attention_without_calling_it_failed(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-tool-overdue",
+                "occurred_at": "2026-08-09T08:29:02",
+                "record_type": "tool_action_started",
+                "trigger_type": "tool_start",
+                "status": "started",
+                "snapshot": {"tool_name": "daily_vehicle", "tool_label": "車輛保養清點"},
+            },
+            now=datetime(2026, 8, 9, 8, 29, 2),
+        )
+
+        view = build_sinposmart_admin_view([event], now=datetime(2026, 8, 9, 8, 44, 2))
+        card = view["tool_events"][0]
+
+        self.assertEqual(card["status_label"], "等待逾時待確認")
+        self.assertEqual(card["status_class"], "attention")
+        self.assertEqual(card["waiting_age_seconds"], 900)
+        self.assertTrue(card["waiting_overdue"])
+        self.assertIn("尚不代表工具失敗", card["waiting_reason"])
+        self.assertEqual(card["pause_reason"], "")
 
     def test_admin_view_combines_queue_and_result_in_one_event(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -354,7 +399,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
                 "display_name": "27番 隊員 林宏為",
                 "trigger_type": "due",
                 "item_kind": "出入",
-                "item_title": "值退 / 值退｜27 林宏為",
+                "item_title": "值退 / 值退｜27番 林宏為（隊員）",
                 "target": "27番 林宏為（隊員）",
                 "target_time": "18:00",
             }
@@ -372,6 +417,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             store.upsert_event(
                 {
                     **base_payload,
+                    "target": "",
                     "event_id": "evt-result",
                     "occurred_at": "2026-06-18T18:00:22",
                     "record_type": "action_result",
@@ -384,7 +430,12 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
 
             self.assertEqual(len(actions), 1)
             self.assertEqual(actions[0]["record_label"], "到點勤務")
-            self.assertEqual(actions[0]["item_title"], "18:00｜出入｜值退 / 值退｜27 林宏為")
+            self.assertEqual(
+                actions[0]["item_title"],
+                "18:00｜出入｜值退 / 值退｜27番 林宏為",
+            )
+            self.assertEqual(actions[0]["item_title"].count("27番 林宏為"), 1)
+            self.assertNotIn("隊員", actions[0]["item_title"])
             self.assertEqual(actions[0]["status_label"], "已登打")
             self.assertEqual(actions[0]["started_at"], "2026-06-18T18:00:00")
             self.assertEqual(actions[0]["completed_at"], "2026-06-18T18:00:22")
@@ -408,17 +459,112 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
                     },
                     now=datetime(2026, 6, 18, 17, 0),
                 )
-            ]
+            ],
+            now=datetime(2026, 6, 18, 17, 0, 41),
         )
 
         self.assertEqual(len(view["action_events"]), 1)
         self.assertEqual(view["action_events"][0]["record_label"], "到點勤務")
-        self.assertEqual(view["action_events"][0]["item_title"], "17:00｜工作｜在隊訓練｜戰術體能訓練")
-        self.assertEqual(view["action_events"][0]["status_label"], "等待登打")
+        self.assertEqual(
+            view["action_events"][0]["item_title"],
+            "17:00｜工作｜在隊訓練｜戰術體能訓練｜1,5,6,8,10,11,15番",
+        )
+        self.assertEqual(view["action_events"][0]["status_label"], "等待完成回傳")
+        self.assertEqual(view["action_events"][0]["status_class"], "running")
         self.assertEqual(view["action_events"][0]["started_at"], "2026-06-18T17:00:00")
         self.assertEqual(view["action_events"][0]["completed_at"], "")
-        self.assertEqual(view["action_events"][0]["pause_reason"], "尚未收到完成結果，可能仍在等待登打或流程已暫停。")
+        self.assertEqual(view["action_events"][0]["waiting_age_seconds"], 41)
+        self.assertEqual(
+            view["action_events"][0]["waiting_reason"],
+            "已收到開始送出，已等待 41 秒，等待勤務系統完成結果回傳。",
+        )
+        self.assertFalse(view["action_events"][0]["waiting_overdue"])
+        self.assertEqual(view["action_events"][0]["pause_reason"], "")
         self.assertNotEqual(view["action_events"][0]["status_label"], "pending_write_automation")
+
+    def test_admin_view_marks_action_waiting_as_attention_without_calling_it_failed(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-queue-overdue",
+                "occurred_at": "2026-06-18T17:00:00",
+                "record_type": "action_queued",
+                "status": "pending_write_automation",
+                "trigger_type": "due",
+                "item_kind": "工作",
+                "item_title": "值班(宿)",
+                "target_time": "17:00",
+            },
+            now=datetime(2026, 6, 18, 17, 0),
+        )
+
+        view = build_sinposmart_admin_view([event], now=datetime(2026, 6, 18, 17, 15))
+        card = view["action_events"][0]
+
+        self.assertEqual(card["status_label"], "等待逾時待確認")
+        self.assertEqual(card["status_class"], "attention")
+        self.assertEqual(card["waiting_age_seconds"], 900)
+        self.assertTrue(card["waiting_overdue"])
+        self.assertIn("尚不代表登打失敗", card["waiting_reason"])
+        self.assertEqual(card["pause_reason"], "")
+        self.assertEqual(view["summary"]["failed"], 0)
+
+    def test_admin_view_merges_targetless_result_before_queued(self):
+        events = [
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-result-before-queue",
+                    "occurred_at": "2026-06-18T12:00:00",
+                    "record_type": "action_result",
+                    "status": "submitted",
+                    "trigger_type": "due",
+                    "item_kind": "工作",
+                    "item_title": "值班(宿)",
+                    "target": "",
+                    "target_time": "12:00",
+                },
+                now=datetime(2026, 6, 18, 12, 0),
+            ),
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-queue-after-result",
+                    "occurred_at": "2026-06-18T12:00:01",
+                    "record_type": "action_queued",
+                    "status": "pending_write_automation",
+                    "trigger_type": "due",
+                    "item_kind": "工作",
+                    "item_title": "值班(宿)",
+                    "target": "12番 王小明（隊員）",
+                    "target_time": "12:00",
+                },
+                now=datetime(2026, 6, 18, 12, 0),
+            ),
+        ]
+
+        view = build_sinposmart_admin_view(events)
+
+        self.assertEqual(len(view["action_events"]), 1)
+        self.assertEqual(view["action_events"][0]["item_title"], "12:00｜工作｜值班(宿)｜12番 王小明")
+        self.assertNotIn("隊員", view["action_events"][0]["item_title"])
+
+    def test_admin_view_omits_empty_action_target_from_title(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-empty-target",
+                "occurred_at": "2026-06-18T12:00:00",
+                "record_type": "action_result",
+                "status": "submitted",
+                "trigger_type": "due",
+                "item_kind": "工作",
+                "item_title": "值班(宿)",
+                "target": "",
+                "target_time": "12:00",
+            },
+            now=datetime(2026, 6, 18, 12, 0),
+        )
+
+        view = build_sinposmart_admin_view([event])
+
+        self.assertEqual(view["action_events"][0]["item_title"], "12:00｜工作｜值班(宿)")
 
     def test_admin_view_combines_manual_action_by_completion_key_when_times_differ(self):
         events = [
@@ -547,6 +693,31 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(len(view["background_updates"]), 1)
         self.assertEqual(view["background_updates"][0]["last_occurred_at"], "2026-06-18T18:00:33")
         self.assertNotIn("snapshot", view["background_updates"][0])
+
+    def test_admin_view_keeps_non_login_error_in_background_updates(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-schedule-error",
+                "occurred_at": "2026-06-18T18:10:00",
+                "record_type": "error",
+                "trigger_type": "schedule",
+                "status": "failed",
+                "actor_no": "27",
+                "display_name": "27番 隊員 林宏為",
+                "item_title": "勤務表背景更新",
+                "error": "勤務表背景更新失敗",
+            },
+            now=datetime(2026, 6, 18, 18, 10),
+        )
+
+        view = build_sinposmart_admin_view([event])
+
+        self.assertEqual(len(view["background_updates"]), 1)
+        card = view["background_updates"][0]
+        self.assertEqual(card["status_label"], "失敗")
+        self.assertEqual(card["status_class"], "failed")
+        self.assertEqual(card["error"], "勤務表背景更新失敗")
+        self.assertEqual(view["login_events"], [])
 
     def test_admin_view_splits_schedule_snapshots_by_fire_day_scope(self):
         events = [

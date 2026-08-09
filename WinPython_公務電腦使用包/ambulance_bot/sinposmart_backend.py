@@ -30,6 +30,7 @@ SINPOSMART_EVENT_FIELDS = (
     "event_id",
     "merged_event_ids",
     "occurred_at",
+    "received_at",
     "fire_day",
     "record_type",
     "actor_no",
@@ -53,6 +54,7 @@ SINPOSMART_EVENT_FIELDS = (
 SENSITIVE_KEY_PATTERN = re.compile(r"(password|passwd|pwd|token|secret|cookie|authorization|credential)", re.I)
 SENSITIVE_TEXT_PATTERN = re.compile(r"(?i)(password|token|secret|cookie|authorization)\s*[:=]\s*[^,\s;]+")
 TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
+SINPOSMART_RESULT_ADVISORY_SECONDS = 15 * 60
 _STORE_LOCKS_GUARD = Lock()
 _STORE_LOCKS: dict[str, RLock] = {}
 
@@ -171,6 +173,13 @@ def sinposmart_person_label(event: dict[str, Any]) -> str:
     return "未知使用者"
 
 
+def sinposmart_action_target_label(value: Any) -> str:
+    target = " ".join(str(value or "").split())
+    if not target:
+        return ""
+    return re.sub(r"\s*[（(][^（）()]*[）)]\s*$", "", target).strip()
+
+
 def sinposmart_person_label_score(label: str) -> int:
     text = str(label or "").strip()
     if not text or text == "未知使用者":
@@ -253,7 +262,9 @@ def sinposmart_action_status_class(label: str) -> str:
         return "failed"
     if label in {"已登打", "已存在"}:
         return "complete"
-    if label == "等待登打":
+    if label == "等待逾時待確認":
+        return "attention"
+    if label in {"等待登打", "等待完成回傳", "執行中"}:
         return "running"
     return "idle"
 
@@ -263,24 +274,28 @@ def sinposmart_display_status_class(label: str, value: str) -> str:
         return "failed"
     if label in {"成功", "登入成功", "登出", "已登打", "已存在", "已儲存", "完成"}:
         return "complete"
-    if label in {"開始", "等待中", "執行中", "等待登打"}:
+    if label == "等待逾時待確認":
+        return "attention"
+    if label in {"開始", "等待中", "執行中", "等待登打", "等待完成回傳"}:
         return "running"
     return sinposmart_status_class(value)
 
 
-def sinposmart_action_group_key(event: dict[str, Any]) -> tuple[str, ...]:
+def sinposmart_action_group_key(event: dict[str, Any], *, include_target: bool = True) -> tuple[str, ...]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     completion_key = sanitize_scalar(snapshot.get("completion_key"), 160) if snapshot else ""
     if completion_key:
         return ("completion_key", completion_key)
-    return (
+    fields = [
         "fields",
         str(event.get("target_time") or ""),
         str(event.get("item_kind") or ""),
         str(event.get("item_title") or ""),
-        str(event.get("target") or ""),
-        str(event.get("trigger_type") or ""),
-    )
+    ]
+    if include_target:
+        fields.append(str(event.get("target") or ""))
+    fields.append(str(event.get("trigger_type") or ""))
+    return tuple(fields)
 
 
 def sinposmart_summary_key(event: dict[str, Any]) -> tuple[str, ...]:
@@ -377,6 +392,58 @@ def sinposmart_event_time(event: dict[str, Any]) -> str:
     return str(event.get("last_occurred_at") or event.get("occurred_at") or "")
 
 
+def sinposmart_pending_age_seconds(event: dict[str, Any], now: datetime | None = None) -> int | None:
+    received_at = str(event.get("received_at") or "").strip()
+    if not received_at:
+        return None
+    current = taipei_local_datetime(now or datetime.now())
+    received = parse_event_datetime(received_at, current)
+    return max(0, int((current - received).total_seconds()))
+
+
+def sinposmart_elapsed_label(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds} 秒"
+    minutes, remainder = divmod(seconds, 60)
+    if remainder:
+        return f"{minutes} 分 {remainder} 秒"
+    return f"{minutes} 分鐘"
+
+
+def sinposmart_waiting_state(
+    event: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    status_label: str,
+    start_label: str,
+    completion_label: str,
+    failure_label: str,
+) -> dict[str, Any]:
+    age_seconds = sinposmart_pending_age_seconds(event, now)
+    overdue = age_seconds is not None and age_seconds >= SINPOSMART_RESULT_ADVISORY_SECONDS
+    if overdue:
+        return {
+            "status_label": "等待逾時待確認",
+            "status_class": "attention",
+            "waiting_age_seconds": age_seconds,
+            "waiting_overdue": True,
+            "waiting_reason": (
+                f"已等待 {sinposmart_elapsed_label(age_seconds)}仍未收到{completion_label}，"
+                f"請確認公務電腦；尚不代表{failure_label}。"
+            ),
+        }
+    waiting_prefix = f"{start_label}，"
+    if age_seconds is not None:
+        waiting_prefix += f"已等待 {sinposmart_elapsed_label(age_seconds)}，"
+    return {
+        "status_label": status_label,
+        "status_class": "running",
+        "waiting_age_seconds": age_seconds or 0,
+        "waiting_overdue": False,
+        "waiting_reason": f"{waiting_prefix}等待{completion_label}回傳。",
+    }
+
+
 def newer_sinposmart_event(current: dict[str, Any] | None, candidate: dict[str, Any]) -> dict[str, Any]:
     if current is None:
         return candidate
@@ -430,11 +497,25 @@ def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str,
     return card
 
 
-def sinposmart_action_display_title(event: dict[str, Any]) -> str:
+def sinposmart_action_display_title(
+    event: dict[str, Any],
+    *,
+    target: Any = None,
+) -> str:
     item_title = str(event.get("item_title") or "").strip()
     if not item_title:
         item_title = sinposmart_record_type_label(str(event.get("record_type") or ""))
     parts = [str(event.get("target_time") or "").strip(), str(event.get("item_kind") or "").strip(), item_title]
+    if target is not None:
+        raw_target = " ".join(str(target or "").split())
+        target_label = sinposmart_action_target_label(target)
+        if target_label:
+            item_parts = item_title.split("｜")
+            if item_parts[-1].strip() in {raw_target, target_label}:
+                item_parts[-1] = target_label
+            else:
+                item_parts.append(target_label)
+            parts[-1] = "｜".join(item_parts)
     return "｜".join(part for part in parts if part)
 
 
@@ -450,16 +531,68 @@ def better_sinposmart_action_result(current: dict[str, Any] | None, candidate: d
     return current
 
 
-def sinposmart_admin_action_event(action_state: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def merge_sinposmart_targetless_action_groups(
+    action_groups: dict[tuple[str, ...], dict[str, dict[str, Any]]],
+) -> None:
+    for key, action_state in list(action_groups.items()):
+        if len(action_state) != 1:
+            continue
+        action_key, event = next(iter(action_state.items()))
+        if action_key not in {"queued", "result"}:
+            continue
+        if str(event.get("target") or "").strip():
+            continue
+        counterpart_key = "result" if action_key == "queued" else "queued"
+        targetless_key = sinposmart_action_group_key(event, include_target=False)
+        candidates = [
+            candidate_state
+            for candidate_key, candidate_state in action_groups.items()
+            if candidate_key != key
+            and set(candidate_state) == {counterpart_key}
+            and str(candidate_state[counterpart_key].get("target") or "").strip()
+            and sinposmart_action_group_key(candidate_state[counterpart_key], include_target=False) == targetless_key
+        ]
+        if len(candidates) != 1:
+            continue
+        candidate_state = candidates[0]
+        if action_key == "queued":
+            candidate_state["queued"] = newer_sinposmart_event(candidate_state.get("queued"), event)
+        else:
+            candidate_state["result"] = better_sinposmart_action_result(candidate_state.get("result"), event)
+        action_groups.pop(key, None)
+
+
+def sinposmart_admin_action_event(
+    action_state: dict[str, dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     queued_event = action_state.get("queued")
     result_event = action_state.get("result")
     base_event = result_event or queued_event or {}
-    status_label = sinposmart_action_status_label(
-        str(base_event.get("status") or ""),
-        str(base_event.get("record_type") or ""),
-    )
+    waiting_state: dict[str, Any] | None = None
+    if queued_event and not result_event:
+        waiting_state = sinposmart_waiting_state(
+            queued_event,
+            now=now,
+            status_label="等待完成回傳",
+            start_label="已收到開始送出",
+            completion_label="勤務系統完成結果",
+            failure_label="登打失敗",
+        )
+        status_label = str(waiting_state["status_label"])
+    else:
+        status_label = sinposmart_action_status_label(
+            str(base_event.get("status") or ""),
+            str(base_event.get("record_type") or ""),
+        )
     card = sinposmart_admin_event(base_event, status_label)
-    card["item_title"] = sinposmart_action_display_title(base_event)
+    if waiting_state:
+        card["status_class"] = str(waiting_state["status_class"])
+    target = base_event.get("target")
+    if not str(target or "").strip() and queued_event:
+        target = queued_event.get("target")
+    card["item_title"] = sinposmart_action_display_title(base_event, target=target)
     started_at = sinposmart_event_time(queued_event) if queued_event else ""
     completed_at = sinposmart_event_time(result_event) if result_event else ""
     steps: list[dict[str, str]] = []
@@ -468,8 +601,8 @@ def sinposmart_admin_action_event(action_state: dict[str, dict[str, Any]]) -> di
             {
                 "label": "開始送出",
                 "occurred_at": started_at,
-                "status_label": "已送出" if result_event else "等待登打",
-                "status_class": "running",
+                "status_label": "已送出" if result_event else status_label,
+                "status_class": "running" if result_event else card["status_class"],
             }
         )
     if result_event:
@@ -486,11 +619,14 @@ def sinposmart_admin_action_event(action_state: dict[str, dict[str, Any]]) -> di
     card["completed_at"] = completed_at
     card["steps"] = steps
     card["last_occurred_at"] = completed_at or started_at or card["last_occurred_at"]
+    card["waiting_age_seconds"] = 0
+    card["waiting_overdue"] = False
+    card["waiting_reason"] = ""
     card["pause_reason"] = ""
     if result_event and status_label == "失敗":
         card["pause_reason"] = str(result_event.get("error") or result_event.get("content") or "登打失敗，請檢查公務電腦或網站回應。")
-    elif queued_event and not result_event:
-        card["pause_reason"] = "尚未收到完成結果，可能仍在等待登打或流程已暫停。"
+    elif waiting_state:
+        card.update(waiting_state)
     return card
 
 
@@ -548,13 +684,31 @@ def sinposmart_tool_failure_detail(event: dict[str, Any]) -> str:
     return details.get(detail, detail)
 
 
-def sinposmart_admin_tool_event(tool_state: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def sinposmart_admin_tool_event(
+    tool_state: dict[str, dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     started_event = tool_state.get("started")
     finished_event = tool_state.get("finished")
     base_event = finished_event or started_event or {}
     failed = bool(finished_event and sinposmart_status_class(str(finished_event.get("status") or "")) == "failed")
-    status_label = "失敗" if failed else "完成" if finished_event else "執行中"
+    waiting_state: dict[str, Any] | None = None
+    if started_event and not finished_event:
+        waiting_state = sinposmart_waiting_state(
+            started_event,
+            now=now,
+            status_label="執行中",
+            start_label="已收到開始執行",
+            completion_label="工具完成結果",
+            failure_label="工具失敗",
+        )
+        status_label = str(waiting_state["status_label"])
+    else:
+        status_label = "失敗" if failed else "完成" if finished_event else "執行中"
     card = sinposmart_admin_event(base_event, status_label)
+    if waiting_state:
+        card["status_class"] = str(waiting_state["status_class"])
     card["item_title"] = sinposmart_tool_label(base_event)
     card["failure_stage_label"] = sinposmart_tool_failure_stage_label(finished_event or {}) if failed else ""
     card["failure_detail"] = sinposmart_tool_failure_detail(finished_event or {}) if failed else ""
@@ -566,8 +720,8 @@ def sinposmart_admin_tool_event(tool_state: dict[str, dict[str, Any]]) -> dict[s
             {
                 "label": "開始執行",
                 "occurred_at": started_at,
-                "status_label": "已開始" if finished_event else "執行中",
-                "status_class": "running",
+                "status_label": "已開始" if finished_event else status_label,
+                "status_class": "running" if finished_event else card["status_class"],
             }
         )
     if finished_event:
@@ -584,11 +738,14 @@ def sinposmart_admin_tool_event(tool_state: dict[str, dict[str, Any]]) -> dict[s
     card["steps"] = steps
     card["last_occurred_at"] = finished_at or started_at or card["last_occurred_at"]
     card["result_text"] = str(base_event.get("error") or base_event.get("content") or "")
+    card["waiting_age_seconds"] = 0
+    card["waiting_overdue"] = False
+    card["waiting_reason"] = ""
     card["pause_reason"] = ""
     if failed:
         card["pause_reason"] = card["result_text"] or "工具執行失敗，請檢查公務電腦或網站回應。"
-    elif started_event and not finished_event:
-        card["pause_reason"] = "尚未收到工具結束結果，可能仍在執行或流程已暫停。"
+    elif waiting_state:
+        card.update(waiting_state)
     return card
 
 
@@ -656,7 +813,11 @@ def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[s
     return card
 
 
-def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
+def build_sinposmart_admin_view(
+    events: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     action_groups: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     tool_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     background_updates: dict[tuple[str, ...], dict[str, Any]] = {}
@@ -698,13 +859,21 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
                 key = sinposmart_summary_key(summary_event)
                 background_updates[key] = newer_sinposmart_event(background_updates.get(key), summary_event)
             continue
+        if record_type == "error":
+            if sinposmart_is_login_event(event):
+                login_events.append(event)
+            else:
+                key = sinposmart_summary_key(event)
+                background_updates[key] = newer_sinposmart_event(background_updates.get(key), event)
+            continue
         if sinposmart_is_login_event(event):
             login_events.append(event)
 
-    action_events = [sinposmart_admin_action_event(action_state) for action_state in action_groups.values()]
+    merge_sinposmart_targetless_action_groups(action_groups)
+    action_events = [sinposmart_admin_action_event(action_state, now=now) for action_state in action_groups.values()]
     action_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
 
-    tool_update_events = [sinposmart_admin_tool_event(tool_state) for tool_state in tool_events.values()]
+    tool_update_events = [sinposmart_admin_tool_event(tool_state, now=now) for tool_state in tool_events.values()]
     tool_update_events.sort(key=lambda item: str(item.get("last_occurred_at") or ""), reverse=True)
 
     background_update_events = [sinposmart_admin_event(event) for event in background_updates.values()]
@@ -725,7 +894,8 @@ def build_sinposmart_admin_view(events: list[dict[str, Any]]) -> dict[str, Any]:
         "submitted": sum(1 for event in action_events if event["status_label"] == "已登打"),
         "existing": sum(1 for event in action_events if event["status_label"] == "已存在"),
         "failed": sum(1 for event in action_events if event["status_label"] == "失敗"),
-        "waiting": sum(1 for event in action_events if event["status_label"] == "等待登打"),
+        "waiting": sum(1 for event in action_events if event["status_label"] in {"等待登打", "等待完成回傳"}),
+        "attention": sum(1 for event in action_events if event["status_label"] == "等待逾時待確認"),
         "tools": len(tool_update_events),
         "background_updates": len(background_update_events),
         "logins": len(login_update_events),
@@ -787,24 +957,24 @@ class SinpoSmartBackendStore:
                 if isinstance(payload, dict):
                     payload["events"] = compact_sinposmart_events(payload.get("events") or [])
                     payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
-                    payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [])
+                    payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [], now=now)
                     days.append(payload)
             return days[:limit]
 
-    def read_day(self, fire_day: str) -> dict[str, Any]:
+    def read_day(self, fire_day: str, now: datetime | None = None) -> dict[str, Any]:
         with self._lock:
             path = self.path_for_day(fire_day)
             if not path.exists():
-                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
+                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([], now=now)}
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
+                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([], now=now)}
             if not isinstance(payload, dict):
-                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([])}
+                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([], now=now)}
             payload["events"] = compact_sinposmart_events(payload.get("events") or [])
             payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
-            payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [])
+            payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [], now=now)
             return payload
 
     def cleanup(self, now: datetime | None = None) -> None:
@@ -830,8 +1000,8 @@ class SinpoSmartBackendStore:
 
 
 def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
-    now = now or datetime.now()
-    occurred_at = parse_event_datetime(raw_event.get("occurred_at"), now)
+    received_at = taipei_local_datetime(now or datetime.now())
+    occurred_at = parse_event_datetime(raw_event.get("occurred_at"), received_at)
     record_type = str(raw_event.get("record_type") or "error").strip()
     if record_type not in SINPOSMART_RECORD_TYPES:
         record_type = "error"
@@ -842,6 +1012,7 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         "event_id": str(raw_event.get("event_id") or uuid4()).strip(),
         "merged_event_ids": [],
         "occurred_at": occurred_at.isoformat(timespec="seconds"),
+        "received_at": received_at.isoformat(timespec="seconds"),
         "fire_day": fire_day,
         "record_type": record_type,
         "actor_no": sanitize_scalar(raw_event.get("actor_no"), 40),
@@ -918,6 +1089,8 @@ def merge_sinposmart_event(existing: dict[str, Any], event: dict[str, Any]) -> d
     merged["first_occurred_at"] = str(existing.get("first_occurred_at") or existing.get("occurred_at") or event.get("occurred_at") or "")
     merged["last_occurred_at"] = str(event.get("occurred_at") or existing.get("last_occurred_at") or existing.get("occurred_at") or "")
     merged["occurred_at"] = merged["last_occurred_at"] or str(existing.get("occurred_at") or "")
+    if not str(merged.get("received_at") or "").strip() and event.get("received_at"):
+        merged["received_at"] = event["received_at"]
     for key in ("result_ref", "snapshot"):
         if event.get(key):
             merged[key] = event[key]

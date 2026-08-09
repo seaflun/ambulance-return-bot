@@ -25,6 +25,8 @@
       --failed-bg: #fae9e7;
       --running: #557a95;
       --running-bg: #e8f1f6;
+      --attention: #976a20;
+      --attention-bg: #fff4df;
       --idle-bg: #f3f1ed;
       --shadow: 0 16px 36px rgba(39, 49, 43, .07);
       --text-sm: 13px;
@@ -146,6 +148,8 @@
     .event-steps { display: grid; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
     .event-step { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; gap: 10px; align-items: center; color: var(--muted); font-size: var(--text-sm); }
     .event-step-name { color: var(--ink); font-weight: 760; }
+    .waiting-reason { margin-top: 10px; padding: 10px; border: 1px solid var(--running-bg); border-radius: 8px; background: var(--running-bg); color: var(--running); font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .waiting-reason.attention { border-color: var(--attention-bg); background: var(--attention-bg); color: var(--attention); }
     .pause-reason { margin-top: 10px; padding: 10px; border: 1px solid var(--failed-bg); border-radius: 8px; background: var(--failed-bg); color: var(--failed); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .event-badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
     .status {
@@ -164,6 +168,7 @@
     .status.complete { background: var(--complete-bg); color: var(--complete); }
     .status.failed { background: var(--failed-bg); color: var(--failed); }
     .status.running { background: var(--running-bg); color: var(--running); }
+    .status.attention { background: var(--attention-bg); color: var(--attention); }
     .empty { padding: 18px; color: var(--muted); }
     @media (max-width: 720px) {
       main { padding: 18px 12px 36px; }
@@ -236,8 +241,8 @@
           <div class="summary-value">{{ summary.submitted or 0 }} / {{ summary.existing or 0 }}</div>
         </div>
         <div class="summary-card">
-          <div class="summary-label">等待登打</div>
-          <div class="summary-value">{{ summary.waiting or 0 }}</div>
+          <div class="summary-label">等待回傳 / 逾時待確認</div>
+          <div class="summary-value">{{ summary.waiting or 0 }} / {{ summary.attention or 0 }}</div>
         </div>
         <div class="summary-card">
           <div class="summary-label">失敗</div>
@@ -316,6 +321,9 @@
                 {% endfor %}
               </div>
             {% endif %}
+            {% if event.waiting_reason %}
+              <div class="waiting-reason {{ 'attention' if event.waiting_overdue else '' }}">等待狀態：{{ event.waiting_reason }}</div>
+            {% endif %}
             {% if event.pause_reason %}
               <div class="pause-reason">暫停原因：{{ event.pause_reason }}</div>
             {% endif %}
@@ -365,6 +373,9 @@
             {% endif %}
             {% if event.failure_detail %}
               <div class="event-detail">錯誤詳情：{{ event.failure_detail }}</div>
+            {% endif %}
+            {% if event.waiting_reason %}
+              <div class="waiting-reason {{ 'attention' if event.waiting_overdue else '' }}">等待狀態：{{ event.waiting_reason }}</div>
             {% endif %}
             {% if event.pause_reason %}
               <div class="pause-reason">暫停原因：{{ event.pause_reason }}</div>
@@ -438,7 +449,7 @@
       <details class="section" aria-label="背景資料比對快照">
         <summary class="section-head">
           <h2 class="section-title">背景資料比對快照</h2>
-          <div class="section-note">整日勤務與已登打資料只保留最後更新摘要</div>
+          <div class="section-note">整日勤務與已登打資料只保留最後更新摘要；背景錯誤會保留原因</div>
         </summary>
         <div class="event-list">
         {% for event in admin_view.background_updates or [] %}
@@ -453,6 +464,9 @@
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
               </div>
             </div>
+            {% if event.error %}
+            <div class="event-detail">錯誤原因：{{ event.error }}</div>
+            {% endif %}
           </article>
         {% else %}
           <section class="empty">目前沒有背景資料比對紀錄。</section>
