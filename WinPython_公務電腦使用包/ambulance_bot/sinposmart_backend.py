@@ -257,6 +257,17 @@ def sinposmart_unreturned_return_status_class(value: str) -> str:
     return "running"
 
 
+def sinposmart_unreturned_return_trigger_label(event: dict[str, Any]) -> str:
+    trigger_type = str(event.get("trigger_type") or "").strip().lower()
+    if trigger_type == "manual":
+        return "手動確認返隊"
+    if trigger_type == "recovery":
+        return "自動返隊確認"
+    if trigger_type == "due":
+        return "自動偵測未返隊"
+    return sinposmart_trigger_label(trigger_type)
+
+
 def sinposmart_action_status_class(label: str) -> str:
     if label == "失敗":
         return "failed"
@@ -484,6 +495,7 @@ def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str,
     )
     card["record_label"] = "未返隊暫停"
     card["status_class"] = sinposmart_unreturned_return_status_class(str(event.get("status") or ""))
+    card["trigger_label"] = sinposmart_unreturned_return_trigger_label(event)
     card["item_title"] = sinposmart_action_display_title(event)
     card["first_paused_at"] = sanitize_scalar(snapshot.get("first_paused_at"), 80)
     card["last_attempt_at"] = sanitize_scalar(snapshot.get("last_attempt_at"), 80)
@@ -494,6 +506,80 @@ def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str,
         card["retry_interval_minutes"] = max(0, int(snapshot.get("retry_interval_minutes") or 0))
     except (TypeError, ValueError):
         card["retry_interval_minutes"] = 0
+    return card
+
+
+def sinposmart_admin_unreturned_return_history_event(
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ordered_events = sorted(events, key=sinposmart_event_time)
+    latest_event = ordered_events[-1]
+    card = sinposmart_admin_unreturned_return_event(latest_event)
+    handoff_snapshots = [
+        snapshot.get("handoff")
+        for event in ordered_events
+        if isinstance(event.get("snapshot"), dict)
+        for snapshot in [event["snapshot"]]
+        if isinstance(snapshot.get("handoff"), dict)
+    ]
+    first_handoff = handoff_snapshots[0] if handoff_snapshots else {}
+    latest_handoff = handoff_snapshots[-1] if handoff_snapshots else {}
+    bridge_history = latest_handoff.get("bridge_history", []) if isinstance(latest_handoff, dict) else []
+
+    def people(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(person or "").strip() for person in value if str(person or "").strip()]
+        return [person.strip() for person in str(value or "").split("、") if person.strip()]
+
+    skipped_people = people(latest_handoff.get("skipped_scheduled_people")) + [
+        str(person or "").strip()
+        for bridge in bridge_history
+        if isinstance(bridge, dict)
+        for person in bridge.get("skipped_scheduled_people", [])
+        if str(person or "").strip()
+    ]
+    actual_people = people(latest_handoff.get("actual_incoming_people")) + [
+        str(person or "").strip()
+        for bridge in bridge_history
+        if isinstance(bridge, dict)
+        for person in bridge.get("actual_incoming_people", [])
+        if str(person or "").strip()
+    ]
+    card["original_handoff_time"] = sanitize_scalar(
+        first_handoff.get("original_handoff_time"), 80
+    )
+    card["outgoing_person"] = sanitize_scalar(first_handoff.get("outgoing_person"), 120)
+    card["scheduled_incoming_person"] = sanitize_scalar(
+        first_handoff.get("scheduled_incoming_person"), 120
+    )
+    card["actual_incoming_person"] = sanitize_scalar(
+        actual_people[-1] if actual_people else latest_handoff.get("actual_incoming_person"),
+        120,
+    )
+    card["skipped_scheduled_people"] = list(dict.fromkeys(skipped_people))
+    card["transitions"] = [
+        {
+            "occurred_at": sinposmart_event_time(event),
+            "status_label": sinposmart_unreturned_return_status_label(
+                str(event.get("status") or "")
+            ),
+            "status_class": sinposmart_unreturned_return_status_class(
+                str(event.get("status") or "")
+            ),
+            "trigger_label": sinposmart_unreturned_return_trigger_label(event),
+            "owner_actor_no": sanitize_scalar(
+                (event.get("snapshot") or {}).get("last_owner_actor_no"), 40
+            )
+            if isinstance(event.get("snapshot"), dict)
+            else "",
+        }
+        for event in ordered_events
+    ]
+    card["last_result_at"] = (
+        sinposmart_event_time(latest_event)
+        if str(latest_event.get("status") or "").strip().lower() in {"resolved", "expired"}
+        else ""
+    )
     return card
 
 
@@ -822,6 +908,7 @@ def build_sinposmart_admin_view(
     tool_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     background_updates: dict[tuple[str, ...], dict[str, Any]] = {}
     unreturned_return_events: dict[str, dict[str, Any]] = {}
+    unreturned_return_history_events: dict[str, list[dict[str, Any]]] = {}
     login_events: list[dict[str, Any]] = []
     compacted_events = compact_sinposmart_events(events)
     preferred_people = build_sinposmart_preferred_person_labels(compacted_events)
@@ -837,6 +924,7 @@ def build_sinposmart_admin_view(
                 unreturned_return_events.get(queue_id),
                 event,
             )
+            unreturned_return_history_events.setdefault(queue_id, []).append(event)
             continue
         if record_type in {"action_queued", "action_result"}:
             key = sinposmart_action_group_key(event)
@@ -888,6 +976,15 @@ def build_sinposmart_admin_view(
         if str(event.get("status") or "").strip().lower() in {"pending", "retrying"}
     ]
     unreturned_return_cards.sort(key=lambda item: str(item.get("next_retry_at") or ""))
+    unreturned_return_history_cards = [
+        sinposmart_admin_unreturned_return_history_event(queue_events)
+        for queue_events in unreturned_return_history_events.values()
+        if queue_events
+    ]
+    unreturned_return_history_cards.sort(
+        key=lambda item: str(item.get("first_paused_at") or item.get("occurred_at") or ""),
+        reverse=True,
+    )
 
     summary = {
         "actions": len(action_events),
@@ -900,6 +997,7 @@ def build_sinposmart_admin_view(
         "background_updates": len(background_update_events),
         "logins": len(login_update_events),
         "unreturned_returns": len(unreturned_return_cards),
+        "unreturned_return_history": len(unreturned_return_history_cards),
     }
     return {
         "summary": summary,
@@ -908,6 +1006,7 @@ def build_sinposmart_admin_view(
         "background_updates": background_update_events,
         "login_events": login_update_events,
         "unreturned_return_events": unreturned_return_cards,
+        "unreturned_return_history_events": unreturned_return_history_cards,
     }
 
 

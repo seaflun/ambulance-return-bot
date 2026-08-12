@@ -285,6 +285,47 @@
         </div>
       </section>
 
+      <details class="section" aria-label="未返隊交接歷程">
+        <summary class="section-head">
+          <h2 class="section-title">未返隊交接歷程</h2>
+          <div class="section-note">保留各消防日已解決、逾期與待處理案件的完整時序；上方待處理卡只顯示目前需要處理的案件。</div>
+        </summary>
+        <div class="event-list">
+        {% for event in admin_view.unreturned_return_history_events or [] %}
+          <article class="event-card">
+            <div class="event-head">
+              <time class="event-time">{{ event.first_paused_at or event.occurred_at }}</time>
+              <div>
+                <h3 class="event-title">{{ event.original_handoff_time or event.target_time or '未返隊交接' }}</h3>
+                <div class="event-meta">{{ event.record_label }}｜原值退 {{ event.outgoing_person or '未提供' }}｜表定接班 {{ event.scheduled_incoming_person or '未提供' }}</div>
+              </div>
+              <div class="event-badges">
+                <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
+              </div>
+            </div>
+            <div class="event-detail">首次暫停：{{ event.first_paused_at or event.occurred_at }}{% if event.last_result_at %}｜最後結果：{{ event.last_result_at }}{% endif %}</div>
+            {% if event.actual_incoming_person %}
+              <div class="event-detail">實際接班：{{ event.actual_incoming_person }}</div>
+            {% endif %}
+            {% if event.skipped_scheduled_people %}
+              <div class="event-detail">跨班略過：{{ event.skipped_scheduled_people | join('、') }}</div>
+            {% endif %}
+            <div class="event-steps">
+            {% for transition in event.transitions or [] %}
+              <div class="event-step">
+                <div class="event-step-name">{{ transition.trigger_label }}{% if transition.owner_actor_no %}｜{{ transition.owner_actor_no }}番{% endif %}</div>
+                <time>{{ transition.occurred_at }}</time>
+                <span class="status {{ transition.status_class }}">{{ transition.status_label }}</span>
+              </div>
+            {% endfor %}
+            </div>
+          </article>
+        {% else %}
+          <div class="section-note">目前沒有未返隊交接歷程。</div>
+        {% endfor %}
+        </div>
+      </details>
+
       <details class="section" aria-label="到點勤務">
         <summary class="section-head">
           <h2 class="section-title">到點勤務</h2>
