@@ -177,7 +177,17 @@ def sinposmart_action_target_label(value: Any) -> str:
     target = " ".join(str(value or "").split())
     if not target:
         return ""
-    return re.sub(r"\s*[（(][^（）()]*[）)]\s*$", "", target).strip()
+    target = re.sub(r"\s*[（(][^（）()]*[）)]\s*$", "", target).strip()
+    number_match = re.fullmatch(r"(\d{1,2})(?:番)?", target)
+    if number_match:
+        return f"{number_match.group(1)}番"
+    person_match = re.fullmatch(r"(\d{1,2})番\s*(.+)", target)
+    if person_match:
+        return f"{person_match.group(1)}番 {person_match.group(2)}"
+    person_match = re.fullmatch(r"(\d{1,2})\s+((?!號(?:\s|$)).+)", target)
+    if person_match:
+        return f"{person_match.group(1)}番 {person_match.group(2)}"
+    return target
 
 
 def sinposmart_person_label_score(label: str) -> int:
@@ -493,10 +503,10 @@ def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str,
         event,
         sinposmart_unreturned_return_status_label(str(event.get("status") or "")),
     )
-    card["record_label"] = "未返隊暫停"
+    card["record_label"] = "因人員未返隊暫停"
     card["status_class"] = sinposmart_unreturned_return_status_class(str(event.get("status") or ""))
     card["trigger_label"] = sinposmart_unreturned_return_trigger_label(event)
-    card["item_title"] = sinposmart_action_display_title(event)
+    card["item_title"] = sinposmart_action_display_title(event, target=event.get("target"))
     card["first_paused_at"] = sanitize_scalar(snapshot.get("first_paused_at"), 80)
     card["last_attempt_at"] = sanitize_scalar(snapshot.get("last_attempt_at"), 80)
     card["next_retry_at"] = sanitize_scalar(snapshot.get("next_retry_at"), 80)
@@ -515,6 +525,48 @@ def sinposmart_admin_unreturned_return_history_event(
     ordered_events = sorted(events, key=sinposmart_event_time)
     latest_event = ordered_events[-1]
     card = sinposmart_admin_unreturned_return_event(latest_event)
+    task_fields = ("target_time", "item_kind", "item_title", "target")
+    task_event = dict(latest_event)
+    for field in task_fields:
+        task_event[field] = next(
+            (
+                event.get(field)
+                for event in ordered_events
+                if str(event.get(field) or "").strip()
+            ),
+            "",
+        )
+    has_any_task_details = any(
+        str(task_event.get(field) or "").strip()
+        for field in task_fields
+    )
+    has_complete_task_details = all(
+        str(task_event.get(field) or "").strip()
+        for field in task_fields
+    )
+    first_paused_at = next(
+        (
+            sanitize_scalar(event["snapshot"].get("first_paused_at"), 80)
+            for event in ordered_events
+            if isinstance(event.get("snapshot"), dict)
+            and sanitize_scalar(event["snapshot"].get("first_paused_at"), 80)
+        ),
+        "",
+    )
+    if first_paused_at:
+        card["first_paused_at"] = first_paused_at
+    if has_any_task_details:
+        card["item_title"] = sinposmart_action_display_title(
+            task_event,
+            target=task_event.get("target"),
+        )
+    else:
+        paused_at = str(card.get("first_paused_at") or latest_event.get("occurred_at") or "")
+        time_match = re.search(r"(?:^|[T\s])(\d{2}:\d{2})(?::\d{2})?", paused_at)
+        paused_time = time_match.group(1) if time_match else ""
+        card["item_title"] = "｜".join(
+            part for part in (paused_time, "未返隊", "舊版事件未提供勤務明細") if part
+        )
     handoff_snapshots = [
         snapshot.get("handoff")
         for event in ordered_events
@@ -522,7 +574,6 @@ def sinposmart_admin_unreturned_return_history_event(
         for snapshot in [event["snapshot"]]
         if isinstance(snapshot.get("handoff"), dict)
     ]
-    first_handoff = handoff_snapshots[0] if handoff_snapshots else {}
     latest_handoff = handoff_snapshots[-1] if handoff_snapshots else {}
     bridge_history = latest_handoff.get("bridge_history", []) if isinstance(latest_handoff, dict) else []
 
@@ -545,18 +596,41 @@ def sinposmart_admin_unreturned_return_history_event(
         for person in bridge.get("actual_incoming_people", [])
         if str(person or "").strip()
     ]
-    card["original_handoff_time"] = sanitize_scalar(
-        first_handoff.get("original_handoff_time"), 80
-    )
-    card["outgoing_person"] = sanitize_scalar(first_handoff.get("outgoing_person"), 120)
-    card["scheduled_incoming_person"] = sanitize_scalar(
-        first_handoff.get("scheduled_incoming_person"), 120
+    def first_handoff_value(field: str, limit: int) -> str:
+        return next(
+            (
+                sanitize_scalar(snapshot.get(field), limit)
+                for snapshot in handoff_snapshots
+                if sanitize_scalar(snapshot.get(field), limit)
+            ),
+            "",
+        )
+
+    card["original_handoff_time"] = first_handoff_value("original_handoff_time", 80)
+    card["outgoing_person"] = first_handoff_value("outgoing_person", 120)
+    card["scheduled_incoming_person"] = first_handoff_value(
+        "scheduled_incoming_person",
+        120,
     )
     card["actual_incoming_person"] = sanitize_scalar(
         actual_people[-1] if actual_people else latest_handoff.get("actual_incoming_person"),
         120,
     )
     card["skipped_scheduled_people"] = list(dict.fromkeys(skipped_people))
+    card["has_handoff_context"] = any(
+        (
+            card["original_handoff_time"],
+            card["outgoing_person"],
+            card["scheduled_incoming_person"],
+            card["actual_incoming_person"],
+            card["skipped_scheduled_people"],
+        )
+    )
+    card["missing_task_details"] = not has_complete_task_details
+    card["is_active"] = str(latest_event.get("status") or "").strip().lower() in {
+        "pending",
+        "retrying",
+    }
     card["transitions"] = [
         {
             "occurred_at": sinposmart_event_time(event),
@@ -981,9 +1055,20 @@ def build_sinposmart_admin_view(
         for queue_events in unreturned_return_history_events.values()
         if queue_events
     ]
-    unreturned_return_history_cards.sort(
+    active_unreturned_return_history_cards = sorted(
+        (item for item in unreturned_return_history_cards if item.get("is_active")),
+        key=lambda item: (
+            str(item.get("next_retry_at") or ""),
+            str(item.get("first_paused_at") or item.get("occurred_at") or ""),
+        ),
+    )
+    completed_unreturned_return_history_cards = sorted(
+        (item for item in unreturned_return_history_cards if not item.get("is_active")),
         key=lambda item: str(item.get("first_paused_at") or item.get("occurred_at") or ""),
         reverse=True,
+    )
+    unreturned_return_history_cards = (
+        active_unreturned_return_history_cards + completed_unreturned_return_history_cards
     )
 
     summary = {

@@ -965,7 +965,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
                     "status": status,
                     "item_kind": "出入",
                     "item_title": "出 / 退勤",
-                    "target": "08番 測試員",
+                    "target": "08 測試員",
                     "target_time": "08:05",
                     "snapshot": {
                         "queue_id": queue_id,
@@ -991,10 +991,137 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["summary"]["unreturned_returns"], 1)
         self.assertEqual(len(view["unreturned_return_events"]), 1)
         card = view["unreturned_return_events"][0]
-        self.assertEqual(card["target"], "08番 測試員")
+        self.assertEqual(card["target"], "08 測試員")
+        self.assertEqual(card["item_title"], "08:05｜出入｜出 / 退勤｜08番 測試員")
         self.assertEqual(card["status_label"], "重新確認中")
         self.assertEqual(card["retry_interval_minutes"], 10)
         self.assertEqual(card["owner_actor_no"], "11")
+        self.assertTrue(view["unreturned_return_history_events"][0]["is_active"])
+        self.assertFalse(view["unreturned_return_history_events"][0]["has_handoff_context"])
+        self.assertFalse(view["unreturned_return_history_events"][0]["missing_task_details"])
+
+    def test_admin_view_labels_legacy_unreturned_return_without_task_details(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-unreturned-legacy",
+                "occurred_at": "2026-08-12T10:00:02",
+                "record_type": "unreturned_return",
+                "trigger_type": "due",
+                "status": "resolved",
+                "snapshot": {
+                    "queue_id": "queue-legacy",
+                    "first_paused_at": "2026-08-12T10:00:02",
+                },
+            },
+            now=datetime(2026, 8, 12, 10, 0),
+        )
+
+        view = build_sinposmart_admin_view([event])
+
+        card = view["unreturned_return_history_events"][0]
+        self.assertEqual(card["item_title"], "10:00｜未返隊｜舊版事件未提供勤務明細")
+        self.assertTrue(card["missing_task_details"])
+        self.assertFalse(card["has_handoff_context"])
+
+    def test_admin_view_marks_partial_legacy_task_details_as_missing(self):
+        event = normalize_sinposmart_event(
+            {
+                "event_id": "evt-unreturned-partial",
+                "occurred_at": "2026-08-12T10:00:02",
+                "record_type": "unreturned_return",
+                "trigger_type": "due",
+                "status": "resolved",
+                "target_time": "10:00",
+                "target": "21",
+                "snapshot": {"queue_id": "queue-partial"},
+            },
+            now=datetime(2026, 8, 12, 10, 0),
+        )
+
+        view = build_sinposmart_admin_view([event])
+
+        card = view["unreturned_return_history_events"][0]
+        self.assertEqual(card["item_title"], "10:00｜未返隊暫停｜21番")
+        self.assertTrue(card["missing_task_details"])
+
+    def test_admin_view_orders_active_unreturned_returns_by_next_retry(self):
+        def event(event_id, status, first_paused_at, next_retry_at):
+            return normalize_sinposmart_event(
+                {
+                    "event_id": event_id,
+                    "occurred_at": first_paused_at,
+                    "record_type": "unreturned_return",
+                    "trigger_type": "recovery",
+                    "status": status,
+                    "item_kind": "出入",
+                    "item_title": "入 / 返隊",
+                    "target": "21 張家和",
+                    "target_time": "20:01",
+                    "snapshot": {
+                        "queue_id": event_id,
+                        "first_paused_at": first_paused_at,
+                        "next_retry_at": next_retry_at,
+                    },
+                },
+                now=datetime.fromisoformat(first_paused_at),
+            )
+
+        view = build_sinposmart_admin_view(
+            [
+                event("queue-later", "retrying", "2026-08-12T10:10:00", "2026-08-12T10:20:00"),
+                event("queue-earlier", "pending", "2026-08-12T10:00:00", "2026-08-12T10:15:00"),
+                event("queue-login", "pending", "2026-08-12T09:55:00", ""),
+                event("queue-resolved", "resolved", "2026-08-12T11:00:00", ""),
+            ]
+        )
+
+        cards = view["unreturned_return_history_events"]
+        self.assertEqual([card["is_active"] for card in cards], [True, True, True, False])
+        self.assertEqual(
+            [card["next_retry_at"] for card in cards[:3]],
+            ["", "2026-08-12T10:15:00", "2026-08-12T10:20:00"],
+        )
+
+    def test_admin_view_fills_handoff_people_from_later_snapshot(self):
+        def event(event_id, occurred_at, snapshot):
+            return normalize_sinposmart_event(
+                {
+                    "event_id": event_id,
+                    "occurred_at": occurred_at,
+                    "record_type": "unreturned_return",
+                    "trigger_type": "recovery",
+                    "status": "resolved",
+                    "item_kind": "出入",
+                    "item_title": "值班交接",
+                    "target": "7 原值退",
+                    "target_time": "10:00",
+                    "snapshot": {"queue_id": "queue-handoff", "handoff": snapshot},
+                },
+                now=datetime.fromisoformat(occurred_at),
+            )
+
+        view = build_sinposmart_admin_view(
+            [
+                event(
+                    "evt-handoff-first",
+                    "2026-08-12T10:00:00",
+                    {"original_handoff_time": "10:00"},
+                ),
+                event(
+                    "evt-handoff-later",
+                    "2026-08-12T10:05:00",
+                    {
+                        "outgoing_person": "7番 原值退",
+                        "scheduled_incoming_person": "8番 表定接班",
+                    },
+                ),
+            ]
+        )
+
+        card = view["unreturned_return_history_events"][0]
+        self.assertEqual(card["outgoing_person"], "7番 原值退")
+        self.assertEqual(card["scheduled_incoming_person"], "8番 表定接班")
+        self.assertTrue(card["has_handoff_context"])
 
 
 if __name__ == "__main__":

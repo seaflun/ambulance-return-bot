@@ -3760,11 +3760,14 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
 
-        self.assertIn("未返隊暫停", body)
+        self.assertIn('<details class="section" aria-label="未返隊處理歷程" open>', body)
+        self.assertNotIn('<section class="summary-card unreturned-return-card"', body)
         self.assertIn("待處理 1 筆", body)
-        self.assertIn("08番 外勤人員", body)
+        self.assertIn("09:10｜出入｜出 / 退勤｜08番 外勤人員", body)
         self.assertIn("重新確認中", body)
         self.assertIn("間隔：10 分鐘", body)
+        self.assertNotIn("原值退 未提供", body)
+        self.assertNotIn("表定接班 未提供", body)
         self.assertNotIn("secret", body)
 
     def test_sinposmart_admin_keeps_resolved_unreturned_handoff_history_with_confirmation_source(self):
@@ -3842,14 +3845,43 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
 
         self.assertIn("待處理 0 筆", body)
-        self.assertIn("未返隊交接歷程", body)
-        self.assertIn("原值退 7番 原值退", body)
-        self.assertIn("表定接班 8番 表定接班", body)
+        self.assertIn("未返隊處理歷程", body)
+        self.assertIn("10:00｜出入｜值班交接｜7番 原值退", body)
+        self.assertIn("原排定值退：7番 原值退", body)
+        self.assertIn("原排定接班：8番 表定接班", body)
         self.assertIn("實際接班：16番 實際接班", body)
-        self.assertIn("跨班略過：8番 表定接班", body)
+        self.assertIn("略過的表定接班：8番 表定接班", body)
         self.assertIn("自動偵測未返隊", body)
         self.assertIn("自動返隊確認", body)
         self.assertIn("手動確認返隊", body)
+
+    def test_sinposmart_admin_marks_legacy_unreturned_history_without_fake_handoff_people(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post(
+            "/api/sinposmart/events",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={
+                "event_id": "evt-unreturned-history-legacy",
+                "occurred_at": f"{fire_day}T10:00:02",
+                "record_type": "unreturned_return",
+                "actor_no": "17",
+                "trigger_type": "due",
+                "status": "resolved",
+                "snapshot": {
+                    "queue_id": "queue-handoff-legacy",
+                    "first_paused_at": f"{fire_day}T10:00:02",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        self.assertIn("10:00｜未返隊｜舊版事件未提供勤務明細", body)
+        self.assertIn("舊版公務電腦上傳的勤務明細不完整", body)
+        self.assertNotIn("原值退 未提供", body)
+        self.assertNotIn("表定接班 未提供", body)
 
     def test_sinposmart_admin_shows_worker_credential_sync_without_account_or_password(self):
         worker_token = "0123456789abcdef0123456789abcdef"

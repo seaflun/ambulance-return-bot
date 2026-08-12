@@ -250,45 +250,10 @@
         </div>
       </section>
 
-      <section class="summary-card unreturned-return-card" aria-label="未返隊暫停">
-        <div class="unreturned-return-head">
-          <div>
-            <div class="summary-label">未返隊暫停</div>
-            <h2 class="unreturned-return-title">待處理 {{ summary.unreturned_returns or 0 }} 筆</h2>
-          </div>
-          <div class="section-note">公務電腦持久清單；此處僅顯示目前待處理狀態</div>
-        </div>
-        <div class="unreturned-return-list">
-        {% for event in admin_view.unreturned_return_events or [] %}
-          <article class="unreturned-return-item">
-            <div class="event-head">
-              <time class="event-time">暫停 {{ event.first_paused_at or event.last_occurred_at }}</time>
-              <div>
-                <h3 class="event-title">{{ event.item_title }}</h3>
-                <div class="event-meta">{{ event.target or event.person_label }}｜{{ event.record_label }}｜{{ event.trigger_label }}</div>
-              </div>
-              <div class="event-badges">
-                <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
-              </div>
-            </div>
-            <div class="unreturned-return-meta">
-              最近確認：{{ event.last_attempt_at or '尚未確認' }}
-              ｜下次重試：{{ event.next_retry_at or '等待登入' }}
-              ｜間隔：{{ event.retry_interval_minutes or 0 }} 分鐘
-              ｜到期：{{ event.expires_at or '未標示' }}
-              {% if event.owner_actor_no %}｜目前處理番號：{{ event.owner_actor_no }}{% endif %}
-            </div>
-          </article>
-        {% else %}
-          <div class="section-note">目前沒有未返隊暫停案件。</div>
-        {% endfor %}
-        </div>
-      </section>
-
-      <details class="section" aria-label="未返隊交接歷程">
+      <details class="section" aria-label="未返隊處理歷程"{% if summary.unreturned_returns %} open{% endif %}>
         <summary class="section-head">
-          <h2 class="section-title">未返隊交接歷程</h2>
-          <div class="section-note">保留各消防日已解決、逾期與待處理案件的完整時序；上方待處理卡只顯示目前需要處理的案件。</div>
+          <h2 class="section-title">未返隊處理歷程</h2>
+          <div class="section-note">待處理 {{ summary.unreturned_returns or 0 }} 筆；待處理案件置頂，並保留已解決與逾期案件的完整時序。</div>
         </summary>
         <div class="event-list">
         {% for event in admin_view.unreturned_return_history_events or [] %}
@@ -296,19 +261,37 @@
             <div class="event-head">
               <time class="event-time">{{ event.first_paused_at or event.occurred_at }}</time>
               <div>
-                <h3 class="event-title">{{ event.original_handoff_time or event.target_time or '未返隊交接' }}</h3>
-                <div class="event-meta">{{ event.record_label }}｜原值退 {{ event.outgoing_person or '未提供' }}｜表定接班 {{ event.scheduled_incoming_person or '未提供' }}</div>
+                <h3 class="event-title">{{ event.item_title }}</h3>
+                <div class="event-meta">
+                  {{ event.record_label }}｜{{ event.trigger_label }}
+                  {% if event.has_handoff_context %}
+                    {% if event.outgoing_person %}｜原排定值退：{{ event.outgoing_person }}{% endif %}
+                    {% if event.scheduled_incoming_person %}｜原排定接班：{{ event.scheduled_incoming_person }}{% endif %}
+                  {% endif %}
+                  {% if event.missing_task_details %}
+                    ｜舊版公務電腦上傳的勤務明細不完整
+                  {% endif %}
+                </div>
               </div>
               <div class="event-badges">
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
               </div>
             </div>
             <div class="event-detail">首次暫停：{{ event.first_paused_at or event.occurred_at }}{% if event.last_result_at %}｜最後結果：{{ event.last_result_at }}{% endif %}</div>
+            {% if event.is_active %}
+              <div class="unreturned-return-meta">
+                最近確認：{{ event.last_attempt_at or '尚未確認' }}
+                ｜下次重試：{{ event.next_retry_at or '等待登入' }}
+                ｜間隔：{{ event.retry_interval_minutes or 0 }} 分鐘
+                ｜到期：{{ event.expires_at or '未標示' }}
+                {% if event.owner_actor_no %}｜目前處理番號：{{ event.owner_actor_no }}{% endif %}
+              </div>
+            {% endif %}
             {% if event.actual_incoming_person %}
               <div class="event-detail">實際接班：{{ event.actual_incoming_person }}</div>
             {% endif %}
             {% if event.skipped_scheduled_people %}
-              <div class="event-detail">跨班略過：{{ event.skipped_scheduled_people | join('、') }}</div>
+              <div class="event-detail">略過的表定接班：{{ event.skipped_scheduled_people | join('、') }}</div>
             {% endif %}
             <div class="event-steps">
             {% for transition in event.transitions or [] %}
@@ -321,7 +304,7 @@
             </div>
           </article>
         {% else %}
-          <div class="section-note">目前沒有未返隊交接歷程。</div>
+          <div class="section-note">目前沒有未返隊處理歷程。</div>
         {% endfor %}
         </div>
       </details>
