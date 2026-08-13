@@ -2658,7 +2658,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('.site-card-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }', body)
         self.assertIn('.vehicle-card-label { display: none; color: var(--running); font-size: 22px; font-weight: 800; line-height: 1.2; }', body)
         self.assertIn('.workspace-page #task-form.two-vehicle-enabled .vehicle-card-label { display: inline-flex; }', body)
-        self.assertIn('.workspace-page #task-form .record-folder-preview strong { display: block; margin-bottom: 8px; font-size: var(--text-lg); font-weight: 800; }', body)
+        self.assertIn('<h2>將建立的 NAS 資料夾名稱</h2>', body)
         self.assertIn("\u5169\u8eca\u540c\u6642\u767b\u6253", body)
         self.assertIn("\u6b64\u52fe\u9078\u70ba\u5169\u8eca\u540c\u6642\u767b\u6253\uff0c\u82e5\u9700\u5206\u958b\u767b\u6253\u5247\u4e0d\u7528\u52fe\u9078", body)
         self.assertNotIn("2\u8eca\u51fa\u52e4", body)

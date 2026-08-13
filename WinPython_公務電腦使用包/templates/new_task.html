@@ -204,7 +204,6 @@
     .fuel-record-fields .grid:last-child label { margin-bottom: 0; }
     .fuel-total { margin-top: 10px; color: var(--accent); font-weight: 800; }
     .record-folder-preview { background: var(--surface); }
-    .workspace-page #task-form .record-folder-preview strong { display: block; margin-bottom: 8px; font-size: var(--text-lg); font-weight: 800; }
     .record-folder-preview ul { margin: 0; padding-left: 22px; overflow-wrap: anywhere; }
     .site-card-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
     .site-card-heading h2 { margin: 0; }
@@ -754,7 +753,7 @@
       </section>
       {% endif %}
       <section class="site-card record-folder-preview" id="record-folder-preview" aria-live="polite">
-        <strong>將建立的 NAS 資料夾名稱</strong>
+        <h2>將建立的 NAS 資料夾名稱</h2>
         <div data-record-folder-empty>請先完成案件與車輛資料。</div>
         <ul data-record-folder-list></ul>
       </section>
