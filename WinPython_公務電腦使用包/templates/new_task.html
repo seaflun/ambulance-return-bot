@@ -186,7 +186,7 @@
     .disinfection-grid .check-item { min-height: 46px; padding: 8px 12px; font-size: var(--text-sm); }
     .disinfection-grid .check-item input { width: 18px; height: 18px; min-height: 18px; transform: scale(1.2); }
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
-    .two-vehicle-toggle { width: fit-content; margin: 0 0 16px; }
+    .two-vehicle-option-card .two-vehicle-toggle { width: 100%; margin: 0; }
     .mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: start; margin: 0 0 12px; }
     .mileage-row .field-visual { margin: 0; }
     .mileage-hint-panel { min-width: 0; }
@@ -204,10 +204,12 @@
     .fuel-record-fields .grid:last-child label { margin-bottom: 0; }
     .fuel-total { margin-top: 10px; color: var(--accent); font-weight: 800; }
     .record-folder-preview { background: var(--surface); }
-    .workspace-page #task-form .record-folder-preview strong { display: block; margin-bottom: 8px; font-size: 21px; font-weight: 800; }
+    .workspace-page #task-form .record-folder-preview strong { display: block; margin-bottom: 8px; font-size: var(--text-lg); font-weight: 800; }
     .record-folder-preview ul { margin: 0; padding-left: 22px; overflow-wrap: anywhere; }
-    .workspace-page #task-form .vehicle-section-title { display: none; margin: 4px 0 14px; padding-top: 2px; color: var(--accent); font-size: 22px; font-weight: 800; line-height: 1.2; }
-    .workspace-page #task-form.two-vehicle-enabled .vehicle-section-title { display: block; }
+    .site-card-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+    .site-card-heading h2 { margin: 0; }
+    .vehicle-card-label { display: none; color: var(--running); font-size: 22px; font-weight: 800; line-height: 1.2; }
+    .workspace-page #task-form.two-vehicle-enabled .vehicle-card-label { display: inline-flex; }
     .two-vehicle-panel { margin-top: 18px; }
     .two-vehicle-panel[hidden] { display: none; }
     .consumables { margin: 0 0 14px; }
@@ -408,14 +410,20 @@
       <input type="hidden" name="personnel" value="{{ selected_case.personnel | join(',') if selected_case.personnel else '' }}">
       <input type="hidden" name="personnel_accounts" value="{{ selected_case.personnel_hidden_raw or (selected_case.personnel_accounts | join(',')) or '' }}">
       <input type="hidden" name="two_vehicle_available" value="{{ '1' if two_vehicle_available else '' }}">
-      <section class="site-card" data-site-card="work-record">
-        <h2>案件資料</h2>
       {% if two_vehicle_available %}
+      <section class="site-card two-vehicle-option-card" data-site-card="two-vehicle-option">
+        <h2>兩車同時登打</h2>
         <label class="check-item two-vehicle-toggle">
           <input type="checkbox" name="two_vehicle" id="two-vehicle-toggle" value="1"{% if selected_case.two_vehicle %} checked{% endif %}>
           <span>兩車同時登打（此勾選為兩車同時登打，若需分開登打則不用勾選）</span>
         </label>
+      </section>
       {% endif %}
+      <section class="site-card" data-site-card="work-record">
+        <div class="site-card-heading">
+          {% if two_vehicle_available %}<span class="vehicle-card-label vehicle-card-label--1">1車</span>{% endif %}
+          <h2>案件資料</h2>
+        </div>
       <div class="address-row">
         <label>案件地址
           <input name="case_address" autocomplete="off" value="{{ selected_case_address(selected_case) }}">
@@ -424,9 +432,6 @@
           <button class="clear-button" type="submit" formaction="/cases/clear" formmethod="post" formnovalidate>清除</button>
         {% endif %}
       </div>
-      {% if two_vehicle_available %}
-        <h2 class="vehicle-section-title" id="primary-vehicle-title">1車</h2>
-      {% endif %}
       <div class="grid time-grid">
         <label class="field-visual" data-field-name="case_time">
           <span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -507,7 +512,10 @@
       </div>
       </section>
       <section class="site-card" data-site-card="fuel">
-        <h2>加油紀錄</h2>
+        <div class="site-card-heading">
+          {% if two_vehicle_available %}<span class="vehicle-card-label vehicle-card-label--1">1車</span>{% endif %}
+          <h2>加油紀錄</h2>
+        </div>
       <div class="fuel-record-row">
         <label class="check-item fuel-record-toggle">
           <input type="checkbox" name="fuel_record" id="fuel-record-toggle" value="1"{% if primary_fuel.enabled %} checked{% endif %}>
@@ -544,7 +552,10 @@
       </section>
 
       <section class="site-card consumables" data-site-card="consumables">
-        <h2>救護耗材</h2>
+        <div class="site-card-heading">
+          {% if two_vehicle_available %}<span class="vehicle-card-label vehicle-card-label--1">1車</span>{% endif %}
+          <h2>救護耗材</h2>
+        </div>
         <input type="hidden" name="consumables" id="consumables-value">
         <input type="hidden" name="consumable_packages" id="consumable-packages-value" value="{{ selected_consumable_packages | default([]) | join(',') }}">
         <input type="hidden" name="baseline_consumables_loaded" value="{{ '1' if baseline_consumables_loaded else '' }}">
@@ -558,7 +569,8 @@
                 <button type="button" class="secondary package-button" data-consumable-package="io" data-consumable-target="1" aria-pressed="false">IO套餐</button>
                 <button type="button" class="secondary package-button" data-consumable-package="ecg" data-consumable-target="1" aria-pressed="false">心電圖套餐</button>
                 <button type="button" class="secondary package-button" data-consumable-package="ohca" data-consumable-target="1" aria-pressed="false">OHCA套餐</button>
-                <button type="button" class="secondary package-button" data-consumable-package="gauze" data-consumable-target="1" aria-pressed="false">紗布套餐</button>
+                <button type="button" class="secondary package-button" data-consumable-package="gauze" data-consumable-target="1" aria-pressed="false">4吋紗布</button>
+                <button type="button" class="secondary package-button" data-consumable-package="disposable_bed_sheet" data-consumable-target="1" aria-pressed="false">拋棄床單</button>
               </div>
             </div>
             <button type="button" class="add-consumable-button" id="add-consumable">＋ 新增耗材</button>
@@ -569,7 +581,10 @@
       </section>
 
       <section class="site-card" data-site-card="disinfection">
-        <h2>消毒記錄</h2>
+        <div class="site-card-heading">
+          {% if two_vehicle_available %}<span class="vehicle-card-label vehicle-card-label--1">1車</span>{% endif %}
+          <h2>消毒記錄</h2>
+        </div>
         <div class="check-grid disinfection-grid">
           {% for item in disinfection_item_options %}
             <label class="check-item">
@@ -581,9 +596,11 @@
       </section>
       {% if two_vehicle_available %}
       <section class="two-vehicle-panel" id="second-vehicle-section" hidden>
-        <h2 class="vehicle-section-title">2車</h2>
         <section class="site-card" data-site-card="work-record-2">
-          <h2>案件資料</h2>
+          <div class="site-card-heading">
+            <span class="vehicle-card-label vehicle-card-label--2">2車</span>
+            <h2>案件資料</h2>
+          </div>
         <div class="grid time-grid">
           <label class="field-visual" data-field-name="case_time_2_display">
             <span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -655,7 +672,10 @@
         </div>
         </section>
         <section class="site-card" data-site-card="fuel-2">
-          <h2>加油紀錄</h2>
+          <div class="site-card-heading">
+            <span class="vehicle-card-label vehicle-card-label--2">2車</span>
+            <h2>加油紀錄</h2>
+          </div>
         <div class="fuel-record-row">
           <label class="check-item fuel-record-toggle">
             <input type="checkbox" name="fuel_record_2" id="fuel-record-toggle-2" value="1"{% if second_fuel.enabled %} checked{% endif %}>
@@ -691,7 +711,10 @@
         </section>
         </section>
         <section class="site-card consumables" data-site-card="consumables-2">
-          <h2>救護耗材</h2>
+          <div class="site-card-heading">
+            <span class="vehicle-card-label vehicle-card-label--2">2車</span>
+            <h2>救護耗材</h2>
+          </div>
           <input type="hidden" name="consumables_2" id="consumables-value-2">
           <div class="consumable-head">
             <span>耗材</span>
@@ -704,7 +727,8 @@
                   <button type="button" class="secondary package-button" data-consumable-package="io" data-consumable-target="2" aria-pressed="false">IO套餐</button>
                   <button type="button" class="secondary package-button" data-consumable-package="ecg" data-consumable-target="2" aria-pressed="false">心電圖套餐</button>
                   <button type="button" class="secondary package-button" data-consumable-package="ohca" data-consumable-target="2" aria-pressed="false">OHCA套餐</button>
-                  <button type="button" class="secondary package-button" data-consumable-package="gauze" data-consumable-target="2" aria-pressed="false">紗布套餐</button>
+                  <button type="button" class="secondary package-button" data-consumable-package="gauze" data-consumable-target="2" aria-pressed="false">4吋紗布</button>
+                  <button type="button" class="secondary package-button" data-consumable-package="disposable_bed_sheet" data-consumable-target="2" aria-pressed="false">拋棄床單</button>
                 </div>
               </div>
               <button type="button" class="add-consumable-button" id="add-consumable-2">新增耗材</button>
@@ -714,7 +738,10 @@
           <div class="consumable-list" id="consumable-list-2"></div>
         </section>
         <section class="site-card" data-site-card="disinfection-2">
-          <h2>消毒記錄</h2>
+          <div class="site-card-heading">
+            <span class="vehicle-card-label vehicle-card-label--2">2車</span>
+            <h2>消毒記錄</h2>
+          </div>
           <div class="check-grid disinfection-grid">
             {% for item in disinfection_item_options %}
               <label class="check-item">
@@ -840,9 +867,16 @@
         }
       },
       gauze: {
-        label: "紗布套餐",
+        label: "4吋紗布",
         consumables: [
           ["桃-4吋紗布塊(包)", 1]
+        ],
+        notes: {}
+      },
+      disposable_bed_sheet: {
+        label: "拋棄床單",
+        consumables: [
+          ["桃-擔架床用可丟棄式床單(件)", 1]
         ],
         notes: {}
       }

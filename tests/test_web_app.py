@@ -1776,7 +1776,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="check-item fuel-record-toggle full"', disaster_body)
         self.assertIn(".fuel-record-toggle input { width: 18px; height: 18px; min-height: 18px;", disaster_body)
 
-        self.assertIn('<section class="site-card" data-site-card="work-record">\n        <h2>案件資料</h2>', ems_body)
+        self.assertIn('<section class="site-card" data-site-card="work-record">', ems_body)
+        self.assertIn('<div class="site-card-heading">', ems_body)
+        self.assertIn('<h2>案件資料</h2>', ems_body)
         self.assertIn("案件地址", ems_body)
         self.assertNotIn("案發地址", ems_body)
         self.assertNotIn("使用耗材", ems_body)
@@ -2572,7 +2574,8 @@ class WebAppTests(unittest.TestCase):
             ("io", "IO套餐"),
             ("ecg", "心電圖套餐"),
             ("ohca", "OHCA套餐"),
-            ("gauze", "紗布套餐"),
+            ("gauze", "4吋紗布"),
+            ("disposable_bed_sheet", "拋棄床單"),
         ]:
             self.assertIn(f'data-consumable-package="{package_key}"', body)
             self.assertIn(f">{label}</button>", body)
@@ -2593,6 +2596,7 @@ class WebAppTests(unittest.TestCase):
             "桃-非充氣聲門上呼吸道-4號(組)",
             "桃-細菌過濾器(組)",
             "桃-4吋紗布塊(包)",
+            "桃-擔架床用可丟棄式床單(件)",
         ]:
             self.assertIn(consumable_name, body)
         self.assertIn('<span class="package-group-label">套餐帶入</span>', body)
@@ -2611,6 +2615,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("請確認輸液", body)
         self.assertNotIn("請確認針長", body)
         self.assertIn("請確認尺寸", body)
+        self.assertNotIn(">紗布套餐</button>", body)
+        self.assertIn(">4吋紗布</button>", body)
+        self.assertIn(">拋棄床單</button>", body)
         iv_section = body[body.index("iv: {") : body.index("io: {")]
         io_section = body[body.index("io: {") : body.index("ecg: {")]
         self.assertIn('"桃-注射用-生理食鹽水500ml(包)": "請確認輸液"', iv_section)
@@ -2640,16 +2647,24 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn('name="two_vehicle"', body)
-        self.assertIn('.workspace-page #task-form .vehicle-section-title { display: none; margin: 4px 0 14px; padding-top: 2px; color: var(--accent); font-size: 22px; font-weight: 800;', body)
-        self.assertIn('.workspace-page #task-form.two-vehicle-enabled .vehicle-section-title { display: block; }', body)
-        self.assertIn('.workspace-page #task-form .record-folder-preview strong { display: block; margin-bottom: 8px; font-size: 21px; font-weight: 800; }', body)
+        self.assertIn('class="site-card two-vehicle-option-card" data-site-card="two-vehicle-option"', body)
+        lookup_position = body.index('<section class="panel lookup">')
+        option_position = body.index('data-site-card="two-vehicle-option"')
+        work_record_position = body.index('data-site-card="work-record"')
+        self.assertLess(lookup_position, option_position)
+        self.assertLess(option_position, work_record_position)
+        option_section = body[option_position:work_record_position]
+        self.assertIn('name="two_vehicle"', option_section)
+        self.assertIn('.site-card-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }', body)
+        self.assertIn('.vehicle-card-label { display: none; color: var(--running); font-size: 22px; font-weight: 800; line-height: 1.2; }', body)
+        self.assertIn('.workspace-page #task-form.two-vehicle-enabled .vehicle-card-label { display: inline-flex; }', body)
+        self.assertIn('.workspace-page #task-form .record-folder-preview strong { display: block; margin-bottom: 8px; font-size: var(--text-lg); font-weight: 800; }', body)
         self.assertIn("\u5169\u8eca\u540c\u6642\u767b\u6253", body)
         self.assertIn("\u6b64\u52fe\u9078\u70ba\u5169\u8eca\u540c\u6642\u767b\u6253\uff0c\u82e5\u9700\u5206\u958b\u767b\u6253\u5247\u4e0d\u7528\u52fe\u9078", body)
         self.assertNotIn("2\u8eca\u51fa\u52e4", body)
-        self.assertIn("1\u8eca", body)
-        self.assertIn("2\u8eca", body)
-        self.assertLess(body.index('id="primary-vehicle-title"'), body.index('name="case_time"'))
-        self.assertLess(body.index('id="primary-vehicle-title"'), body.index('name="case_reason"'))
+        self.assertEqual(4, body.count('<span class="vehicle-card-label vehicle-card-label--1">1\u8eca</span>'))
+        self.assertEqual(4, body.count('<span class="vehicle-card-label vehicle-card-label--2">2\u8eca</span>'))
+        self.assertLess(body.index('<span class="vehicle-card-label vehicle-card-label--1">1\u8eca</span>'), body.index('<h2>案件資料</h2>'))
         primary_field_order = [
             'name="case_time"',
             'name="return_time"',
@@ -2683,7 +2698,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="disinfection_items_2"', body)
         self.assertIn('data-consumable-target="1"', body)
         self.assertIn('data-consumable-target="2"', body)
-        for package_key in ("glucose", "iv", "io", "ecg", "ohca"):
+        for package_key in ("glucose", "iv", "io", "ecg", "ohca", "gauze", "disposable_bed_sheet"):
             self.assertIn(f'data-consumable-package="{package_key}" data-consumable-target="2"', body)
 
     def test_imported_salvaged_body_case_is_treated_as_ambulance_drowning(self):

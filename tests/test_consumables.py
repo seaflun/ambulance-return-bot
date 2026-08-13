@@ -44,6 +44,12 @@ class ConsumableInventoryTests(unittest.TestCase):
 
         self.assertEqual(gauze["category"], "創傷類")
 
+    def test_disposable_bed_sheet_uses_other_category(self):
+        options = consumable_inventory_options()
+        bed_sheet = next(item for item in options if item["name"] == "桃-擔架床用可丟棄式床單(件)")
+
+        self.assertEqual(bed_sheet["category"], "其它類")
+
 
 if __name__ == "__main__":
     unittest.main()
