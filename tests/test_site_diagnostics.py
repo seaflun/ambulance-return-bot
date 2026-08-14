@@ -87,6 +87,16 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("驗證碼", payload["next_action"])
         self.assertEqual(payload["exception_type"], "login")
 
+    def test_work_log_case_query_range_failure_is_classified_as_case_not_found(self):
+        payload = diagnostic_payload(
+            "duty_work_log",
+            "duty_case_not_found",
+            "未在案件查詢區間（2026/07/13 08:04 起至目前）找到符合時間=0805 的案件",
+        )
+
+        self.assertEqual(payload["exception_type"], "case_not_found")
+        self.assertEqual(payload["failure_stage"], "由案件帶入")
+
     def test_errno_22_oserror_points_to_chrome_start_stage(self):
         payload = diagnostic_payload(
             "consumables",

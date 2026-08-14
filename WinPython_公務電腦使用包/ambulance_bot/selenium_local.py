@@ -1168,17 +1168,23 @@ def _prepare_duty_work_log_form(
     _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
     _switch_to_window_containing(driver, "_txtSDATE")
     time.sleep(1.5)
-    _set_case_query_date_range(driver, lookup_range="24h")
+    case_query_start_at = _case_query_start_at(request)
+    _set_case_query_date_range(driver, lookup_range="24h", start_at=case_query_start_at)
     _click_query_if_present(driver)
     time.sleep(1)
     cases = _extract_all_emergency_cases(driver)
     case = _match_case_for_request(cases, request)
     if not case:
         _save_artifacts(driver, output_dir, request.task_id, "duty_case_picker")
+        query_range_label = (
+            f"{case_query_start_at:%Y/%m/%d %H:%M} 起至目前"
+            if case_query_start_at is not None
+            else "前 24 小時"
+        )
         return SeleniumRunResult(
             ok=False,
             status="duty_case_not_found",
-            detail=f"未在前 24 小時案件清單找到符合時間={request.case_time}、地址={request.case_address} 的案件；已保存查詢頁截圖。",
+            detail=f"未在案件查詢區間（{query_range_label}）找到符合時間={request.case_time}、地址={request.case_address} 的案件；已保存查詢頁截圖。",
             summary_path=summary_path,
         )
     if not _click_case_choose(driver, case["case_id"]):
@@ -3897,9 +3903,30 @@ def _click_query_if_present(driver: webdriver.Chrome) -> None:
         return
 
 
-def _set_case_query_date_range(driver: webdriver.Chrome, lookup_range: str = "24h") -> None:
+def _case_query_start_at(request: AmbulanceReturnRequest) -> datetime | None:
+    case_hhmm = normalize_hhmm_local(request.case_time)
+    if len(case_hhmm) != 4:
+        return None
+    try:
+        case_at = request.service_case_date().replace(
+            hour=int(case_hhmm[:2]),
+            minute=int(case_hhmm[2:]),
+            second=0,
+            microsecond=0,
+        )
+    except (TypeError, ValueError):
+        return None
+    return case_at - timedelta(minutes=1)
+
+
+def _set_case_query_date_range(
+    driver: webdriver.Chrome,
+    lookup_range: str = "24h",
+    start_at: datetime | None = None,
+) -> None:
     end_at = datetime.now()
-    start_at = end_at - timedelta(hours=24)
+    if start_at is None:
+        start_at = end_at - timedelta(hours=24)
     start_date = _roc_date(start_at)
     end_date = _roc_date(end_at)
     driver.execute_script(

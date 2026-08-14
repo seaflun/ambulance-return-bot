@@ -165,7 +165,12 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return "case_not_closed"
     if "captcha" in text or "驗證碼" in raw_detail or "sso" in text or "login" in text or "登入" in raw_detail or "帳密" in raw_detail:
         return "login"
-    if "case not found" in text or "找不到符合案件" in raw_detail or "未在前 24 小時案件清單找到" in raw_detail:
+    if (
+        "case not found" in text
+        or "找不到符合案件" in raw_detail
+        or "未在前 24 小時案件清單找到" in raw_detail
+        or "未在案件查詢區間" in raw_detail
+    ):
         return "case_not_found"
     if "missing disinfection detail" in text or "無法開啟消毒紀錄" in raw_detail:
         return "case_detail"

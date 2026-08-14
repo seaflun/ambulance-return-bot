@@ -833,6 +833,7 @@ class SeleniumLocalTests(unittest.TestCase):
             created_at=datetime.now(),
             raw_text="",
             case_id="20260713080500001",
+            case_date="2026/07/13",
             case_time="0805",
         )
 
@@ -840,10 +841,13 @@ class SeleniumLocalTests(unittest.TestCase):
             def get(self, _url):
                 pass
 
+        query_calls = []
         with patch.object(selenium_local_module, "_ensure_duty_login", return_value=True), patch.object(
             selenium_local_module, "_click_by_text_or_id"
         ), patch.object(selenium_local_module, "_switch_to_window_containing"), patch.object(
-            selenium_local_module, "_set_case_query_date_range"
+            selenium_local_module,
+            "_set_case_query_date_range",
+            side_effect=lambda *args, **kwargs: query_calls.append(kwargs),
         ), patch.object(selenium_local_module, "_click_query_if_present"), patch.object(
             selenium_local_module, "_extract_all_emergency_cases", return_value=[{"case_id": request.case_id}]
         ), patch.object(
@@ -860,6 +864,21 @@ class SeleniumLocalTests(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "duty_work_log_saved")
+        self.assertEqual(query_calls[0]["start_at"], datetime(2026, 7, 13, 8, 4))
+
+    def test_case_query_date_range_accepts_a_specific_start_time(self):
+        class FakeDriver:
+            def execute_script(self, script: str, *args):
+                self.script = script
+                self.args = args
+
+        driver = FakeDriver()
+
+        _set_case_query_date_range(driver, start_at=datetime(2026, 7, 13, 8, 4))
+
+        self.assertEqual(driver.args[0], "1150713")
+        self.assertEqual(driver.args[2:4], ("08", "04"))
+        self.assertEqual(len(driver.args), 6)
 
     def test_duty_work_log_unknown_nonempty_confirmation_remains_waiting(self):
         request = AmbulanceReturnRequest(
