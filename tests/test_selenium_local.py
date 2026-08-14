@@ -16,6 +16,7 @@ from ambulance_bot.selenium_local import (
     _assert_disinfection_not_login,
     _click_disinfection_query,
     _click_disinfection_save,
+    _click_case_choose,
     _click_fuel_card_register,
     _click_save_control,
     _click_vehicle_mileage_save,
@@ -176,6 +177,20 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertIsNotNone(matched)
         self.assertEqual(matched["case_id"], request.case_id)
+
+    def test_click_case_choose_retries_when_button_is_not_ready_yet(self):
+        class FakeDriver:
+            def __init__(self):
+                self.calls = 0
+
+            def execute_script(self, _script, _case_id):
+                self.calls += 1
+                return self.calls >= 2
+
+        driver = FakeDriver()
+        with patch.object(selenium_local_module.time, "sleep"):
+            self.assertTrue(_click_case_choose(driver, "20260814003659012"))
+        self.assertGreaterEqual(driver.calls, 2)
 
     def test_work_log_case_match_does_not_fallback_when_case_id_is_unavailable(self):
         request = AmbulanceReturnRequest(

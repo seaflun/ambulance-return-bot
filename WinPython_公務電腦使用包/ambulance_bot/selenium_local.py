@@ -3776,22 +3776,40 @@ def _switch_to_work_log_form_for_case(driver: webdriver.Chrome, case: dict[str, 
 
 
 def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
+    case_id = str(case_id or "").strip()
+    if not case_id:
+        return False
     script = """
-    const caseId = arguments[0];
+    const caseId = String(arguments[0] || '').trim();
     const rows = Array.from(document.querySelectorAll('tr'));
-    for (const row of rows) {
-      if (!row.innerText.includes(caseId)) continue;
-      const controls = Array.from(row.querySelectorAll('input, button, a'));
-      const target = controls.find(el => {
-        const text = [el.value, el.innerText, el.title, el.id, el.name].map(x => String(x || '')).join(' ');
-        const onclick = String(el.getAttribute('onclick') || '');
-        return text.includes('選擇') && onclick.includes(caseId);
-      });
-      if (target) { target.click(); return true; }
-    }
-    return false;
+    const row = rows.find(item => Array.from(item.children).some(cell => {
+      if (!['TD', 'TH'].includes(cell.tagName)) return false;
+      return String(cell.innerText || cell.textContent || '').trim() === caseId;
+    }));
+    if (!row) return false;
+    const controls = Array.from(row.querySelectorAll('input, button, a'));
+    const target = controls.find(el => {
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const text = [el.value, el.innerText, el.title, el.id, el.name]
+        .map(x => String(x || '')).join(' ');
+      return text.includes('選擇') || /choose/i.test(text);
+    });
+    if (!target) return false;
+    target.click();
+    return true;
     """
-    return bool(driver.execute_script(script, case_id))
+    def try_click(current_driver):
+        try:
+            return bool(current_driver.execute_script(script, case_id))
+        except WebDriverException:
+            return False
+
+    try:
+        return bool(WebDriverWait(driver, 10, poll_frequency=0.25).until(try_click))
+    except (TimeoutException, WebDriverException):
+        return False
 
 
 def _extract_selected_case_form(driver: webdriver.Chrome) -> dict[str, object]:
