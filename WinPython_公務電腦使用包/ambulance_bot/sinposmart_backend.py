@@ -682,6 +682,12 @@ def sinposmart_action_display_title(
 def better_sinposmart_action_result(current: dict[str, Any] | None, candidate: dict[str, Any]) -> dict[str, Any]:
     if current is None:
         return candidate
+    current_time = sinposmart_event_time(current)
+    candidate_time = sinposmart_event_time(candidate)
+    if candidate_time > current_time:
+        return candidate
+    if candidate_time < current_time:
+        return current
     current_rank = sinposmart_action_status_rank(str(current.get("status") or ""), str(current.get("record_type") or ""))
     candidate_rank = sinposmart_action_status_rank(str(candidate.get("status") or ""), str(candidate.get("record_type") or ""))
     if candidate_rank > current_rank:

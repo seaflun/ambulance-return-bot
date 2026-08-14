@@ -629,6 +629,66 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["action_events"][0]["status_label"], "失敗")
         self.assertEqual(view["action_events"][0]["pause_reason"], "找不到出入欄位")
 
+    def test_admin_view_uses_later_success_after_failed_retry(self):
+        completion_key = "entry:2026-08-14:18:in:27:返隊:防溺車巡繼領取氣瓶"
+        events = [
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-retry-queued",
+                    "occurred_at": "2026-08-14T18:00:00",
+                    "record_type": "action_queued",
+                    "status": "pending_write_automation",
+                    "trigger_type": "due",
+                    "item_kind": "出入",
+                    "item_title": "入 / 返隊",
+                    "target": "27番 林宏為",
+                    "target_time": "18:00",
+                    "snapshot": {"completion_key": completion_key},
+                },
+                now=datetime(2026, 8, 14, 18, 0),
+            ),
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-retry-failed",
+                    "occurred_at": "2026-08-14T18:00:13",
+                    "record_type": "action_result",
+                    "status": "failed",
+                    "error": "第一次登打失敗",
+                    "trigger_type": "due",
+                    "item_kind": "出入",
+                    "item_title": "入 / 返隊",
+                    "target": "27番 林宏為",
+                    "target_time": "18:00",
+                    "snapshot": {"completion_key": completion_key},
+                },
+                now=datetime(2026, 8, 14, 18, 0, 13),
+            ),
+            normalize_sinposmart_event(
+                {
+                    "event_id": "evt-retry-submitted",
+                    "occurred_at": "2026-08-14T18:01:39",
+                    "record_type": "action_result",
+                    "status": "submitted",
+                    "trigger_type": "due",
+                    "item_kind": "出入",
+                    "item_title": "入 / 返隊",
+                    "target": "27番 林宏為",
+                    "target_time": "18:00",
+                    "snapshot": {"completion_key": completion_key},
+                },
+                now=datetime(2026, 8, 14, 18, 1, 39),
+            ),
+        ]
+
+        view = build_sinposmart_admin_view(events)
+        card = view["action_events"][0]
+
+        self.assertEqual(len(view["action_events"]), 1)
+        self.assertEqual(card["status_label"], "已登打")
+        self.assertEqual(card["status_class"], "complete")
+        self.assertEqual(card["completed_at"], "2026-08-14T18:01:39")
+        self.assertEqual(card["pause_reason"], "")
+
     def test_admin_view_keeps_same_time_duty_items_separate(self):
         events = []
         for index, (item_kind, title, target) in enumerate(
