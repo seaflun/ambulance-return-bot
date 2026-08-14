@@ -45,6 +45,7 @@ from ambulance_bot.selenium_local import (
     _profile_dir,
     cleanup_stale_selenium_profiles,
     _resolve_end_mileage,
+    _set_case_query_date_range,
     _save_duty_work_log_enabled,
     _save_disinfection_probe_enabled,
     _save_disinfection_record_enabled,
@@ -2398,6 +2399,18 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIn("下一頁", driver.script)
         self.assertIn("dispatchEvent(new Event('change'", driver.script)
         self.assertIn("totalPages", driver.script)
+
+    def test_case_lookup_date_range_targets_one_calendar_day(self):
+        class FakeDriver:
+            def execute_script(self, script: str, *args):
+                self.script = script
+                self.args = args
+
+        driver = FakeDriver()
+
+        _set_case_query_date_range(driver, lookup_range="date:2026-08-13")
+
+        self.assertEqual(driver.args, ("1150813", "1150813", "00", "00", "23", "59"))
 
     def test_extract_all_emergency_cases_continues_past_five_pages(self):
         pages = [[{"case_id": f"case-{index}"}] for index in range(1, 7)]

@@ -401,6 +401,9 @@
                 {% endif %}
                 <div class="meta">同步帳號：{{ synced_account }}</div>
                 <div class="meta">公務電腦：{{ item.worker_id or '未回報' }}｜更新：{{ item.updated_at }}</div>
+                {% if task.task_id and task.task_id in retry_sites_by_task %}
+                  <a class="task-detail-link" href="{{ url_for('task_detail', task_id=task.task_id) }}">查看任務明細</a>
+                {% endif %}
               </div>
               <span class="status {{ status_class(effective_task_status(item)) }}">{{ task_completion_label(item) }}</span>
             </div>
@@ -445,6 +448,12 @@
                 <div class="site">
                   <div class="site-name">{{ title }}</div>
                   <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
+                  {% if site_key in (retry_sites_by_task.get(task.task_id, []) or []) %}
+                    <form class="site-retry-form" method="post" action="{{ url_for('run_task_site', task_id=task.task_id, site_key=site_key) }}" onsubmit="return confirm('確定重新送出{{ title }}？');">
+                      <input type="hidden" name="return_service" value="{{ service_filter }}">
+                      <button type="submit">重新送出{{ title }}</button>
+                    </form>
+                  {% endif %}
                   {% if diag.failure_reason %}
                     <div class="site-diagnostic">
                       <div class="site-diagnostic-title">錯誤指引</div>

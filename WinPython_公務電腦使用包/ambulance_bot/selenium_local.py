@@ -641,9 +641,10 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
         cases = _attach_case_form_details(driver, cases, artifacts_dir, previous_cases, deadline=deadline)
         _case_lookup_log_step("details_loaded", range=lookup_range, count=len(cases))
         _save_artifacts(driver, artifacts_dir / "selenium", "case_lookup", "duty_cases")
+        range_label = _case_lookup_result_range_label(lookup_range)
         payload = _case_lookup_payload(
             "cases_loaded",
-            f"\u5df2\u67e5\u5230 {len(cases)} \u7b46 24 \u5c0f\u6642\u5167\u6848\u4ef6\uff0c\u4e26\u8b80\u53d6\u51fa\u52e4\u4eba\u54e1\u3002",
+            f"已查到 {len(cases)} 筆 {range_label}案件，並讀取出勤人員。",
             cases,
         )
         _write_json_atomic(output_path, payload)
@@ -801,6 +802,18 @@ def _case_lookup_payload(status: str, detail: str, cases: list[dict[str, str]]) 
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "cases": cases,
     }
+
+
+def _case_lookup_result_range_label(lookup_range: str) -> str:
+    raw_value = str(lookup_range or "").strip()
+    if raw_value.startswith("date:"):
+        try:
+            parsed = datetime.strptime(raw_value[5:], "%Y-%m-%d")
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            return f"{parsed:%Y/%m/%d}"
+    return "24 小時內"
 
 
 def _case_lookup_timeout_seconds() -> int:
@@ -1168,7 +1181,8 @@ def _prepare_duty_work_log_form(
     _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
     _switch_to_window_containing(driver, "_txtSDATE")
     time.sleep(1.5)
-    _set_case_query_date_range(driver, lookup_range="24h")
+    lookup_range = f"date:{request.service_case_date():%Y-%m-%d}"
+    _set_case_query_date_range(driver, lookup_range=lookup_range)
     _click_query_if_present(driver)
     time.sleep(1)
     cases = _extract_all_emergency_cases(driver)
@@ -1178,7 +1192,10 @@ def _prepare_duty_work_log_form(
         return SeleniumRunResult(
             ok=False,
             status="duty_case_not_found",
-            detail=f"未在前 24 小時案件清單找到符合時間={request.case_time}、地址={request.case_address} 的案件；已保存查詢頁截圖。",
+            detail=(
+                f"未在 {_case_lookup_result_range_label(lookup_range)}案件清單找到符合時間={request.case_time}、"
+                f"地址={request.case_address} 的案件；已保存查詢頁截圖。"
+            ),
             summary_path=summary_path,
         )
     if not _click_case_choose(driver, case["case_id"]):
@@ -3898,8 +3915,19 @@ def _click_query_if_present(driver: webdriver.Chrome) -> None:
 
 
 def _set_case_query_date_range(driver: webdriver.Chrome, lookup_range: str = "24h") -> None:
-    end_at = datetime.now()
-    start_at = end_at - timedelta(hours=24)
+    selected_date = None
+    raw_value = str(lookup_range or "").strip()
+    if raw_value.startswith("date:"):
+        try:
+            selected_date = datetime.strptime(raw_value[5:], "%Y-%m-%d").date()
+        except ValueError:
+            selected_date = None
+    if selected_date is None:
+        end_at = datetime.now()
+        start_at = end_at - timedelta(hours=24)
+    else:
+        start_at = datetime.combine(selected_date, datetime.min.time())
+        end_at = datetime.combine(selected_date, datetime.max.time()).replace(microsecond=0)
     start_date = _roc_date(start_at)
     end_date = _roc_date(end_at)
     driver.execute_script(

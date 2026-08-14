@@ -497,7 +497,7 @@ def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceRet
 def _find_consumable_detail_hrefs(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
     wait = WebDriverWait(driver, 15)
     wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "a.btn_t02[href^='/ACS/ACS15002?emmTemsisid=']")) > 0)
-    candidates = _stable_consumable_candidates(driver)
+    candidates = _collect_consumable_candidates(driver, request)
     if not candidates:
         raise RuntimeError("耗材列表找不到內容連結。")
 
@@ -568,6 +568,103 @@ def _find_consumable_detail_hrefs(driver: webdriver.Chrome, request: AmbulanceRe
     raise RuntimeError(f"耗材列表找不到符合案件的內容列：時間={case_time or '未填'} 地址={address or '未填'}")
 
 
+def _collect_consumable_candidates(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+) -> list[dict[str, str]]:
+    candidates = _stable_consumable_candidates(driver)
+    if not candidates:
+        return []
+    collected: list[dict[str, str]] = []
+    seen_hrefs: set[str] = set()
+    matched_case_page = False
+    for _ in range(200):
+        for item in candidates:
+            href = str(item.get("href") or "")
+            if href and href not in seen_hrefs:
+                seen_hrefs.add(href)
+                collected.append(item)
+        page_has_case_match = any(
+            _consumable_sid_score(
+                request.case_id,
+                str(item.get("sid") or _emm_temsis_id_from_href(str(item.get("href") or ""))),
+            )
+            > 0
+            for item in candidates
+        )
+        if page_has_case_match:
+            matched_case_page = True
+        elif matched_case_page:
+            break
+        if _consumable_page_is_older_than_case(request.case_id, candidates):
+            break
+        previous_signature = _consumable_candidates_signature(candidates)
+        if not _click_next_consumable_page_if_present(driver):
+            break
+        if not _wait_for_consumable_page_change(driver, previous_signature):
+            break
+        candidates = _stable_consumable_candidates(driver)
+        if not candidates:
+            break
+    return collected
+
+
+def _consumable_candidates_signature(candidates: list[dict[str, str]]) -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (
+            str(item.get("href") or ""),
+            str(item.get("sid") or ""),
+            str(item.get("text") or ""),
+        )
+        for item in candidates
+    )
+
+
+def _wait_for_consumable_page_change(
+    driver: webdriver.Chrome,
+    previous_signature: tuple[tuple[str, str, str], ...],
+    timeout: float = 10.0,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current_signature = _consumable_candidates_signature(_read_consumable_candidates(driver))
+        if current_signature and current_signature != previous_signature:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _click_next_consumable_page_if_present(driver: webdriver.Chrome) -> bool:
+    return bool(
+        driver.execute_script(
+            """
+            const next = document.querySelector('#result-datatable_next, a.paginate_button.next');
+            if (!next || next.classList.contains('disabled') || next.getAttribute('aria-disabled') === 'true') {
+              return false;
+            }
+            next.click();
+            return true;
+            """
+        )
+    )
+
+
+def _consumable_page_is_older_than_case(case_id: str, candidates: list[dict[str, str]]) -> bool:
+    case_date = _yyyymmdd_from_case_id(case_id)
+    if not case_date:
+        return False
+    candidate_dates = [
+        candidate_date
+        for item in candidates
+        for candidate_date in [
+            _yyyymmdd_from_row_text(str(item.get("text") or ""))
+            or _yyyymmdd_from_sid(str(item.get("sid") or ""))
+        ]
+        if candidate_date
+    ]
+    return bool(candidate_dates) and max(candidate_dates) < case_date
+
+
 def _read_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]]:
     raw_candidates = driver.execute_script(
         """
@@ -588,26 +685,12 @@ def _read_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]
 
 def _stable_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]]:
     candidates = _read_consumable_candidates(driver)
-    signature = tuple(
-        (
-            str(item.get("href") or ""),
-            str(item.get("sid") or ""),
-            str(item.get("text") or ""),
-        )
-        for item in candidates
-    )
+    signature = _consumable_candidates_signature(candidates)
     stable_rounds = 0
     for _ in range(32):
         time.sleep(0.25)
         current = _read_consumable_candidates(driver)
-        current_signature = tuple(
-            (
-                str(item.get("href") or ""),
-                str(item.get("sid") or ""),
-                str(item.get("text") or ""),
-            )
-            for item in current
-        )
+        current_signature = _consumable_candidates_signature(current)
         if current_signature == signature:
             stable_rounds += 1
         else:

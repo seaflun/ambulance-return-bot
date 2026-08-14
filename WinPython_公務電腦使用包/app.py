@@ -295,7 +295,7 @@ def disaster_task():
 def query_cases():
     global _case_lookup_start_error
 
-    lookup_range = "24h"
+    lookup_range = case_lookup_range_from_date(request.form.get("lookup_date"))
     source = case_lookup_source_label(request.host)
     mode = effective_task_execution_mode()
     try:
@@ -618,6 +618,17 @@ def run_task(task_id: str):
     return redirect(url_for("task_detail", task_id=task_id))
 
 
+def task_site_run_redirect(task_id: str):
+    return_service = str(request.form.get("return_service") or "").strip().lower()
+    if return_service == "ems":
+        return redirect(url_for("admin_ems"))
+    if return_service == "disaster":
+        return redirect(url_for("admin_disaster"))
+    if return_service == "public_pc":
+        return redirect(url_for("admin_public_pc"))
+    return redirect(url_for("task_detail", task_id=task_id))
+
+
 @app.post("/tasks/<task_id>/sites/<site_key>/run")
 def run_task_site(task_id: str, site_key: str):
     if site_key not in VALID_SITE_KEYS:
@@ -629,14 +640,14 @@ def run_task_site(task_id: str, site_key: str):
     payload = refresh_stale_running_task(payload)
     if site_key == "fuel_record" and not task_has_fuel_record(payload.get("task") or {}):
         store.set_overall_status(task_id, "desktop_fast_unavailable", "此任務未勾選加油紀錄，已略過加油登打。")
-        return redirect(url_for("task_detail", task_id=task_id))
+        return task_site_run_redirect(task_id)
     if task_payload_is_active(payload):
         store.set_overall_status(
             task_id,
             effective_task_status(payload),
             "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
         )
-        return redirect(url_for("task_detail", task_id=task_id))
+        return task_site_run_redirect(task_id)
     if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
         return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
     payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
@@ -655,7 +666,7 @@ def run_task_site(task_id: str, site_key: str):
             "desktop_fast_unavailable",
             "單站登打只能在本機網頁使用；手機/NAS 請使用五站登打或公務電腦 worker。",
         )
-    return redirect(url_for("task_detail", task_id=task_id))
+    return task_site_run_redirect(task_id)
 
 
 @app.post("/tasks/<task_id>/sites/<site_key>/complete")
@@ -988,6 +999,14 @@ def render_admin_public_pc(*, locked_service: str = ""):
         if result_filter == "all"
         else [item for item in service_reports if public_pc_report_result(item) == result_filter]
     )
+    retry_sites_by_task = {}
+    for item in visible_reports:
+        task = item.get("task") if isinstance(item.get("task"), dict) else {}
+        task_id = str(task.get("task_id") or item.get("task_id") or "").strip()
+        if task_id:
+            retry_sites = admin_retryable_site_keys(item)
+            if retry_sites is not None:
+                retry_sites_by_task[task_id] = retry_sites
     return render_template(
         "admin_public_pc.html",
         reports=visible_reports,
@@ -1007,6 +1026,7 @@ def render_admin_public_pc(*, locked_service: str = ""):
         remote_update=remote_update_admin_view() if remote_update_enabled else {},
         remote_update_enabled=remote_update_enabled,
         remote_update_csrf_token=csrf_token if remote_update_enabled else "",
+        retry_sites_by_task=retry_sites_by_task,
     )
 
 
@@ -3901,8 +3921,37 @@ def write_case_lookup_request(lookup_range: str, source: str = "", mode: str = "
     return payload
 
 
+def case_lookup_range_from_date(value: object) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return "24h"
+    try:
+        parsed = datetime.strptime(raw_value, "%Y-%m-%d")
+    except ValueError:
+        return "24h"
+    return f"date:{parsed:%Y-%m-%d}"
+
+
+def _case_lookup_date_from_range(lookup_range: object) -> datetime | None:
+    raw_value = str(lookup_range or "").strip()
+    if not raw_value.startswith("date:"):
+        return None
+    try:
+        return datetime.strptime(raw_value[5:], "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
 def case_lookup_range_label(lookup_range: str) -> str:
+    parsed = _case_lookup_date_from_range(lookup_range)
+    if parsed is not None:
+        return f"指定日期 {parsed:%Y/%m/%d}"
     return "最近 24 小時"
+
+
+def case_lookup_date_input(lookup_range: object) -> str:
+    parsed = _case_lookup_date_from_range(lookup_range)
+    return parsed.strftime("%Y-%m-%d") if parsed is not None else ""
 
 
 def case_lookup_source_label(host: str) -> str:
@@ -4326,6 +4375,25 @@ def site_can_run_individually(site_statuses: dict, site_key: str) -> bool:
             return True
         return current_class == "failed" or (blocked and current_class != "complete")
     return False
+
+
+def admin_retryable_site_keys(item: Mapping[str, object]) -> list[str] | None:
+    task = item.get("task") if isinstance(item.get("task"), dict) else {}
+    task_id = str(task.get("task_id") or item.get("task_id") or "").strip()
+    if not task_id:
+        return None
+    try:
+        store.get(task_id)
+    except (FileNotFoundError, KeyError, OSError, ValueError):
+        return None
+    site_statuses = item.get("site_statuses") if isinstance(item.get("site_statuses"), dict) else {}
+    if task_has_waiting_confirmation(site_statuses):
+        return []
+    try:
+        site_pairs = task_site_display_pairs(task, site_statuses)
+    except (KeyError, TypeError, ValueError):
+        return []
+    return [site_key for site_key, _ in site_pairs if site_can_run_individually(site_statuses, site_key)]
 
 
 def site_action_button_label(status: str, site_key: str) -> str:
@@ -4987,6 +5055,7 @@ def template_helpers() -> dict:
         "effective_task_status": effective_task_status,
         "event_detail_text": event_detail_text,
         "event_site_name": event_site_name,
+        "case_lookup_date_input": case_lookup_date_input,
         "selected_case_date_input": selected_case_date_input,
         "selected_case_address": selected_case_address,
         "selected_return_date_input": selected_return_date_input,
@@ -5182,6 +5251,10 @@ def prepared_case_lookup() -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
     cases = case_lookup.get("cases") or []
+    selected_lookup_range = str(
+        lookup_request.get("lookup_range") or case_lookup.get("lookup_range") or "24h"
+    )
+    case_lookup["lookup_date"] = case_lookup_date_input(selected_lookup_range)
     if _case_lookup_start_error:
         case_lookup["detail"] = _case_lookup_start_error
         case_lookup["is_running"] = False

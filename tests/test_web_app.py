@@ -5903,6 +5903,18 @@ class WebAppTests(unittest.TestCase):
         request_payload = app_module.read_case_lookup_request()
         self.assertEqual(request_payload["lookup_range"], "24h")
 
+    def test_query_cases_accepts_explicit_lookup_date(self):
+        response = self.client.post(
+            "/cases/query",
+            data={"lookup_date": "2026-08-13"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        request_payload = app_module.read_case_lookup_request()
+        self.assertEqual(request_payload["lookup_range"], "date:2026-08-13")
+        self.assertEqual(app_module.case_lookup_range_label(request_payload["lookup_range"]), "指定日期 2026/08/13")
+
     def test_query_cases_handles_request_write_failure(self):
         def fail_write(lookup_range: str, source: str = "", mode: str = "worker_queue") -> dict:
             raise OSError("request path denied")
@@ -7615,6 +7627,51 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("四站登打啟動", body)
         self.assertIn(f"/tasks/{task_id}/sites/disinfection/run", body)
         self.assertIn("單獨登打", body)
+
+    def test_nas_ems_admin_exposes_failed_site_retry_and_returns_to_admin(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "consumables",
+                "一站通耗材",
+                "consumables_failed",
+                "耗材儲存失敗",
+            ),
+        )
+        payload = self.store.get(task_id)
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "evt-admin-retry",
+                "task_id": task_id,
+                "title": "NAS 重送測試",
+                "task": payload["task"],
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": payload["site_statuses"],
+            }
+        )
+
+        page = self.client.get("/admin/ems", base_url="http://100.114.126.58:8080")
+        body = html.unescape(page.get_data(as_text=True))
+
+        self.assertIn(f'href="/tasks/{task_id}"', body)
+        self.assertIn(f'action="/tasks/{task_id}/sites/consumables/run"', body)
+        self.assertIn('name="return_service" value="ems"', body)
+        self.assertIn("重新送出", body)
+
+        response = self.client.post(
+            f"/tasks/{task_id}/sites/consumables/run",
+            base_url="http://100.114.126.58:8080",
+            data={"return_service": "ems"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/admin/ems")
+        self.assertEqual(self.store.get(task_id)["worker_queue"]["run_site_key"], "consumables")
 
     def test_task_detail_shows_chinese_statuses_without_raw_statuses(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())

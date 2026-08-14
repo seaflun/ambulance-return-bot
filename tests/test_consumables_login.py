@@ -19,6 +19,7 @@ from consumables_login import (
     _emm_temsis_id_from_href,
     _find_consumable_detail_href,
     _find_consumable_detail_hrefs,
+    _click_next_consumable_page_if_present,
     _load_acs_credentials,
     _patient_sid_parts,
     _wait_for_consumable_detail_page,
@@ -692,6 +693,76 @@ class ConsumablesLoginTests(unittest.TestCase):
             hrefs = _find_consumable_detail_hrefs(FakeDriver(), request)
 
         self.assertEqual([_emm_temsis_id_from_href(href)[-2:] for href in hrefs], ["01", "02"])
+
+    def test_consumable_detail_search_continues_to_next_result_page(self):
+        page_one = [
+            {
+                "href": "/ACS/ACS15002?emmTemsisid=2026071310100399999901",
+                "sid": "2026071310100399999901",
+                "text": "2026/07/13 08:05:05 其他案件",
+            }
+        ]
+        page_two = [
+            {
+                "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031901",
+                "sid": "2026071310100308031901",
+                "text": "2026/07/13 08:05:05 桃園市觀音區案件",
+            }
+        ]
+
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                self.driver = driver
+
+            def until(self, predicate):
+                return predicate(self.driver)
+
+        class FakeDriver:
+            current_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS15001"
+
+            def __init__(self):
+                self.page = 0
+
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                if "result-datatable_next" in script:
+                    if self.page == 0:
+                        self.page = 1
+                        return True
+                    return False
+                if "a.btn_t02" in script:
+                    return page_one if self.page == 0 else page_two
+                return []
+
+        request = AmbulanceReturnRequest(
+            task_id="task-pagination",
+            created_at=datetime.now(),
+            raw_text="",
+            case_id="20260713080319001",
+            case_time="0805",
+            vehicle="",
+            case_address="桃園市觀音區案件",
+            case_reason="急病",
+        )
+
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            hrefs = _find_consumable_detail_hrefs(FakeDriver(), request)
+
+        self.assertEqual(hrefs, [page_two[0]["href"]])
+
+    def test_consumable_next_page_click_stops_at_disabled_control(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                self.script = script
+                return False
+
+        driver = FakeDriver()
+
+        self.assertFalse(_click_next_consumable_page_if_present(driver))
+        self.assertIn("result-datatable_next", driver.script)
+        self.assertIn("classList.contains('disabled')", driver.script)
 
     def test_consumable_candidate_list_waits_until_patient_links_are_stable(self):
         first = {
