@@ -1325,6 +1325,15 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("待填：", body)
         self.assertIn('setFieldState(field.name, "pending");', body)
 
+    def test_ems_and_disaster_entry_pages_keep_24h_lookup_without_date_field(self):
+        ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        for body in (ems_body, disaster_body):
+            self.assertIn('action="/cases/query"', body)
+            self.assertNotIn('name="lookup_date"', body)
+            self.assertNotIn('class="lookup-date"', body)
+
     def test_lookup_submit_locks_existing_import_buttons(self):
         cases_dir = app_module.artifacts_dir / "cases"
         cases_dir.mkdir(parents=True, exist_ok=True)
@@ -5903,7 +5912,7 @@ class WebAppTests(unittest.TestCase):
         request_payload = app_module.read_case_lookup_request()
         self.assertEqual(request_payload["lookup_range"], "24h")
 
-    def test_query_cases_accepts_explicit_lookup_date(self):
+    def test_query_cases_ignores_explicit_lookup_date(self):
         response = self.client.post(
             "/cases/query",
             data={"lookup_date": "2026-08-13"},
@@ -5912,8 +5921,8 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 302)
         request_payload = app_module.read_case_lookup_request()
-        self.assertEqual(request_payload["lookup_range"], "date:2026-08-13")
-        self.assertEqual(app_module.case_lookup_range_label(request_payload["lookup_range"]), "指定日期 2026/08/13")
+        self.assertEqual(request_payload["lookup_range"], "24h")
+        self.assertEqual(app_module.case_lookup_range_label(request_payload["lookup_range"]), "最近 24 小時")
 
     def test_query_cases_handles_request_write_failure(self):
         def fail_write(lookup_range: str, source: str = "", mode: str = "worker_queue") -> dict:
@@ -7672,6 +7681,54 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["Location"], "/admin/ems")
         self.assertEqual(self.store.get(task_id)["worker_queue"]["run_site_key"], "consumables")
+
+    def test_nas_ems_admin_materializes_report_only_task_for_retry(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "consumables",
+                "一站通耗材",
+                "consumables_failed",
+                "耗材儲存失敗",
+            ),
+        )
+        payload = self.store.get(task_id)
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "evt-admin-report-only-retry",
+                "task_id": task_id,
+                "title": "公務電腦回報重送測試",
+                "task": payload["task"],
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": payload["site_statuses"],
+            }
+        )
+
+        report_only_store = JsonTaskStore(Path(self.tmp.name) / "report-only-tasks")
+        app_module.store = report_only_store
+        app_module.runner = TaskRunner(Path(self.tmp.name), store=report_only_store)
+        app_module.desktop_runner = FakeDesktopRunner(report_only_store)
+
+        page = self.client.get("/admin/ems", base_url="http://100.114.126.58:8080")
+        body = html.unescape(page.get_data(as_text=True))
+
+        self.assertIn(f'href="/tasks/{task_id}"', body)
+        self.assertIn(f'action="/tasks/{task_id}/sites/consumables/run"', body)
+
+        response = self.client.post(
+            f"/tasks/{task_id}/sites/consumables/run",
+            base_url="http://100.114.126.58:8080",
+            data={"return_service": "ems"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/admin/ems")
+        self.assertEqual(report_only_store.get(task_id)["worker_queue"]["run_site_key"], "consumables")
 
     def test_task_detail_shows_chinese_statuses_without_raw_statuses(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())

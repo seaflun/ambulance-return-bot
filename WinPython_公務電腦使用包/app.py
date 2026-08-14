@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from copy import deepcopy
 import hashlib
 import hmac
 import json
@@ -106,6 +107,8 @@ from ambulance_bot.task_store import (
     SiteCompletionConflictError,
     TaskActiveError,
     WorkerClaimConflictError,
+    initial_site_attempts,
+    initial_worker_queue_state,
     pending_legacy_silent_save_report_event_id,
     task_completion_snapshot,
     task_payload_is_active_for_edit,
@@ -295,7 +298,7 @@ def disaster_task():
 def query_cases():
     global _case_lookup_start_error
 
-    lookup_range = case_lookup_range_from_date(request.form.get("lookup_date"))
+    lookup_range = "24h"
     source = case_lookup_source_label(request.host)
     mode = effective_task_execution_mode()
     try:
@@ -549,7 +552,9 @@ def task_detail(task_id: str):
     try:
         payload = store.get(task_id)
     except FileNotFoundError:
-        abort(404)
+        payload = materialize_public_pc_report_task(task_id)
+        if payload is None:
+            abort(404)
     payload = refresh_stale_running_task(payload)
     return render_template("task_detail.html", payload=payload, site_can_run_individually=site_can_run_individually)
 
@@ -636,7 +641,9 @@ def run_task_site(task_id: str, site_key: str):
     try:
         payload = store.get(task_id)
     except FileNotFoundError:
-        abort(404)
+        payload = materialize_public_pc_report_task(task_id)
+        if payload is None:
+            abort(404)
     payload = refresh_stale_running_task(payload)
     if site_key == "fuel_record" and not task_has_fuel_record(payload.get("task") or {}):
         store.set_overall_status(task_id, "desktop_fast_unavailable", "此任務未勾選加油紀錄，已略過加油登打。")
@@ -3921,37 +3928,8 @@ def write_case_lookup_request(lookup_range: str, source: str = "", mode: str = "
     return payload
 
 
-def case_lookup_range_from_date(value: object) -> str:
-    raw_value = str(value or "").strip()
-    if not raw_value:
-        return "24h"
-    try:
-        parsed = datetime.strptime(raw_value, "%Y-%m-%d")
-    except ValueError:
-        return "24h"
-    return f"date:{parsed:%Y-%m-%d}"
-
-
-def _case_lookup_date_from_range(lookup_range: object) -> datetime | None:
-    raw_value = str(lookup_range or "").strip()
-    if not raw_value.startswith("date:"):
-        return None
-    try:
-        return datetime.strptime(raw_value[5:], "%Y-%m-%d")
-    except ValueError:
-        return None
-
-
 def case_lookup_range_label(lookup_range: str) -> str:
-    parsed = _case_lookup_date_from_range(lookup_range)
-    if parsed is not None:
-        return f"指定日期 {parsed:%Y/%m/%d}"
     return "最近 24 小時"
-
-
-def case_lookup_date_input(lookup_range: object) -> str:
-    parsed = _case_lookup_date_from_range(lookup_range)
-    return parsed.strftime("%Y-%m-%d") if parsed is not None else ""
 
 
 def case_lookup_source_label(host: str) -> str:
@@ -4377,14 +4355,54 @@ def site_can_run_individually(site_statuses: dict, site_key: str) -> bool:
     return False
 
 
+def public_pc_report_for_task(task_id: str) -> dict | None:
+    target_task_id = str(task_id or "").strip()
+    if not target_task_id:
+        return None
+    for report in public_pc_reports():
+        task = report.get("task") if isinstance(report.get("task"), dict) else {}
+        report_task_id = str(report.get("task_id") or task.get("task_id") or "").strip()
+        if report_task_id == target_task_id:
+            return report
+    return None
+
+
+def materialize_public_pc_report_task(task_id: str) -> dict | None:
+    report = public_pc_report_for_task(task_id)
+    if report is None:
+        return None
+    report_task = report.get("task") if isinstance(report.get("task"), dict) else {}
+    if not report_task:
+        return None
+    try:
+        task_request = AmbulanceReturnRequest.from_dict(report_task)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if task_request.task_id != str(task_id or "").strip():
+        return None
+
+    report_site_statuses = report.get("site_statuses")
+    report_attempts = report.get("site_attempts")
+    report_events = report.get("events")
+    payload = {
+        "task": task_request.to_dict(),
+        "created_at": task_request.created_at.isoformat(timespec="seconds"),
+        "updated_at": "",
+        "overall_status": str(report.get("overall_status") or "created"),
+        "worker_queue": initial_worker_queue_state(),
+        "recent_status_event_ids": [],
+        "site_statuses": deepcopy(report_site_statuses) if isinstance(report_site_statuses, dict) else {},
+        "site_attempts": deepcopy(report_attempts) if isinstance(report_attempts, dict) else initial_site_attempts(),
+        "events": deepcopy(report_events) if isinstance(report_events, list) else [],
+    }
+    store.save_payload(task_request.task_id, payload)
+    return payload
+
+
 def admin_retryable_site_keys(item: Mapping[str, object]) -> list[str] | None:
     task = item.get("task") if isinstance(item.get("task"), dict) else {}
     task_id = str(task.get("task_id") or item.get("task_id") or "").strip()
     if not task_id:
-        return None
-    try:
-        store.get(task_id)
-    except (FileNotFoundError, KeyError, OSError, ValueError):
         return None
     site_statuses = item.get("site_statuses") if isinstance(item.get("site_statuses"), dict) else {}
     if task_has_waiting_confirmation(site_statuses):
@@ -5055,7 +5073,6 @@ def template_helpers() -> dict:
         "effective_task_status": effective_task_status,
         "event_detail_text": event_detail_text,
         "event_site_name": event_site_name,
-        "case_lookup_date_input": case_lookup_date_input,
         "selected_case_date_input": selected_case_date_input,
         "selected_case_address": selected_case_address,
         "selected_return_date_input": selected_return_date_input,
@@ -5251,10 +5268,6 @@ def prepared_case_lookup() -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
     cases = case_lookup.get("cases") or []
-    selected_lookup_range = str(
-        lookup_request.get("lookup_range") or case_lookup.get("lookup_range") or "24h"
-    )
-    case_lookup["lookup_date"] = case_lookup_date_input(selected_lookup_range)
     if _case_lookup_start_error:
         case_lookup["detail"] = _case_lookup_start_error
         case_lookup["is_running"] = False

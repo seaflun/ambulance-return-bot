@@ -83,8 +83,6 @@
     .lookup { margin-bottom: 16px; }
     .lookup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .lookup-form { display: flex; align-items: center; gap: 10px; padding: 0; border: 0; box-shadow: none; background: transparent; }
-    .lookup-date { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .82rem; font-weight: 700; white-space: nowrap; }
-    .lookup-date input { width: 148px; min-height: 42px; }
     .lookup-form button { min-width: 148px; }
     .lookup-status { display: none; color: var(--running); font-weight: 760; white-space: nowrap; }
     .lookup-status.is-visible { display: inline-flex; align-items: center; }
@@ -192,10 +190,6 @@
       <h2>勤務案件</h2>
       <form class="lookup-form" method="post" action="/cases/query" id="lookup-form">
         <input type="hidden" name="return_to" value="disaster">
-        <label class="lookup-date">
-          <span>案件日期（留白＝最近24小時）</span>
-          <input type="date" name="lookup_date" value="{{ case_lookup.lookup_date or '' }}">
-        </label>
         <span class="lookup-status{% if case_lookup.is_running %} is-visible{% endif %}" id="lookup-status" aria-live="polite">查詢中</span>
         <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢案件</button>
       </form>
