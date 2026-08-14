@@ -8271,6 +8271,34 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(mileages["91A1"], "10000")
 
+    def test_last_vehicle_mileage_ignores_single_site_retry_recency(self):
+        older = AmbulanceReturnRequest(
+            task_id="mileage-history-old",
+            created_at=datetime(2026, 8, 13, 8, 0),
+            raw_text="",
+            vehicle="新坡91",
+            mileage="10000",
+            case_date="2026-08-13",
+            case_time="0800",
+        )
+        newer = AmbulanceReturnRequest(
+            task_id="mileage-history-new",
+            created_at=datetime(2026, 8, 14, 8, 0),
+            raw_text="",
+            vehicle="新坡91",
+            mileage="11000",
+            case_date="2026-08-14",
+            case_time="0800",
+        )
+        app_module.store.create(older)
+        app_module.store.create(newer)
+        app_module.store.update_site_result(
+            older.task_id,
+            app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_saved", "單站重登"),
+        )
+
+        self.assertEqual(app_module.last_vehicle_mileages()["新坡91"], "11000")
+
     def test_task_edit_second_vehicle_fields_mark_saved_sites_for_update(self):
         previous_request = app_module.request_from_form(
             self.valid_task_data(

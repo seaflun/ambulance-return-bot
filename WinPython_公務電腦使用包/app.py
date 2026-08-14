@@ -4811,9 +4811,36 @@ def task_site_display_pairs(task: dict, site_statuses: dict | None = None) -> li
     ]
 
 
+def _last_vehicle_mileage_sort_key(payload: object) -> tuple[datetime, datetime]:
+    if not isinstance(payload, dict):
+        return datetime.min, datetime.min
+    task = dict(payload.get("task") or {})
+    case_date = parse_case_date(str(task.get("case_date") or ""))
+    case_time = normalize_hhmm(str(task.get("case_time") or ""))
+    created_at = datetime.min
+    for raw_value in (payload.get("created_at"), task.get("created_at")):
+        try:
+            created_at = datetime.fromisoformat(str(raw_value or "").strip()).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            continue
+        break
+    case_datetime = created_at
+    if case_date is not None and len(case_time) == 4:
+        try:
+            case_datetime = case_date.replace(hour=int(case_time[:2]), minute=int(case_time[2:]))
+        except ValueError:
+            pass
+    return case_datetime, created_at
+
+
 def last_vehicle_mileages(limit: int = 300) -> dict[str, str]:
     mileages: dict[str, str] = {}
-    for payload in store.list_recent(limit=limit):
+    recent_payloads = sorted(
+        store.list_recent(limit=limit),
+        key=_last_vehicle_mileage_sort_key,
+        reverse=True,
+    )
+    for payload in recent_payloads:
         if not isinstance(payload, dict):
             continue
         task = payload.get("task")
