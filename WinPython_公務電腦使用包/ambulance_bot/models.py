@@ -750,6 +750,57 @@ def form_flag_enabled(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+_PATIENT_COUNT_VALUES = {
+    "0": 0,
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+}
+
+
+def _normalize_patient_count(value: object) -> int:
+    return _PATIENT_COUNT_VALUES.get(str(value or "").strip(), 0)
+
+
+def patient_summary_from_counts(male_count: object, female_count: object) -> str:
+    male = _normalize_patient_count(male_count)
+    female = _normalize_patient_count(female_count)
+    parts = []
+    if male:
+        parts.append(f"男{male}名")
+    if female:
+        parts.append(f"女{female}名")
+    return "、".join(parts) or "無"
+
+
+def patient_counts_from_summary(summary: object) -> tuple[int, int]:
+    text = str(summary or "").strip()
+    counts = {"男": 0, "女": 0}
+    for gender, value in re.findall(r"([男女])\s*([0-5零〇一二三四五])\s*名?", text):
+        counts[gender] = _normalize_patient_count(value)
+    return counts["男"], counts["女"]
+
+
+def patient_summary_from_form(form: dict[str, Any], field_name: str, *, count_suffix: str = "") -> str:
+    summary = str(form.get(field_name) or "").strip()
+    if summary:
+        return summary
+    male_field = f"patient_male_count{count_suffix}"
+    female_field = f"patient_female_count{count_suffix}"
+    if male_field in form or female_field in form:
+        return patient_summary_from_counts(form.get(male_field), form.get(female_field))
+    return ""
+
+
 def fuel_record_from_form(
     form: dict[str, Any],
     *,
@@ -827,7 +878,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         mileage=str(form.get("mileage") or "").strip(),
         return_date=normalize_case_date(str(form.get("return_date") or "")),
         return_time=str(form.get("return_time") or "").strip(),
-        patient_summary=str(form.get("patient_summary") or "").strip(),
+        patient_summary=patient_summary_from_form(form, "patient_summary"),
         disinfection=str(form.get("disinfection") or "").strip()
         or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
         disinfection_items=list(disinfection_items),
@@ -845,7 +896,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
                 mileage=str(form.get("mileage_2") or "").strip(),
                 return_date=normalize_case_date(str(form.get("return_date_2") or "")),
                 return_time=str(form.get("return_time_2") or "").strip(),
-                patient_summary=str(form.get("patient_summary_2") or "").strip(),
+                patient_summary=patient_summary_from_form(form, "patient_summary_2", count_suffix="_2"),
                 disinfection=str(form.get("disinfection_2") or "").strip()
                 or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
                 disinfection_items=parse_disinfection_items_from_form(
@@ -876,7 +927,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         return_date=normalize_case_date(str(form.get("return_date") or "")),
         return_time=str(form.get("return_time") or "").strip(),
         case_address=clean_case_address(str(form.get("case_address") or "")),
-        patient_summary=str(form.get("patient_summary") or "").strip(),
+        patient_summary=patient_summary_from_form(form, "patient_summary"),
         case_reason=str(form.get("case_reason") or "").strip(),
         disinfection=str(form.get("disinfection") or "").strip()
         or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",

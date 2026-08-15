@@ -85,6 +85,13 @@
     #task-form input,
     #task-form select { min-height: 46px; padding: 10px 12px; }
     #task-form .grid { gap: 10px; }
+    #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-sm); font-weight: 700; }
+    .patient-count-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
+    .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-sm); font-weight: 700; }
+    .patient-count-option > span { flex: 0 0 auto; }
+    .patient-count-select { position: relative; flex: 1 1 auto; min-width: 0; }
+    #task-form .patient-count-select select { width: 100%; margin-top: 0; padding-right: 42px; }
+    .patient-count-unit { position: absolute; top: 50%; right: 32px; transform: translateY(-50%); color: var(--muted); line-height: 1; pointer-events: none; }
     input, select {
       width: 100%;
       min-width: 0;
@@ -188,6 +195,7 @@
     .form-section-divider { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
     .two-vehicle-option-card .two-vehicle-toggle { width: 100%; margin: 0; }
     .mileage-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: start; margin: 0 0 12px; }
+    .mileage-grid > .mileage-row { display: block; margin: 0; }
     .mileage-row .field-visual { margin: 0; }
     .mileage-hint-panel { min-width: 0; }
     .mileage-hint-spacer { min-height: calc(1.45em + 6px); visibility: hidden; }
@@ -474,15 +482,35 @@
       </div>
       <div data-site-card="mileage">
       <div class="grid">
-        <label class="field-visual" data-field-name="patient_summary">
-          <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <select name="patient_summary">
-            <option value="">請選擇</option>
-            <option value="男一名"{% if selected_case.patient_summary == '男一名' %} selected{% endif %}>男</option>
-            <option value="女一名"{% if selected_case.patient_summary == '女一名' %} selected{% endif %}>女</option>
-            <option value="無"{% if selected_case.patient_summary == '無' %} selected{% endif %}>無</option>
-          </select>
-        </label>
+        {% set primary_patient_counts = patient_counts_from_summary(selected_case.patient_summary) %}
+        <div class="field-visual patient-summary-field" data-field-name="patient_summary">
+          <span class="field-label-title">傷病患人數<span class="field-error-mark" aria-hidden="true">*</span></span>
+          <div class="patient-count-grid" role="group" aria-label="傷病患人數">
+            <div class="patient-count-option">
+              <span>男</span>
+              <div class="patient-count-select">
+                <select name="patient_male_count" data-patient-count="male" aria-label="男性傷病患人數">
+                  {% for count in range(6) %}
+                    <option value="{{ count }}"{% if primary_patient_counts[0] == count %} selected{% endif %}>{{ count }}</option>
+                  {% endfor %}
+                </select>
+                <span class="patient-count-unit" aria-hidden="true">人</span>
+              </div>
+            </div>
+            <div class="patient-count-option">
+              <span>女</span>
+              <div class="patient-count-select">
+                <select name="patient_female_count" data-patient-count="female" aria-label="女性傷病患人數">
+                  {% for count in range(6) %}
+                    <option value="{{ count }}"{% if primary_patient_counts[1] == count %} selected{% endif %}>{{ count }}</option>
+                  {% endfor %}
+                </select>
+                <span class="patient-count-unit" aria-hidden="true">人</span>
+              </div>
+            </div>
+          </div>
+          <input type="hidden" name="patient_summary" value="{{ selected_case.patient_summary or '無' }}">
+        </div>
         <label class="field-visual" data-field-name="mileage">
           <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
           <input name="mileage" inputmode="numeric" pattern="[0-9]*" data-numeric="integer" value="{{ selected_case.mileage or '' }}">
@@ -618,35 +646,46 @@
             </select>
           </label>
         </div>
-        <div class="grid">
-          <label class="field-visual" data-field-name="case_reason_2_display">
-            <span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span>
-            <select id="case-reason-2-display" disabled>
-              <option value="">請選擇</option>
-              {% for reason in case_reason_options %}
-                <option value="{{ reason }}"{% if selected_case.reason == reason %} selected{% endif %}>{{ reason }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label class="field-visual" data-field-name="patient_summary_2">
-            <span class="field-label-title">傷病患<span class="field-error-mark" aria-hidden="true">*</span></span>
-            <select name="patient_summary_2">
-              <option value="">請選擇</option>
-              <option value="男一名"{% if second_vehicle.patient_summary == '男一名' %} selected{% endif %}>男</option>
-              <option value="女一名"{% if second_vehicle.patient_summary == '女一名' %} selected{% endif %}>女</option>
-              <option value="無"{% if second_vehicle.patient_summary == '無' %} selected{% endif %}>無</option>
-            </select>
-          </label>
-        </div>
         <div data-site-card="mileage-2">
-        <div class="mileage-row">
-          <label class="field-visual" data-field-name="mileage_2">
-            <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
-            <input name="mileage_2" inputmode="numeric" pattern="[0-9]*" data-numeric="integer" value="{{ second_vehicle.mileage or '' }}">
-          </label>
-          <div class="mileage-hint-panel" hidden>
-            <span class="field-label-title mileage-hint-spacer" aria-hidden="true">&nbsp;</span>
-            <div class="mileage-hint" data-last-mileage-for="vehicle_2" aria-live="polite"></div>
+        <div class="grid mileage-grid">
+          {% set second_patient_counts = patient_counts_from_summary(second_vehicle.patient_summary) %}
+          <div class="field-visual patient-summary-field" data-field-name="patient_summary_2">
+            <span class="field-label-title">傷病患人數<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <div class="patient-count-grid" role="group" aria-label="2車傷病患人數">
+              <div class="patient-count-option">
+                <span>男</span>
+                <div class="patient-count-select">
+                  <select name="patient_male_count_2" data-patient-count="male" aria-label="2車男性傷病患人數">
+                    {% for count in range(6) %}
+                      <option value="{{ count }}"{% if second_patient_counts[0] == count %} selected{% endif %}>{{ count }}</option>
+                    {% endfor %}
+                  </select>
+                  <span class="patient-count-unit" aria-hidden="true">人</span>
+                </div>
+              </div>
+              <div class="patient-count-option">
+                <span>女</span>
+                <div class="patient-count-select">
+                  <select name="patient_female_count_2" data-patient-count="female" aria-label="2車女性傷病患人數">
+                    {% for count in range(6) %}
+                      <option value="{{ count }}"{% if second_patient_counts[1] == count %} selected{% endif %}>{{ count }}</option>
+                    {% endfor %}
+                  </select>
+                  <span class="patient-count-unit" aria-hidden="true">人</span>
+                </div>
+              </div>
+            </div>
+            <input type="hidden" name="patient_summary_2" value="{{ second_vehicle.patient_summary or '無' }}">
+          </div>
+          <div class="mileage-row">
+            <label class="field-visual" data-field-name="mileage_2">
+              <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
+              <input name="mileage_2" inputmode="numeric" pattern="[0-9]*" data-numeric="integer" value="{{ second_vehicle.mileage or '' }}">
+            </label>
+            <div class="mileage-hint-panel" hidden>
+              <span class="field-label-title mileage-hint-spacer" aria-hidden="true">&nbsp;</span>
+              <div class="mileage-hint" data-last-mileage-for="vehicle_2" aria-live="polite"></div>
+            </div>
           </div>
         </div>
         </div>
@@ -889,7 +928,7 @@
       { name: "driver", label: "司機", selector: 'select[name="driver"]' },
       { name: "summary_type", label: "案件類型", selector: 'select[name="summary_type"]' },
       { name: "case_reason", label: "事由", selector: 'select[name="case_reason"]' },
-      { name: "patient_summary", label: "傷病患", selector: 'select[name="patient_summary"]' },
+      { name: "patient_summary", label: "傷病患人數", selector: 'input[name="patient_summary"]' },
       { name: "mileage", label: "里程", selector: 'input[name="mileage"]' }
     ];
     const formErrorFieldMap = {
@@ -1114,6 +1153,34 @@
     if (fuelRecordToggle) fuelRecordToggle.addEventListener("change", updateFuelRecordUi);
     if (fuelRecordToggle2) fuelRecordToggle2.addEventListener("change", updateFuelRecordUi);
 
+    function patientSummaryFromCounts(maleCount, femaleCount) {
+      const male = Number.parseInt(maleCount, 10) || 0;
+      const female = Number.parseInt(femaleCount, 10) || 0;
+      const parts = [];
+      if (male > 0 && male <= 5) parts.push(`男${male}名`);
+      if (female > 0 && female <= 5) parts.push(`女${female}名`);
+      return parts.join("、") || "無";
+    }
+
+    function syncPatientSummary(suffix = "") {
+      const male = document.querySelector(`select[name="patient_male_count${suffix}"]`);
+      const female = document.querySelector(`select[name="patient_female_count${suffix}"]`);
+      const summary = document.querySelector(`input[name="patient_summary${suffix}"]`);
+      if (!male || !female || !summary) return;
+      summary.value = patientSummaryFromCounts(male.value, female.value);
+    }
+
+    function bindPatientSummaryCounts(suffix = "") {
+      ["male", "female"].forEach((gender) => {
+        const select = document.querySelector(`select[name="patient_${gender}_count${suffix}"]`);
+        if (!select) return;
+        select.addEventListener("change", () => {
+          syncPatientSummary(suffix);
+          updateFieldVisualHints();
+        });
+      });
+    }
+
     function taskFieldValue(fieldName) {
       const field = requiredTaskFields.find((item) => item.name === fieldName);
       const input = field ? document.querySelector(field.selector) : null;
@@ -1214,6 +1281,8 @@
     if (taskForm) {
       taskForm.addEventListener("submit", (event) => {
         if (event.submitter?.formAction.endsWith("/cases/clear")) return;
+        syncPatientSummary();
+        syncPatientSummary("_2");
         syncFuelDrivers();
         const errors = [
           ...fuelRecordErrors("", "1車"),
@@ -1880,6 +1949,8 @@
 
     if (summaryType) summaryType.addEventListener("change", updateReasonOptionsForSummaryType);
 
+    bindPatientSummaryCounts();
+    bindPatientSummaryCounts("_2");
     Object.entries(defaultConsumables).forEach(([name, qty]) => addConsumableRow(name, qty));
     Object.entries(defaultConsumables2).forEach(([name, qty]) => addConsumableRow2(name, qty));
     selectedConsumablePackages.forEach((packageKey) => {

@@ -2211,6 +2211,11 @@ class WebAppTests(unittest.TestCase):
         for field_name in ("case_time", "return_time", "fuel_time", "return_time_2", "fuel_time_2"):
             self.assertRegex(ems_body, rf'name="{field_name}"[^>]*placeholder="hhmm"')
 
+        self.client.post(
+            "/cases/import",
+            data={"case_id": "case-time-hints", "return_to": "disaster"},
+            follow_redirects=False,
+        )
         disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
         for field_name in ("case_time", "return_time", "vehicle_return_time"):
             self.assertRegex(disaster_body, rf'name="{field_name}"[^>]*placeholder="hhmm"')
@@ -2707,14 +2712,24 @@ class WebAppTests(unittest.TestCase):
         ]
         primary_field_positions = [body.index(field) for field in primary_field_order]
         self.assertEqual(primary_field_positions, sorted(primary_field_positions))
+        self.assertIn("傷病患人數", body)
+        self.assertEqual(2, body.count('data-patient-count="male"'))
+        self.assertEqual(2, body.count('data-patient-count="female"'))
+        self.assertEqual(4, body.count('class="patient-count-select"'))
+        self.assertEqual(4, body.count('<span class="patient-count-unit" aria-hidden="true">人</span>'))
+        self.assertIn("font-size: var(--text-sm); font-weight: 700;", body)
+        self.assertIn("#task-form .patient-count-select select { width: 100%; margin-top: 0; padding-right: 42px; }", body)
+        self.assertIn(".mileage-grid > .mileage-row { display: block; margin: 0; }", body)
+        for count in range(6):
+            self.assertIn(f'value="{count}"', body)
         self.assertIn('id="case-time-2-display"', body)
-        self.assertIn('id="case-reason-2-display"', body)
+        self.assertNotIn('data-field-name="case_reason_2_display"', body)
+        self.assertNotIn('id="case-reason-2-display"', body)
         second_field_order = [
             'id="case-time-2-display"',
             'name="return_time_2"',
             'name="vehicle_2"',
             'name="driver_2"',
-            'id="case-reason-2-display"',
             'name="patient_summary_2"',
             'name="mileage_2"',
         ]
@@ -6655,14 +6670,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(" checked>", imported_body)
         self.assertIn('formaction="/cases/clear"', imported_body)
         self.assertIn("const baselineConsumablesLoaded = true;", imported_body)
-        self.assertEqual(app_module.read_selected_case()["case_id"], "20260602090556012")
+        self.assertEqual(app_module.read_selected_case(), {})
 
         refreshed_response = self.client.get("/app")
         refreshed_body = html.unescape(refreshed_response.data.decode("utf-8"))
-        self.assertIn('value="0905"', refreshed_body)
-        self.assertIn('value="桃園市觀音區"', refreshed_body)
-        self.assertIn(" checked>", refreshed_body)
-        self.assertIn("const baselineConsumablesLoaded = true;", refreshed_body)
+        self.assertNotIn('value="0905"', refreshed_body)
+        self.assertNotIn('value="桃園市觀音區"', refreshed_body)
+        self.assertNotIn("const baselineConsumablesLoaded = true;", refreshed_body)
+        self.assertIn("請先從上方案件按「帶入」", refreshed_body)
 
         clear_response = self.client.post("/cases/clear", follow_redirects=False)
         self.assertEqual(clear_response.status_code, 302)
@@ -6680,6 +6695,33 @@ class WebAppTests(unittest.TestCase):
         self.client.post("/cases/import", data={"case_id": "20260602090556012"}, follow_redirects=False)
         self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
         self.assertEqual(app_module.read_selected_case(), {})
+
+    def test_opening_task_pages_clears_stale_imported_case_without_pending_import(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True, exist_ok=True)
+
+        for path, form_id in (("/app", "task-form"), ("/app/disaster", "disaster-form")):
+            with self.subTest(path=path):
+                app_module.write_json_atomic(
+                    cases_dir / "selected.json",
+                    {
+                        "status": "case_imported",
+                        "selected_case": {
+                            "case_id": "stale-case",
+                            "address": "舊案件地址",
+                            "personnel": ["舊人員"],
+                        },
+                    },
+                )
+
+                response = self.client.get(path)
+                body = html.unescape(response.data.decode("utf-8"))
+
+                self.assertEqual(200, response.status_code)
+                self.assertNotIn('value="stale-case"', body)
+                self.assertNotIn('value="舊案件地址"', body)
+                self.assertNotIn(f'id="{form_id}"', body)
+                self.assertEqual({}, app_module.read_selected_case())
 
     def test_replacing_imported_case_shows_clear_and_import_notice(self):
         cases_dir = app_module.artifacts_dir / "cases"
@@ -6709,7 +6751,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(self.client.get(replacement.headers["Location"]).data.decode("utf-8"))
         self.assertIn("已清除資料並帶入", body)
         self.assertIn("第二案件地址", body)
-        self.assertEqual("case-two", app_module.read_selected_case()["case_id"])
+        self.assertEqual({}, app_module.read_selected_case())
 
     def test_task_detail_run_does_not_allow_blind_manual_complete(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
@@ -7786,7 +7828,7 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/ems", base_url="http://100.114.126.58:8080")
         body = html.unescape(page.get_data(as_text=True))
 
-        self.assertIn(f'href="/tasks/{task_id}"', body)
+        self.assertNotIn(f'href="/tasks/{task_id}"', body)
         self.assertIn(f'action="/tasks/{task_id}/sites/consumables/run"', body)
         self.assertIn('name="return_service" value="ems"', body)
         self.assertIn("重新送出", body)
@@ -7836,7 +7878,7 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/ems", base_url="http://100.114.126.58:8080")
         body = html.unescape(page.get_data(as_text=True))
 
-        self.assertIn(f'href="/tasks/{task_id}"', body)
+        self.assertNotIn(f'href="/tasks/{task_id}"', body)
         self.assertIn(f'action="/tasks/{task_id}/sites/consumables/run"', body)
 
         response = self.client.post(

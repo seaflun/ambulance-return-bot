@@ -348,14 +348,6 @@
   font-size: .82rem;
 }
 
-.task-detail-link {
-  display: inline-flex;
-  margin-top: 8px;
-  color: var(--admin-accent);
-  font-size: .82rem;
-  font-weight: 720;
-}
-
 .status {
   display: inline-flex;
   min-height: 28px;

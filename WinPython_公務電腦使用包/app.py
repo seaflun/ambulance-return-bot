@@ -22,7 +22,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, url_for
+from flask import Flask, abort, jsonify, make_response, redirect, render_template, request, send_from_directory, url_for
 
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
@@ -75,6 +75,7 @@ from ambulance_bot.models import (
     normalize_hhmm,
     parse_case_date,
     parse_request,
+    patient_counts_from_summary,
     request_from_form,
     request_from_disaster_form,
     save_vehicle_record,
@@ -132,6 +133,8 @@ _public_pc_report_lock = threading.Lock()
 _public_pc_pending_report_lock = threading.RLock()
 _credential_sync_relay_lock = threading.RLock()
 _case_lookup_start_error = ""
+SELECTED_CASE_PENDING_COOKIE = "sinposmart_selected_case_pending"
+SELECTED_CASE_PENDING_MAX_AGE_SECONDS = 300
 PUBLIC_PC_REPORT_RETENTION_DAYS = 14
 PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024
 PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT = 5
@@ -237,10 +240,10 @@ def task_entry():
 
 @app.get("/app")
 def new_task():
-    selected_case = read_selected_case()
+    selected_case, clear_pending_cookie = selected_case_for_task_entry()
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
     vehicle_records = effective_ems_vehicle_records()
-    return render_template(
+    response = make_response(render_template(
         "new_task.html",
         form_action=url_for("create_task"),
         submit_label="建立任務",
@@ -263,12 +266,15 @@ def new_task():
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
         form_errors=[],
         page_notice=task_form_notice(),
-    )
+    ))
+    if clear_pending_cookie:
+        response.delete_cookie(SELECTED_CASE_PENDING_COOKIE)
+    return response
 
 
 @app.get("/app/disaster")
 def disaster_task():
-    selected_case = read_selected_case()
+    selected_case, clear_pending_cookie = selected_case_for_task_entry()
     person_options = selected_case.get("person_options") or person_options_from_personnel(selected_case.get("personnel") or [])
     nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
     vehicle_records = effective_disaster_vehicle_records(nas_settings)
@@ -278,7 +284,7 @@ def disaster_task():
         if nas_settings is not None
         else load_disaster_action_packages(artifacts_dir)
     )
-    return render_template(
+    response = make_response(render_template(
         "disaster_task.html",
         form_action=url_for("create_disaster_task"),
         selected_case=selected_case,
@@ -293,7 +299,10 @@ def disaster_task():
         last_vehicle_mileages=last_vehicle_mileages(),
         form_errors=[],
         page_notice=task_form_notice(),
-    )
+    ))
+    if clear_pending_cookie:
+        response.delete_cookie(SELECTED_CASE_PENDING_COOKIE)
+    return response
 
 
 @app.post("/cases/query")
@@ -360,7 +369,15 @@ def import_case():
         abort(404)
     anchor = "disaster-form" if str(request.form.get("return_to") or "").strip() == "disaster" else "task-form"
     notice = "replaced" if form_flag_enabled(request.form.get("replace_existing")) else ""
-    return redirect(task_form_url(anchor=anchor, notice=notice))
+    response = redirect(task_form_url(anchor=anchor, notice=notice))
+    response.set_cookie(
+        SELECTED_CASE_PENDING_COOKIE,
+        "1",
+        max_age=SELECTED_CASE_PENDING_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="Lax",
+    )
+    return response
 
 
 @app.post("/cases/clear")
@@ -5126,6 +5143,7 @@ def template_helpers() -> dict:
         "selected_case_address": selected_case_address,
         "selected_return_date_input": selected_return_date_input,
         "selected_return_time_input": selected_return_time_input,
+        "patient_counts_from_summary": patient_counts_from_summary,
         "compact_login_account_summary": compact_login_account_summary,
         "recent_tasks_need_refresh": recent_tasks_need_refresh,
         "site_action_button_label": site_action_button_label,
@@ -5291,6 +5309,12 @@ def read_selected_case() -> dict:
     selected["status"] = payload.get("status", "")
     selected["detail"] = payload.get("detail", "")
     return selected
+
+
+def selected_case_for_task_entry() -> tuple[dict, bool]:
+    pending_import = request.cookies.get(SELECTED_CASE_PENDING_COOKIE) == "1"
+    selected = pop_selected_case()
+    return (selected if pending_import else {}), pending_import
 
 
 def task_form_values(task: dict) -> dict:

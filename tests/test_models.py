@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from werkzeug.datastructures import MultiDict
 
-from ambulance_bot.models import apply_disaster_vehicle_mileage_system_names, clean_case_address, parse_case_date, parse_consumables, parse_request, request_from_disaster_form, request_from_form
+from ambulance_bot.models import apply_disaster_vehicle_mileage_system_names, clean_case_address, parse_case_date, parse_consumables, parse_request, patient_counts_from_summary, patient_summary_from_counts, request_from_disaster_form, request_from_form
 from ambulance_bot.models import AmbulanceReturnRequest, VehicleEntry
 from ambulance_bot.models import delete_vehicle_record, load_vehicle_records, save_vehicle_record, vehicle_options, vehicle_ppe_names
 
@@ -358,6 +358,40 @@ class ModelParsingTests(unittest.TestCase):
         request = request_from_form({"patient_summary": ""})
 
         self.assertEqual(request.patient_summary, "")
+
+    def test_patient_summary_from_counts_uses_numeric_gender_counts(self):
+        self.assertEqual("無", patient_summary_from_counts("0", "0"))
+        self.assertEqual("男1名", patient_summary_from_counts("1", "0"))
+        self.assertEqual("女1名", patient_summary_from_counts("0", "1"))
+        self.assertEqual("男2名、女1名", patient_summary_from_counts("2", "1"))
+
+    def test_patient_counts_from_summary_keeps_old_and_new_formats(self):
+        self.assertEqual((0, 0), patient_counts_from_summary("無"))
+        self.assertEqual((1, 0), patient_counts_from_summary("男一名"))
+        self.assertEqual((0, 2), patient_counts_from_summary("女二名"))
+        self.assertEqual((2, 1), patient_counts_from_summary("男2名、女1名"))
+
+    def test_request_from_form_composes_patient_summary_from_gender_counts(self):
+        request = request_from_form(
+            {
+                "vehicle": "新坡91",
+                "driver": "曾彥綸",
+                "patient_male_count": "2",
+                "patient_female_count": "1",
+                "two_vehicle": "1",
+                "vehicle_2": "新坡92",
+                "driver_2": "陳小明",
+                "patient_male_count_2": "0",
+                "patient_female_count_2": "1",
+            }
+        )
+
+        self.assertEqual("男2名、女1名", request.patient_summary)
+        self.assertEqual("女1名", request.vehicle_entries[1].patient_summary)
+        self.assertEqual(
+            "1.新坡91:曾彥綸 新坡92:陳小明\n2.新坡91:男2名、女1名 新坡92:女1名",
+            request.duty_status_text,
+        )
 
     def test_request_from_form_normalizes_date_text(self):
         request = request_from_form({"case_date": "2026 / 06 / 07", "return_date": "2026-06-08"})
