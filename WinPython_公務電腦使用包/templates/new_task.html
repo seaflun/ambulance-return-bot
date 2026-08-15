@@ -338,6 +338,10 @@
       {% endif %}
     {% endcall %}
 
+    {% if page_notice %}
+      <div class="lookup-message task-form-notice" role="status" aria-live="polite">{{ page_notice }}</div>
+    {% endif %}
+
     {% if not cancel_url %}
       <section class="panel lookup">
         <div class="lookup-head">
@@ -366,7 +370,8 @@
                 </div>
                 <form method="post" action="/cases/import">
                   <input type="hidden" name="case_id" value="{{ case.case_id }}">
-                  <button type="submit">帶入</button>
+                  <input type="hidden" name="replace_existing" value="{{ '1' if selected_case.case_id else '' }}">
+                  <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>帶入</button>
                 </form>
               </div>
             {% endfor %}
@@ -436,14 +441,14 @@
           <span class="field-label-title">案件時間<span class="field-error-mark" aria-hidden="true">*</span></span>
           <div class="time-field">
             <input type="text" name="case_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_case_date_input(selected_case) }}">
-            <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ selected_case.case_time_hhmm or '' }}">
+            <input name="case_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="hhmm" data-time-hhmm value="{{ selected_case.case_time_hhmm or '' }}">
           </div>
         </label>
         <label class="field-visual" data-field-name="return_time">
           <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
           <div class="time-field return-time-field">
             <input type="text" name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(selected_case) }}">
-            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ selected_return_time_input(selected_case) }}">
+            <input name="return_time" id="return-time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="hhmm" data-time-hhmm value="{{ selected_return_time_input(selected_case) }}">
             <button type="button" class="clock-button" id="return-now" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
           </div>
         </label>
@@ -527,7 +532,7 @@
             <input type="text" name="fuel_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="{{ primary_fuel_date }}">
           </label>
           <label class="fuel-required" data-fuel-required="fuel_time">加油時間<span class="field-error-mark" aria-hidden="true">*</span>
-            <input name="fuel_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ primary_fuel.time or '' }}">
+            <input name="fuel_time" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="hhmm" data-time-hhmm value="{{ primary_fuel.time or '' }}">
           </label>
         </div>
         <div class="grid">
@@ -612,7 +617,7 @@
             <span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span>
             <div class="time-field return-time-field">
               <input type="text" name="return_date_2" id="return-date-2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ selected_return_date_input(second_vehicle) }}">
-              <input name="return_time_2" id="return-time-2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ selected_return_time_input(second_vehicle) }}">
+              <input name="return_time_2" id="return-time-2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="hhmm" data-time-hhmm value="{{ selected_return_time_input(second_vehicle) }}">
               <button type="button" class="clock-button" id="return-now-2" aria-label="使用目前時間"><span class="clock-glyph"></span></button>
             </div>
           </label>
@@ -687,7 +692,7 @@
               <input type="text" name="fuel_date_2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="{{ second_fuel_date }}">
             </label>
             <label class="fuel-required" data-fuel-required="fuel_time_2">加油時間<span class="field-error-mark" aria-hidden="true">*</span>
-              <input name="fuel_time_2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" data-time-hhmm value="{{ second_fuel.time or '' }}">
+              <input name="fuel_time_2" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="hhmm" data-time-hhmm value="{{ second_fuel.time or '' }}">
             </label>
           </div>
           <div class="grid">
@@ -1232,6 +1237,7 @@
 
     if (taskForm) {
       taskForm.addEventListener("submit", (event) => {
+        if (event.submitter?.formAction.endsWith("/cases/clear")) return;
         syncFuelDrivers();
         const errors = [
           ...fuelRecordErrors("", "1車"),
@@ -1240,6 +1246,12 @@
         showClientFormErrors(errors);
         if (errors.length) {
           event.preventDefault();
+          return;
+        }
+        const submitButton = event.submitter || taskForm.querySelector(".form-actions button[type='submit']");
+        if (submitButton) {
+          submitButton.disabled = true;
+          submitButton.setAttribute("aria-busy", "true");
         }
       });
     }

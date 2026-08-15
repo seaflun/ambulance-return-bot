@@ -338,6 +338,12 @@ body.workspace-page--ems-settings {
   border-radius: 12px;
 }
 
+.workspace-page .task-form-notice {
+  border-color: #b7d4bf;
+  background: var(--complete-bg);
+  color: var(--complete);
+}
+
 .workspace-page .case-card,
 .workspace-page .recent-card,
 .workspace-page .vehicle-row,

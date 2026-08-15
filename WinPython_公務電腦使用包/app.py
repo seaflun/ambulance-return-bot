@@ -237,7 +237,7 @@ def task_entry():
 
 @app.get("/app")
 def new_task():
-    selected_case = pop_selected_case()
+    selected_case = read_selected_case()
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
     vehicle_records = effective_ems_vehicle_records()
     return render_template(
@@ -262,12 +262,13 @@ def new_task():
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
         form_errors=[],
+        page_notice=task_form_notice(),
     )
 
 
 @app.get("/app/disaster")
 def disaster_task():
-    selected_case = pop_selected_case()
+    selected_case = read_selected_case()
     person_options = selected_case.get("person_options") or person_options_from_personnel(selected_case.get("personnel") or [])
     nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
     vehicle_records = effective_disaster_vehicle_records(nas_settings)
@@ -291,6 +292,7 @@ def disaster_task():
         disaster_action_packages=action_packages,
         last_vehicle_mileages=last_vehicle_mileages(),
         form_errors=[],
+        page_notice=task_form_notice(),
     )
 
 
@@ -357,18 +359,29 @@ def import_case():
     if not write_selected_case_from_lookup(case_id):
         abort(404)
     anchor = "disaster-form" if str(request.form.get("return_to") or "").strip() == "disaster" else "task-form"
-    return redirect(task_form_url(anchor=anchor))
+    notice = "replaced" if form_flag_enabled(request.form.get("replace_existing")) else ""
+    return redirect(task_form_url(anchor=anchor, notice=notice))
 
 
 @app.post("/cases/clear")
 def clear_imported_case():
     pop_selected_case()
-    return redirect(task_form_url())
+    return redirect(task_form_url(notice="cleared"))
 
 
-def task_form_url(*, anchor: str = "") -> str:
+TASK_FORM_NOTICE_LABELS = {
+    "cleared": "\u5df2\u6e05\u9664\u8cc7\u6599",
+    "replaced": "\u5df2\u6e05\u9664\u8cc7\u6599\u4e26\u5e36\u5165",
+}
+
+
+def task_form_notice() -> str:
+    return TASK_FORM_NOTICE_LABELS.get(str(request.args.get("notice") or "").strip(), "")
+
+
+def task_form_url(*, anchor: str = "", notice: str = "") -> str:
     endpoint = "disaster_task" if str(request.form.get("return_to") or "").strip() == "disaster" else "new_task"
-    return url_for(endpoint, _anchor=anchor or None)
+    return url_for(endpoint, notice=notice or None, _anchor=anchor or None)
 
 
 @app.post("/tasks")
@@ -388,6 +401,10 @@ def create_task():
             selected_consumable_packages=selected_consumable_packages_from_form(request.form),
             two_vehicle_available=form_flag_enabled(request.form.get("two_vehicle_available")) or task_request.two_vehicle,
         ), 400
+    existing = existing_task_for_case(task_request.case_id, "ems")
+    if existing:
+        existing_task_id = str(dict(existing.get("task") or {}).get("task_id") or "")
+        return redirect(url_for("task_detail", task_id=existing_task_id))
     payload = store.create(task_request)
     report_public_pc_task_event(payload, "建立任務")
     if should_auto_queue_task_on_create():
@@ -5441,15 +5458,23 @@ def validate_task_form(task_request) -> list[str]:
     return errors
 
 
-def existing_disaster_task_for_case(case_id: str) -> dict | None:
+def existing_task_for_case(case_id: str, service_type: str = "ems") -> dict | None:
     normalized = str(case_id or "").strip()
+    normalized_service_type = str(service_type or "ems").strip().lower()
     if not normalized:
         return None
     for payload in store.list_recent(limit=100000):
         task = dict(payload.get("task") or {})
-        if str(task.get("service_type") or "ems") == "disaster" and str(task.get("case_id") or "").strip() == normalized:
+        if (
+            str(task.get("service_type") or "ems").strip().lower() == normalized_service_type
+            and str(task.get("case_id") or "").strip() == normalized
+        ):
             return payload
     return None
+
+
+def existing_disaster_task_for_case(case_id: str) -> dict | None:
+    return existing_task_for_case(case_id, "disaster")
 
 
 def validate_disaster_task_form(task_request) -> list[str]:

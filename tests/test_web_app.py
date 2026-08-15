@@ -2192,6 +2192,28 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-fuel-total', body)
         self.assertIn('/api/record-folder-preview', body)
         self.assertIn('action="/tasks"', body)
+        self.assertIn('formAction.endsWith("/cases/clear")', body)
+        self.assertIn('submitButton.disabled = true', body)
+
+    def test_ems_and_disaster_time_inputs_show_hhmm_hint(self):
+        self.import_case_for_form(
+            {
+                "case_id": "case-time-hints",
+                "case_date": "2026/07/22",
+                "case_time": "1207",
+                "address": "獢?撣??喳?",
+                "category": "緊急救護-急病",
+                "personnel": ["A", "B", "C", "D"],
+            }
+        )
+
+        ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        for field_name in ("case_time", "return_time", "fuel_time", "return_time_2", "fuel_time_2"):
+            self.assertRegex(ems_body, rf'name="{field_name}"[^>]*placeholder="hhmm"')
+
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+        for field_name in ("case_time", "return_time", "vehicle_return_time"):
+            self.assertRegex(disaster_body, rf'name="{field_name}"[^>]*placeholder="hhmm"')
 
     def test_nas_index_shows_entry_buttons_only(self):
         response = self.client.get("/", headers={"Host": "100.114.126.58:8080"})
@@ -3182,6 +3204,16 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(self.store.list_recent(), [])
         self.assertIn("請先從上方案件按「帶入」", body)
         self.assertNotIn('id="task-form"', body)
+
+    def test_create_task_prevents_duplicate_case_submission(self):
+        data = self.valid_task_data(case_id="EMS-DUPLICATE-1")
+
+        first = self.client.post("/tasks", data=data, follow_redirects=False)
+        second = self.client.post("/tasks", data=data, follow_redirects=False)
+
+        self.assertEqual(302, first.status_code)
+        self.assertEqual(first.headers["Location"], second.headers["Location"])
+        self.assertEqual(1, len(self.store.list_recent()))
 
     def test_create_disaster_task_builds_folders_before_storing_and_prevents_duplicate_case(self):
         data = MultiDict([
@@ -5961,6 +5993,19 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("正在查詢最近 24 小時案件，請稍候。", body)
         self.assertNotIn("已查到 2 筆", body)
 
+    def test_case_import_buttons_are_disabled_while_lookup_is_running(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {"status": "cases_loaded", "cases": [{"case_id": "lookup-lock-case"}]},
+        )
+        app_module.write_case_lookup_request("24h")
+
+        for endpoint in ("/app", "/app/disaster"):
+            body = html.unescape(self.client.get(endpoint).data.decode("utf-8"))
+            self.assertIn('type="submit" disabled>帶入</button>', body)
+
     def test_app_page_auto_refreshes_while_recent_task_is_running(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
@@ -6566,21 +6611,22 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(" checked>", imported_body)
         self.assertIn('formaction="/cases/clear"', imported_body)
         self.assertIn("const baselineConsumablesLoaded = true;", imported_body)
-        self.assertEqual(app_module.read_selected_case(), {})
+        self.assertEqual(app_module.read_selected_case()["case_id"], "20260602090556012")
 
         refreshed_response = self.client.get("/app")
         refreshed_body = html.unescape(refreshed_response.data.decode("utf-8"))
-        self.assertNotIn('value="0905"', refreshed_body)
-        self.assertNotIn('value="桃園市觀音區"', refreshed_body)
-        self.assertNotIn(" checked>", refreshed_body)
-        self.assertIn("const baselineConsumablesLoaded = false;", refreshed_body)
+        self.assertIn('value="0905"', refreshed_body)
+        self.assertIn('value="桃園市觀音區"', refreshed_body)
+        self.assertIn(" checked>", refreshed_body)
+        self.assertIn("const baselineConsumablesLoaded = true;", refreshed_body)
 
         clear_response = self.client.post("/cases/clear", follow_redirects=False)
         self.assertEqual(clear_response.status_code, 302)
-        self.assertEqual(clear_response.headers["Location"], "/app")
+        self.assertIn("/app?notice=", clear_response.headers["Location"])
         self.assertEqual(app_module.read_selected_case(), {})
-        cleared_response = self.client.get("/app")
+        cleared_response = self.client.get(clear_response.headers["Location"])
         cleared_body = html.unescape(cleared_response.data.decode("utf-8"))
+        self.assertIn("已清除資料", cleared_body)
         self.assertNotIn('value="0905"', cleared_body)
         self.assertNotIn('value="桃園市觀音區"', cleared_body)
         self.assertNotIn(" checked>", cleared_body)
@@ -6590,6 +6636,36 @@ class WebAppTests(unittest.TestCase):
         self.client.post("/cases/import", data={"case_id": "20260602090556012"}, follow_redirects=False)
         self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
         self.assertEqual(app_module.read_selected_case(), {})
+
+    def test_replacing_imported_case_shows_clear_and_import_notice(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "cases": [
+                    {"case_id": "case-one", "address": "第一案件地址"},
+                    {"case_id": "case-two", "address": "第二案件地址"},
+                ],
+            },
+        )
+
+        first = self.client.post("/cases/import", data={"case_id": "case-one"}, follow_redirects=False)
+        self.assertEqual("/app#task-form", first.headers["Location"])
+        self.client.get("/app")
+
+        replacement = self.client.post(
+            "/cases/import",
+            data={"case_id": "case-two", "replace_existing": "1"},
+            follow_redirects=False,
+        )
+        self.assertIn("/app?notice=", replacement.headers["Location"])
+
+        body = html.unescape(self.client.get(replacement.headers["Location"]).data.decode("utf-8"))
+        self.assertIn("已清除資料並帶入", body)
+        self.assertIn("第二案件地址", body)
+        self.assertEqual("case-two", app_module.read_selected_case()["case_id"])
 
     def test_task_detail_run_does_not_allow_blind_manual_complete(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
