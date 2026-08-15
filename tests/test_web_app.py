@@ -2878,15 +2878,22 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(navigation, nas_body)
         self.assertIn(navigation, local_body)
 
-    def test_app_page_recent_task_does_not_show_delete_button(self):
+    def test_app_page_recent_task_shows_nas_delete_button_but_local_hides_it(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data(), follow_redirects=False)
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
 
-        app_response = self.client.get("/app")
-        body = html.unescape(app_response.data.decode("utf-8"))
-        self.assertIn(f'href="/tasks/{task_id}"', body)
-        self.assertNotIn(f'action="/tasks/{task_id}/delete"', body)
-        self.assertNotIn('aria-label="刪除案件"', body)
+        nas_body = html.unescape(
+            self.client.get("/app", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
+        )
+        local_body = html.unescape(
+            self.client.get("/app", headers={"Host": "127.0.0.1:8090"}).data.decode("utf-8")
+        )
+        self.assertIn(f'href="/tasks/{task_id}"', nas_body)
+        self.assertIn(f'action="/tasks/{task_id}/delete"', nas_body)
+        self.assertIn('aria-label="刪除案件"', nas_body)
+        self.assertIn('name="return_to" value="ems"', nas_body)
+        self.assertNotIn(f'action="/tasks/{task_id}/delete"', local_body)
+        self.assertNotIn('aria-label="刪除案件"', local_body)
 
     def test_app_page_recent_task_titles_show_one_or_two_vehicles(self):
         address = "桃園市觀音區崙坪三路126號1樓(OHCA-N)"
@@ -3087,11 +3094,44 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('href="/tasks/public-pc-ems-recent"', ems_body)
         self.assertIn("公務電腦建立", ems_body)
         self.assertIn("NAS 僅查看", ems_body)
+        self.assertNotIn('action="/tasks/public-pc-ems-recent/delete"', ems_body)
         self.assertIn("公務電腦救災案件", disaster_body)
         self.assertNotIn("公務電腦救護案件", disaster_body)
         self.assertNotIn('href="/tasks/public-pc-disaster-recent"', disaster_body)
         self.assertIn("公務電腦建立", disaster_body)
         self.assertIn("NAS 僅查看", disaster_body)
+        self.assertNotIn('action="/tasks/public-pc-disaster-recent/delete"', disaster_body)
+
+    def test_nas_disaster_recent_task_delete_returns_to_disaster_page(self):
+        task = self.store.create(
+            AmbulanceReturnRequest(
+                task_id="nas-disaster-delete",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                vehicle="新坡11",
+                case_reason="NAS 救災案件",
+                case_address="桃園市觀音區刪除路1號",
+            )
+        )
+        task_id = task["task"]["task_id"]
+        headers = {"Host": "100.114.126.58:8080"}
+
+        body = html.unescape(self.client.get("/app/disaster", headers=headers).data.decode("utf-8"))
+        self.assertIn(f'action="/tasks/{task_id}/delete"', body)
+        self.assertIn('name="return_to" value="disaster"', body)
+
+        response = self.client.post(
+            f"/tasks/{task_id}/delete",
+            data={"return_to": "disaster"},
+            headers=headers,
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/app/disaster")
+        with self.assertRaises(FileNotFoundError):
+            self.store.get(task_id)
 
     def test_nas_recent_tasks_prefer_nas_task_when_public_pc_report_has_same_id(self):
         task_id = "shared-recent-task"
@@ -6004,7 +6044,11 @@ class WebAppTests(unittest.TestCase):
 
         for endpoint in ("/app", "/app/disaster"):
             body = html.unescape(self.client.get(endpoint).data.decode("utf-8"))
-            self.assertIn('type="submit" disabled>帶入</button>', body)
+            self.assertIn('type="submit" disabled aria-disabled="true">查詢中…</button>', body)
+
+        workspace_css = self.client.get("/static/sinposmart-workspace.css").data.decode("utf-8")
+        self.assertIn(".workspace-page--task .case-card button:disabled", workspace_css)
+        self.assertIn("cursor: wait;", workspace_css)
 
     def test_app_page_auto_refreshes_while_recent_task_is_running(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -9342,7 +9386,7 @@ class WebAppTests(unittest.TestCase):
         self.client.post(f"/tasks/{fast_task_id}/run", base_url="http://100.114.126.58:8080", follow_redirects=False)
 
         os.environ["DESKTOP_FAST_MODE"] = "0"
-        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        create_response = self.client.post("/tasks", data=self.valid_task_data(case_id="case-test-002"))
         queued_task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         self.client.post(f"/tasks/{queued_task_id}/run", base_url="http://127.0.0.1:8080", follow_redirects=False)
 

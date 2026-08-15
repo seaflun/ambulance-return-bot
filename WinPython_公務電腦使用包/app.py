@@ -597,13 +597,18 @@ def confirm_ems_case_closed(task_id: str):
 
 @app.post("/tasks/<task_id>/delete")
 def delete_task(task_id: str):
+    return_endpoint = (
+        "disaster_task"
+        if str(request.form.get("return_to") or "").strip().lower() == "disaster"
+        else "new_task"
+    )
     try:
         store.delete(task_id)
     except TaskActiveError:
         return "任務正在執行中，請先中止登打再刪除。", 409
     except FileNotFoundError:
         abort(404)
-    return redirect(url_for("new_task"))
+    return redirect(url_for(return_endpoint))
 
 
 @app.post("/tasks/<task_id>/run")

@@ -209,7 +209,7 @@
             <input type="hidden" name="return_to" value="disaster">
             <input type="hidden" name="case_id" value="{{ case.case_id }}">
             <input type="hidden" name="replace_existing" value="{{ '1' if selected_case.case_id else '' }}">
-            <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>帶入</button>
+            <button type="submit"{% if case_lookup.is_running %} disabled aria-disabled="true"{% endif %}>{{ "查詢中…" if case_lookup.is_running else "帶入" }}</button>
           </form>
         </div>
       {% endfor %}

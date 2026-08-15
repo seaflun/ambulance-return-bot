@@ -420,6 +420,41 @@ body.workspace-page--ems-settings {
   margin-top: 3px;
 }
 
+.workspace-page--task .recent-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.workspace-page .recent-delete {
+  margin: 0;
+  padding: 0;
+}
+
+.workspace-page .recent-delete button {
+  min-width: 64px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-color: var(--line-strong);
+  background: #fff;
+  color: var(--failed);
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+.workspace-page--task .case-card button:disabled,
+.workspace-page--task .case-card button:disabled:hover {
+  border-color: var(--line);
+  background: var(--surface-muted);
+  color: var(--muted);
+  box-shadow: none;
+  cursor: wait;
+  filter: none;
+  opacity: 1;
+  transform: none;
+}
+
 .workspace-page .status {
   border-radius: 999px;
   font-weight: 700;
@@ -552,6 +587,10 @@ body.workspace-page--ems-settings {
 
   .workspace-page--duty .section {
     padding: 16px;
+  }
+
+  .workspace-page--task .recent-actions {
+    justify-self: start;
   }
 
   .workspace-page--duty .section-head {

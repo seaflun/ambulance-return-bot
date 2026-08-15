@@ -252,30 +252,6 @@
     .form-actions button:only-child { grid-column: 1 / -1; }
     .recent { margin-top: 18px; }
     .recent-list { display: grid; gap: 8px; }
-    .recent-delete {
-      width: 34px;
-      margin: 0;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      box-shadow: none;
-    }
-    .recent-delete button {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 34px;
-      min-width: 34px;
-      height: 34px;
-      min-height: 34px;
-      padding: 0;
-      line-height: 1;
-      border-radius: 999px;
-      color: var(--failed);
-      background: #fff;
-      border-color: var(--line-strong);
-      box-shadow: none;
-    }
     .status { min-width: 62px; text-align: center; border-radius: 999px; padding: 5px 10px; font-size: var(--text-sm); font-weight: 760; background: var(--idle-bg); color: var(--muted); }
     .status.complete { background: var(--complete-bg); color: var(--complete); }
     .status.failed { background: var(--failed-bg); color: var(--failed); }
@@ -371,7 +347,7 @@
                 <form method="post" action="/cases/import">
                   <input type="hidden" name="case_id" value="{{ case.case_id }}">
                   <input type="hidden" name="replace_existing" value="{{ '1' if selected_case.case_id else '' }}">
-                  <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>帶入</button>
+                  <button type="submit"{% if case_lookup.is_running %} disabled aria-disabled="true"{% endif %}>{{ "查詢中…" if case_lookup.is_running else "帶入" }}</button>
                 </form>
               </div>
             {% endfor %}

@@ -17,7 +17,15 @@
           </div>
           <div class="recent-progress">{{ task_progress_summary(item) }}</div>
         </div>
-        <span class="status {{ status_class(effective_task_status(item)) }}">{{ status_label(effective_task_status(item)) }}</span>
+        <div class="recent-actions">
+          <span class="status {{ status_class(effective_task_status(item)) }}">{{ status_label(effective_task_status(item)) }}</span>
+          {% if show_nas_home_button() and item.recent_origin == "nas" %}
+            <form class="recent-delete" method="post" action="/tasks/{{ item.task.task_id }}/delete" onsubmit="return confirm('確定刪除這筆案件？刪除後無法復原。');">
+              <input type="hidden" name="return_to" value="{{ item.task.service_type }}">
+              <button type="submit" aria-label="刪除案件" title="刪除案件">刪除</button>
+            </form>
+          {% endif %}
+        </div>
       </div>
     {% endfor %}
   </div>
