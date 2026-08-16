@@ -94,7 +94,7 @@
     .vehicle-list { display: grid; gap: 8px; }
     .vehicle-row {
       display: grid;
-      grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 64px 56px;
+      grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 64px 76px;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -116,8 +116,8 @@
     .vehicle-label { font-weight: 780; overflow-wrap: anywhere; }
     .vehicle-plate { color: var(--muted); font-weight: 700; overflow-wrap: anywhere; }
     .vehicle-kind { min-width: 48px; text-align: center; color: var(--muted); font-size: var(--text-sm); }
-    .delete-form { padding: 0; border: 0; background: transparent; box-shadow: none; }
-    .delete-button { min-height: 34px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
+    .delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 36px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+    .delete-button { min-width: 64px; min-height: 34px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; white-space: nowrap; }
     .sync-panel { margin-bottom: 16px; }
     .sync-panel p { margin: 0; color: var(--muted); font-weight: 720; }
     .pending-sync-list { display: grid; gap: 8px; margin-top: 12px; }

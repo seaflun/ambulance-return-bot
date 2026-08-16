@@ -220,9 +220,6 @@
     .consumables { margin: 0 0 14px; }
     .consumable-head { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 10px; font-size: var(--text-label); font-weight: 780; }
     .consumable-actions { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; min-width: 0; }
-    .package-cluster { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
-    .package-group-label { display: inline-flex; align-items: center; min-height: 38px; padding: 0 2px; color: var(--muted); font-size: var(--text-sm); font-weight: 780; white-space: nowrap; }
-    .package-buttons { display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 8px; min-width: 0; }
     .package-button { box-shadow: none; }
     .package-button.is-active,
     .package-button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
@@ -289,8 +286,6 @@
       .recent-card { grid-template-columns: minmax(0, 1fr); }
       .recent-card .status { justify-self: start; }
       .consumable-actions { align-items: stretch; flex-direction: column; }
-      .package-cluster { align-items: stretch; flex-direction: column; }
-      .package-buttons { justify-content: flex-start; }
       .package-button { flex: 1 1 calc(50% - 8px); }
       #add-consumable,
       #add-consumable-2 { width: 100%; }

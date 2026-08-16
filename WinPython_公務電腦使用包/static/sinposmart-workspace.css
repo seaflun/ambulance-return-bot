@@ -254,14 +254,32 @@ body.workspace-page--ems-settings {
   box-shadow: 0 8px 22px rgba(29, 29, 31, .08);
 }
 
+.workspace-page .package-cluster {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
 .workspace-page .package-group-label {
+  display: inline-flex;
+  align-items: center;
   min-height: 32px;
+  padding: 0 2px;
+  color: var(--muted);
   font-size: var(--workspace-type-helper);
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .workspace-page .package-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
 }
 
 .workspace-page .package-buttons button {
@@ -642,6 +660,13 @@ body.workspace-page--ems-settings {
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
+  }
+}
+
+@media (max-width: 560px) {
+  .workspace-page .package-cluster {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

@@ -58,7 +58,7 @@
     #disaster-form label { margin-bottom: 11px; font-size: var(--text-md); }
     #disaster-form input,
     #disaster-form select { min-height: 46px; padding: 10px 12px; }
-    #disaster-form .grid { gap: 10px; }
+    #disaster-form .grid { column-gap: 10px; row-gap: 0; }
     input, select, textarea {
       width: 100%; min-width: 0; min-height: 52px; margin-top: 6px; padding: 14px 16px;
       border: 1px solid var(--line-strong); border-radius: 10px; background: #fff; color: var(--ink); font: inherit; font-size: var(--text-md);
@@ -120,7 +120,6 @@
     .mileage-hint { min-height: 46px; margin: 0; padding: 8px 10px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); color: var(--muted); font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
     .mileage-hint:empty { display: none; }
     #disaster-form .field-visual .mileage-hint { margin-top: 8px; min-height: 42px; }
-    .package-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
     .preview, .folder-preview-output { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); }
     .preview { min-height: 68px; white-space: pre-wrap; }
     .remove-vehicle { background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
@@ -266,7 +265,10 @@
 
     <section class="panel">
       <h2>工作紀錄</h2>
-      <h3>處理情形套餐</h3><div class="package-buttons">{% for text in disaster_action_packages %}<button type="button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
+      <h3>處理情形補充</h3>
+      <div class="package-cluster">
+        <span class="package-group-label">套餐帶入</span><div class="package-buttons" aria-label="處理情形套餐">{% for text in disaster_action_packages %}<button type="button" class="secondary package-button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
+      </div>
       <label class="field-visual{% if not selected_case.action_note %} is-pending{% endif %}" data-required-message="請填寫處理情形"><span class="field-label-title">處理情形補充 <small class="field-label-helper">（可以自行輸入增減）</small><span class="field-error-mark" aria-hidden="true">*</span></span><textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
       <h3>處理情形預覽</h3><div class="preview" id="processing-preview"></div>
     </section>

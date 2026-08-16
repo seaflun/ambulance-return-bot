@@ -67,6 +67,7 @@
     }
     input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
     textarea { width: 100%; min-height: 240px; margin-top: 6px; padding: 12px; resize: vertical; font: inherit; }
+    #action-packages { min-height: 360px; }
     button, .button {
       display: inline-flex;
       align-items: center;
@@ -216,7 +217,7 @@
     <form method="post" action="/admin/disaster-vehicles/action-packages">
       <h2>處理情形套餐</h2>
       <label>每行一個套餐內容
-        <textarea name="action_packages" autocomplete="off">{{ form_values.get('action_packages', action_packages | join('\n')) }}</textarea>
+        <textarea id="action-packages" name="action_packages" rows="12" autocomplete="off">{{ form_values.get('action_packages', action_packages | join('\n')) }}</textarea>
       </label>
       <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
       <button type="submit">儲存套餐</button>

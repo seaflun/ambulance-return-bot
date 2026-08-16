@@ -1,4 +1,5 @@
 $ErrorActionPreference = "Stop"
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 
 $packageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $localVersionPath = Join-Path $packageDir "VERSION.txt"
