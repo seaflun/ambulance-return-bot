@@ -1697,7 +1697,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("轄內A2", body)
         self.assertIn("轄內A3", body)
         self.assertIn("新增車輛", body)
-        self.assertIn("<h3>處理情形補充</h3>", body)
+        self.assertNotIn("<h3>處理情形補充</h3>", body)
+        self.assertIn('處理情形補充 <small class="field-label-helper">（可以自行輸入增減）</small>', body)
         self.assertNotIn("<h3>處理情形套餐</h3>", body)
         self.assertNotIn("服勤人員</label>", body)
         self.assertNotIn('name="duty_item"', body)
@@ -1742,13 +1743,28 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".workspace-page .package-group-label {", workspace_css)
         self.assertIn(".workspace-page .package-buttons button {\n  min-height: 42px;", workspace_css)
         self.assertNotIn("#disaster-form .package-buttons button", disaster_body)
-        self.assertIn("<h3>處理情形補充</h3>", disaster_body)
+        self.assertNotIn("<h3>處理情形補充</h3>", disaster_body)
         self.assertNotIn("<h3>處理情形套餐</h3>", disaster_body)
         self.assertIn('<span class="package-group-label">套餐帶入</span>', disaster_body)
         self.assertIn('class="package-buttons" aria-label="處理情形套餐"', disaster_body)
+        package_label_index = disaster_body.index('<span class="package-group-label">套餐帶入</span>')
+        package_buttons_index = disaster_body.index('<div class="package-buttons" aria-label="處理情形套餐">')
+        self.assertLess(package_label_index, package_buttons_index)
         self.assertIn('data-required-message="請填寫處理情形"', disaster_body)
         self.assertIn("處理情形補充 <small class=\"field-label-helper\">（可以自行輸入增減）</small>", disaster_body)
         self.assertIn(".workspace-page .field-label-helper {", workspace_css)
+        self.assertIn(
+            ".workspace-page .package-cluster {\n"
+            "  display: flex;\n"
+            "  align-items: center;\n"
+            "  flex-wrap: nowrap;",
+            workspace_css,
+        )
+        self.assertIn("  flex: 1 1 0;\n  flex-wrap: wrap;", workspace_css)
+        self.assertIn(
+            ".workspace-page--disaster-task .package-cluster {\n  margin-bottom: 12px;",
+            workspace_css,
+        )
         self.assertIn("textarea { width: 100%; min-height: 240px;", settings_body)
         self.assertIn("#action-packages { min-height: 360px; }", settings_body)
         self.assertIn('id="action-packages" name="action_packages" rows="12"', settings_body)
