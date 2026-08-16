@@ -52,7 +52,6 @@
     header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
     h1 { margin: 0; font-size: var(--text-xl); line-height: 1.25; font-weight: 800; color: var(--ink); }
     h2 { margin: 0 0 12px; font-size: var(--text-lg); line-height: 1.35; font-weight: 760; color: var(--ink); }
-    h3 { margin: 18px 0 8px; font-size: var(--text-md); }
     .panel { margin-bottom: 16px; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
     label { display: block; min-width: 0; margin: 0 0 15px; color: var(--ink); font-size: var(--text-label); font-weight: 780; }
     #disaster-form { padding: 0; background: transparent; border: 0; box-shadow: none; }
@@ -97,7 +96,6 @@
     .task-form-locked p { margin: 0; }
     .form-errors { margin: 0 0 14px; padding: 10px 12px; border: 1px solid #e3b7b2; border-radius: 10px; background: var(--failed-bg); color: #8f3934; font-size: var(--text-md); font-weight: 720; }
     .form-errors ul { margin: 0; padding-left: 20px; }
-    .field-label-title { display: inline-flex; align-items: baseline; gap: 4px; }
     .field-error-mark { display: none; color: #c83f37; font-weight: 900; }
     .field-visual.is-pending .field-error-mark,
     .field-visual.has-error .field-error-mark { display: inline; }
@@ -109,8 +107,6 @@
     .clock-glyph { width: 18px; height: 18px; border: 2px solid currentColor; border-radius: 50%; position: relative; display: inline-block; }
     .clock-glyph::before { content: ""; position: absolute; left: 7px; top: 3px; width: 2px; height: 6px; background: currentColor; }
     .clock-glyph::after { content: ""; position: absolute; left: 7px; top: 8px; width: 5px; height: 2px; background: currentColor; }
-    .workspace-page #disaster-form .vehicle-card [data-vehicle-title] { color: var(--accent); font-size: 22px; font-weight: 800; line-height: 1.2; }
-    #disaster-form [data-required-message="請填寫處理情形"] .field-label-title { font-size: var(--text-label); font-weight: 780; }
     .check-item { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 46px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
     #disaster-form .fuel-record-toggle input { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; transform: scale(1.2); accent-color: var(--accent); }
     label > span { display: flex; align-items: center; gap: 10px; }
@@ -118,7 +114,6 @@
     .firecam-selector .check-item { min-height: 40px; padding: 6px 10px; border-radius: 999px; font-size: var(--text-sm); font-weight: 700; }
     #disaster-form .firecam-selector .check-item input { width: 18px; height: 18px; min-height: 18px; margin: 0; padding: 0; flex: 0 0 auto; transform: none; accent-color: var(--accent); }
     .firecam-selector .check-item span { display: inline; white-space: nowrap; }
-    .firecam-selector-title { font-size: var(--text-label); font-weight: 780; }
     .firecam-selector .check-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
     .fuel-fields { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
     .fuel-total { color: var(--accent); font-weight: 800; }
@@ -126,14 +121,13 @@
     .mileage-hint:empty { display: none; }
     #disaster-form .field-visual .mileage-hint { margin-top: 8px; min-height: 42px; }
     .package-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-    #disaster-form .package-buttons button { min-height: 42px; padding: 0 12px; background: #fff; color: var(--accent); border-color: var(--line-strong); box-shadow: none; font-size: var(--text-md); }
     .preview, .folder-preview-output { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--idle-bg); }
     .preview { min-height: 68px; white-space: pre-wrap; }
     .remove-vehicle { background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; }
     .folder-preview-output { grid-column: 1 / -1; }
     .folder-preview-output ul { margin: 6px 0 0; padding-left: 22px; overflow-wrap: anywhere; }
     .folder-preview-group + .folder-preview-group { margin-top: 12px; }
-    .folder-preview-group h3 { margin: 0; color: var(--muted); font-size: var(--text-sm); font-weight: 760; }
+    .folder-preview-group h3 { margin: 0; color: var(--muted); }
     fieldset { margin: 0; min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
     legend { padding: 0 5px; color: var(--muted); font-size: var(--text-sm); font-weight: 760; }
     .check-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; }
@@ -256,7 +250,7 @@
         {% for entry in disaster_entries %}
         {% set fuel = entry.fuel_record if entry.fuel_record is defined else {} %}
         <article class="vehicle-card">
-          <div class="section-head"><strong data-vehicle-title>{{ loop.index }}車</strong><button type="button" class="remove-vehicle">移除車輛</button></div>
+          <div class="section-head"><strong class="vehicle-card-title" data-vehicle-title>{{ loop.index }}車</strong><button type="button" class="remove-vehicle">移除車輛</button></div>
           <div class="grid">
             <label class="field-visual{% if not entry.vehicle %} is-pending{% endif %}" data-required-message="請選擇車輛"><span class="field-label-title">車輛<span class="field-error-mark" aria-hidden="true">*</span></span><select name="vehicle" required><option value="">請選擇</option>{% for vehicle in vehicle_options %}<option value="{{ vehicle }}"{% if entry.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}{% if vehicle_plate_names.get(vehicle) %} | {{ vehicle_plate_names[vehicle] }}{% endif %}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not entry.driver %} is-pending{% endif %}" data-required-message="請選擇司機"><span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span><select name="driver" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
@@ -273,7 +267,7 @@
     <section class="panel">
       <h2>工作紀錄</h2>
       <h3>處理情形套餐</h3><div class="package-buttons">{% for text in disaster_action_packages %}<button type="button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
-      <label class="field-visual{% if not selected_case.action_note %} is-pending{% endif %}" data-required-message="請填寫處理情形"><span class="field-label-title">處理情形補充<span class="field-error-mark" aria-hidden="true">*</span></span><textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
+      <label class="field-visual{% if not selected_case.action_note %} is-pending{% endif %}" data-required-message="請填寫處理情形"><span class="field-label-title">處理情形補充 <small class="field-label-helper">（可以自行輸入增減）</small><span class="field-error-mark" aria-hidden="true">*</span></span><textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
       <h3>處理情形預覽</h3><div class="preview" id="processing-preview"></div>
     </section>
     <section class="panel" id="disaster-folder-preview">
@@ -282,7 +276,7 @@
         <label class="field-visual{% if not selected_case.recorder_category %} is-pending{% endif %}" data-required-message="請選擇行車紀錄器分類"><span class="field-label-title">行車紀錄器分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_category" id="recorder-category" required><option value="">請選擇</option>{% for category in ['轄內A2','轄內A3','轄內其他案件','支援他轄'] %}<option value="{{ category }}"{% if selected_case.recorder_category == category %} selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
         <label class="field-visual{% if selected_case.recorder_category == '轄內其他案件' and not selected_case.recorder_subcategory %} is-pending{% endif %}" id="subcategory-field" data-required-message="請選擇轄內其他案件子分類"{% if selected_case.recorder_category != '轄內其他案件' %} hidden{% endif %}><span class="field-label-title">子分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_subcategory"><option value="">請選擇</option>{% for subcategory in ['其他','誤報','溺水','破門','警報器誤動作','車禍救助','輸電線災害','電梯受困','電線桿災害'] %}<option value="{{ subcategory }}"{% if selected_case.recorder_subcategory == subcategory %} selected{% endif %}>{{ subcategory }}</option>{% endfor %}</select></label>
         <input type="hidden" name="recorder_subcategory" id="locked-recorder-subcategory" value="誤報" disabled>
-        <div class="full firecam-selector"><span class="field-label-title firecam-selector-title">Firecam（可複選）</span><div class="check-grid">{% for value,label in person_options %}<label class="check-item"><input type="checkbox" name="firecam_person" value="{{ label }}"{% if label in (selected_case.firecam_people or []) %} checked{% endif %}><span>{{ label }}</span></label>{% endfor %}</div></div>
+        <div class="full firecam-selector"><span class="field-section-label firecam-selector-title">Firecam（可複選）</span><div class="check-grid">{% for value,label in person_options %}<label class="check-item"><input type="checkbox" name="firecam_person" value="{{ label }}"{% if label in (selected_case.firecam_people or []) %} checked{% endif %}><span>{{ label }}</span></label>{% endfor %}</div></div>
         <div class="folder-preview-output"><div data-folder-empty>請先完成案件與車輛資料。</div><section class="folder-preview-group" data-folder-recorder-group hidden><h3>行車紀錄器</h3><ul data-folder-recorder-list></ul></section><section class="folder-preview-group" data-folder-firecam-group hidden><h3>Firecam</h3><ul data-folder-firecam-list></ul></section></div>
       </div>
     </section>

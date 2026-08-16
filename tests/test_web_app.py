@@ -1434,6 +1434,14 @@ class WebAppTests(unittest.TestCase):
             self.assertIn(".workspace-page .page-chrome", css)
             self.assertNotIn(".workspace-page main > header", css)
             self.assertIn(".workspace-page .panel", css)
+            self.assertIn("--workspace-type-body: 1rem;", css)
+            self.assertIn("--workspace-type-label: .9375rem;", css)
+            self.assertIn(".workspace-page h3 {\n  margin: 16px 0 8px;", css)
+            self.assertIn(".workspace-page .field-label-helper {", css)
+            self.assertIn(
+                ".workspace-page .vehicle-card-label,\n.workspace-page .vehicle-card-title {",
+                css,
+            )
             self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         finally:
             response.close()
@@ -1551,7 +1559,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("backdrop-filter: blur(18px) saturate(150%);", base_css)
 
     def test_workspace_package_controls_are_compact_and_keep_selected_state(self):
-        css = self.client.get("/static/sinposmart-workspace.css").data.decode("utf-8")
+        css_response = self.client.get("/static/sinposmart-workspace.css")
+        css = css_response.data.decode("utf-8")
+        css_response.close()
         self.import_case_for_form(
             {
                 "case_id": "package-visual-state",
@@ -1564,8 +1574,8 @@ class WebAppTests(unittest.TestCase):
         )
         disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
-        self.assertIn(".workspace-page .package-buttons button {\n  min-height: 36px;", css)
-        self.assertIn("font-size: .8125rem;", css)
+        self.assertIn(".workspace-page .package-buttons button {\n  min-height: 42px;", css)
+        self.assertIn("font-size: var(--workspace-type-control-small);", css)
         self.assertIn(".workspace-page .package-buttons .package-button.is-active,", css)
         self.assertIn('data-action-text="現場待命"', disaster_body)
         self.assertNotIn('data-action-text="現場待命" aria-pressed=', disaster_body)
@@ -1674,6 +1684,9 @@ class WebAppTests(unittest.TestCase):
         )
         response = self.client.get("/app/disaster")
         body = html.unescape(response.data.decode("utf-8"))
+        workspace_css_response = self.client.get("/static/sinposmart-workspace.css")
+        workspace_css = workspace_css_response.data.decode("utf-8")
+        workspace_css_response.close()
 
         self.assertEqual(200, response.status_code)
         self.assertIn('<html lang="zh-Hant" data-ui="task-console">', body)
@@ -1696,8 +1709,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('.time-field { display: grid; grid-template-columns: minmax(0, 1fr) 104px 52px;', body)
         self.assertIn('class="clock-button" id="now-time" aria-label="帶入現在時間"', body)
         self.assertIn('data-vehicle-return-now aria-label="帶入現在時間"', body)
-        self.assertIn('.workspace-page #disaster-form .vehicle-card [data-vehicle-title] { color: var(--accent); font-size: 22px; font-weight: 800;', body)
-        self.assertIn('#disaster-form [data-required-message="請填寫處理情形"] .field-label-title { font-size: var(--text-label); font-weight: 780; }', body)
+        self.assertIn('<strong class="vehicle-card-title" data-vehicle-title>', body)
+        self.assertIn(".workspace-page .vehicle-card-title {\n  color: var(--accent);", workspace_css)
+        self.assertNotIn("[data-required-message=\"請填寫處理情形\"] .field-label-title", body)
         self.assertIn("return vehicle&&driver?`${vehicle}司機:${driver}`:'';", body)
         self.assertIn("const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官';", body)
         self.assertNotIn("帶隊官:${teamLeader}", body)
@@ -1715,14 +1729,18 @@ class WebAppTests(unittest.TestCase):
         )
 
         disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+        workspace_css_response = self.client.get("/static/sinposmart-workspace.css")
+        workspace_css = workspace_css_response.data.decode("utf-8")
+        workspace_css_response.close()
         settings_body = html.unescape(
             self.client.get("/admin/disaster-vehicles", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
         )
 
-        self.assertIn("#disaster-form .package-buttons button { min-height: 42px;", disaster_body)
-        self.assertIn("font-size: var(--text-md);", disaster_body)
+        self.assertIn(".workspace-page .package-buttons button {\n  min-height: 42px;", workspace_css)
+        self.assertNotIn("#disaster-form .package-buttons button", disaster_body)
         self.assertIn('data-required-message="請填寫處理情形"', disaster_body)
-        self.assertIn("處理情形補充", disaster_body)
+        self.assertIn("處理情形補充 <small class=\"field-label-helper\">（可以自行輸入增減）</small>", disaster_body)
+        self.assertIn(".workspace-page .field-label-helper {", workspace_css)
         self.assertIn("textarea { width: 100%; min-height: 240px;", settings_body)
         self.assertIn(".delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 36px;", settings_body)
         self.assertIn("white-space: nowrap;", settings_body)
@@ -2475,13 +2493,18 @@ class WebAppTests(unittest.TestCase):
 
         response = self.client.get("/app/disaster")
         body = html.unescape(response.data.decode("utf-8"))
+        workspace_css_response = self.client.get("/static/sinposmart-workspace.css")
+        workspace_css = workspace_css_response.data.decode("utf-8")
+        workspace_css_response.close()
 
         self.assertIn('<div class="full firecam-selector">', body)
         self.assertNotIn('<fieldset class="full firecam-selector">', body)
         self.assertIn('.firecam-selector .check-grid { gap: 8px; margin: 0; }', body)
         self.assertIn('#disaster-form .firecam-selector .check-item input { width: 18px;', body)
         self.assertIn('.firecam-selector .check-item span { display: inline; white-space: nowrap; }', body)
-        self.assertIn('.firecam-selector-title { font-size: var(--text-label); font-weight: 780; }', body)
+        self.assertIn('<span class="field-section-label firecam-selector-title">Firecam（可複選）</span>', body)
+        self.assertIn(".workspace-page .field-section-label {", workspace_css)
+        self.assertNotIn('.firecam-selector-title { font-size:', body)
         self.assertIn('.firecam-selector .check-item:has(input:checked)', body)
         self.assertNotIn('.firecam-selector .check-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: #8f4436; }', body)
         self.assertIn('data-folder-recorder-group', body)
@@ -2692,7 +2715,7 @@ class WebAppTests(unittest.TestCase):
         option_section = body[option_position:work_record_position]
         self.assertIn('name="two_vehicle"', option_section)
         self.assertIn('.site-card-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }', body)
-        self.assertIn('.vehicle-card-label { display: none; color: var(--running); font-size: 22px; font-weight: 800; line-height: 1.2; }', body)
+        self.assertIn('.vehicle-card-label { display: none; color: var(--running); }', body)
         self.assertIn('.workspace-page #task-form.two-vehicle-enabled .vehicle-card-label { display: inline-flex; }', body)
         self.assertIn('<h2>將建立的 NAS 資料夾名稱</h2>', body)
         self.assertIn("\u5169\u8eca\u540c\u6642\u767b\u6253", body)
