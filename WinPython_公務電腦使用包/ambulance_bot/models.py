@@ -514,12 +514,15 @@ class AmbulanceReturnRequest:
     def duty_status_text(self) -> str:
         entries = self.effective_vehicle_entries()
         if self.service_type == "disaster":
-            vehicles = "、".join(
-                f"車輛:{entry.vehicle or '未填車輛'}／司機:{entry.driver or '未填司機'}" for entry in entries
-            )
-            commander = f"、指揮官:{self.commander}" if self.commander else ""
-            team_leader = f"、帶隊官:{self.team_leader}" if self.team_leader else ""
-            return f"1.{vehicles}{commander}{team_leader}\n2.{self.action_note}".rstrip()
+            assignments = [
+                f"{entry.vehicle}司機:{entry.driver}"
+                for entry in entries
+                if entry.vehicle and entry.driver
+            ]
+            if self.commander:
+                assignments.append(f"指揮官:{self.commander}")
+            assignment_text = "、".join(assignments) if assignments else "尚未選擇車輛／司機／指揮官"
+            return f"1.{assignment_text}\n2.{self.action_note}".rstrip()
         if len(entries) > 1:
             vehicle_line = " ".join(_vehicle_driver_text(entry) for entry in entries if entry.vehicle or entry.driver).strip()
             patient_entries = [

@@ -39,7 +39,7 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual("支援他轄", support_false_alarm_request.recorder_category)
         self.assertEqual("", support_false_alarm_request.recorder_subcategory)
 
-    def test_disaster_work_record_includes_team_leader(self):
+    def test_disaster_work_record_matches_processing_preview(self):
         request = AmbulanceReturnRequest(
             task_id="DISASTER-1",
             created_at=datetime(2026, 7, 27, 9, 20),
@@ -52,7 +52,29 @@ class ModelParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            "1.車輛:新坡11／司機:甲、指揮官:乙、帶隊官:丙\n2.處理完成",
+            "1.新坡11司機:甲、指揮官:乙\n2.處理完成",
+            request.duty_status_text,
+        )
+
+    def test_disaster_work_record_matches_processing_preview_fallback(self):
+        request = AmbulanceReturnRequest(
+            task_id="DISASTER-2",
+            created_at=datetime(2026, 7, 27, 9, 20),
+            raw_text="",
+            service_type="disaster",
+            vehicle_entries=[VehicleEntry(vehicle="新坡11"), VehicleEntry(vehicle="新坡15", driver="乙")],
+            action_note="現場待命",
+        )
+
+        self.assertEqual(
+            "1.新坡15司機:乙\n2.現場待命",
+            request.duty_status_text,
+        )
+
+        request.vehicle_entries = [VehicleEntry()]
+        request.action_note = ""
+        self.assertEqual(
+            "1.尚未選擇車輛／司機／指揮官\n2.",
             request.duty_status_text,
         )
 

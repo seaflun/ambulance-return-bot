@@ -268,8 +268,8 @@
       <div class="package-cluster">
         <span class="package-group-label">套餐帶入</span><div class="package-buttons" aria-label="處理情形套餐">{% for text in disaster_action_packages %}<button type="button" class="secondary package-button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
       </div>
-      <label class="field-visual{% if not selected_case.action_note %} is-pending{% endif %}" data-required-message="請填寫處理情形"><span class="field-label-title">處理情形補充 <small class="field-label-helper">（可以自行輸入增減）</small><span class="field-error-mark" aria-hidden="true">*</span></span><textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
-      <h3>處理情形預覽</h3><div class="preview" id="processing-preview"></div>
+      <label class="field-visual{% if not selected_case.action_note %} is-pending{% endif %}" data-required-message="請填寫處理情形"><span class="field-label-title processing-section-title">處理情形補充 <small class="field-label-helper">（可以自行輸入增減）</small><span class="field-error-mark" aria-hidden="true">*</span></span><textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
+      <h3 class="processing-section-title">處理情形預覽</h3><div class="preview" id="processing-preview"></div>
     </section>
     <section class="panel" id="disaster-folder-preview">
       <h2>將建立的 NAS 資料夾名稱</h2>

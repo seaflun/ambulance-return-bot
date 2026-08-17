@@ -1752,7 +1752,32 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(package_label_index, package_buttons_index)
         self.assertIn('data-required-message="請填寫處理情形"', disaster_body)
         self.assertIn("處理情形補充 <small class=\"field-label-helper\">（可以自行輸入增減）</small>", disaster_body)
+        self.assertIn('class="field-label-title processing-section-title">處理情形補充', disaster_body)
+        self.assertIn('<h3 class="processing-section-title">處理情形預覽</h3>', disaster_body)
         self.assertIn(".workspace-page .field-label-helper {", workspace_css)
+        self.assertIn(
+            ".workspace-page--disaster-task .processing-section-title {\n"
+            "  font-size: var(--workspace-type-subsection);\n"
+            "  font-weight: 740;\n"
+            "  letter-spacing: -.01em;\n"
+            "  line-height: 1.35;",
+            workspace_css,
+        )
+        self.assertIn(
+            ".workspace-page--disaster-task #action-note,\n"
+            ".workspace-page--disaster-task #processing-preview {\n"
+            "  font-family: inherit;\n"
+            "  font-size: var(--workspace-type-body);\n"
+            "  font-weight: 400;\n"
+            "  line-height: 1.5;",
+            workspace_css,
+        )
+        self.assertIn("return vehicle&&driver?`${vehicle}司機:${driver}`:'';", disaster_body)
+        self.assertIn("const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官';", disaster_body)
+        self.assertIn(
+            "document.getElementById('processing-preview').textContent=`1.${assignmentText}\\n2.${document.getElementById('action-note').value}`;",
+            disaster_body,
+        )
         self.assertIn(
             ".workspace-page .package-cluster {\n"
             "  display: flex;\n"
