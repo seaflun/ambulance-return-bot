@@ -34,6 +34,27 @@ $activeMarkerTempPath = Join-Path $resultDir ".remote_update_active.$runId.tmp"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $remoteUpdatePhases = @("discovering_runtime", "installing", "validating", "committing", "rolling_back", "restarting")
 
+function Move-FileWithRetry {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$Label
+    )
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Move-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -ge 5) {
+                throw
+            }
+            Write-Warning "$Label file replacement retry $attempt/4: $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
 function Get-PackageIdentity {
     $normalized = [System.IO.Path]::GetFullPath($packageDir).TrimEnd([char]92).ToLowerInvariant()
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
@@ -246,7 +267,7 @@ function Write-UpdateOwnerHeartbeat {
     }
     try {
         [System.IO.File]::WriteAllText($heartbeatTemp, ($payload | ConvertTo-Json -Compress), $utf8NoBom)
-        Move-Item -LiteralPath $heartbeatTemp -Destination $heartbeatPath -Force
+        Move-FileWithRetry -SourcePath $heartbeatTemp -DestinationPath $heartbeatPath -Label "Update owner heartbeat"
     } finally {
         Remove-Item -LiteralPath $heartbeatTemp -Force -ErrorAction SilentlyContinue
     }
@@ -387,9 +408,9 @@ function Write-RemoteUpdateResult {
     }
     $json = $payload | ConvertTo-Json -Depth 4
     [System.IO.File]::WriteAllText($tempResultPath, $json, $utf8NoBom)
-    Move-Item -LiteralPath $tempResultPath -Destination $resultPath -Force
+    Move-FileWithRetry -SourcePath $tempResultPath -DestinationPath $resultPath -Label "Remote update result"
     [System.IO.File]::WriteAllText($compatibilityTempPath, $json, $utf8NoBom)
-    Move-Item -LiteralPath $compatibilityTempPath -Destination $compatibilityResultPath -Force
+    Move-FileWithRetry -SourcePath $compatibilityTempPath -DestinationPath $compatibilityResultPath -Label "Remote update compatibility result"
 }
 
 function Protect-WorkerFromStaleSuccessResult {
@@ -405,7 +426,7 @@ function Protect-WorkerFromStaleSuccessResult {
         }
         $quarantinePath = Join-Path $uniqueResultDir ("stale-success-{0}-{1}.json" -f $safeRequestId, [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Path $uniqueResultDir -Force | Out-Null
-        Move-Item -LiteralPath $compatibilityResultPath -Destination $quarantinePath -Force
+        Move-FileWithRetry -SourcePath $compatibilityResultPath -DestinationPath $quarantinePath -Label "Stale remote update result quarantine"
         return -not (Test-Path -LiteralPath $compatibilityResultPath)
     } catch {
         Write-Warning "Could not quarantine stale remote update success result: $($_.Exception.Message)"
@@ -457,7 +478,7 @@ function Write-RemoteUpdateMarkerPayload {
     $markerTempPath = $activeMarkerPath + "." + [guid]::NewGuid().ToString("N") + ".tmp"
     try {
         [System.IO.File]::WriteAllText($markerTempPath, ($Payload | ConvertTo-Json -Compress), $utf8NoBom)
-        Move-Item -LiteralPath $markerTempPath -Destination $activeMarkerPath -Force
+        Move-FileWithRetry -SourcePath $markerTempPath -DestinationPath $activeMarkerPath -Label "Remote update active marker"
     } finally {
         Remove-Item -LiteralPath $markerTempPath -Force -ErrorAction SilentlyContinue
     }

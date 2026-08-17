@@ -32,6 +32,27 @@ $updateOwnerNonce = ""
 $watchdogInstallWarning = ""
 Remove-Item Env:AMBULANCE_WATCHDOG_INSTALL_WARNING -ErrorAction SilentlyContinue
 
+function Move-FileWithRetry {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$Label
+    )
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Move-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -ge 5) {
+                throw
+            }
+            Write-Warning "$Label file replacement retry $attempt/4: $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
 function Enter-UpdateLock {
     $lockBase = if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { $env:TEMP } else { $env:LOCALAPPDATA }
     $lockDir = Join-Path $lockBase "AmbulanceReturnBot"
@@ -645,7 +666,10 @@ function Write-DeferredUpdateTransaction {
         } finally {
             $stream.Dispose()
         }
-        Move-Item -LiteralPath $transactionTemp -Destination $safeTransactionPath -Force
+        Move-FileWithRetry `
+            -SourcePath $transactionTemp `
+            -DestinationPath $safeTransactionPath `
+            -Label "Deferred update transaction"
     } finally {
         if (Test-Path -LiteralPath $transactionTemp -PathType Leaf) {
             Remove-Item -LiteralPath $transactionTemp -Force -ErrorAction SilentlyContinue
@@ -961,7 +985,7 @@ function Write-UpdateOwnerHeartbeat {
     }
     try {
         [System.IO.File]::WriteAllText($heartbeatTemp, ($payload | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
-        Move-Item -LiteralPath $heartbeatTemp -Destination $heartbeatPath -Force
+        Move-FileWithRetry -SourcePath $heartbeatTemp -DestinationPath $heartbeatPath -Label "Update owner heartbeat"
     } finally {
         Remove-Item -LiteralPath $heartbeatTemp -Force -ErrorAction SilentlyContinue
     }

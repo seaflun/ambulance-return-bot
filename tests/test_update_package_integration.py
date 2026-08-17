@@ -362,6 +362,17 @@ exit 0
         self.assertLess(validation, launcher_refresh)
         self.assertIn("-File $installer -SkipScheduledTask", updater)
 
+    def test_runtime_update_file_replacements_retry_transient_windows_collisions(self):
+        updater = Path("WinPython_公務電腦使用包/update_package.ps1").read_text(encoding="utf-8")
+        wrapper = Path("WinPython_公務電腦使用包/REMOTE_UPDATE_PACKAGE.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("function Move-FileWithRetry", updater)
+        self.assertIn("function Move-FileWithRetry", wrapper)
+        self.assertIn("Start-Sleep -Milliseconds 250", updater)
+        self.assertIn("Start-Sleep -Milliseconds 250", wrapper)
+        self.assertIn('Label "Remote update active marker"', wrapper)
+        self.assertIn('Label "Deferred update transaction"', updater)
+
     def test_remote_wrapper_records_nonfatal_watchdog_install_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
             installed, state, env, server, thread = self._prepare_fixture(Path(tmp))
