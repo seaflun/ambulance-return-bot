@@ -198,12 +198,15 @@
       {% for case in case_lookup.cases %}
         <div class="case-card">
           <div><div class="case-title">{{ display_case_title(case) }}</div><div class="case-meta">{{ case_time_range(case) }}</div>{% if case.personnel %}<div class="case-meta">出勤人員：{{ case.personnel | join('、') }}</div>{% endif %}</div>
-          <form method="post" action="/cases/import">
-            <input type="hidden" name="return_to" value="disaster">
-            <input type="hidden" name="case_id" value="{{ case.case_id }}">
-            <input type="hidden" name="replace_existing" value="{{ '1' if selected_case.case_id else '' }}">
-            <button type="submit"{% if case_lookup.is_running %} disabled aria-disabled="true"{% endif %}>{{ "查詢中…" if case_lookup.is_running else "帶入" }}</button>
-          </form>
+          <div class="case-card-actions">
+            <span class="case-entry-status case-entry-status--{{ case.entry_status }}">{{ "已建立" if case.entry_status == "established" else "尚未建立" }}</span>
+            <form method="post" action="/cases/import">
+              <input type="hidden" name="return_to" value="disaster">
+              <input type="hidden" name="case_id" value="{{ case.case_id }}">
+              <input type="hidden" name="replace_existing" value="{{ '1' if selected_case.case_id else '' }}">
+              <button type="submit"{% if case_lookup.is_running %} disabled aria-disabled="true"{% endif %}>{{ "查詢中…" if case_lookup.is_running else "帶入" }}</button>
+            </form>
+          </div>
         </div>
       {% endfor %}
       </div>

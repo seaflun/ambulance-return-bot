@@ -27,3 +27,37 @@
       overflow-wrap: anywhere;
     }
     .case-meta { margin-top: 3px; }
+    .case-card-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .case-entry-status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 84px;
+      min-height: 36px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      font-size: var(--text-sm);
+      font-weight: 760;
+      white-space: nowrap;
+    }
+    .case-entry-status--established {
+      border-color: #c9dbe7;
+      background: var(--running-bg);
+      color: var(--running);
+    }
+    .case-entry-status--unestablished {
+      border-color: #eadbb9;
+      background: var(--waiting-bg);
+      color: var(--waiting);
+    }
+    @media (max-width: 700px) {
+      .case-card-actions { justify-content: stretch; }
+      .case-card-actions form { flex: 1; }
+      .case-card-actions button { width: 100%; }
+    }

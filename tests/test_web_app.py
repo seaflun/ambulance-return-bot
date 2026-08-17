@@ -6239,6 +6239,65 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("服勤人員：王小明", body)
         self.assertLess(body.index("已查到 2 筆"), body.index('<div class="case-list">'))
 
+    def test_case_lookup_marks_established_status_per_service_before_import_button(self):
+        self.store.create(
+            AmbulanceReturnRequest(
+                task_id="ems-case-status",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="ems",
+                case_id="case-ems-status",
+                case_address="桃園市觀音區救護狀態路1號",
+                vehicle="新坡91",
+            )
+        )
+        self.store.create(
+            AmbulanceReturnRequest(
+                task_id="disaster-case-status",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                case_id="case-disaster-status",
+                case_address="桃園市觀音區救災狀態路2號",
+                vehicle="新坡11",
+            )
+        )
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True, exist_ok=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "lookup_range": "24h",
+                "cases": [
+                    {
+                        "case_id": "case-ems-status",
+                        "address": "桃園市觀音區救護狀態路1號",
+                    },
+                    {
+                        "case_id": "case-disaster-status",
+                        "address": "桃園市觀音區救災狀態路2號",
+                    },
+                    {
+                        "case_id": "case-new-status",
+                        "address": "桃園市觀音區新案件路3號",
+                    },
+                ],
+            },
+        )
+
+        ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertEqual(1, ems_body.count("已建立"))
+        self.assertEqual(2, ems_body.count("尚未建立"))
+        self.assertEqual(1, disaster_body.count("已建立"))
+        self.assertEqual(2, disaster_body.count("尚未建立"))
+        self.assertLess(
+            ems_body.index("case-entry-status"),
+            ems_body.index('action="/cases/import"'),
+        )
+
     def test_mobile_layout_keeps_header_action_compact_and_stacks_time_fields(self):
         response = self.client.get("/app")
         body = html.unescape(response.data.decode("utf-8"))

@@ -249,7 +249,7 @@ def new_task():
         submit_label="建立任務",
         cancel_url="",
         recent_tasks=recent_tasks_for_task_form("ems"),
-        case_lookup=prepared_case_lookup(),
+        case_lookup=prepared_case_lookup("ems"),
         selected_case=selected_case,
         vehicle_options=[record["label"] for record in vehicle_records],
         vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
@@ -289,7 +289,7 @@ def disaster_task():
         form_action=url_for("create_disaster_task"),
         selected_case=selected_case,
         recent_tasks=recent_tasks_for_task_form("disaster"),
-        case_lookup=prepared_case_lookup(),
+        case_lookup=prepared_case_lookup("disaster"),
         person_options=person_options,
         vehicle_options=vehicle_options,
         vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
@@ -414,7 +414,7 @@ def create_task():
             submit_label="建立任務",
             cancel_url="",
             recent_tasks=recent_tasks_for_task_form("ems"),
-            case_lookup=prepared_case_lookup(),
+            case_lookup=prepared_case_lookup("ems"),
             form_errors=errors,
             baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
             selected_consumable_packages=selected_consumable_packages_from_form(request.form),
@@ -444,7 +444,7 @@ def create_disaster_task():
             form_action=url_for("create_disaster_task"),
             selected_case=task_form_values(task_request.to_dict()),
             recent_tasks=recent_tasks_for_task_form("disaster"),
-            case_lookup=prepared_case_lookup(),
+            case_lookup=prepared_case_lookup("disaster"),
             person_options=person_options_from_personnel(task_request.personnel),
             vehicle_options=[record["label"] for record in vehicle_records],
             vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
@@ -470,7 +470,7 @@ def create_disaster_task():
             form_action=url_for("create_disaster_task"),
             selected_case=task_form_values(task_request.to_dict()),
             recent_tasks=recent_tasks_for_task_form("disaster"),
-            case_lookup=prepared_case_lookup(),
+            case_lookup=prepared_case_lookup("disaster"),
             person_options=person_options_from_personnel(task_request.personnel),
             vehicle_options=[record["label"] for record in vehicle_records],
             vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
@@ -5339,10 +5339,44 @@ def duty_item_reason_options() -> dict[str, list[str]]:
     }
 
 
-def prepared_case_lookup() -> dict:
+def case_entry_status_index(service_type: str = "ems") -> set[str]:
+    normalized_service = "disaster" if str(service_type).strip().lower() == "disaster" else "ems"
+    case_ids: set[str] = set()
+    payloads = list(store.list_recent(limit=100000)) + list(public_pc_reports())
+    for payload in payloads:
+        task = payload.get("task") if isinstance(payload, dict) else None
+        if not isinstance(task, dict):
+            continue
+        task_service = (
+            "disaster"
+            if str(task.get("service_type") or "ems").strip().lower() == "disaster"
+            else "ems"
+        )
+        if task_service != normalized_service:
+            continue
+        case_id = str(task.get("case_id") or "").strip()
+        if case_id:
+            case_ids.add(case_id)
+    return case_ids
+
+
+def prepared_case_lookup(service_type: str = "ems") -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
-    cases = case_lookup.get("cases") or []
+    raw_cases = case_lookup.get("cases") or []
+    existing_case_ids = case_entry_status_index(service_type) if raw_cases else set()
+    cases = [
+        {
+            **case,
+            "entry_status": (
+                "established"
+                if str(case.get("case_id") or "").strip() in existing_case_ids
+                else "unestablished"
+            ),
+        }
+        for case in raw_cases
+        if isinstance(case, dict)
+    ]
     if _case_lookup_start_error:
         case_lookup["detail"] = _case_lookup_start_error
         case_lookup["is_running"] = False
