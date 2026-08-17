@@ -6275,6 +6275,18 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("案件查詢啟動失敗", body)
         self.assertIn("cannot start local lookup", body)
 
+    def test_query_cases_handles_local_mode_detection_failure_without_500(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+
+        with mock.patch.object(app_module, "effective_task_execution_mode", side_effect=OSError(22, "Invalid argument")):
+            response = self.client.post("/cases/query", follow_redirects=False)
+
+        body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("案件查詢啟動失敗", body)
+        self.assertIn("Invalid argument", body)
+
     def test_local_ip_query_cases_starts_local_lookup_when_fast_mode_auto(self):
         calls = []
         os.environ["DESKTOP_FAST_MODE"] = "auto"

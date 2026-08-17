@@ -408,10 +408,7 @@ def _read_pending_update_transaction(
     *,
     state_root: Path | None = None,
 ) -> dict[str, object]:
-    expected_dir = ((state_root or update_state_root()) / "AmbulanceReturnBot" / "update_transactions").resolve()
-    expected_prefix = package_update_identity(package_dir) + "-"
-    if path.resolve().parent != expected_dir or not path.name.startswith(expected_prefix) or path.suffix != ".json":
-        raise RuntimeError(f"pending update transaction path is unsafe: {path}")
+    path = _validate_pending_update_transaction_path(path, package_dir, state_root=state_root)
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -436,6 +433,33 @@ def _read_pending_update_transaction(
     if os.path.normcase(str(payload.get("owner_heartbeat_path") or "")) != os.path.normcase(expected_heartbeat):
         raise RuntimeError(f"pending update transaction has an invalid heartbeat path: {path}")
     return payload
+
+
+def _validate_pending_update_transaction_path(
+    path: Path,
+    package_dir: Path,
+    *,
+    state_root: Path | None = None,
+) -> Path:
+    expected_dir = ((state_root or update_state_root()) / "AmbulanceReturnBot" / "update_transactions").resolve()
+    expected_prefix = package_update_identity(package_dir) + "-"
+    path = path.resolve()
+    if path.parent != expected_dir or not path.name.startswith(expected_prefix) or path.suffix != ".json":
+        raise RuntimeError(f"pending update transaction path is unsafe: {path}")
+    return path
+
+
+def _handle_missing_update_probe(transaction_path: Path) -> str:
+    clear_update_control_environment()
+    if remote_update_marker_is_healthy():
+        raise RuntimeError(
+            f"update probe transaction disappeared while remote update is active: {transaction_path}"
+        )
+    print(
+        f"[worker] update probe transaction already finalized; starting normal worker: {transaction_path}",
+        flush=True,
+    )
+    return "committed"
 
 
 def find_pending_update_transaction(
@@ -465,8 +489,15 @@ def wait_for_update_probe_gate(
     if not raw_path:
         return "none"
     root = (package_dir or Path(__file__).resolve().parent).resolve()
-    transaction_path = Path(raw_path).resolve()
-    payload = _read_pending_update_transaction(transaction_path, root)
+    transaction_path = _validate_pending_update_transaction_path(Path(raw_path), root)
+    if not transaction_path.exists():
+        return _handle_missing_update_probe(transaction_path)
+    try:
+        payload = _read_pending_update_transaction(transaction_path, root)
+    except RuntimeError:
+        if transaction_path.exists():
+            raise
+        return _handle_missing_update_probe(transaction_path)
     version_path = root / "VERSION.txt"
     installed_version = version_path.read_text(encoding="utf-8-sig").strip() if version_path.is_file() else "0"
     if str(payload.get("new_version") or "") != installed_version:

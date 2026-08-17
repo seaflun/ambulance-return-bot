@@ -1605,6 +1605,84 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(result, ["committed"])
             self.assertFalse(ready_path.exists())
 
+    def test_missing_committed_update_probe_is_accepted_and_clears_stale_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "package"
+            state_root = Path(tmp) / "state"
+            root.mkdir()
+            transaction_dir = state_root / "AmbulanceReturnBot" / "update_transactions"
+            transaction_dir.mkdir(parents=True)
+            transaction_path = transaction_dir / f"{worker_module.package_update_identity(root)}-committed.json"
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "LOCALAPPDATA": str(state_root),
+                    "AMBULANCE_UPDATE_PROBE_TRANSACTION_PATH": str(transaction_path),
+                    "WORKER_RUNTIME_MODE": "headless",
+                },
+                clear=False,
+            ), mock.patch.object(worker_module, "remote_update_marker_is_healthy", return_value=False):
+                outcome = worker_module.wait_for_update_probe_gate(package_dir=root)
+
+            self.assertEqual(outcome, "committed")
+            self.assertNotIn("AMBULANCE_UPDATE_PROBE_TRANSACTION_PATH", os.environ)
+
+    def test_update_probe_read_race_after_commit_is_accepted_and_clears_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "package"
+            state_root = Path(tmp) / "state"
+            root.mkdir()
+            transaction_dir = state_root / "AmbulanceReturnBot" / "update_transactions"
+            transaction_dir.mkdir(parents=True)
+            transaction_path = transaction_dir / f"{worker_module.package_update_identity(root)}-race.json"
+            transaction_path.write_text("{}", encoding="utf-8")
+
+            def read_after_commit(*_args, **_kwargs):
+                transaction_path.unlink()
+                raise RuntimeError("pending update transaction is unreadable")
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "LOCALAPPDATA": str(state_root),
+                    "AMBULANCE_UPDATE_PROBE_TRANSACTION_PATH": str(transaction_path),
+                    "WORKER_RUNTIME_MODE": "headless",
+                },
+                clear=False,
+            ), mock.patch.object(
+                worker_module,
+                "_read_pending_update_transaction",
+                side_effect=read_after_commit,
+            ), mock.patch.object(worker_module, "remote_update_marker_is_healthy", return_value=False):
+                outcome = worker_module.wait_for_update_probe_gate(package_dir=root)
+
+            self.assertEqual(outcome, "committed")
+            self.assertNotIn("AMBULANCE_UPDATE_PROBE_TRANSACTION_PATH", os.environ)
+
+    def test_missing_active_update_probe_fails_closed_and_clears_stale_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "package"
+            state_root = Path(tmp) / "state"
+            root.mkdir()
+            transaction_dir = state_root / "AmbulanceReturnBot" / "update_transactions"
+            transaction_dir.mkdir(parents=True)
+            transaction_path = transaction_dir / f"{worker_module.package_update_identity(root)}-active.json"
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "LOCALAPPDATA": str(state_root),
+                    "AMBULANCE_UPDATE_PROBE_TRANSACTION_PATH": str(transaction_path),
+                    "WORKER_RUNTIME_MODE": "headless",
+                },
+                clear=False,
+            ), mock.patch.object(worker_module, "remote_update_marker_is_healthy", return_value=True):
+                with self.assertRaisesRegex(RuntimeError, "disappeared while remote update is active"):
+                    worker_module.wait_for_update_probe_gate(package_dir=root)
+
+            self.assertNotIn("AMBULANCE_UPDATE_PROBE_TRANSACTION_PATH", os.environ)
+
     def test_interrupted_update_is_discovered_by_package_identity_and_recovery_wrapper_is_launched(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "package"

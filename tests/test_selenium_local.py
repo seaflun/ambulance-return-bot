@@ -2330,6 +2330,49 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(calls["sleep"], [2])
         self.assertEqual(cleanups, [(options, "local selenium")])
 
+    def test_local_driver_retries_when_startup_cleanup_raises_oserror(self):
+        class FakeDriver:
+            pass
+
+        calls: dict[str, object] = {"count": 0, "sleep": []}
+        original_webdriver_chrome = selenium_local_module.webdriver.Chrome
+        original_sleep = selenium_local_module.time.sleep
+        original_cleanup = selenium_local_module.cleanup_worker_chrome_residue
+        original_profile_cleanup = selenium_local_module.cleanup_runtime_profiles_for_startup_failure
+        original_attempts = os.environ.get("SELENIUM_LOCAL_SESSION_ATTEMPTS")
+        options = object()
+        try:
+            os.environ["SELENIUM_LOCAL_SESSION_ATTEMPTS"] = "2"
+
+            def fake_chrome(options=None):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise OSError(22, "Invalid argument")
+                return FakeDriver()
+
+            def fail_cleanup(*args, **kwargs):
+                raise OSError(22, "Invalid argument")
+
+            selenium_local_module.webdriver.Chrome = fake_chrome
+            selenium_local_module.time.sleep = lambda seconds: calls["sleep"].append(seconds)
+            selenium_local_module.cleanup_worker_chrome_residue = fail_cleanup
+            selenium_local_module.cleanup_runtime_profiles_for_startup_failure = fail_cleanup
+
+            result = _create_local_driver_with_retry(options)
+        finally:
+            selenium_local_module.webdriver.Chrome = original_webdriver_chrome
+            selenium_local_module.time.sleep = original_sleep
+            selenium_local_module.cleanup_worker_chrome_residue = original_cleanup
+            selenium_local_module.cleanup_runtime_profiles_for_startup_failure = original_profile_cleanup
+            if original_attempts is None:
+                os.environ.pop("SELENIUM_LOCAL_SESSION_ATTEMPTS", None)
+            else:
+                os.environ["SELENIUM_LOCAL_SESSION_ATTEMPTS"] = original_attempts
+
+        self.assertIsInstance(result, FakeDriver)
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(calls["sleep"], [2])
+
     def test_local_chrome_startup_error_treats_no_space_left_as_retryable(self):
         self.assertTrue(
             selenium_local_module._is_local_chrome_startup_error(

@@ -310,9 +310,11 @@ def query_cases():
     global _case_lookup_start_error
 
     lookup_range = "24h"
-    source = case_lookup_source_label(request.host)
-    mode = effective_task_execution_mode()
+    source = "unknown"
+    mode = "unknown"
     try:
+        source = case_lookup_source_label(request.host)
+        mode = effective_task_execution_mode()
         write_case_lookup_request(lookup_range, source=source, mode=mode)
         print(f"[case_lookup] query requested host={request.host} source={source} range={lookup_range} mode={mode}", flush=True)
         if mode == "desktop_fast":

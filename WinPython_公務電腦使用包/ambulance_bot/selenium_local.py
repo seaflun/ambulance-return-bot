@@ -958,8 +958,14 @@ def _create_local_driver_with_retry(options: Options) -> webdriver.Chrome:
             if not _is_local_chrome_startup_error(exc):
                 raise
             print(f"[selenium] local chrome session attempt {attempt} failed: {_short_webdriver_error(exc)}", flush=True)
-            cleanup_worker_chrome_residue(options, "local selenium")
-            cleanup_runtime_profiles_for_startup_failure(_worker_user_data_paths(options))
+            try:
+                cleanup_worker_chrome_residue(options, "local selenium")
+            except OSError as cleanup_exc:
+                print(f"[selenium] local selenium residue cleanup skipped: {_short_webdriver_error(cleanup_exc)}", flush=True)
+            try:
+                cleanup_runtime_profiles_for_startup_failure(_worker_user_data_paths(options))
+            except OSError as cleanup_exc:
+                print(f"[selenium] local selenium profile cleanup skipped: {_short_webdriver_error(cleanup_exc)}", flush=True)
             if attempt >= attempts:
                 break
             time.sleep(2)
