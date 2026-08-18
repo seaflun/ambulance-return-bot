@@ -84,9 +84,9 @@
     #task-form input,
     #task-form select { min-height: 46px; padding: 10px 12px; }
     #task-form .grid { gap: 10px; }
-    #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-sm); font-weight: 700; }
+    #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-md); font-weight: 700; }
     .patient-count-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
-    .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-sm); font-weight: 700; }
+    .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-md); font-weight: 700; }
     .patient-count-option > span { flex: 0 0 auto; }
     .patient-count-select { position: relative; flex: 1 1 auto; min-width: 0; }
     #task-form .patient-count-select select { width: 100%; margin-top: 0; padding-right: 42px; }
@@ -795,7 +795,9 @@
     </section>
     {% endif %}
 
+    {% if not task_form_enabled %}
     {% include "_recent_tasks.html" %}
+    {% endif %}
   </main>
   {% set auto_refresh = case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
   <script>

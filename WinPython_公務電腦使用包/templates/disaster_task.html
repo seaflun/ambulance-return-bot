@@ -292,7 +292,9 @@
     <p>請先從上方案件按「帶入」，下方輸入欄位才會開啟。</p>
   </section>
   {% endif %}
+  {% if not task_form_enabled %}
   {% include "_recent_tasks.html" %}
+  {% endif %}
 </main>
 <script>
   const lookupForm=document.getElementById('lookup-form');

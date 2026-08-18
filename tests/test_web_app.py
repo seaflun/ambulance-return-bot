@@ -2791,7 +2791,14 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(2, body.count('data-patient-count="female"'))
         self.assertEqual(4, body.count('class="patient-count-select"'))
         self.assertEqual(4, body.count('<span class="patient-count-unit" aria-hidden="true">人</span>'))
-        self.assertIn("font-size: var(--text-sm); font-weight: 700;", body)
+        self.assertIn(
+            "#task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-md); font-weight: 700; }",
+            body,
+        )
+        self.assertIn(
+            ".patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-md); font-weight: 700; }",
+            body,
+        )
         self.assertIn("#task-form .patient-count-select select { width: 100%; margin-top: 0; padding-right: 42px; }", body)
         self.assertIn(".mileage-grid > .mileage-row { display: block; margin: 0; }", body)
         for count in range(6):
@@ -3085,6 +3092,42 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("最近任務", disaster_body)
         self.assertIn(f'href="/tasks/{disaster["task"]["task_id"]}"', disaster_body)
         self.assertNotIn(f'href="/tasks/{ems["task"]["task_id"]}"', disaster_body)
+
+    def test_task_entry_pages_hide_recent_tasks_after_case_imported(self):
+        self.store.create(
+            AmbulanceReturnRequest(
+                task_id="recent-ems-hidden-after-import",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="ems",
+                vehicle="新坡91",
+                case_reason="救護最近任務",
+            )
+        )
+        self.store.create(
+            AmbulanceReturnRequest(
+                task_id="recent-disaster-hidden-after-import",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                vehicle="新坡11",
+                case_reason="救災最近任務",
+            )
+        )
+
+        for path in ("/app", "/app/disaster"):
+            with self.subTest(path=path):
+                self.import_case_for_form(
+                    {
+                        "case_id": "case-hides-recent-tasks",
+                        "case_date": "2026/08/18",
+                        "case_time_hhmm": "0905",
+                        "address": "桃園市觀音區",
+                        "personnel": ["甲"],
+                    }
+                )
+                body = html.unescape(self.client.get(path).data.decode("utf-8"))
+                self.assertNotIn('<section class="panel recent">', body)
 
     def test_public_pc_recent_tasks_hide_all_statuses_after_48_hours(self):
         now = datetime.now()
