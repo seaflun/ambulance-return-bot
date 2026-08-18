@@ -538,6 +538,19 @@ body.workspace-page--ems-settings {
   transform: none;
 }
 
+.workspace-page--task .lookup-form button:disabled,
+.workspace-page--task .lookup-form button:disabled:hover,
+.workspace-page--task .lookup-form.is-submitting button {
+  border-color: var(--line);
+  background: var(--surface-muted);
+  color: var(--muted);
+  box-shadow: none;
+  cursor: wait;
+  filter: none;
+  opacity: 1;
+  transform: none;
+}
+
 .workspace-page .status {
   border-radius: 999px;
   font-weight: 700;

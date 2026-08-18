@@ -84,9 +84,10 @@
     #task-form input,
     #task-form select { min-height: 46px; padding: 10px 12px; }
     #task-form .grid { gap: 10px; }
-    #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-md); font-weight: 700; }
+    .workspace-page--ems-task #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-md); font-weight: 700; }
     .patient-count-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
-    .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-md); font-weight: 700; }
+    .workspace-page--ems-task #task-form .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-md); font-weight: 700; }
+    .workspace-page--ems-task #task-form label[data-field-name='mileage'] { font-size: var(--text-md); }
     .patient-count-option > span { flex: 0 0 auto; }
     .patient-count-select { position: relative; flex: 1 1 auto; min-width: 0; }
     #task-form .patient-count-select select { width: 100%; margin-top: 0; padding-right: 42px; }
@@ -326,7 +327,7 @@
           <form class="lookup-form" method="post" action="/cases/query" id="lookup-form">
             <input type="hidden" name="lookup_range" value="24h">
             <span class="lookup-status{% if case_lookup.is_running %} is-visible{% endif %}" id="lookup-status" aria-live="polite">查詢中</span>
-            <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢案件</button>
+            <button type="submit"{% if case_lookup.is_running %} disabled aria-disabled="true"{% endif %}>{{ "查詢中…" if case_lookup.is_running else "查詢案件" }}</button>
           </form>
         </div>
         {% if case_lookup.is_running or case_lookup.empty_message or case_lookup.detail %}
@@ -1321,11 +1322,21 @@
     {% endif %}
 
     if (lookupForm) {
-      lookupForm.addEventListener("submit", () => {
+      let lookupSubmitted = false;
+      lookupForm.addEventListener("submit", (event) => {
+        if (lookupSubmitted) {
+          event.preventDefault();
+          return;
+        }
+        lookupSubmitted = true;
+        lookupForm.classList.add("is-submitting");
+        lookupForm.setAttribute("aria-busy", "true");
         if (lookupStatus) lookupStatus.classList.add("is-visible");
         const button = lookupForm.querySelector("button[type='submit']");
         if (button) {
           button.disabled = true;
+          button.setAttribute("aria-disabled", "true");
+          button.textContent = "查詢中…";
         }
         const importButtons = Array.from(document.querySelectorAll('.case-card form[action="/cases/import"] button[type="submit"]'));
         importButtons.forEach((importButton) => {

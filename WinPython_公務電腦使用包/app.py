@@ -309,6 +309,14 @@ def disaster_task():
 def query_cases():
     global _case_lookup_start_error
 
+    current_request = read_case_lookup_request()
+    if (
+        current_request.get("status") == "case_lookup_requested"
+        and not case_lookup_request_is_stale(current_request)
+    ):
+        print("[case_lookup] duplicate query ignored while a request is active", flush=True)
+        return redirect(task_form_url())
+
     lookup_range = "24h"
     source = "unknown"
     mode = "unknown"

@@ -1353,6 +1353,32 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('document.querySelectorAll(\'.case-card form[action="/cases/import"] button[type="submit"]\')', body)
         self.assertIn("importButton.disabled = true;", body)
 
+    def test_lookup_submit_locks_query_button_and_prevents_reentry(self):
+        for endpoint in ("/app", "/app/disaster"):
+            with self.subTest(endpoint=endpoint):
+                body = html.unescape(self.client.get(endpoint).data.decode("utf-8"))
+                self.assertIn('let lookupSubmitted = false;', body)
+                self.assertIn('if (lookupSubmitted) {', body)
+                self.assertIn('event.preventDefault();', body)
+                self.assertIn('lookupForm.classList.add("is-submitting");', body)
+                self.assertIn('lookupForm.setAttribute("aria-busy", "true");', body)
+                self.assertIn('button.setAttribute("aria-disabled", "true");', body)
+                self.assertIn('button.textContent = "查詢中…";', body)
+
+        workspace_css = self.client.get("/static/sinposmart-workspace.css").data.decode("utf-8")
+        self.assertIn(".workspace-page--task .lookup-form button:disabled", workspace_css)
+        self.assertIn(".workspace-page--task .lookup-form.is-submitting button", workspace_css)
+
+    def test_query_cases_does_not_replace_active_lookup_request(self):
+        first_request = app_module.write_case_lookup_request("24h", source="test", mode="worker_queue")
+
+        response = self.client.post("/cases/query", follow_redirects=False)
+
+        current_request = app_module.read_case_lookup_request()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(current_request["request_id"], first_request["request_id"])
+        self.assertEqual(current_request["requested_at"], first_request["requested_at"])
+
     def test_local_index_redirects_to_task_entry(self):
         response = self.client.get("/", follow_redirects=False)
 
@@ -2792,11 +2818,15 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(4, body.count('class="patient-count-select"'))
         self.assertEqual(4, body.count('<span class="patient-count-unit" aria-hidden="true">人</span>'))
         self.assertIn(
-            "#task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-md); font-weight: 700; }",
+            ".workspace-page--ems-task #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-md); font-weight: 700; }",
             body,
         )
         self.assertIn(
-            ".patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-md); font-weight: 700; }",
+            ".workspace-page--ems-task #task-form .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-md); font-weight: 700; }",
+            body,
+        )
+        self.assertIn(
+            ".workspace-page--ems-task #task-form label[data-field-name='mileage'] { font-size: var(--text-md); }",
             body,
         )
         self.assertIn("#task-form .patient-count-select select { width: 100%; margin-top: 0; padding-right: 42px; }", body)
@@ -6164,7 +6194,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("window.location.reload()", body)
         self.assertIn("lookup-status is-visible", body)
-        self.assertIn("disabled>查詢案件</button>", body)
+        self.assertIn('disabled aria-disabled="true">查詢中…</button>', body)
         self.assertIn("正在查詢最近 24 小時案件，請稍候。", body)
         self.assertNotIn("已查到 2 筆", body)
 

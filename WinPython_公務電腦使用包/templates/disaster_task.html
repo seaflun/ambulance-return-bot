@@ -187,7 +187,7 @@
       <form class="lookup-form" method="post" action="/cases/query" id="lookup-form">
         <input type="hidden" name="return_to" value="disaster">
         <span class="lookup-status{% if case_lookup.is_running %} is-visible{% endif %}" id="lookup-status" aria-live="polite">查詢中</span>
-        <button type="submit"{% if case_lookup.is_running %} disabled{% endif %}>查詢案件</button>
+        <button type="submit"{% if case_lookup.is_running %} disabled aria-disabled="true"{% endif %}>{{ "查詢中…" if case_lookup.is_running else "查詢案件" }}</button>
       </form>
     </div>
     {% if case_lookup.is_running or case_lookup.empty_message or case_lookup.detail %}
@@ -300,10 +300,22 @@
   const lookupForm=document.getElementById('lookup-form');
   const lookupStatus=document.getElementById('lookup-status');
   if(lookupForm){
-    lookupForm.addEventListener('submit',()=>{
+    let lookupSubmitted = false;
+    lookupForm.addEventListener("submit", (event) => {
+      if (lookupSubmitted) {
+        event.preventDefault();
+        return;
+      }
+      lookupSubmitted = true;
+      lookupForm.classList.add("is-submitting");
+      lookupForm.setAttribute("aria-busy", "true");
       if(lookupStatus) lookupStatus.classList.add('is-visible');
       const button=lookupForm.querySelector('button[type="submit"]');
-      if(button) button.disabled=true;
+      if(button) {
+        button.disabled=true;
+        button.setAttribute("aria-disabled", "true");
+        button.textContent = "查詢中…";
+      }
     });
   }
   document.querySelectorAll('.case-card form[action="/cases/import"]').forEach(importForm=>importForm.addEventListener('submit',()=>{const button=importForm.querySelector('button[type="submit"]');if(button) button.disabled=true;}));
