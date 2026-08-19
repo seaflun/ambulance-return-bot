@@ -391,6 +391,11 @@ class AmbulanceReturnRequest:
     two_vehicle: bool = False
     vehicle_entries: list[VehicleEntry] = field(default_factory=list)
     fuel_record: FuelRecord = field(default_factory=FuelRecord)
+    volunteer_assist: bool = False
+    volunteer_assist_member_id: str = ""
+    volunteer_assist_member_name: str = ""
+    volunteer_assist_member_title: str = ""
+    volunteer_assist_member_unit: str = ""
     duty_item: str = ""
     summary_type: str = ""
     commander: str = ""
@@ -531,18 +536,27 @@ class AmbulanceReturnRequest:
                 if (entry.patient_summary or "").strip() and (entry.patient_summary or "").strip() != "\u7121"
             ]
             if not patient_entries:
-                return " ".join(_vehicle_driver_short_text(entry) for entry in entries if entry.vehicle or entry.driver).strip()
+                status_text = " ".join(
+                    _vehicle_driver_short_text(entry) for entry in entries if entry.vehicle or entry.driver
+                ).strip()
+                return self._with_volunteer_assist_duty_status(status_text)
             if len(patient_entries) == 1:
                 patient_text = patient_entries[0][1]
             else:
                 patient_text = " ".join(f"{vehicle}:{patient}" for vehicle, patient in patient_entries if vehicle or patient)
-            return f"1.{vehicle_line}\n2.{patient_text}"
+            return self._with_volunteer_assist_duty_status(f"1.{vehicle_line}\n2.{patient_text}")
         vehicle = self.vehicle or "\u672a\u586b\u8eca\u8f1b"
         driver = self.driver or "\u672a\u586b\u53f8\u6a5f"
         patient = self.patient_summary or "\u7537\u4e00\u540d"
         if patient == "\u7121":
-            return f"{vehicle};{driver}"
-        return f"1.{vehicle}:{driver}\n2.{patient}"
+            return self._with_volunteer_assist_duty_status(f"{vehicle};{driver}")
+        return self._with_volunteer_assist_duty_status(f"1.{vehicle}:{driver}\n2.{patient}")
+
+    def _with_volunteer_assist_duty_status(self, status_text: str) -> str:
+        if self.service_type != "ems" or not self.volunteer_assist:
+            return status_text
+        volunteer_name = self.volunteer_assist_member_name.strip() or "未選取"
+        return f"{status_text}\n3.救護義消協勤:{volunteer_name}".strip()
 
     def primary_vehicle_entry(self) -> VehicleEntry:
         return VehicleEntry(
@@ -571,6 +585,8 @@ class AmbulanceReturnRequest:
             keys.append("fuel_record")
         if self.service_type == "ems":
             keys.extend(["consumables", "disinfection"])
+            if self.volunteer_assist:
+                keys.append("volunteer_assist")
         return keys
 
     def vehicle_requests(self) -> list["AmbulanceReturnRequest"]:
@@ -671,6 +687,11 @@ class AmbulanceReturnRequest:
             two_vehicle=form_flag_enabled(payload.get("two_vehicle")),
             vehicle_entries=vehicle_entries,
             fuel_record=FuelRecord.from_dict(payload.get("fuel_record")),
+            volunteer_assist=form_flag_enabled(payload.get("volunteer_assist")),
+            volunteer_assist_member_id=str(payload.get("volunteer_assist_member_id") or "").strip(),
+            volunteer_assist_member_name=str(payload.get("volunteer_assist_member_name") or "").strip(),
+            volunteer_assist_member_title=str(payload.get("volunteer_assist_member_title") or "").strip(),
+            volunteer_assist_member_unit=str(payload.get("volunteer_assist_member_unit") or "").strip(),
             duty_item=str(payload.get("duty_item") or ""),
             summary_type=str(payload.get("summary_type") or ""),
             commander=str(payload.get("commander") or ""),
@@ -873,6 +894,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
     consumables = parse_consumables(str(form.get("consumables") or ""))
     disinfection_items = parse_disinfection_items_from_form(form)
     two_vehicle = form_flag_enabled(form.get("two_vehicle"))
+    volunteer_assist = form_flag_enabled(form.get("volunteer_assist"))
     case_date = normalize_case_date(str(form.get("case_date") or ""))
     primary_driver = str(form.get("driver") or "").strip()
     primary_vehicle = VehicleEntry(
@@ -941,6 +963,11 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         two_vehicle=two_vehicle,
         vehicle_entries=vehicle_entries,
         fuel_record=FuelRecord.from_dict(primary_vehicle.fuel_record),
+        volunteer_assist=volunteer_assist,
+        volunteer_assist_member_id=(str(form.get("volunteer_assist_member_id") or "").strip() if volunteer_assist else ""),
+        volunteer_assist_member_name=(str(form.get("volunteer_assist_member_name") or "").strip() if volunteer_assist else ""),
+        volunteer_assist_member_title=(str(form.get("volunteer_assist_member_title") or "").strip() if volunteer_assist else ""),
+        volunteer_assist_member_unit=(str(form.get("volunteer_assist_member_unit") or "").strip() if volunteer_assist else ""),
         duty_item=duty_item,
         summary_type=summary_type,
     )

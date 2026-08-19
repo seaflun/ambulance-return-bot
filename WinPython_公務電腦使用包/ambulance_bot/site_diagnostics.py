@@ -14,6 +14,7 @@ SITE_STAGE_DEFINITIONS = {
     "fuel_record": ["啟動 Chrome", "登入 PPE", "開啟登打油耗", "填寫加油紀錄", "儲存"],
     "consumables": ["啟動 Chrome", "登入一站通", "開啟耗材紀錄", "填寫耗材品項", "儲存"],
     "disinfection": ["啟動 Chrome", "登入消毒系統", "查詢案件", "開啟消毒紀錄", "填寫消毒項目", "儲存"],
+    "volunteer_assist": ["啟動 Chrome", "登入內部入口網", "查詢義消名冊", "新增出入登記", "案件代入", "儲存並回查"],
 }
 
 SITE_SHORT_NAMES = {
@@ -22,6 +23,7 @@ SITE_SHORT_NAMES = {
     "fuel_record": "加油",
     "consumables": "耗材",
     "disinfection": "消毒",
+    "volunteer_assist": "民力系統",
 }
 
 SITE_STATUS_STAGE = {
@@ -38,6 +40,12 @@ SITE_STATUS_STAGE = {
     "manual_captcha_required": "登入一站通",
     "consumables_prefilled": "儲存",
     "disinfection_session_ready": "儲存",
+    "volunteer_assist_waiting_dependency": "新增出入登記",
+    "volunteer_assist_running": "登入內部入口網",
+    "volunteer_assist_roster_failed": "查詢義消名冊",
+    "volunteer_assist_io_failed": "新增出入登記",
+    "volunteer_assist_case_failed": "案件代入",
+    "volunteer_assist_verify_failed": "儲存並回查",
     "local_pc_ready": "啟動 Chrome",
     "chrome_start_failed": "啟動 Chrome",
 }
@@ -48,6 +56,7 @@ SITE_DEFAULT_FAILURE_STAGE = {
     "fuel_record": "開啟登打油耗",
     "consumables": "開啟耗材紀錄",
     "disinfection": "查詢案件",
+    "volunteer_assist": "登入內部入口網",
 }
 
 
@@ -215,7 +224,9 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
     if category == "login":
         return _login_stage(site_key)
     if category == "case_not_found":
-        return "由案件帶入" if site_key == "duty_work_log" else "查詢案件"
+        if site_key == "duty_work_log":
+            return "由案件帶入"
+        return "案件代入" if site_key == "volunteer_assist" else "查詢案件"
     if category == "case_not_closed":
         if site_key == "consumables":
             return "開啟耗材紀錄"
@@ -241,6 +252,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
             return "填寫加油紀錄"
         if site_key == "disinfection":
             return "填寫消毒項目"
+        if site_key == "volunteer_assist":
+            return "新增出入登記"
         return "填寫勤務資料"
     if category == "save":
         return "儲存"
@@ -258,6 +271,7 @@ def _login_stage(site_key: str) -> str:
         "fuel_record": "登入 PPE",
         "consumables": "登入一站通",
         "disinfection": "登入消毒系統",
+        "volunteer_assist": "登入內部入口網",
     }.get(site_key, "登入系統")
 
 
@@ -274,6 +288,8 @@ def _field_stage(site_key: str, detail: str) -> str:
         if "detail" in detail.lower() or "開啟" in detail:
             return "開啟消毒紀錄"
         return "填寫消毒項目"
+    if site_key == "volunteer_assist":
+        return "新增出入登記"
     return "填寫資料"
 
 

@@ -549,6 +549,30 @@
             {% endif %}
           </ul>
         </article>
+
+        {% if payload.task.volunteer_assist %}
+        {% set volunteer_site = payload.site_statuses.get('volunteer_assist', {}) %}
+        <article class="task-card {{ status_class(volunteer_site.status) }}">
+          <div class="card-head">
+            <h3>民力系統</h3>
+            <div class="card-state">
+              {% if (show_task_entry_controls() or status_class(volunteer_site.status) == 'failed') and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, 'volunteer_assist') %}
+                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/volunteer_assist/run">
+                  <button class="secondary" type="submit">{{ site_action_button_label(volunteer_site.status, 'volunteer_assist') }}</button>
+                </form>
+              {% endif %}
+              {{ manual_confirmation_forms(payload.task.task_id, 'volunteer_assist', volunteer_site, task_active) }}
+              <span class="status {{ status_class(volunteer_site.status) }}">{{ status_label(volunteer_site.status, volunteer_site.detail) }}</span>
+            </div>
+          </div>
+          <ul class="line-list">
+            <li><span class="label">協勤人員</span><span class="value">{{ payload.task.volunteer_assist_member_name or '未選取' }}{% if payload.task.volunteer_assist_member_title %} / {{ payload.task.volunteer_assist_member_title }}{% endif %}</span></li>
+            <li><span class="label">所屬／服勤</span><span class="value">{{ payload.task.volunteer_assist_member_unit or '大園救護分隊' }} / 新坡分隊</span></li>
+            <li><span class="label">出／入</span><span class="value">{{ task_datetime_display(payload.task, 'case_date', 'case_time') }} / {{ task_datetime_display(payload.task, 'return_date', 'return_time') }}</span></li>
+            {% if volunteer_site.detail %}<li><span class="label">回報</span><span class="value">{{ volunteer_site.detail }}</span></li>{% endif %}
+          </ul>
+        </article>
+        {% endif %}
         {% endif %}
       </div>
     </section>

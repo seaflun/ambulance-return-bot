@@ -10,6 +10,7 @@ SITE_ORDER = (
     "fuel_record",
     "consumables",
     "disinfection",
+    "volunteer_assist",
 )
 
 SITE_LABELS = {
@@ -18,30 +19,39 @@ SITE_LABELS = {
     "fuel_record": "加油",
     "consumables": "耗材",
     "disinfection": "消毒",
+    "volunteer_assist": "民力系統",
 }
 
 COMMON_FIELD_RULES = {
-    "case_date": ("案件日期", {"duty_work_log", "vehicle_mileage", "consumables", "disinfection"}),
-    "case_time": ("案件時間", {"duty_work_log", "vehicle_mileage", "consumables", "disinfection"}),
-    "case_address": ("案件地址", {"duty_work_log", "vehicle_mileage"}),
-    "case_reason": ("出勤原因", {"duty_work_log"}),
+    "case_date": ("案件日期", {"duty_work_log", "vehicle_mileage", "consumables", "disinfection", "volunteer_assist"}),
+    "case_time": ("案件時間", {"duty_work_log", "vehicle_mileage", "consumables", "disinfection", "volunteer_assist"}),
+    "case_address": ("案件地址", {"duty_work_log", "vehicle_mileage", "volunteer_assist"}),
+    "case_reason": ("出勤原因", {"duty_work_log", "volunteer_assist"}),
     "work_note": ("工作備註", {"duty_work_log"}),
 }
 
 VEHICLE_FIELD_RULES = {
     "vehicle": (
         "車號",
-        {"duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"},
+        {"duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection", "volunteer_assist"},
     ),
-    "driver": ("駕駛", {"duty_work_log", "vehicle_mileage", "fuel_record"}),
+    "driver": ("駕駛", {"duty_work_log", "vehicle_mileage", "fuel_record", "volunteer_assist"}),
     "mileage": ("里程", {"vehicle_mileage"}),
-    "return_date": ("返隊日期", {"vehicle_mileage"}),
-    "return_time": ("返隊時間", {"vehicle_mileage"}),
-    "patient_summary": ("傷病患摘要", {"duty_work_log"}),
+    "return_date": ("返隊日期", {"vehicle_mileage", "volunteer_assist"}),
+    "return_time": ("返隊時間", {"vehicle_mileage", "volunteer_assist"}),
+    "patient_summary": ("傷病患摘要", {"duty_work_log", "volunteer_assist"}),
     "fuel_record": ("加油資料", {"fuel_record"}),
     "consumables": ("耗材", {"consumables"}),
     "disinfection": ("消毒方式", {"disinfection"}),
     "disinfection_items": ("消毒項目", {"disinfection"}),
+}
+
+VOLUNTEER_ASSIST_FIELD_RULES = {
+    "volunteer_assist": ("民力系統", {"duty_work_log", "volunteer_assist"}),
+    "volunteer_assist_member_id": ("協勤義消", {"volunteer_assist"}),
+    "volunteer_assist_member_name": ("協勤義消", {"duty_work_log", "volunteer_assist"}),
+    "volunteer_assist_member_title": ("協勤義消職稱", {"volunteer_assist"}),
+    "volunteer_assist_member_unit": ("協勤義消單位", {"volunteer_assist"}),
 }
 
 
@@ -90,6 +100,10 @@ def analyze_task_edit(
 ) -> dict[str, Any]:
     changed_fields: list[dict[str, str]] = []
     affected_sites: dict[str, dict[str, Any]] = {}
+    volunteer_assist_active = bool(
+        normalize_edit_value(previous_task.get("volunteer_assist"))
+        or normalize_edit_value(current_task.get("volunteer_assist"))
+    )
 
     def record(
         *,
@@ -103,6 +117,8 @@ def analyze_task_edit(
         changed_fields.append({"key": key, "label": label})
         for site_key in SITE_ORDER:
             if site_key not in site_keys:
+                continue
+            if site_key == "volunteer_assist" and not volunteer_assist_active:
                 continue
             if site_key == "fuel_record" and not fuel_active:
                 continue
@@ -124,6 +140,12 @@ def analyze_task_edit(
                 site["field_labels"].append(label)
 
     for field_name, (label, site_keys) in COMMON_FIELD_RULES.items():
+        if normalize_edit_value(previous_task.get(field_name)) != normalize_edit_value(
+            current_task.get(field_name)
+        ):
+            record(key=field_name, label=label, site_keys=site_keys)
+
+    for field_name, (label, site_keys) in VOLUNTEER_ASSIST_FIELD_RULES.items():
         if normalize_edit_value(previous_task.get(field_name)) != normalize_edit_value(
             current_task.get(field_name)
         ):

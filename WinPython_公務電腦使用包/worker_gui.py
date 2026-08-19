@@ -64,11 +64,13 @@ WORKER_CHROME_PROFILE_PREFIXES = (
     "fuel_record_profile",
     "consumables_profile",
     "disinfection_profile",
+    "civilpower_profile",
     "duty_work_log_profile_",
     "vehicle_mileage_profile_",
     "fuel_record_profile_",
     "consumables_profile_",
     "disinfection_profile_",
+    "civilpower_profile_",
 )
 
 GUI_THEME = {
@@ -306,9 +308,9 @@ def format_gui_log_message(message: str, now: str | None = None) -> str:
         ("耗材系統已開啟案件內容：", "耗材｜已開啟案件｜"),
         ("執行耗材失敗：", "錯誤｜耗材｜"),
         ("耗材失敗狀態回寫失敗：", "錯誤｜耗材回寫｜"),
-        ("五站登打啟動：", "五站｜啟動｜"),
-        ("五站登打已啟動：", "五站｜已啟動｜"),
-        ("五站登打流程結束：", "五站｜流程結束｜"),
+        ("多站登打啟動：", "多站｜啟動｜"),
+        ("多站登打已啟動：", "多站｜已啟動｜"),
+        ("多站登打流程結束：", "多站｜流程結束｜"),
         ("Chrome 已預先啟動：", "Chrome｜已預先啟動｜"),
         ("Chrome 預先啟動失敗：", "錯誤｜Chrome｜"),
     ]
@@ -1288,8 +1290,8 @@ class WorkerGui(ctk.CTk):
         if not task_id:
             return
         self._apply_server_url()
-        self.worker_status.set(f"五站登打：{task_id}")
-        self._log(f"五站登打啟動：{task_id}")
+        self.worker_status.set(f"多站登打：{task_id}")
+        self._log(f"多站登打啟動：{task_id}")
         threading.Thread(target=self._run_selected_all_sites_background, args=(task_id,), daemon=True).start()
 
     def _selected_task_id(self) -> str:
@@ -1385,6 +1387,14 @@ class WorkerGui(ctk.CTk):
                 )
             elif site_key == "consumables":
                 result = worker.run_consumables_worker_task(
+                    server_url,
+                    worker_id,
+                    task,
+                    artifacts_dir,
+                    **common_kwargs,
+                )
+            elif site_key == "volunteer_assist":
+                result = worker.run_volunteer_assist_worker_task(
                     server_url,
                     worker_id,
                     task,
@@ -1573,10 +1583,39 @@ class WorkerGui(ctk.CTk):
             cancellation_event=cancellation_event,
         )
 
+    def _run_selected_volunteer_assist_background(
+        self,
+        task_id: str,
+        profile_name: str = "civilpower_profile",
+        debugger_port: int | None = None,
+        use_session_lock: bool = True,
+        tile_name: str = "",
+        force_new_driver: bool = False,
+        manage_manual_lock: bool = True,
+        update_overall: bool | None = None,
+        claimed_task: dict[str, object] | None = None,
+        cancellation_event: threading.Event | None = None,
+    ):
+        return WorkerGui._run_selected_site_background_common(
+            self,
+            "volunteer_assist",
+            task_id,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            use_session_lock=use_session_lock,
+            tile_name=tile_name,
+            force_new_driver=force_new_driver,
+            manage_manual_lock=manage_manual_lock,
+            update_overall=update_overall,
+            claimed_task=claimed_task,
+            cancellation_event=cancellation_event,
+        )
+
     def _run_selected_all_sites_with_lease(self, task_id: str) -> None:
         profile_suffix = task_id.replace("-", "_")
         all_runners = [
             ("工作紀錄", "duty_work_log", self._run_selected_task_background, f"duty_work_log_profile_{profile_suffix}", None, "duty_work_log"),
+            ("民力系統", "volunteer_assist", self._run_selected_volunteer_assist_background, f"civilpower_profile_{profile_suffix}", None, "volunteer_assist"),
             ("車輛里程", "vehicle_mileage", self._run_selected_vehicle_mileage_background, f"vehicle_mileage_profile_{profile_suffix}", None, "vehicle_mileage"),
             ("加油紀錄", "fuel_record", self._run_selected_fuel_record_background, f"fuel_record_profile_{profile_suffix}", None, "fuel_record"),
             ("耗材", "consumables", self._run_selected_consumables_background, f"consumables_profile_{profile_suffix}", None, "consumables"),
@@ -1598,8 +1637,13 @@ class WorkerGui(ctk.CTk):
             stop_heartbeat = worker._start_worker_claim_heartbeat(server_url, task_id, worker_id)
             worker._raise_if_task_cancelled(task_id, execution_event)
             request = worker.AmbulanceReturnRequest.from_dict(task)
-            runners = [runner for runner in all_runners if runner[1] != "fuel_record" or (request and request.has_fuel_record())]
-            site_count_label = "五站" if request and request.has_fuel_record() else "四站"
+            runners = [
+                runner
+                for runner in all_runners
+                if (runner[1] != "fuel_record" or request.has_fuel_record())
+                and (runner[1] != "volunteer_assist" or request.volunteer_assist)
+            ]
+            site_count_label = worker.task_site_count_label(request)
             worker.post_status(server_url, task_id, "desktop_fast_running", f"本機快速執行已啟動：{site_count_label}登打。")
             blocked_site = ""
             for name, site_key, target, profile_name, debugger_port, tile_name in runners:
@@ -1614,6 +1658,21 @@ class WorkerGui(ctk.CTk):
                 if _gui_site_is_complete(current_status):
                     self.log_queue.put(f"{site_count_label}登打略過：{name} 已完成")
                     continue
+                if site_key == "volunteer_assist":
+                    duty_status = str((site_statuses.get("duty_work_log") or {}).get("status") or "")
+                    if not _gui_site_is_complete(duty_status):
+                        detail = "民力系統需先完成第一站消防勤務工作紀錄，尚未開始登打。"
+                        worker.post_status(
+                            server_url,
+                            task_id,
+                            "volunteer_assist_failed",
+                            detail,
+                            site_key="volunteer_assist",
+                            site_name="民力系統",
+                        )
+                        self.log_queue.put(f"{site_count_label}登打未啟動：{detail}")
+                        blocked_site = name
+                        break
                 self.log_queue.put(f"{site_count_label}登打已啟動：{name}")
                 result = target(
                     task_id,

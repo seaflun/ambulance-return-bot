@@ -9,12 +9,12 @@ SinpoSmart - 救災救護Worker is maintained as a Windows public-duty worker pl
 - `UPDATE/`: generated public-duty update assets and generated NAS deployment package.
 - `NAS包/`: legacy local/generated folder. It is ignored by Git; build fresh NAS output with `scripts\build_nas_package.ps1`.
 
-Root `app.py`, `worker.py`, `worker_gui.py`, `consumables_login.py`, and `disinfect.py` are compatibility launchers that load runtime code from `WinPython_公務電腦使用包`.
+Root `app.py`, `worker.py`, `worker_gui.py`, `consumables_login.py`, `disinfect.py`, and `civilpower.py` are compatibility launchers that load runtime code from `WinPython_公務電腦使用包`.
 
 ## Verify
 
 ```powershell
-py -m py_compile app.py worker.py worker_gui.py consumables_login.py disinfect.py _runtime_loader.py
+py -m py_compile app.py worker.py worker_gui.py consumables_login.py disinfect.py civilpower.py _runtime_loader.py
 py -m unittest discover -s tests -v
 ```
 

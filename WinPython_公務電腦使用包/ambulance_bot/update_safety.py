@@ -105,6 +105,8 @@ def manual_update_reason(
         )
     if site_key == "duty_work_log":
         return "已存的消防勤務工作紀錄不能安全自動修改，請人工更新。"
+    if site_key == "volunteer_assist":
+        return "已存的民力系統出入與工作紀錄不能安全自動修改，請到民力運用管理系統人工核對及更新。"
 
     try:
         previous = previous_vehicle_request_for_update(update_context, current_request)

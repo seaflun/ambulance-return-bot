@@ -30,9 +30,12 @@ def open_task_on_local_desktop(request: AmbulanceReturnRequest, artifacts_dir: P
 
 def _active_site_definitions(request: AmbulanceReturnRequest):
     has_fuel_record = any(item.fuel_record.enabled for item in request.vehicle_requests())
-    if has_fuel_record:
-        return SITE_DEFINITIONS
-    return [site for site in SITE_DEFINITIONS if site.key != "fuel_record"]
+    excluded_keys = set()
+    if not has_fuel_record:
+        excluded_keys.add("fuel_record")
+    if not request.volunteer_assist:
+        excluded_keys.add("volunteer_assist")
+    return [site for site in SITE_DEFINITIONS if site.key not in excluded_keys]
 
 
 def _task_text(request: AmbulanceReturnRequest) -> str:

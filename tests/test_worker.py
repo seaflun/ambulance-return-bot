@@ -3151,6 +3151,109 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(payloads[0]["request_id"], "lookup-request-123")
         self.assertNotIn("request_id", payloads[1])
 
+    def test_weekly_civilpower_roster_refresh_posts_worker_report(self):
+        report = {
+            "status": "civilpower_roster_loaded",
+            "detail": "loaded",
+            "members": [{"name": "測試義消"}],
+        }
+        posted: list[dict[str, object]] = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            worker_module,
+            "refresh_civilpower_roster",
+            return_value=report,
+        ) as refresh, mock.patch.object(
+            worker_module,
+            "post_civilpower_roster",
+            side_effect=lambda _server, value: posted.append(value),
+        ):
+            last_refresh_at = worker_module.maybe_run_civilpower_roster_refresh(
+                "http://nas",
+                Path(tmp),
+                0,
+                7 * 24 * 60 * 60,
+            )
+
+        refresh.assert_called_once()
+        self.assertEqual([report], posted)
+        self.assertGreater(last_refresh_at, 0)
+
+    def test_volunteer_assist_runs_only_after_saved_duty_work_log(self):
+        task = {
+            "task_id": "volunteer-after-duty",
+            "created_at": "2026-08-19T09:00:00",
+            "case_date": "2026-08-19",
+            "case_time": "1232",
+            "return_date": "2026-08-19",
+            "return_time": "1434",
+            "case_address": "桃園市大園區航城路二段936巷111號",
+            "volunteer_assist": True,
+            "volunteer_assist_member_id": "civilpower-member",
+            "volunteer_assist_member_name": "測試義消",
+            "volunteer_assist_member_unit": "大園救護分隊",
+        }
+        payload = {
+            "task": task,
+            "site_statuses": {
+                "duty_work_log": {"status": "duty_work_log_saved"},
+                "volunteer_assist": {"status": "volunteer_assist_failed"},
+            },
+        }
+        result = SimpleNamespace(ok=True, status="volunteer_assist_saved", detail="verified")
+        with mock.patch.object(worker_module, "fetch_task_payload", return_value=payload), mock.patch.object(
+            worker_module,
+            "run_civilpower_task",
+            return_value=result,
+        ) as run_civilpower, mock.patch.object(worker_module, "post_status"), mock.patch.object(
+            worker_module,
+            "maximize_worker_site_windows",
+        ):
+            worker_module.run_selected_sites_task(
+                "http://nas",
+                "worker-a",
+                task,
+                Path("artifacts"),
+                "volunteer_assist",
+            )
+
+        run_civilpower.assert_called_once()
+
+    def test_volunteer_assist_is_blocked_until_duty_work_log_is_saved(self):
+        task = {
+            "task_id": "volunteer-before-duty",
+            "created_at": "2026-08-19T09:00:00",
+            "volunteer_assist": True,
+            "volunteer_assist_member_id": "civilpower-member",
+            "volunteer_assist_member_name": "測試義消",
+            "volunteer_assist_member_unit": "大園救護分隊",
+        }
+        payload = {
+            "task": task,
+            "site_statuses": {
+                "duty_work_log": {"status": "not_started"},
+                "volunteer_assist": {"status": "volunteer_assist_failed"},
+            },
+        }
+        statuses: list[tuple[str, str]] = []
+        with mock.patch.object(worker_module, "fetch_task_payload", return_value=payload), mock.patch.object(
+            worker_module,
+            "run_civilpower_task",
+        ) as run_civilpower, mock.patch.object(
+            worker_module,
+            "post_status",
+            side_effect=lambda _server, _task_id, status, detail, **_kwargs: statuses.append((status, detail)),
+        ), mock.patch.object(worker_module, "maximize_worker_site_windows"):
+            worker_module.run_selected_sites_task(
+                "http://nas",
+                "worker-a",
+                task,
+                Path("artifacts"),
+                "volunteer_assist",
+            )
+
+        run_civilpower.assert_not_called()
+        self.assertTrue(any(status == "volunteer_assist_failed" for status, _detail in statuses))
+
     def test_fetch_next_task_remembers_claim_context_for_all_status_posts(self):
         captured: dict[str, object] = {}
 

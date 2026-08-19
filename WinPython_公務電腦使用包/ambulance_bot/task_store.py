@@ -76,6 +76,7 @@ SUCCESS_SITE_STATUSES = {
     "vehicle_mileage_saved",
     "disinfection_saved",
     "consumables_saved",
+    "volunteer_assist_saved",
 }
 SITE_RUN_ORDER = tuple(site.key for site in SITE_DEFINITIONS)
 TASK_HISTORY_HOURS = 24 * 14
@@ -163,7 +164,7 @@ def task_completion_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "active_site_keys": active_site_keys,
-        "site_count_label": {2: "二站", 3: "三站", 4: "四站", 5: "五站"}.get(total_count, f"{total_count}站"),
+        "site_count_label": {2: "二站", 3: "三站", 4: "四站", 5: "五站", 6: "六站"}.get(total_count, f"{total_count}站"),
         "total_count": total_count,
         "completed_count": len(completed_site_keys),
         "completed_site_keys": completed_site_keys,

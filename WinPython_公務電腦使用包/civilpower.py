@@ -1,0 +1,778 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import time
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from io import BytesIO
+from pathlib import Path
+from typing import Callable
+from uuid import uuid4
+
+import ddddocr
+from PIL import Image
+from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select, WebDriverWait
+
+from ambulance_bot.adapters import SiteAutomationResult
+from ambulance_bot.chrome_startup import (
+    add_worker_chrome_options,
+    create_chrome_driver_with_retry,
+    mark_driver_operation_active,
+)
+from ambulance_bot.civilpower_roster import HOME_RESCUE_UNIT, normalize_roster_members
+from ambulance_bot.duty_credentials import load_synced_worker_credential
+from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
+from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
+from ambulance_bot.profile_paths import runtime_profile_dir
+from ambulance_bot.task_cancellation import TaskCancellationError
+from ambulance_bot.window_layout import apply_tile
+
+
+OA_LOGIN_URL = "https://oa.tyfd.gov.tw/login.php"
+CIVILPOWER_BASE_URL = "https://civilpower.tyfd.gov.tw/TYCC/"
+FIREMAN_URL = f"{CIVILPOWER_BASE_URL}Home/FireMan"
+IO_WORK_LOG_URL = f"{CIVILPOWER_BASE_URL}Home/IOWorkLog"
+WORK_LOG_URL = f"{CIVILPOWER_BASE_URL}Home/WorkLog"
+SERVE_UNIT = "新坡分隊"
+OUT_STATUS = "出"
+IN_STATUS = "入"
+OUT_REASON = "救護出勤"
+IN_REASON = "救護返隊"
+MAX_LOGIN_ATTEMPTS = 3
+DEFAULT_WAIT_SECONDS = 15
+OUTPUT_DIR = Path(
+    os.getenv("CAPTCHA_OUTPUT_DIR")
+    or Path(os.getenv("LOCALAPPDATA") or Path.home()) / "ambulance_return_bot" / "captcha"
+)
+ocr = ddddocr.DdddOcr(show_ad=False)
+
+
+@dataclass(frozen=True, slots=True)
+class CivilpowerTaskPlan:
+    task_id: str
+    case_id: str
+    case_address: str
+    member_id: str
+    member_name: str
+    member_title: str
+    home_unit: str
+    serve_unit: str
+    out_date: str
+    out_time: str
+    in_date: str
+    in_time: str
+    out_reason: str
+    in_reason: str
+    duty_status_line: str
+
+    @property
+    def case_search_start_hour(self) -> str:
+        return self.out_time[:2]
+
+    @property
+    def case_search_end_hour(self) -> str:
+        return self.in_time[:2]
+
+
+def build_civilpower_task_plan(request: AmbulanceReturnRequest) -> CivilpowerTaskPlan:
+    if request.service_type != "ems" or not request.volunteer_assist:
+        raise ValueError("此任務未啟用義消協勤。")
+    member_id = _clean_text(request.volunteer_assist_member_id)
+    member_name = _clean_text(request.volunteer_assist_member_name)
+    home_unit = _clean_text(request.volunteer_assist_member_unit) or HOME_RESCUE_UNIT
+    if not member_id or not member_name:
+        raise ValueError("義消協勤未選擇 NAS 名冊中的人員。")
+    if home_unit != HOME_RESCUE_UNIT:
+        raise ValueError(f"義消協勤人員所屬單位不符：預期={HOME_RESCUE_UNIT} 實際={home_unit}")
+    out_time = normalize_hhmm(request.case_time)
+    in_time = normalize_hhmm(request.return_time)
+    if not _valid_hhmm(out_time):
+        raise ValueError("義消協勤需要精準救護出勤時間。")
+    if not _valid_hhmm(in_time):
+        raise ValueError("義消協勤需要救護返隊時間。")
+    out_date = request.service_case_date().strftime("%Y/%m/%d")
+    in_date = request.service_return_date().strftime("%Y/%m/%d")
+    return CivilpowerTaskPlan(
+        task_id=_clean_text(request.task_id),
+        case_id=_clean_text(request.case_id),
+        case_address=clean_case_address(request.case_address),
+        member_id=member_id,
+        member_name=member_name,
+        member_title=_clean_text(request.volunteer_assist_member_title),
+        home_unit=home_unit,
+        serve_unit=SERVE_UNIT,
+        out_date=out_date,
+        out_time=out_time,
+        in_date=in_date,
+        in_time=in_time,
+        out_reason=OUT_REASON,
+        in_reason=IN_REASON,
+        duty_status_line=f"3.救護義消協勤:{member_name}",
+    )
+
+
+def civilpower_roster_refresh_due(
+    artifacts_dir: Path,
+    *,
+    now: datetime | None = None,
+    interval_seconds: int = 7 * 24 * 60 * 60,
+) -> bool:
+    path = Path(artifacts_dir) / "civilpower" / "roster_refresh.json"
+    if not path.exists():
+        return True
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        attempted_at = datetime.fromisoformat(str(payload.get("attempted_at") or ""))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return True
+    current = now or datetime.now()
+    return (current - attempted_at).total_seconds() >= max(int(interval_seconds), 60)
+
+
+def refresh_civilpower_roster(
+    artifacts_dir: Path,
+    *,
+    profile_name: str = "civilpower_roster_profile",
+    tile_name: str = "volunteer_assist",
+    driver=None,
+) -> dict[str, object]:
+    attempted_at = datetime.now().isoformat(timespec="seconds")
+    active_driver = driver
+    try:
+        if active_driver is None:
+            active_driver = login_civilpower_and_get_driver(
+                profile_name=profile_name,
+                tile_name=tile_name,
+            )
+        members = query_civilpower_roster(active_driver)
+        if not members:
+            raise RuntimeError("民力運用系統未找到可用的大園救護分隊義消名冊。")
+        report = {
+            "status": "civilpower_roster_loaded",
+            "detail": f"已由民力運用系統更新 {len(members)} 位大園救護分隊可選義消。",
+            "source": "public_duty_pc_worker",
+            "attempted_at": attempted_at,
+            "last_success_at": attempted_at,
+            "members": members,
+        }
+    except Exception as exc:
+        report = {
+            "status": "civilpower_roster_failed",
+            "detail": f"義消名冊更新失敗：{exc}",
+            "source": "public_duty_pc_worker",
+            "attempted_at": attempted_at,
+            "members": [],
+        }
+    _write_json_atomic(Path(artifacts_dir) / "civilpower" / "roster_refresh.json", report)
+    return report
+
+
+def query_civilpower_roster(driver) -> list[dict[str, str]]:
+    driver.get(FIREMAN_URL)
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _wait_for_civilpower_page(driver, wait)
+    _select_option_containing(wait, "#ddl_Prop", "救護", clear_others=True)
+    _select_option_containing(wait, "#ddl_Type3Unit", HOME_RESCUE_UNIT)
+    _click(wait, "#btn_Query")
+    _wait_for_rows(driver, wait)
+    raw_members: list[dict[str, str]] = []
+    for row in _table_rows(driver):
+        cells = [_clean_text(cell.text) for cell in _row_cells(row)]
+        if len(cells) < 3:
+            continue
+        unit, title, name = cells[-3:]
+        raw_members.append({"unit": unit, "title": title, "name": name})
+    return normalize_roster_members(raw_members)
+
+
+def login_civilpower_and_get_driver(
+    *,
+    profile_name: str = "civilpower_profile",
+    debugger_port: int | None = None,
+    tile_name: str = "",
+) -> webdriver.Chrome:
+    credential = load_synced_worker_credential()
+    if credential is None or not credential.user_id.strip() or not credential.password:
+        raise RuntimeError("尚未同步 Worker 帳密，無法登入消防局內部入口網。")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    options = Options()
+    options.add_argument("--window-size=1280,900")
+    options.add_argument(f"--user-data-dir={runtime_profile_dir(profile_name)}")
+    add_worker_chrome_options(options)
+    if debugger_port:
+        options.add_argument(f"--remote-debugging-port={debugger_port}")
+    options.add_experimental_option("detach", True)
+    driver = create_chrome_driver_with_retry(options, "民力系統")
+    timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
+    driver.set_page_load_timeout(timeout)
+    driver.set_script_timeout(timeout)
+    apply_tile(driver, tile_name)
+    errors: list[str] = []
+    try:
+        for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
+            try:
+                _login_once(driver, credential.user_id, credential.password, attempt)
+                driver.get(CIVILPOWER_BASE_URL)
+                _wait_for_civilpower_page(driver, WebDriverWait(driver, DEFAULT_WAIT_SECONDS))
+                return driver
+            except Exception as exc:
+                errors.append(f"第 {attempt} 次：{exc}")
+        raise RuntimeError("內部入口網登入失敗，已重試 3 次：" + "；".join(errors))
+    except Exception:
+        if os.getenv("CIVILPOWER_CLOSE_BROWSER_ON_LOGIN_FAILURE", "false").strip().lower() in {"1", "true", "yes", "on"}:
+            driver.quit()
+        raise
+
+
+def run_civilpower_task(
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path,
+    *,
+    profile_name: str = "civilpower_profile",
+    debugger_port: int | None = None,
+    tile_name: str = "volunteer_assist",
+    cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
+    driver=None,
+) -> SiteAutomationResult:
+    started_at = time.monotonic()
+    active_driver = driver
+    mark_driver_operation_active(active_driver)
+    try:
+        plan = build_civilpower_task_plan(request)
+        _raise_if_cancelled(cancel_check)
+        if active_driver is None:
+            _report_progress(progress, "登入內部入口網")
+            active_driver = login_civilpower_and_get_driver(
+                profile_name=profile_name,
+                debugger_port=debugger_port,
+                tile_name=tile_name,
+            )
+        mark_driver_operation_active(active_driver)
+        checkpoint = _load_task_checkpoint(artifacts_dir, plan)
+        _report_progress(progress, "確認救護出勤出入登記")
+        _ensure_io_record(active_driver, plan, OUT_STATUS, checkpoint, cancel_check=cancel_check)
+        _save_task_checkpoint(artifacts_dir, plan, checkpoint)
+        _report_progress(progress, "確認救護返隊出入登記")
+        _ensure_io_record(active_driver, plan, IN_STATUS, checkpoint, cancel_check=cancel_check)
+        _save_task_checkpoint(artifacts_dir, plan, checkpoint)
+        _report_progress(progress, "案件代入並儲存工作紀錄")
+        _ensure_work_log(active_driver, request, plan, checkpoint, cancel_check=cancel_check)
+        _save_task_checkpoint(artifacts_dir, plan, checkpoint)
+        return SiteAutomationResult(
+            "volunteer_assist",
+            "民力系統",
+            "volunteer_assist_saved",
+            "已新增救護出勤／救護返隊出入登記，案件代入工作紀錄並回查確認。",
+        )
+    except TaskCancellationError:
+        raise
+    except Exception as exc:
+        detail = f"民力系統登打失敗：{exc}"
+        if active_driver is not None:
+            try:
+                evidence = capture_failure_artifacts(
+                    active_driver,
+                    Path(artifacts_dir) / "selenium",
+                    request.task_id,
+                    "volunteer_assist",
+                    exception=exc,
+                    target_url=str(getattr(active_driver, "current_url", "") or CIVILPOWER_BASE_URL),
+                    elapsed_seconds=time.monotonic() - started_at,
+                )
+                detail = augment_failure_detail(detail, evidence)
+            except Exception as capture_exc:
+                detail = f"{detail} [failure_capture_error:{capture_exc.__class__.__name__}: {capture_exc}]"
+        return SiteAutomationResult("volunteer_assist", "民力系統", "volunteer_assist_failed", detail)
+    finally:
+        mark_driver_operation_active(active_driver, False)
+
+
+def _login_once(driver, account: str, password: str, attempt: int) -> None:
+    driver.get(OA_LOGIN_URL)
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _set_input(wait, "#login_name", account)
+    _set_input(wait, "#password", password)
+    captcha = wait.until(EC.visibility_of_element_located((By.ID, "checkcodeImg")))
+    wait.until(lambda _driver: captcha.get_attribute("src") and captcha.size.get("width", 0) > 0)
+    image_path = OUTPUT_DIR / f"civilpower_oa_captcha_attempt_{attempt}.png"
+    Image.open(BytesIO(captcha.screenshot_as_png)).convert("RGB").save(image_path)
+    captcha_text = "".join(character for character in ocr.classification(image_path.read_bytes()) if character.isalnum())
+    if not captcha_text:
+        raise RuntimeError("內部入口網驗證碼 OCR 未辨識到文字。")
+    _set_input(wait, "#verify_code", captcha_text)
+    _click(wait, "#loginBtn")
+    wait.until(lambda current: not _is_oa_login_page(current))
+
+
+def _is_oa_login_page(driver) -> bool:
+    return bool(driver.find_elements(By.CSS_SELECTOR, "#login_name, #verify_code, #loginBtn"))
+
+
+def _wait_for_civilpower_page(driver, wait: WebDriverWait) -> None:
+    def ready(current) -> bool:
+        if _is_oa_login_page(current):
+            return False
+        body_text = _clean_text(current.find_element(By.TAG_NAME, "body").text)
+        return "民力運用" in body_text or "/TYCC/" in str(current.current_url or "")
+
+    wait.until(ready)
+
+
+def _ensure_io_record(
+    driver,
+    plan: CivilpowerTaskPlan,
+    status: str,
+    checkpoint: dict[str, object],
+    *,
+    cancel_check: Callable[[], None] | None,
+) -> None:
+    marker = "out" if status == OUT_STATUS else "in"
+    _raise_if_cancelled(cancel_check)
+    if _find_io_record(driver, plan, status):
+        checkpoint[f"{marker}_verified"] = True
+        return
+    _open_io_work_log(driver)
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _click(wait, "#btn_Add")
+    _wait_visible(wait, "#jqxAddWindow")
+    date_text = plan.out_date if status == OUT_STATUS else plan.in_date
+    time_text = plan.out_time if status == OUT_STATUS else plan.in_time
+    _set_input(wait, "#txt_AddLogDate", date_text)
+    _set_input(wait, "#txt_AddLogHour", time_text[:2])
+    _set_input(wait, "#txt_AddLogMin", time_text[2:])
+    _select_jqx_combobox(driver, wait, "#txt_AddUnit", plan.home_unit)
+    _select_jqx_combobox(driver, wait, "#txt_AddServeUnit", plan.serve_unit)
+    _select_io_person(driver, wait, plan)
+    _select_option_containing(wait, "#ddl_AddIO", status)
+    _set_input(wait, "#txt_AddReason", plan.out_reason if status == OUT_STATUS else plan.in_reason)
+    _raise_if_cancelled(cancel_check)
+    _click(wait, "#btn_IOWorkLogAdd")
+    _wait_after_save(driver, wait, "#jqxAddWindow")
+    _raise_if_cancelled(cancel_check)
+    if not _find_io_record(driver, plan, status):
+        raise RuntimeError(f"出入登記簿儲存後回查不到{status}／{plan.out_reason if status == OUT_STATUS else plan.in_reason}紀錄。")
+    checkpoint[f"{marker}_verified"] = True
+
+
+def _open_io_work_log(driver) -> None:
+    driver.get(IO_WORK_LOG_URL)
+    _wait_for_civilpower_page(driver, WebDriverWait(driver, DEFAULT_WAIT_SECONDS))
+
+
+def _find_io_record(driver, plan: CivilpowerTaskPlan, status: str) -> bool:
+    _open_io_work_log(driver)
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    date_text = plan.out_date if status == OUT_STATUS else plan.in_date
+    time_text = plan.out_time if status == OUT_STATUS else plan.in_time
+    _set_if_present(driver, wait, "#txt_Name", plan.member_name)
+    _set_if_present(driver, wait, "#txt_Date_S", date_text)
+    _set_if_present(driver, wait, "#txt_Date_E", date_text)
+    _select_option_containing_if_present(driver, wait, "#ddl_IO", status)
+    _click_if_present(driver, wait, "#btn_Query")
+    rows = _matching_table_rows(
+        driver,
+        [
+            plan.member_name,
+            plan.home_unit,
+            plan.serve_unit,
+            plan.out_reason if status == OUT_STATUS else plan.in_reason,
+            time_text,
+        ],
+    )
+    if len(rows) > 1:
+        raise RuntimeError(f"出入登記簿找到多筆相同{status}紀錄，無法安全判定。")
+    return bool(rows)
+
+
+def _select_io_person(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
+    _click(wait, "#btn_AddSltMan")
+    dialog = _visible_dialog(driver, wait)
+    tokens = [plan.home_unit, plan.member_name]
+    if plan.member_title:
+        tokens.append(plan.member_title)
+    _select_dialog_row(dialog, tokens)
+    _confirm_dialog(driver, wait, dialog)
+    hidden_value = _control_value(driver, "#hf_AddVolFMan")
+    visible_value = _control_value(driver, "#txt_AddVolFMan")
+    if not hidden_value and plan.member_name not in visible_value:
+        raise RuntimeError("出入登記簿未帶入所選義消人員。")
+
+
+def _ensure_work_log(
+    driver,
+    request: AmbulanceReturnRequest,
+    plan: CivilpowerTaskPlan,
+    checkpoint: dict[str, object],
+    *,
+    cancel_check: Callable[[], None] | None,
+) -> None:
+    _raise_if_cancelled(cancel_check)
+    if _find_work_log_record(driver, plan):
+        checkpoint["work_log_verified"] = True
+        return
+    driver.get(WORK_LOG_URL)
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _wait_for_civilpower_page(driver, wait)
+    _select_out_io_record_for_work_log(driver, wait, plan)
+    _raise_if_cancelled(cancel_check)
+    _import_work_log_case(driver, wait, plan)
+    _assert_imported_work_log_values(driver, plan)
+    _raise_if_cancelled(cancel_check)
+    _click(wait, "#btn_WorkLogAdd")
+    _wait_after_save(driver, wait, "#jqxAddWindow")
+    _raise_if_cancelled(cancel_check)
+    if not _find_work_log_record(driver, plan):
+        raise RuntimeError("工作紀錄簿儲存後回查不到本次救護義消協勤紀錄。")
+    checkpoint["work_log_verified"] = True
+
+
+def _select_out_io_record_for_work_log(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
+    _set_input(wait, "#txt_IODate_S", plan.out_date)
+    _set_input(wait, "#txt_IODate_E", plan.out_date)
+    _click(wait, "#btn_AddSltIOWorkLog")
+    dialog = _visible_dialog(driver, wait)
+    _select_dialog_row(dialog, [plan.member_name, plan.home_unit, plan.out_reason, plan.out_time])
+    _confirm_dialog(driver, wait, dialog)
+    if not _control_value(driver, "#hf_AddIOLogIDs"):
+        raise RuntimeError("工作紀錄簿未選取救護出勤的出入登記。")
+
+
+def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
+    checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#cb_SearchCase")))
+    if not checkbox.is_selected():
+        driver.execute_script("arguments[0].click();", checkbox)
+    _set_input(wait, "#txt_SearchDate_S", plan.out_date)
+    _set_input(wait, "#txt_SearchDate_S_H", plan.case_search_start_hour)
+    _set_input(wait, "#txt_SearchDate_E", plan.in_date)
+    _set_input(wait, "#txt_SearchDate_E_H", plan.case_search_end_hour)
+    _click(wait, "#btn_CaseSlt")
+    dialog = _visible_dialog(driver, wait)
+    tokens = [plan.case_address] if plan.case_address else [plan.case_id]
+    if plan.case_id:
+        try:
+            _select_dialog_row(dialog, [plan.case_id])
+        except RuntimeError:
+            _select_dialog_row(dialog, tokens)
+    else:
+        _select_dialog_row(dialog, tokens)
+    _confirm_dialog(driver, wait, dialog)
+
+
+def _assert_imported_work_log_values(driver, plan: CivilpowerTaskPlan) -> None:
+    expected = {
+        "#txt_AddDisDate": plan.out_date,
+        "#txt_AddDisHour": plan.out_time[:2],
+        "#txt_AddDisMin": plan.out_time[2:],
+        "#txt_AddBackDate": plan.in_date,
+        "#txt_AddBackHour": plan.in_time[:2],
+        "#txt_AddBackMin": plan.in_time[2:],
+    }
+    for selector, expected_value in expected.items():
+        actual = _control_value(driver, selector)
+        if not _same_value(actual, expected_value):
+            raise RuntimeError(f"案件代入後欄位不符：{selector} 預期={expected_value} 實際={actual or '空白'}")
+    status_text = _control_value(driver, "#txt_AddStat")
+    if plan.duty_status_line not in status_text:
+        raise RuntimeError(f"案件代入後未帶入第一站工作紀錄的 {plan.duty_status_line}。")
+
+
+def _find_work_log_record(driver, plan: CivilpowerTaskPlan) -> bool:
+    driver.get(WORK_LOG_URL)
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _wait_for_civilpower_page(driver, wait)
+    _set_if_present(driver, wait, "#txt_Date_S", plan.out_date)
+    _set_if_present(driver, wait, "#txt_Date_E", plan.in_date)
+    _click_if_present(driver, wait, "#btn_Query")
+    tokens = [plan.member_name, plan.out_reason, plan.out_time]
+    if plan.case_id:
+        rows = _matching_table_rows(driver, [plan.member_name, plan.case_id])
+        if rows:
+            return len(rows) == 1
+    if plan.case_address:
+        rows = _matching_table_rows(driver, [plan.member_name, plan.case_address])
+        if rows:
+            return len(rows) == 1
+    rows = _matching_table_rows(driver, tokens)
+    if len(rows) > 1:
+        raise RuntimeError("工作紀錄簿找到多筆相同義消協勤紀錄，無法安全判定。")
+    return bool(rows)
+
+
+def _visible_dialog(driver, wait: WebDriverWait):
+    def find_dialog(current):
+        candidates = current.find_elements(By.CSS_SELECTOR, ".jqx-window, [role='dialog']")
+        visible = [candidate for candidate in candidates if candidate.is_displayed()]
+        return visible[-1] if visible else False
+
+    return wait.until(find_dialog)
+
+
+def _select_dialog_row(dialog, required_tokens: list[str]) -> None:
+    rows = []
+    for row in _table_rows(dialog):
+        text = _clean_text(row.text)
+        if text and all(_token_matches(text, token) for token in required_tokens if token):
+            rows.append(row)
+    if not rows:
+        raise RuntimeError("選取視窗找不到符合條件的紀錄：" + "、".join(required_tokens))
+    if len(rows) > 1:
+        raise RuntimeError("選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
+    row = rows[0]
+    controls = row.find_elements(By.CSS_SELECTOR, "input[type='checkbox'], input[type='radio'], button, input[type='button']")
+    for control in controls:
+        if control.is_displayed() and control.is_enabled():
+            control.click()
+            return
+    try:
+        row.click()
+    except Exception as exc:
+        raise RuntimeError("選取視窗的符合紀錄無法選取。") from exc
+
+
+def _confirm_dialog(driver, wait: WebDriverWait, dialog) -> None:
+    candidates = driver.find_elements(
+        By.XPATH,
+        "//input[@type='button' or @type='submit'] | //button",
+    )
+    for candidate in candidates:
+        text = _clean_text(candidate.get_attribute("value") or candidate.text)
+        if candidate.is_displayed() and candidate.is_enabled() and "確認選取" in text:
+            candidate.click()
+            wait.until(lambda current: _is_stale(dialog) or not dialog.is_displayed())
+            return
+    raise RuntimeError("選取視窗找不到「確認選取」按鈕。")
+
+
+def _wait_after_save(driver, wait: WebDriverWait, modal_selector: str) -> None:
+    try:
+        wait.until(lambda current: not _element_displayed(current, modal_selector))
+    except TimeoutException:
+        body_text = _clean_text(driver.find_element(By.TAG_NAME, "body").text)
+        if any(token in body_text for token in ("失敗", "錯誤", "請輸入", "必填")):
+            raise RuntimeError("民力運用系統未接受儲存：" + body_text[-300:])
+
+
+def _matching_table_rows(driver, required_tokens: list[str]) -> list[object]:
+    return [
+        row
+        for row in _table_rows(driver)
+        if all(_token_matches(_clean_text(row.text), token) for token in required_tokens if token)
+    ]
+
+
+def _table_rows(driver) -> list[object]:
+    rows: list[object] = []
+    selectors = "table tbody tr, table tr, [role='row'], .jqx-grid-row"
+    seen_ids: set[str] = set()
+    for row in driver.find_elements(By.CSS_SELECTOR, selectors):
+        try:
+            row_id = str(getattr(row, "id", "") or "")
+            if row_id and row_id in seen_ids:
+                continue
+            if row_id:
+                seen_ids.add(row_id)
+            if row.is_displayed() and _row_cells(row):
+                rows.append(row)
+        except Exception:
+            continue
+    return rows
+
+
+def _row_cells(row) -> list[object]:
+    return row.find_elements(By.CSS_SELECTOR, "td, [role='gridcell'], .jqx-grid-cell")
+
+
+def _wait_for_rows(driver, wait: WebDriverWait) -> None:
+    wait.until(lambda current: bool(_table_rows(current)))
+
+
+def _select_jqx_combobox(driver, wait: WebDriverWait, selector: str, text: str) -> None:
+    element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+    selected = driver.execute_script(
+        """
+        const outer = arguments[0];
+        const expected = arguments[1].replace(/\\s+/g, ' ').trim();
+        const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+        const input = outer.matches('input') ? outer : outer.querySelector('input');
+        if (window.jQuery && window.jQuery.fn && window.jQuery.fn.jqxComboBox) {
+          const widget = window.jQuery(outer);
+          try {
+            const items = widget.jqxComboBox('getItems') || [];
+            const item = items.find((candidate) => clean(candidate.label) === expected || clean(candidate.value) === expected);
+            if (item) {
+              widget.jqxComboBox('selectItem', item);
+              widget.jqxComboBox('val', item.value);
+              if (input) input.dispatchEvent(new Event('change', {bubbles: true}));
+              return true;
+            }
+          } catch (_) {}
+        }
+        if (input) {
+          input.focus();
+          input.value = expected;
+          input.dispatchEvent(new Event('input', {bubbles: true}));
+          input.dispatchEvent(new Event('change', {bubbles: true}));
+          input.blur();
+          return true;
+        }
+        return false;
+        """,
+        element,
+        text,
+    )
+    if not selected:
+        raise RuntimeError(f"民力系統找不到單位下拉選項：{text}")
+    wait.until(lambda current: _token_matches(_control_value(current, selector), text))
+
+
+def _select_option_containing(wait: WebDriverWait, selector: str, text: str, *, clear_others: bool = False) -> None:
+    element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+    select = Select(element)
+    if clear_others and select.is_multiple:
+        select.deselect_all()
+    matches = [option for option in select.options if _token_matches(_clean_text(option.text), text)]
+    if len(matches) != 1:
+        raise RuntimeError(f"下拉選單找不到唯一選項：{selector}={text}")
+    select.select_by_visible_text(matches[0].text)
+
+
+def _select_option_containing_if_present(driver, wait: WebDriverWait, selector: str, text: str) -> None:
+    if driver.find_elements(By.CSS_SELECTOR, selector):
+        _select_option_containing(wait, selector, text)
+
+
+def _set_input(wait: WebDriverWait, selector: str, value: str) -> None:
+    element = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+    element.clear()
+    element.send_keys(value)
+    element.send_keys("\t")
+
+
+def _set_if_present(driver, wait: WebDriverWait, selector: str, value: str) -> None:
+    if driver.find_elements(By.CSS_SELECTOR, selector):
+        _set_input(wait, selector, value)
+
+
+def _click(wait: WebDriverWait, selector: str) -> None:
+    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector))).click()
+
+
+def _click_if_present(driver, wait: WebDriverWait, selector: str) -> None:
+    if driver.find_elements(By.CSS_SELECTOR, selector):
+        _click(wait, selector)
+
+
+def _wait_visible(wait: WebDriverWait, selector: str):
+    return wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, selector)))
+
+
+def _control_value(driver, selector: str) -> str:
+    try:
+        element = driver.find_element(By.CSS_SELECTOR, selector)
+    except NoSuchElementException:
+        return ""
+    value = element.get_attribute("value")
+    if value:
+        return _clean_text(value)
+    if selector.startswith("#txt_"):
+        nested = element.find_elements(By.CSS_SELECTOR, "input")
+        if nested:
+            return _clean_text(nested[0].get_attribute("value"))
+    return _clean_text(element.text)
+
+
+def _element_displayed(driver, selector: str) -> bool:
+    elements = driver.find_elements(By.CSS_SELECTOR, selector)
+    return any(element.is_displayed() for element in elements)
+
+
+def _same_value(actual: str, expected: str) -> bool:
+    clean_actual = re.sub(r"\D", "", str(actual or ""))
+    clean_expected = re.sub(r"\D", "", str(expected or ""))
+    return clean_actual == clean_expected if clean_expected else _clean_text(actual) == _clean_text(expected)
+
+
+def _token_matches(text: str, token: str) -> bool:
+    actual = _clean_text(text)
+    expected = _clean_text(token)
+    if not expected:
+        return True
+    if expected in actual:
+        return True
+    expected_digits = re.sub(r"\D", "", expected)
+    return bool(expected_digits and expected_digits in re.sub(r"\D", "", actual))
+
+
+def _valid_hhmm(value: str) -> bool:
+    return bool(re.fullmatch(r"([01]\d|2[0-3])[0-5]\d", value))
+
+
+def _clean_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _raise_if_cancelled(cancel_check: Callable[[], None] | None) -> None:
+    if cancel_check is not None:
+        cancel_check()
+
+
+def _report_progress(progress: Callable[[str], None] | None, stage: str) -> None:
+    if progress is not None:
+        progress(stage)
+
+
+def _task_checkpoint_path(artifacts_dir: Path, task_id: str) -> Path:
+    safe_task_id = re.sub(r"[^\w.-]+", "_", task_id).strip("._") or "unknown_task"
+    return Path(artifacts_dir) / "civilpower" / "tasks" / f"{safe_task_id}.json"
+
+
+def _plan_fingerprint(plan: CivilpowerTaskPlan) -> str:
+    raw = json.dumps(asdict(plan), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _load_task_checkpoint(artifacts_dir: Path, plan: CivilpowerTaskPlan) -> dict[str, object]:
+    path = _task_checkpoint_path(artifacts_dir, plan.task_id)
+    fingerprint = _plan_fingerprint(plan)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict) or payload.get("fingerprint") != fingerprint:
+        return {"fingerprint": fingerprint, "created_at": datetime.now().isoformat(timespec="seconds")}
+    return payload
+
+
+def _save_task_checkpoint(artifacts_dir: Path, plan: CivilpowerTaskPlan, checkpoint: dict[str, object]) -> None:
+    checkpoint["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _write_json_atomic(_task_checkpoint_path(artifacts_dir, plan.task_id), checkpoint)
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _is_stale(element) -> bool:
+    try:
+        _ = element.is_displayed()
+        return False
+    except Exception:
+        return True

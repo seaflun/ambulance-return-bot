@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 
+from civilpower import civilpower_roster_refresh_due, refresh_civilpower_roster, run_civilpower_task
 from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task, save_consumables_record_enabled
 from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 from ambulance_bot import worker_control, worker_health, worker_routes
@@ -90,7 +91,10 @@ class StaleWorkerClaimError(TaskCancellationError):
 
 
 def task_site_count_label(request: AmbulanceReturnRequest) -> str:
-    return "五站" if request.has_fuel_record() else "四站"
+    return {2: "二站", 3: "三站", 4: "四站", 5: "五站", 6: "六站"}.get(
+        len(request.active_site_keys()),
+        f"{len(request.active_site_keys())}站",
+    )
 
 
 def main() -> None:
@@ -98,11 +102,16 @@ def main() -> None:
     worker_id = os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc")
     poll_seconds = int(os.getenv("WORKER_POLL_SECONDS", "10"))
     lookup_interval_seconds = max(1800, int(os.getenv("CASE_LOOKUP_INTERVAL_SECONDS", "1800")))
+    civilpower_roster_interval_seconds = max(
+        60,
+        int(os.getenv("CIVILPOWER_ROSTER_REFRESH_INTERVAL_SECONDS", str(7 * 24 * 60 * 60))),
+    )
     run_once = os.getenv("WORKER_RUN_ONCE", "false").strip().lower() in {"1", "true", "yes", "on"}
     auto_claim_tasks = os.getenv("WORKER_AUTO_CLAIM_TASKS", "false").strip().lower() in {"1", "true", "yes", "on"}
     artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
     last_case_lookup_at = time.time()
     last_case_hash = load_last_case_hash(artifacts_dir)
+    last_civilpower_roster_refresh_at = 0.0
 
     if os.getenv("WORKER_USE_LOCAL_CHROME", "true").strip().lower() not in {"0", "false", "no", "off"}:
         os.environ["SELENIUM_REMOTE_URL"] = ""
@@ -142,6 +151,17 @@ def main() -> None:
                     )
                 finally:
                     runtime_state.set("idle")
+                if not run_once:
+                    runtime_state.set("busy", activity="civilpower_roster", busy_reason="checking civilpower roster")
+                    try:
+                        last_civilpower_roster_refresh_at = maybe_run_civilpower_roster_refresh(
+                            server_url,
+                            artifacts_dir,
+                            last_civilpower_roster_refresh_at,
+                            civilpower_roster_interval_seconds,
+                        )
+                    finally:
+                        runtime_state.set("idle")
                 if auto_claim_tasks:
                     execution_key = "__auto_claim__"
                     execution_event = begin_manual_task_execution(execution_key, artifacts_dir)
@@ -996,6 +1016,35 @@ def maybe_run_case_lookup(
         return now, case_hash
     finally:
         worker_health.clear_activity(activity_owner)
+
+
+def maybe_run_civilpower_roster_refresh(
+    server_url: str,
+    artifacts_dir: Path,
+    last_refresh_at: float,
+    interval_seconds: int,
+) -> float:
+    if MANUAL_TASK_ACTIVE.is_set() or manual_task_lock_active(artifacts_dir):
+        print("[worker] civilpower roster refresh skipped: manual task active", flush=True)
+        return last_refresh_at
+    now = time.time()
+    if now - last_refresh_at < max(interval_seconds, 60):
+        return last_refresh_at
+    if not civilpower_roster_refresh_due(artifacts_dir, interval_seconds=interval_seconds):
+        return now
+    activity_owner = f"civilpower_roster:{os.getpid()}:{int(now)}"
+    worker_health.write_activity(activity="civilpower_roster", owner=activity_owner)
+    try:
+        report = refresh_civilpower_roster(artifacts_dir)
+        post_civilpower_roster(server_url, report)
+        print(
+            "[worker] civilpower roster result "
+            f"status={report.get('status')} count={len(report.get('members') or [])}",
+            flush=True,
+        )
+    finally:
+        worker_health.clear_activity(activity_owner)
+    return now
 
 
 def fetch_next_task(server_url: str, worker_id: str) -> dict[str, object] | None:
@@ -1862,6 +1911,23 @@ def _run_all_sites_task_impl(
                 ),
             ),
         )
+    if request.volunteer_assist:
+        site_groups[0].append(
+            (
+                "volunteer_assist",
+                lambda payload: run_volunteer_assist_worker_task(
+                    server_url,
+                    worker_id,
+                    dict(payload.get("task") or task),
+                    artifacts_dir,
+                    profile_name=f"civilpower_profile_{profile_suffix}",
+                    tile_name="volunteer_assist",
+                    update_overall=False,
+                    update_context=site_update_context_from_payload(payload, "volunteer_assist"),
+                    cancel_check=lambda: _raise_if_task_cancelled(request.task_id, cancellation_event),
+                ),
+            )
+        )
     if only_site_keys is not None:
         site_groups = [
             [entry for entry in site_group if entry[0] in only_site_keys]
@@ -1957,6 +2023,26 @@ def _run_worker_site_group(
             if _site_is_complete(current_status):
                 print(f"[worker] skip completed site task={task_id} site={site_key}", flush=True)
                 continue
+            if site_key == "volunteer_assist":
+                duty_status = str((site_statuses.get("duty_work_log") or {}).get("status") or "")
+                if not _site_is_complete(duty_status):
+                    detail = "民力系統需先完成第一站消防勤務工作紀錄，尚未開始登打。"
+                    result = make_site_result(
+                        "volunteer_assist",
+                        SITE_NAMES.get("volunteer_assist", "民力系統"),
+                        "volunteer_assist_failed",
+                        detail,
+                    )
+                    post_status(
+                        server_url,
+                        task_id,
+                        result.status,
+                        result.detail,
+                        site_key="volunteer_assist",
+                        site_name=SITE_NAMES.get("volunteer_assist", "民力系統"),
+                    )
+                    failed_results.append(result)
+                    continue
             last_result = runner(payload)
             if _result_blocks_progress(last_result):
                 failed_results.append(last_result)
@@ -2352,6 +2438,76 @@ def run_fuel_worker_task(
             result.detail,
         )
     print(f"[worker] finished fuel record {request.task_id}: {result.status}", flush=True)
+    return result
+
+
+def run_volunteer_assist_worker_task(
+    server_url: str,
+    worker_id: str,
+    task: dict[str, object],
+    artifacts_dir: Path,
+    profile_name: str = "civilpower_profile",
+    debugger_port: int | None = None,
+    tile_name: str = "volunteer_assist",
+    update_overall: bool = True,
+    update_context: dict[str, object] | None = None,
+    cancel_check: Callable[[], None] | None = None,
+) -> SiteAutomationResult:
+    if update_context is None:
+        update_context = site_update_context_from_embedded_task(task, "volunteer_assist")
+    request = AmbulanceReturnRequest.from_dict(task)
+    if not request.volunteer_assist:
+        return SiteAutomationResult("volunteer_assist", "民力系統", "volunteer_assist_skipped", "未勾選救護義消協勤，已略過。")
+    login_audit = login_audit_for_site("volunteer_assist", request)
+    print(f"[worker] volunteer assist task {request.task_id}", flush=True)
+
+    def report_progress(stage: str) -> None:
+        post_status(
+            server_url,
+            request.task_id,
+            "volunteer_assist_running",
+            with_login_audit(f"公務電腦 worker 民力系統：{stage}", login_audit),
+            site_key="volunteer_assist",
+            site_name="民力系統",
+        )
+
+    report_progress("準備登入民力運用管理系統")
+    try:
+        require_safe_automated_update("volunteer_assist", request, update_context)
+        result = run_civilpower_task(
+            request,
+            artifacts_dir,
+            profile_name=profile_name,
+            debugger_port=debugger_port,
+            tile_name=tile_name,
+            cancel_check=cancel_check,
+            progress=report_progress,
+        )
+    except TaskCancellationError:
+        raise
+    except ManualUpdateRequiredError as exc:
+        result = make_site_result(
+            "volunteer_assist",
+            "民力系統",
+            "volunteer_assist_waiting_confirmation",
+            f"需人工更新：{exc}",
+            exc,
+        )
+    except Exception as exc:
+        result = make_site_result("volunteer_assist", "民力系統", "volunteer_assist_failed", f"民力系統操作失敗：{exc}", exc)
+    result = _result_with_login_audit(result, login_audit)
+    post_status(
+        server_url,
+        request.task_id,
+        result.status,
+        result.detail,
+        site_key="volunteer_assist",
+        site_name="民力系統",
+        **_result_diagnostic_kwargs(result),
+    )
+    if update_overall:
+        post_site_terminal_status(server_url, request.task_id, result.status, result.detail)
+    print(f"[worker] finished volunteer assist {request.task_id}: {result.status}", flush=True)
     return result
 
 
@@ -2927,6 +3083,18 @@ def post_cases(
         message = worker_api_error_message(exc)
         exc.close()
         raise RuntimeError(message) from exc
+
+
+def post_civilpower_roster(server_url: str, report: Mapping[str, object]) -> None:
+    payload = {
+        "status": str(report.get("status") or "civilpower_roster_failed"),
+        "detail": str(report.get("detail") or ""),
+        "source": str(report.get("source") or "public_duty_pc_worker"),
+        "attempted_at": str(report.get("attempted_at") or ""),
+        "last_success_at": str(report.get("last_success_at") or ""),
+        "members": list(report.get("members") or []),
+    }
+    post_json(f"{str(server_url).rstrip('/')}/worker/civilpower-roster", payload)
 
 
 def ack_credential_sync_request(server_url: str, request_id: str, status: str, detail: str) -> None:

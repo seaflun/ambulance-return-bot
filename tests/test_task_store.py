@@ -221,6 +221,42 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["remaining_site_keys"], ["disinfection"])
             self.assertFalse(snapshot["all_complete"])
 
+    def test_completion_snapshot_requires_volunteer_assist_after_first_five_sites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="snapshot-six-sites",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+                volunteer_assist=True,
+                volunteer_assist_member_id="VOL-001",
+                volunteer_assist_member_name="測試義消",
+            )
+            payload = store.create(request)
+            for site_key in (
+                "duty_work_log",
+                "vehicle_mileage",
+                "consumables",
+                "disinfection",
+            ):
+                payload["site_statuses"][site_key]["status"] = f"{site_key}_saved"
+
+            snapshot = task_completion_snapshot(payload)
+
+            self.assertEqual(
+                [
+                    "duty_work_log",
+                    "vehicle_mileage",
+                    "consumables",
+                    "disinfection",
+                    "volunteer_assist",
+                ],
+                snapshot["active_site_keys"],
+            )
+            self.assertEqual("五站", snapshot["site_count_label"])
+            self.assertEqual(["volunteer_assist"], snapshot["remaining_site_keys"])
+
     def test_single_site_terminal_status_cannot_complete_incomplete_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
@@ -1016,7 +1052,7 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(payload["worker_queue"]["status"], "idle")
             self.assertEqual(
                 list(payload["site_statuses"]),
-                ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"],
+            ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection", "volunteer_assist"],
             )
             self.assertTrue((Path(tmp) / "task-1.json").exists())
 

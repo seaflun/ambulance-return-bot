@@ -26,6 +26,12 @@ from flask import Flask, abort, jsonify, make_response, redirect, render_templat
 
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
+from ambulance_bot.civilpower_roster import (
+    ROSTER_LOADED_STATUS,
+    merge_roster_report,
+    normalize_roster_members,
+    roster_member_by_id,
+)
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.credential_envelope import (
     CredentialEnvelopeError,
@@ -127,6 +133,7 @@ store = JsonTaskStore(artifacts_dir / "tasks")
 runner = TaskRunner(artifacts_dir, store=store)
 desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 _vehicle_settings_sync_lock = threading.RLock()
+_civilpower_roster_lock = threading.RLock()
 _local_case_lookup_thread_lock = threading.Lock()
 _local_case_lookup_thread: threading.Thread | None = None
 _public_pc_report_lock = threading.Lock()
@@ -145,6 +152,7 @@ PUBLIC_PC_FAILURE_SITE_KEYS = {
     "fuel_record",
     "consumables",
     "disinfection",
+    "volunteer_assist",
 }
 TASK_FORM_COMPLETED_HISTORY_HOURS = 48
 TASK_FORM_RECENT_TASK_LIMIT = 5
@@ -184,13 +192,14 @@ REMOTE_UPDATE_TRANSITIONS = {
     "updating": {"updating", "completed", "up_to_date", "failed"},
 }
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
-SITE_RUN_ORDER = ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"]
+SITE_RUN_ORDER = ["duty_work_log", "volunteer_assist", "vehicle_mileage", "fuel_record", "consumables", "disinfection"]
 SITE_SHORT_NAMES = {
     "duty_work_log": "工作",
     "vehicle_mileage": "里程",
     "fuel_record": "加油",
     "disinfection": "消毒",
     "consumables": "耗材",
+    "volunteer_assist": "民力系統",
 }
 SITE_DISPLAY_NAMES = {
     "duty_work_log": "工作",
@@ -198,6 +207,7 @@ SITE_DISPLAY_NAMES = {
     "fuel_record": "加油",
     "consumables": "耗材",
     "disinfection": "消毒",
+    "volunteer_assist": "民力系統",
 }
 SITE_UPDATE_BUTTON_LABELS = {
     "duty_work_log": "更新工作",
@@ -205,6 +215,7 @@ SITE_UPDATE_BUTTON_LABELS = {
     "fuel_record": "更新加油",
     "consumables": "更新耗材",
     "disinfection": "更新消毒",
+    "volunteer_assist": "更新民力系統",
 }
 CONSUMABLE_PACKAGE_KEYS = {"glucose", "iv", "io", "ecg", "ohca"}
 STALE_RUNNING_TASK_DETAIL = "登打流程超過 10 分鐘未回報，已自動中止；請先修復 Chrome 或重新啟動 Worker 後再重試。"
@@ -264,6 +275,7 @@ def new_task():
         last_vehicle_mileages=last_vehicle_mileages(),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
+        civilpower_roster=read_civilpower_roster(),
         form_errors=[],
         page_notice=task_form_notice(),
     ))
@@ -414,6 +426,7 @@ def task_form_url(*, anchor: str = "", notice: str = "") -> str:
 @app.post("/tasks")
 def create_task():
     task_request = request_from_form(request.form)
+    hydrate_volunteer_assist_member(task_request)
     errors = validate_task_form(task_request)
     if errors:
         return render_task_form_from_request(
@@ -538,6 +551,7 @@ def edit_task(task_id: str):
         two_vehicle_available=two_vehicle_option_available(selected_case),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task.get("disinfection_items") or []),
+        civilpower_roster=read_civilpower_roster(),
         form_errors=[],
     )
 
@@ -555,6 +569,7 @@ def update_task(task_id: str):
     if task_edit_is_locked(previous_payload):
         return task_edit_lock_message(previous_payload), 409
     task_request = request_from_form(request.form)
+    hydrate_volunteer_assist_member(task_request)
     errors = validate_task_form(task_request)
     if errors:
         return render_task_form_from_request(
@@ -720,7 +735,7 @@ def run_task_site(task_id: str, site_key: str):
         store.set_overall_status(
             task_id,
             "desktop_fast_unavailable",
-            "單站登打只能在本機網頁使用；手機/NAS 請使用五站登打或公務電腦 worker。",
+            "單站登打只能在本機網頁使用；手機/NAS 請使用多站登打或公務電腦 worker。",
         )
     return task_site_run_redirect(task_id)
 
@@ -1479,6 +1494,32 @@ def worker_cases():
     else:
         mark_case_lookup_request_failed(payload)
     return jsonify({"ok": True, "case_count": len(cases), "payload": payload})
+
+
+@app.post("/worker/civilpower-roster")
+def worker_civilpower_roster():
+    if not worker_authorized():
+        abort(403)
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        abort(400)
+    if str(data.get("status") or "").strip() == ROSTER_LOADED_STATUS and not normalize_roster_members(data.get("members")):
+        data = {
+            **data,
+            "status": "civilpower_roster_failed",
+            "detail": "Worker 回傳的義消名冊沒有可用人員，保留上次成功名冊。",
+        }
+    with _civilpower_roster_lock:
+        payload = merge_roster_report(read_civilpower_roster(), data)
+        write_json_atomic(civilpower_roster_path(), payload)
+    return jsonify(
+        {
+            "ok": True,
+            "status": payload["status"],
+            "member_count": payload["member_count"],
+            "last_success_at": payload["last_success_at"],
+        }
+    )
 
 
 @app.post("/worker/public-pc-task-events")
@@ -3115,7 +3156,7 @@ def start_public_pc_pending_report_flusher() -> threading.Thread | None:
 def public_pc_action_for_task(task: dict, action: str) -> str:
     site_count = task_site_count_label(task)
     text = str(action or "")
-    for old_count in ("四站", "五站"):
+    for old_count in ("四站", "五站", "六站"):
         text = text.replace(f"{old_count}登打", f"{site_count}登打")
     return text
 
@@ -3932,6 +3973,62 @@ def read_case_lookup() -> dict:
         }
 
 
+def civilpower_roster_path() -> Path:
+    return artifacts_dir / "civilpower" / "volunteer_roster.json"
+
+
+def read_civilpower_roster() -> dict:
+    unavailable = {
+        "status": "civilpower_roster_unavailable",
+        "detail": "尚未收到公務電腦 Worker 的義消名冊。",
+        "source": "public_duty_pc_worker",
+        "last_attempted_at": "",
+        "last_success_at": "",
+        "member_count": 0,
+        "members": [],
+    }
+    path = civilpower_roster_path()
+    if not path.exists():
+        return unavailable
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {
+            **unavailable,
+            "status": "civilpower_roster_unreadable",
+            "detail": "義消名冊快取讀取失敗。",
+        }
+    if not isinstance(payload, dict):
+        return unavailable
+    members = normalize_roster_members(payload.get("members"))
+    return {
+        "status": str(payload.get("status") or "civilpower_roster_failed").strip(),
+        "detail": str(payload.get("detail") or "義消名冊更新失敗，保留上次成功名冊。").strip(),
+        "source": str(payload.get("source") or "public_duty_pc_worker").strip(),
+        "last_attempted_at": str(payload.get("last_attempted_at") or "").strip(),
+        "last_success_at": str(payload.get("last_success_at") or "").strip(),
+        "member_count": len(members),
+        "members": members,
+    }
+
+
+def hydrate_volunteer_assist_member(task_request) -> None:
+    if not getattr(task_request, "volunteer_assist", False):
+        return
+    member = roster_member_by_id(
+        read_civilpower_roster(),
+        getattr(task_request, "volunteer_assist_member_id", ""),
+    )
+    if member is None:
+        task_request.volunteer_assist_member_name = ""
+        task_request.volunteer_assist_member_title = ""
+        task_request.volunteer_assist_member_unit = ""
+        return
+    task_request.volunteer_assist_member_name = member["name"]
+    task_request.volunteer_assist_member_title = member["title"]
+    task_request.volunteer_assist_member_unit = member["unit"]
+
+
 def case_lookup_debug_artifacts() -> list[dict[str, str]]:
     output_dir = artifacts_dir / "selenium"
     items: list[dict[str, str]] = []
@@ -4389,6 +4486,11 @@ def task_edit_lock_message(payload: dict) -> str:
 
 
 def site_can_run_individually(site_statuses: dict, site_key: str) -> bool:
+    if site_key == "volunteer_assist":
+        duty_status = str(dict(site_statuses.get("duty_work_log") or {}).get("status") or "")
+        volunteer_status = str(dict(site_statuses.get("volunteer_assist") or {}).get("status") or "")
+        return site_is_complete(duty_status) and not site_is_complete(volunteer_status)
+
     blocked = False
     for ordered_key in SITE_RUN_ORDER:
         site = dict(site_statuses.get(ordered_key) or {})
@@ -4847,7 +4949,7 @@ def active_site_keys_for_task(task: dict, site_statuses: dict | None = None) -> 
 
 
 def task_site_count_label(task: dict, site_statuses: dict | None = None) -> str:
-    return {2: "二站", 3: "三站", 4: "四站", 5: "五站"}.get(
+    return {2: "二站", 3: "三站", 4: "四站", 5: "五站", 6: "六站"}.get(
         len(active_site_keys_for_task(task, site_statuses)),
         f"{len(active_site_keys_for_task(task, site_statuses))}站",
     )
@@ -5040,6 +5142,8 @@ def visible_events(events: list[dict], task: dict | None = None) -> list[dict]:
 def event_site_key(event: dict) -> str:
     status = str(event.get("status") or "")
     detail = str(event.get("detail") or "")
+    if status.startswith("volunteer_assist") or "義消協勤" in detail or "民力運用" in detail or "民力系統" in detail:
+        return "volunteer_assist"
     if status.startswith("vehicle_mileage") or "車輛里程" in detail:
         return "vehicle_mileage"
     if status.startswith("fuel_record") or "加油" in detail or "油耗" in detail:
@@ -5127,6 +5231,8 @@ def site_next_action(site_key: str, status: str, detail: str) -> str:
 def event_site_name(event: dict) -> str:
     status = str(event.get("status") or "")
     detail = str(event.get("detail") or "")
+    if status.startswith("volunteer_assist") or "義消協勤" in detail or "民力運用" in detail or "民力系統" in detail:
+        return "民力系統"
     if status.startswith("vehicle_mileage") or "車輛里程" in detail:
         return "里程"
     if status.startswith("fuel_record") or "加油" in detail or "油耗" in detail:
@@ -5453,6 +5559,9 @@ def validate_task_form(task_request) -> list[str]:
         if task_request.case_reason not in valid_reasons:
             errors.append("請選擇事由")
 
+    if task_request.volunteer_assist and not task_request.volunteer_assist_member_name:
+        errors.append("請從最新義消名冊選擇一位協勤人員")
+
     if task_request.two_vehicle:
         vehicle_requests = task_request.vehicle_requests()
         selected_vehicles = [item.vehicle.strip() for item in vehicle_requests if item.vehicle.strip()]
@@ -5677,6 +5786,7 @@ def render_task_form_from_request(
         last_vehicle_mileages=last_vehicle_mileages(),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task_request.disinfection_items or []),
+        civilpower_roster=read_civilpower_roster(),
         form_errors=form_errors,
     )
 

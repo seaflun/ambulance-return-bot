@@ -15,6 +15,7 @@ KNOWN_SITE_KEYS = {
     "fuel_record",
     "consumables",
     "disinfection",
+    "volunteer_assist",
 }
 
 

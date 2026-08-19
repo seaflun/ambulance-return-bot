@@ -51,6 +51,12 @@ class WorkerGuiEnvTests(unittest.TestCase):
             "worker_id": SimpleNamespace(get=lambda: "PC-01"),
             "log_queue": queue.Queue(),
             "_refresh_tasks": mock.Mock(),
+            "_run_selected_task_background": mock.Mock(),
+            "_run_selected_vehicle_mileage_background": mock.Mock(),
+            "_run_selected_fuel_record_background": mock.Mock(),
+            "_run_selected_consumables_background": mock.Mock(),
+            "_run_selected_volunteer_assist_background": mock.Mock(),
+            "_run_selected_disinfection_background": mock.Mock(),
         }
         values.update(overrides)
         return SimpleNamespace(**values)
@@ -1358,6 +1364,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
             worker_gui.WorkerGui._run_selected_disinfection_background,
             worker_gui.WorkerGui._run_selected_fuel_record_background,
             worker_gui.WorkerGui._run_selected_consumables_background,
+            worker_gui.WorkerGui._run_selected_volunteer_assist_background,
         )
 
         with mock.patch.object(worker_gui.worker, "claim_task", return_value=None, create=True) as claim_task, mock.patch.object(
@@ -1411,6 +1418,62 @@ class WorkerGuiEnvTests(unittest.TestCase):
                 self.assertIs(runner.call_args.kwargs["claimed_task"], task)
                 self.assertFalse(runner.call_args.kwargs["manage_manual_lock"])
                 self.assertFalse(runner.call_args.kwargs["update_overall"])
+
+    def test_manual_all_sites_runs_enabled_volunteer_assist_after_duty_work_log(self):
+        task = {
+            "task_id": "task-all-sites-volunteer",
+            "created_at": "2026-08-19T09:00:00",
+            "vehicle": "新坡91",
+            "fuel_record": {"enabled": True},
+            "volunteer_assist": True,
+            "volunteer_assist_member_id": "civilpower-member",
+            "volunteer_assist_member_name": "測試義消",
+            "volunteer_assist_member_unit": "大園救護分隊",
+        }
+        site_keys = (
+            "duty_work_log",
+            "volunteer_assist",
+            "vehicle_mileage",
+            "fuel_record",
+            "consumables",
+            "disinfection",
+        )
+        before = {
+            "task": task,
+            "worker_queue": {"status": "claimed", "claim_id": "claim-volunteer", "worker_id": "PC-01"},
+            "site_statuses": {site_key: {"status": "not_started"} for site_key in site_keys},
+        }
+        after_duty = json.loads(json.dumps(before))
+        after_duty["site_statuses"]["duty_work_log"]["status"] = "duty_work_log_saved"
+        call_order: list[str] = []
+        runners = {
+            site_key: mock.Mock(
+                name=site_key,
+                side_effect=lambda *args, _site_key=site_key, **kwargs: call_order.append(_site_key) or SimpleNamespace(status=f"{_site_key}_saved"),
+            )
+            for site_key in site_keys
+        }
+        gui = self._manual_gui_stub(
+            _run_selected_task_background=runners["duty_work_log"],
+            _run_selected_volunteer_assist_background=runners["volunteer_assist"],
+            _run_selected_vehicle_mileage_background=runners["vehicle_mileage"],
+            _run_selected_fuel_record_background=runners["fuel_record"],
+            _run_selected_consumables_background=runners["consumables"],
+            _run_selected_disinfection_background=runners["disinfection"],
+        )
+
+        with mock.patch.object(worker_gui.worker, "claim_task", return_value=task), mock.patch.object(
+            worker_gui.worker,
+            "fetch_task_payload",
+            side_effect=lambda *_args: after_duty if call_order else before,
+        ), mock.patch.object(worker_gui.worker, "post_status"):
+            worker_gui.WorkerGui._run_selected_all_sites_background(gui, task["task_id"])
+
+        self.assertEqual(["duty_work_log", "volunteer_assist"], call_order[:2])
+        self.assertEqual(
+            "civilpower_profile_task_all_sites_volunteer",
+            runners["volunteer_assist"].call_args.kwargs["profile_name"],
+        )
 
     def test_worker_restart_enables_auto_claim_tasks(self):
         source = Path(worker_gui.__file__).read_text(encoding="utf-8")

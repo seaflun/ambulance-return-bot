@@ -19,6 +19,7 @@ from werkzeug.datastructures import MultiDict
 import app as app_module
 import ambulance_bot.selenium_local as selenium_local_module
 from ambulance_bot.credential_envelope import open_credential_payload
+from ambulance_bot.civilpower_roster import roster_member_id
 from ambulance_bot.manual_task_lock import (
     clear_manual_task_lock,
     manual_task_lock_active,
@@ -1399,7 +1400,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('href="/app/disaster"', body)
         self.assertIn("救護登打", body)
         self.assertIn('href="/app"', body)
-        self.assertIn("工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材", body)
+        self.assertIn("工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材、民力系統、NAS 資料夾建立", body)
         self.assertNotIn("entry-card-action", body)
 
     def test_task_entry_cards_use_same_portal_card_height_as_home(self):
@@ -1656,7 +1657,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(self.client.get("/task-entry").data.decode("utf-8"))
 
         self.assertIn("工作紀錄、車輛里程、加油紀錄、NAS 資料夾建立", body)
-        self.assertIn("工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材、NAS 資料夾建立", body)
+        self.assertIn("工作紀錄、車輛里程、加油紀錄、消毒記錄、救護耗材、民力系統、NAS 資料夾建立", body)
 
     def test_admin_filters_and_home_links_use_apple_control_styles(self):
         task_entry_body = html.unescape(
@@ -2767,6 +2768,16 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('name="two_vehicle"', body)
         self.assertNotIn('id="second-vehicle-section"', body)
 
+    def test_ems_field_titles_share_the_same_label_size(self):
+        response = self.client.get("/app")
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn(
+            ".workspace-page--ems-task #task-form .field-label-title,\n    .workspace-page--ems-task #task-form .patient-count-option > span { font-size: var(--text-label); }",
+            body,
+        )
+
     def test_imported_ambulance_case_with_four_personnel_shows_two_vehicle_fields(self):
         self.import_case_for_form(
             {
@@ -2798,7 +2809,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("\u5169\u8eca\u540c\u6642\u767b\u6253", body)
         self.assertIn("\u6b64\u52fe\u9078\u70ba\u5169\u8eca\u540c\u6642\u767b\u6253\uff0c\u82e5\u9700\u5206\u958b\u767b\u6253\u5247\u4e0d\u7528\u52fe\u9078", body)
         self.assertNotIn("2\u8eca\u51fa\u52e4", body)
-        self.assertEqual(4, body.count('<span class="vehicle-card-label vehicle-card-label--1">1\u8eca</span>'))
+        self.assertEqual(5, body.count('<span class="vehicle-card-label vehicle-card-label--1">1\u8eca</span>'))
         self.assertEqual(4, body.count('<span class="vehicle-card-label vehicle-card-label--2">2\u8eca</span>'))
         self.assertLess(body.index('<span class="vehicle-card-label vehicle-card-label--1">1\u8eca</span>'), body.index('<h2>案件資料</h2>'))
         primary_field_order = [
@@ -6779,6 +6790,121 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(latest["request_id"], "")
         self.assertEqual(latest["case_hash"], "scheduled-abc")
         self.assertEqual(latest["cases"][0]["case_id"], "scheduled-1")
+
+    def test_worker_roster_post_filters_consultants_and_populates_volunteer_assist_form(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        member_id = roster_member_id("大園救護分隊", "隊員", "測試義消")
+
+        response = self.client.post(
+            "/worker/civilpower-roster",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "status": "civilpower_roster_loaded",
+                "detail": "loaded",
+                "attempted_at": "2026-08-19T09:00:00",
+                "last_success_at": "2026-08-19T09:00:00",
+                "members": [
+                    {"unit": "大園救護分隊", "title": "隊員", "name": "測試義消"},
+                    {"unit": "大園救護分隊", "title": "顧問", "name": "排除顧問"},
+                    {"unit": "大園救護分隊", "title": "技術顧問", "name": "排除技術顧問"},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(1, response.get_json()["member_count"])
+        roster = app_module.read_civilpower_roster()
+        self.assertEqual(["測試義消"], [member["name"] for member in roster["members"]])
+
+        app_module.write_json_atomic(
+            app_module.artifacts_dir / "cases" / "selected.json",
+            {
+                "status": "case_imported",
+                "selected_case": self.valid_task_data(),
+            },
+        )
+        self.client.set_cookie(app_module.SELECTED_CASE_PENDING_COOKIE, "1")
+        body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        self.assertIn('id="volunteer-assist-toggle"', body)
+        self.assertIn("<h2>民力系統(測試中)</h2>", body)
+        self.assertIn(">救護義消協勤<", body)
+        self.assertIn('id="volunteer-assist-unit" aria-label="所屬單位" disabled', body)
+        self.assertIn('<option value="大園救護分隊" selected>大園救護分隊</option>', body)
+        self.assertIn('name="volunteer_assist_member_id"', body)
+        self.assertIn('<option value="">請選擇</option>', body)
+        self.assertIn('id="volunteer-assist-required-mark"', body)
+        self.assertIn('volunteerAssistMember.required = enabled;', body)
+        self.assertNotIn('id="volunteer-assist-roster-status"', body)
+        self.assertIn(f'value="{member_id}"', body)
+        self.assertNotIn("排除顧問", body)
+        self.assertNotIn("排除技術顧問", body)
+
+        create = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                volunteer_assist="1",
+                volunteer_assist_member_id=member_id,
+            ),
+            follow_redirects=False,
+        )
+
+        self.assertEqual(create.status_code, 302)
+        task_id = create.headers["Location"].rstrip("/").split("/")[-1]
+        task = self.store.get(task_id)["task"]
+        self.assertTrue(task["volunteer_assist"])
+        self.assertEqual("測試義消", task["volunteer_assist_member_name"])
+        self.assertEqual("民力系統", app_module.SITE_DISPLAY_NAMES["volunteer_assist"])
+        self.assertEqual("民力系統", app_module.event_site_name({"status": "volunteer_assist_saved"}))
+        detail_body = html.unescape(self.client.get(f"/tasks/{task_id}").data.decode("utf-8"))
+        self.assertIn("<h3>民力系統</h3>", detail_body)
+
+    def test_volunteer_assist_can_run_independently_after_duty_work_log(self):
+        site_statuses = {
+            "duty_work_log": {"status": "duty_work_log_saved"},
+            "vehicle_mileage": {"status": "vehicle_mileage_running"},
+            "fuel_record": {"status": "fuel_record_running"},
+            "consumables": {"status": "consumables_running"},
+            "disinfection": {"status": "disinfection_running"},
+            "volunteer_assist": {"status": "created"},
+        }
+
+        self.assertEqual("duty_work_log", app_module.SITE_RUN_ORDER[0])
+        self.assertEqual("volunteer_assist", app_module.SITE_RUN_ORDER[1])
+        self.assertTrue(app_module.site_can_run_individually(site_statuses, "volunteer_assist"))
+
+        site_statuses["duty_work_log"] = {"status": "duty_work_log_running"}
+        self.assertFalse(app_module.site_can_run_individually(site_statuses, "volunteer_assist"))
+
+    def test_worker_roster_failure_preserves_last_successful_snapshot(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        self.client.post(
+            "/worker/civilpower-roster",
+            headers=headers,
+            json={
+                "status": "civilpower_roster_loaded",
+                "attempted_at": "2026-08-12T09:00:00",
+                "last_success_at": "2026-08-12T09:00:00",
+                "members": [{"unit": "大園救護分隊", "title": "隊員", "name": "測試義消"}],
+            },
+        )
+
+        failed = self.client.post(
+            "/worker/civilpower-roster",
+            headers=headers,
+            json={
+                "status": "civilpower_roster_failed",
+                "detail": "登入失敗",
+                "attempted_at": "2026-08-19T09:00:00",
+                "members": [],
+            },
+        )
+
+        self.assertEqual(failed.status_code, 200)
+        roster = app_module.read_civilpower_roster()
+        self.assertEqual("civilpower_roster_failed", roster["status"])
+        self.assertEqual("2026-08-12T09:00:00", roster["last_success_at"])
+        self.assertEqual(["測試義消"], [member["name"] for member in roster["members"]])
 
     def test_worker_cases_rejects_unsolicited_nonempty_request_id(self):
         os.environ["WORKER_TOKEN"] = "test-token"

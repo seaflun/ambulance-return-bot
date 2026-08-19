@@ -88,6 +88,8 @@
     .patient-count-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
     .workspace-page--ems-task #task-form .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-md); font-weight: 700; }
     .workspace-page--ems-task #task-form label[data-field-name='mileage'] { font-size: var(--text-md); }
+    .workspace-page--ems-task #task-form .field-label-title,
+    .workspace-page--ems-task #task-form .patient-count-option > span { font-size: var(--text-label); }
     .patient-count-option > span { flex: 0 0 auto; }
     .patient-count-select { position: relative; flex: 1 1 auto; min-width: 0; }
     #task-form .patient-count-select select { width: 100%; margin-top: 0; padding-right: 42px; }
@@ -146,6 +148,7 @@
     .field-visual.has-error .field-error-mark,
     .fuel-required.is-pending .field-error-mark,
     .fuel-required.has-error .field-error-mark { display: inline; }
+    .field-error-mark.volunteer-assist-required-mark.is-required { display: inline; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
     .address-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
     .address-row label { margin-bottom: 13px; }
@@ -556,6 +559,44 @@
       </section>
       </section>
 
+      <section class="site-card" data-site-card="volunteer-assist">
+        <div class="site-card-heading">
+          {% if two_vehicle_available %}<span class="vehicle-card-label vehicle-card-label--1">1車</span>{% endif %}
+        <h2>民力系統(測試中)</h2>
+        </div>
+        <div class="fuel-record-row">
+          <label class="check-item fuel-record-toggle">
+            <input type="checkbox" name="volunteer_assist" id="volunteer-assist-toggle" value="1"{% if selected_case.volunteer_assist %} checked{% endif %}>
+            <span>救護義消協勤</span>
+          </label>
+        </div>
+        <section class="fuel-record-fields" id="volunteer-assist-fields" hidden>
+          <div class="grid">
+            <label>
+              所屬單位
+              <select id="volunteer-assist-unit" aria-label="所屬單位" disabled>
+                <option value="大園救護分隊" selected>大園救護分隊</option>
+              </select>
+            </label>
+            <label data-field-name="volunteer_assist_member_id">
+              協勤人員<span class="field-error-mark volunteer-assist-required-mark" id="volunteer-assist-required-mark" aria-hidden="true">*</span>
+              <select name="volunteer_assist_member_id" id="volunteer-assist-member">
+                <option value="">請選擇</option>
+                {% for member in civilpower_roster.members %}
+                  <option value="{{ member.member_id }}" data-name="{{ member.name }}" data-title="{{ member.title }}" data-unit="{{ member.unit }}"{% if selected_case.volunteer_assist_member_id == member.member_id %} selected{% endif %}>{{ member.name }}{% if member.title %}（{{ member.title }}）{% endif %}</option>
+                {% endfor %}
+                {% if selected_case.volunteer_assist_member_id and not civilpower_roster.members | selectattr('member_id', 'equalto', selected_case.volunteer_assist_member_id) | list %}
+                  <option value="{{ selected_case.volunteer_assist_member_id }}" selected>{{ selected_case.volunteer_assist_member_name or '原選取人員' }}（名冊待更新）</option>
+                {% endif %}
+              </select>
+            </label>
+          </div>
+          <input type="hidden" name="volunteer_assist_member_name" id="volunteer-assist-member-name" value="{{ selected_case.volunteer_assist_member_name or '' }}">
+          <input type="hidden" name="volunteer_assist_member_title" id="volunteer-assist-member-title" value="{{ selected_case.volunteer_assist_member_title or '' }}">
+          <input type="hidden" name="volunteer_assist_member_unit" id="volunteer-assist-member-unit" value="{{ selected_case.volunteer_assist_member_unit or '' }}">
+        </section>
+      </section>
+
       <section class="site-card consumables" data-site-card="consumables">
         <div class="site-card-heading">
           {% if two_vehicle_available %}<span class="vehicle-card-label vehicle-card-label--1">1車</span>{% endif %}
@@ -816,6 +857,13 @@
     const fuelRecordFields = document.getElementById("fuel-record-fields");
     const fuelRecordToggle2 = document.getElementById("fuel-record-toggle-2");
     const fuelRecordFields2 = document.getElementById("fuel-record-fields-2");
+    const volunteerAssistToggle = document.getElementById("volunteer-assist-toggle");
+    const volunteerAssistFields = document.getElementById("volunteer-assist-fields");
+    const volunteerAssistMember = document.getElementById("volunteer-assist-member");
+    const volunteerAssistRequiredMark = document.getElementById("volunteer-assist-required-mark");
+    const volunteerAssistMemberName = document.getElementById("volunteer-assist-member-name");
+    const volunteerAssistMemberTitle = document.getElementById("volunteer-assist-member-title");
+    const volunteerAssistMemberUnit = document.getElementById("volunteer-assist-member-unit");
     const consumableList = document.getElementById("consumable-list");
     const consumablesValue = document.getElementById("consumables-value");
     const consumableList2 = document.getElementById("consumable-list-2");
@@ -1005,6 +1053,28 @@
       updateFuelTotals();
     }
 
+    function syncVolunteerAssistMember() {
+      if (!volunteerAssistMember) return;
+      const option = volunteerAssistMember.selectedOptions[0];
+      if (volunteerAssistMemberName) volunteerAssistMemberName.value = option?.dataset.name || "";
+      if (volunteerAssistMemberTitle) volunteerAssistMemberTitle.value = option?.dataset.title || "";
+      if (volunteerAssistMemberUnit) volunteerAssistMemberUnit.value = option?.dataset.unit || "";
+    }
+
+    function updateVolunteerAssistUi() {
+      const enabled = Boolean(volunteerAssistToggle && volunteerAssistToggle.checked);
+      if (volunteerAssistFields) volunteerAssistFields.hidden = !enabled;
+      if (volunteerAssistMember) volunteerAssistMember.required = enabled;
+      if (volunteerAssistRequiredMark) volunteerAssistRequiredMark.classList.toggle("is-required", enabled);
+      if (enabled) syncVolunteerAssistMember();
+    }
+
+    function volunteerAssistErrors() {
+      if (!volunteerAssistToggle?.checked) return [];
+      if (volunteerAssistMember?.value) return [];
+      return ["請從 NAS 義消名冊選擇一位協勤人員"];
+    }
+
     function updateFuelTotals() {
       [["", "1"], ["_2", "2"]].forEach(([suffix, number]) => {
         const quantity = Number(document.querySelector(`input[name="fuel_quantity${suffix}"]`)?.value || 0);
@@ -1151,6 +1221,8 @@
     }
     if (fuelRecordToggle) fuelRecordToggle.addEventListener("change", updateFuelRecordUi);
     if (fuelRecordToggle2) fuelRecordToggle2.addEventListener("change", updateFuelRecordUi);
+    if (volunteerAssistToggle) volunteerAssistToggle.addEventListener("change", updateVolunteerAssistUi);
+    if (volunteerAssistMember) volunteerAssistMember.addEventListener("change", syncVolunteerAssistMember);
 
     function patientSummaryFromCounts(maleCount, femaleCount) {
       const male = Number.parseInt(maleCount, 10) || 0;
@@ -1285,7 +1357,8 @@
         syncFuelDrivers();
         const errors = [
           ...fuelRecordErrors("", "1車"),
-          ...fuelRecordErrors("_2", "2車")
+          ...fuelRecordErrors("_2", "2車"),
+          ...volunteerAssistErrors()
         ];
         showClientFormErrors(errors);
         if (errors.length) {
@@ -1990,6 +2063,7 @@
     }
     updateTwoVehicleUi();
     updateFuelRecordUi();
+    updateVolunteerAssistUi();
     updateRecordFolderPreview();
     syncFuelDrivers();
     updateLastMileageHints();

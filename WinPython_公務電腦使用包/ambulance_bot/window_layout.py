@@ -30,6 +30,7 @@ def tile_rect(tile_name: str) -> WindowRect | None:
         "vehicle_mileage": WindowRect(right_x, 0, half_width, half_height),
         "consumables": WindowRect(0, bottom_y, half_width, half_height),
         "disinfection": WindowRect(right_x, bottom_y, half_width, half_height),
+        "volunteer_assist": WindowRect(0, 0, half_width, half_height),
     }
     return mapping.get(tile_name)
 

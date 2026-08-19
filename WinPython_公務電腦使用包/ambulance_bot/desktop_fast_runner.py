@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
+from civilpower import run_civilpower_task
 from consumables_login import login_acs_and_get_driver, open_consumable_record_for_task, save_consumables_record_enabled
 from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 
@@ -78,6 +79,13 @@ def active_site_groups(request, profile_suffix: str, runner: "DesktopFastRunner"
         )
     if request.service_type == "disaster":
         return site_groups
+    if request.volunteer_assist:
+        site_groups[0].append(
+            (
+                "volunteer_assist",
+                lambda: runner._run_civilpower(request, profile_suffix),
+            )
+        )
     site_groups.extend(
         [
             [
@@ -100,7 +108,10 @@ def active_site_groups(request, profile_suffix: str, runner: "DesktopFastRunner"
 def task_site_count_label(request) -> str:
     if request.service_type == "disaster":
         return "三站" if request.has_fuel_record() else "二站"
-    return "五站" if request.has_fuel_record() else "四站"
+    return {4: "四站", 5: "五站", 6: "六站"}.get(
+        len(request.active_site_keys()),
+        f"{len(request.active_site_keys())}站",
+    )
 
 
 class DesktopFastRunner:
@@ -600,6 +611,8 @@ class DesktopFastRunner:
             return lambda: self._run_disinfection(request, profile_suffix)
         if site_key == "consumables":
             return lambda: self._run_consumables(request, profile_suffix)
+        if site_key == "volunteer_assist":
+            return lambda: self._run_civilpower(request, profile_suffix)
         raise KeyError(site_key)
 
     def _run_site(self, task_id: str, site_key: str, action) -> int:
@@ -610,6 +623,20 @@ class DesktopFastRunner:
             self._set_overall_status_owned(task_id, "desktop_fast_running", f"{site_name} 已完成，略過。")
             self._notify(task_id, f"{site_name} 略過")
             return False
+        if site_key == "volunteer_assist":
+            duty_status = str(
+                self.store.get(task_id).get("site_statuses", {}).get("duty_work_log", {}).get("status") or ""
+            )
+            if not _site_is_complete(duty_status):
+                result = make_site_result(
+                    site_key,
+                    site_name,
+                    "volunteer_assist_failed",
+                    "民力系統需先完成第一站消防勤務工作紀錄，尚未開始登打。",
+                )
+                self._update_site_result_owned(task_id, result)
+                self._notify(task_id, f"{site_name} 等待第一站")
+                return True
         self._update_site_result_owned(
             task_id,
             SiteAutomationResult(site_key, site_name, f"{site_key}_running", with_login_audit("本機快速執行中。", login_audit)),
@@ -853,6 +880,18 @@ class DesktopFastRunner:
                     index,
                 ),
             ),
+        )
+
+    def _run_civilpower(self, request, profile_suffix: str) -> SiteAutomationResult:
+        self._raise_if_cancelled(request.task_id)
+        update_context = self._site_update_context(request.task_id, "volunteer_assist")
+        require_safe_automated_update("volunteer_assist", request, update_context)
+        return run_civilpower_task(
+            request,
+            self.artifacts_dir,
+            profile_name=f"civilpower_profile_{profile_suffix}",
+            tile_name="volunteer_assist",
+            cancel_check=self._cancel_check(request.task_id),
         )
 
     def _run_per_vehicle_site(

@@ -38,6 +38,7 @@ SITE_DEFINITIONS = [
     SiteDefinition("fuel_record", "\u767b\u6253\u52a0\u6cb9\u7d00\u9304", "https://ppe.tyfd.gov.tw/FUC04100/Query"),
     SiteDefinition("consumables", "\u4e00\u7ad9\u901a\u8017\u6750", "https://nfaemsap3.nfa.gov.tw/SSO/"),
     SiteDefinition("disinfection", "\u7dca\u6025\u6551\u8b77\u6d88\u6bd2", "https://emsdt.tyfd.gov.tw/EmmWeb/"),
+    SiteDefinition("volunteer_assist", "民力系統", "https://civilpower.tyfd.gov.tw/TYCC/"),
 ]
 SITE_DEFINITION_BY_KEY = {site.key: site for site in SITE_DEFINITIONS}
 
@@ -125,6 +126,20 @@ class DutyWorkLogAdapter(SiteAdapter):
         return SiteAutomationResult(self.key, self.name, "local_pc_ready", detail)
 
 
+class VolunteerAssistAdapter(SiteAdapter):
+    definition = SITE_DEFINITION_BY_KEY["volunteer_assist"]
+
+    def run(self, request: AmbulanceReturnRequest) -> SiteAutomationResult:
+        if not request.volunteer_assist:
+            return SiteAutomationResult(self.key, self.name, "volunteer_assist_skipped", "未勾選義消協勤，已略過。")
+        return SiteAutomationResult(
+            self.key,
+            self.name,
+            "local_pc_ready",
+            "義消協勤須由公務電腦 Worker 自動登入民力運用管理系統後登打。",
+        )
+
+
 def default_adapters() -> list[SiteAdapter]:
     return [
         DutyWorkLogAdapter(),
@@ -132,4 +147,5 @@ def default_adapters() -> list[SiteAdapter]:
         FuelRecordAdapter(),
         ConsumablesAdapter(),
         DisinfectionAdapter(),
+        VolunteerAssistAdapter(),
     ]

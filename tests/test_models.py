@@ -143,6 +143,43 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual("其他類災害", request.duty_item)
         self.assertEqual("溺水", request.case_reason)
 
+    def test_ems_volunteer_assist_adds_site_and_duty_status_line(self):
+        request = request_from_form(
+            {
+                "vehicle": "新坡91",
+                "driver": "測試司機",
+                "patient_summary": "男一名",
+                "volunteer_assist": "1",
+                "volunteer_assist_member_id": "VOL-001",
+                "volunteer_assist_member_name": "測試義消",
+                "volunteer_assist_member_title": "隊員",
+                "volunteer_assist_member_unit": "大園救護分隊",
+            }
+        )
+
+        self.assertTrue(request.volunteer_assist)
+        self.assertEqual("VOL-001", request.volunteer_assist_member_id)
+        self.assertEqual("測試義消", request.volunteer_assist_member_name)
+        self.assertEqual(
+            "1.新坡91:測試司機\n2.男一名\n3.救護義消協勤:測試義消",
+            request.duty_status_text,
+        )
+        self.assertIn("volunteer_assist", request.active_site_keys())
+
+    def test_disabled_volunteer_assist_drops_stale_person(self):
+        request = request_from_form(
+            {
+                "volunteer_assist": "",
+                "volunteer_assist_member_id": "VOL-001",
+                "volunteer_assist_member_name": "測試義消",
+            }
+        )
+
+        self.assertFalse(request.volunteer_assist)
+        self.assertEqual("", request.volunteer_assist_member_id)
+        self.assertEqual("", request.volunteer_assist_member_name)
+        self.assertNotIn("volunteer_assist", request.active_site_keys())
+
     def test_disaster_form_uses_top_return_date_for_vehicle_default(self):
         request = request_from_disaster_form(
             MultiDict(

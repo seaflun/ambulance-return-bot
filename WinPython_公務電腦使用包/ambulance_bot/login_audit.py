@@ -21,6 +21,8 @@ def login_audit_for_site(site_key: str, request: AmbulanceReturnRequest) -> str:
         return disinfection_login_audit(request)
     if site_key == "consumables":
         return consumables_login_audit()
+    if site_key == "volunteer_assist":
+        return civilpower_login_audit()
     return ""
 
 
@@ -31,6 +33,7 @@ def site_login_account_summaries(request: AmbulanceReturnRequest) -> dict[str, s
         "fuel_record": fuel_record_login_summary(request),
         "disinfection": disinfection_login_summary(request),
         "consumables": consumables_login_summary(),
+        "volunteer_assist": civilpower_login_summary(),
     }
 
 
@@ -83,6 +86,13 @@ def consumables_login_summary() -> str:
     return f"{credential_public_label(credential)}（同步帳號，缺 ACS 帳號）"
 
 
+def civilpower_login_summary() -> str:
+    credential = load_synced_worker_credential()
+    if credential is None:
+        return "未取得（同步帳號）"
+    return f"{credential_public_label(credential)}（同步帳號）"
+
+
 def duty_work_log_login_audit(request: AmbulanceReturnRequest) -> str:
     credential = load_duty_credential(request.duty_login_account_candidates)
     if credential is None:
@@ -125,6 +135,13 @@ def consumables_login_audit() -> str:
     if acs_account and credential.password:
         return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，{credential_public_label(credential, login_account=acs_account)}"
     return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，{credential_public_label(credential)}（缺 ACS 可用帳號）"
+
+
+def civilpower_login_audit() -> str:
+    credential = load_synced_worker_credential()
+    if credential is None:
+        return f"登入帳號：民力系統={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，未取得可用帳號"
+    return f"登入帳號：民力系統={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，{credential_public_label(credential)}"
 
 
 def with_login_audit(detail: str, audit: str) -> str:
