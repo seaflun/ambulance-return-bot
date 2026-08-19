@@ -65,6 +65,73 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertEqual("3.救護義消協勤:測試義消", plan.duty_status_line)
         self.assertEqual("EMS-20260819-01", plan.case_id)
 
+    def test_work_log_import_accepts_case_dispatch_time_that_precedes_volunteer_out_time(self):
+        from civilpower import CivilpowerTaskPlan, _assert_imported_work_log_values
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-historical-time-gap",
+            case_id="EMS-20260817-01",
+            case_address="桃園市觀音區中山路二段791號",
+            member_id="member-1",
+            member_name="江尚諭",
+            member_title="隊員",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/17",
+            out_time="1157",
+            in_date="2026/08/17",
+            in_time="1214",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:江尚諭",
+        )
+        values = {
+            "#txt_AddDisDate": "2026/8/17",
+            "#txt_AddDisHour": "11",
+            "#txt_AddDisMin": "56",
+            "#txt_AddBackDate": "2026/8/17",
+            "#txt_AddBackHour": "12",
+            "#txt_AddBackMin": "14",
+            "#txt_AddStat": "1.新坡92:劉家誠\n2.男1名\n3.救護義消協勤:江尚諭",
+        }
+
+        with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
+            _assert_imported_work_log_values(object(), plan)
+
+    def test_work_log_import_keeps_volunteer_status_line_required(self):
+        from civilpower import CivilpowerTaskPlan, _assert_imported_work_log_values
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-status-required",
+            case_id="EMS-20260817-01",
+            case_address="桃園市觀音區中山路二段791號",
+            member_id="member-1",
+            member_name="江尚諭",
+            member_title="隊員",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/17",
+            out_time="1157",
+            in_date="2026/08/17",
+            in_time="1214",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:江尚諭",
+        )
+        values = {
+            "#txt_AddDisDate": "2026/8/17",
+            "#txt_AddDisHour": "11",
+            "#txt_AddDisMin": "56",
+            "#txt_AddBackDate": "2026/8/17",
+            "#txt_AddBackHour": "12",
+            "#txt_AddBackMin": "14",
+            "#txt_AddStat": "1.新坡92:劉家誠\n2.男1名",
+        }
+
+        with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
+            with self.assertRaisesRegex(RuntimeError, "救護義消協勤:江尚諭"):
+                _assert_imported_work_log_values(object(), plan)
+
     def test_task_plan_refuses_unselected_volunteer_or_invalid_times(self):
         from ambulance_bot.models import AmbulanceReturnRequest
         from civilpower import build_civilpower_task_plan
@@ -312,6 +379,178 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         self.assertEqual("civilpower_roster_loaded", report["status"])
         self.assertIs(True, report["pagination_complete"])
+
+    def test_jqx_option_wait_retries_until_the_linked_option_is_ready(self):
+        from civilpower import _wait_for_jqx_combobox_option
+
+        class PollingWait:
+            def __init__(self, driver):
+                self.driver = driver
+                self.calls = 0
+
+            def until(self, predicate):
+                for _ in range(3):
+                    self.calls += 1
+                    result = predicate(self.driver)
+                    if result:
+                        return result
+                raise AssertionError("linked option never became ready")
+
+        driver = mock.Mock()
+        driver.execute_script.side_effect = [False, True]
+        wait = PollingWait(driver)
+
+        _wait_for_jqx_combobox_option(driver, wait, "#txt_AddServeUnit", "新坡分隊")
+
+        self.assertEqual(2, wait.calls)
+
+    def test_io_person_dialog_waits_for_correct_dialog_and_unique_row(self):
+        from civilpower import _wait_for_io_person_dialog_row
+
+        class PollingWait:
+            def __init__(self, driver):
+                self.driver = driver
+                self.calls = 0
+
+            def until(self, predicate):
+                for _ in range(3):
+                    self.calls += 1
+                    result = predicate(self.driver)
+                    if result:
+                        return result
+                raise AssertionError("person selection row never became ready")
+
+        driver = mock.Mock()
+        dialog = mock.Mock()
+        dialog.is_displayed.return_value = True
+        row = mock.Mock()
+        driver.find_elements.side_effect = [[], [dialog]]
+        wait = PollingWait(driver)
+
+        with mock.patch("civilpower._matching_table_rows", return_value=[row]):
+            actual_dialog, actual_row = _wait_for_io_person_dialog_row(
+                driver,
+                wait,
+                ["大園救護分隊", "張贊鏡", "小隊長"],
+            )
+
+        self.assertIs(dialog, actual_dialog)
+        self.assertIs(row, actual_row)
+        self.assertEqual(2, wait.calls)
+
+    def test_io_person_selection_waits_for_person_value_after_confirming_dialog(self):
+        from civilpower import CivilpowerTaskPlan, _select_io_person
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-person-wait",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/19",
+            out_time="1500",
+            in_date="2026/08/19",
+            in_time="",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
+        driver = mock.Mock()
+        wait = object()
+        dialog = mock.Mock()
+        row = mock.Mock()
+
+        with mock.patch("civilpower._click") as click, mock.patch(
+            "civilpower._wait_for_io_person_dialog_row",
+            return_value=(dialog, row),
+        ) as wait_for_row, mock.patch("civilpower._click_dialog_row") as click_row, mock.patch(
+            "civilpower._confirm_dialog"
+        ) as confirm, mock.patch("civilpower._wait_for_io_person_value") as wait_for_value:
+            _select_io_person(driver, wait, plan)
+
+        click.assert_called_once_with(wait, "#btn_AddSltMan")
+        wait_for_row.assert_called_once_with(
+            driver,
+            wait,
+            ["大園救護分隊", "張贊鏡", "小隊長"],
+        )
+        click_row.assert_called_once_with(row)
+        confirm.assert_called_once_with(driver, wait, dialog)
+        wait_for_value.assert_called_once_with(driver, wait, "張贊鏡")
+
+    def test_io_record_reapplies_linked_fields_after_person_selection_before_save(self):
+        from civilpower import CivilpowerTaskPlan, OUT_STATUS, _ensure_io_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-reapply-fields",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/19",
+            out_time="1500",
+            in_date="2026/08/19",
+            in_time="",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
+        steps: list[str] = []
+
+        with mock.patch("civilpower._find_io_record", side_effect=[False, True]), mock.patch(
+            "civilpower._open_io_work_log", side_effect=lambda _driver: steps.append("open")
+        ), mock.patch(
+            "civilpower._click", side_effect=lambda _wait, selector: steps.append(f"click:{selector}")
+        ), mock.patch(
+            "civilpower._wait_visible", side_effect=lambda _wait, selector: steps.append(f"visible:{selector}")
+        ), mock.patch(
+            "civilpower._select_jqx_combobox",
+            side_effect=lambda _driver, _wait, selector, value: steps.append(f"combo:{selector}={value}"),
+        ), mock.patch(
+            "civilpower._wait_for_io_form_dependencies", side_effect=lambda _driver, _wait, _plan: steps.append("dependencies")
+        ), mock.patch(
+            "civilpower._select_io_person", side_effect=lambda _driver, _wait, _plan: steps.append("person")
+        ), mock.patch(
+            "civilpower._set_input", side_effect=lambda _wait, selector, value: steps.append(f"input:{selector}={value}")
+        ), mock.patch(
+            "civilpower._select_option_containing",
+            side_effect=lambda _wait, selector, value: steps.append(f"option:{selector}={value}"),
+        ), mock.patch(
+            "civilpower._wait_for_io_record_form_values", side_effect=lambda _driver, _wait, _plan, _status: steps.append("verify")
+        ), mock.patch(
+            "civilpower._wait_after_save", side_effect=lambda _driver, _wait, selector: steps.append(f"saved:{selector}")
+        ):
+            checkpoint: dict[str, object] = {}
+            _ensure_io_record(object(), plan, OUT_STATUS, checkpoint, cancel_check=None)
+
+        self.assertEqual(
+            [
+                "open",
+                "click:#btn_Add",
+                "visible:#jqxAddWindow",
+                "combo:#txt_AddUnit=大園救護分隊",
+                "dependencies",
+                "combo:#txt_AddServeUnit=新坡分隊",
+                "person",
+                "input:#txt_AddLogDate=2026/08/19",
+                "input:#txt_AddLogHour=15",
+                "input:#txt_AddLogMin=00",
+                "combo:#txt_AddServeUnit=新坡分隊",
+                "option:#ddl_AddIO=出",
+                "input:#txt_AddReason=救護出勤",
+                "verify",
+                "click:#btn_IOWorkLogAdd",
+                "saved:#jqxAddWindow",
+            ],
+            steps,
+        )
+        self.assertTrue(checkpoint["out_verified"])
 
 
 if __name__ == "__main__":

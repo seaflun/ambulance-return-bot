@@ -398,16 +398,19 @@ def _ensure_io_record(
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _click(wait, "#btn_Add")
     _wait_visible(wait, "#jqxAddWindow")
+    _select_jqx_combobox(driver, wait, "#txt_AddUnit", plan.home_unit)
+    _wait_for_io_form_dependencies(driver, wait, plan)
+    _select_jqx_combobox(driver, wait, "#txt_AddServeUnit", plan.serve_unit)
+    _select_io_person(driver, wait, plan)
     date_text = plan.out_date if status == OUT_STATUS else plan.in_date
     time_text = plan.out_time if status == OUT_STATUS else plan.in_time
     _set_input(wait, "#txt_AddLogDate", date_text)
     _set_input(wait, "#txt_AddLogHour", time_text[:2])
     _set_input(wait, "#txt_AddLogMin", time_text[2:])
-    _select_jqx_combobox(driver, wait, "#txt_AddUnit", plan.home_unit)
     _select_jqx_combobox(driver, wait, "#txt_AddServeUnit", plan.serve_unit)
-    _select_io_person(driver, wait, plan)
     _select_option_containing(wait, "#ddl_AddIO", status)
     _set_input(wait, "#txt_AddReason", plan.out_reason if status == OUT_STATUS else plan.in_reason)
+    _wait_for_io_record_form_values(driver, wait, plan, status)
     _raise_if_cancelled(cancel_check)
     _click(wait, "#btn_IOWorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
@@ -449,16 +452,13 @@ def _find_io_record(driver, plan: CivilpowerTaskPlan, status: str) -> bool:
 
 def _select_io_person(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
     _click(wait, "#btn_AddSltMan")
-    dialog = _visible_dialog(driver, wait)
     tokens = [plan.home_unit, plan.member_name]
     if plan.member_title:
         tokens.append(plan.member_title)
-    _select_dialog_row(dialog, tokens)
+    dialog, row = _wait_for_io_person_dialog_row(driver, wait, tokens)
+    _click_dialog_row(row)
     _confirm_dialog(driver, wait, dialog)
-    hidden_value = _control_value(driver, "#hf_AddVolFMan")
-    visible_value = _control_value(driver, "#txt_AddVolFMan")
-    if not hidden_value and plan.member_name not in visible_value:
-        raise RuntimeError("出入登記簿未帶入所選義消人員。")
+    _wait_for_io_person_value(driver, wait, plan.member_name)
 
 
 def _ensure_work_log(
@@ -524,8 +524,6 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
 def _assert_imported_work_log_values(driver, plan: CivilpowerTaskPlan) -> None:
     expected = {
         "#txt_AddDisDate": plan.out_date,
-        "#txt_AddDisHour": plan.out_time[:2],
-        "#txt_AddDisMin": plan.out_time[2:],
         "#txt_AddBackDate": plan.in_date,
         "#txt_AddBackHour": plan.in_time[:2],
         "#txt_AddBackMin": plan.in_time[2:],
@@ -534,6 +532,11 @@ def _assert_imported_work_log_values(driver, plan: CivilpowerTaskPlan) -> None:
         actual = _control_value(driver, selector)
         if not _same_value(actual, expected_value):
             raise RuntimeError(f"案件代入後欄位不符：{selector} 預期={expected_value} 實際={actual or '空白'}")
+    dispatch_time = normalize_hhmm(
+        _control_value(driver, "#txt_AddDisHour") + _control_value(driver, "#txt_AddDisMin")
+    )
+    if not _valid_hhmm(dispatch_time):
+        raise RuntimeError("案件代入後未帶入有效案件派遣時間。")
     status_text = _control_value(driver, "#txt_AddStat")
     if plan.duty_status_line not in status_text:
         raise RuntimeError(f"案件代入後未帶入第一站工作紀錄的 {plan.duty_status_line}。")
@@ -570,6 +573,30 @@ def _visible_dialog(driver, wait: WebDriverWait):
     return wait.until(find_dialog)
 
 
+def _wait_for_io_person_dialog_row(driver, wait: WebDriverWait, tokens: list[str]):
+    def find_row(current):
+        dialogs = [
+            dialog
+            for dialog in current.find_elements(By.CSS_SELECTOR, "#jqxSltWindow")
+            if dialog.is_displayed()
+        ]
+        if not dialogs:
+            return False
+        dialog = dialogs[-1]
+        rows = _matching_table_rows(dialog, tokens)
+        if len(rows) > 1:
+            raise RuntimeError("人員選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(tokens))
+        if not rows:
+            return False
+        return dialog, rows[0]
+
+    return wait.until(find_row)
+
+
+def _wait_for_io_person_value(driver, wait: WebDriverWait, member_name: str) -> None:
+    wait.until(lambda current: member_name in _control_value(current, "#txt_AddVolFMan"))
+
+
 def _select_dialog_row(dialog, required_tokens: list[str]) -> None:
     rows = []
     for row in _table_rows(dialog):
@@ -580,7 +607,10 @@ def _select_dialog_row(dialog, required_tokens: list[str]) -> None:
         raise RuntimeError("選取視窗找不到符合條件的紀錄：" + "、".join(required_tokens))
     if len(rows) > 1:
         raise RuntimeError("選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
-    row = rows[0]
+    _click_dialog_row(rows[0])
+
+
+def _click_dialog_row(row) -> None:
     controls = row.find_elements(By.CSS_SELECTOR, "input[type='checkbox'], input[type='radio'], button, input[type='button']")
     for control in controls:
         if control.is_displayed() and control.is_enabled():
@@ -649,8 +679,45 @@ def _wait_for_rows(driver, wait: WebDriverWait) -> None:
     wait.until(lambda current: bool(_table_rows(current)))
 
 
+def _wait_for_io_form_dependencies(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
+    _wait_for_jqx_combobox_option(driver, wait, "#txt_AddServeUnit", plan.serve_unit)
+    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#btn_AddSltMan")))
+
+
+def _wait_for_jqx_combobox_option(driver, wait: WebDriverWait, selector: str, text: str) -> None:
+    wait.until(lambda current: _jqx_combobox_option_ready(current, selector, text))
+
+
+def _jqx_combobox_option_ready(driver, selector: str, text: str) -> bool:
+    try:
+        element = driver.find_element(By.CSS_SELECTOR, selector)
+    except NoSuchElementException:
+        return False
+    return bool(
+        driver.execute_script(
+            """
+            const outer = arguments[0];
+            const expected = arguments[1].replace(/\\s+/g, ' ').trim();
+            const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+            if (!window.jQuery || !window.jQuery.fn || !window.jQuery.fn.jqxComboBox) return true;
+            try {
+              const widget = window.jQuery(outer);
+              if (widget.jqxComboBox('disabled')) return false;
+              const items = widget.jqxComboBox('getItems') || [];
+              return items.some((item) => clean(item.label) === expected || clean(item.value) === expected);
+            } catch (_) {
+              return false;
+            }
+            """,
+            element,
+            text,
+        )
+    )
+
+
 def _select_jqx_combobox(driver, wait: WebDriverWait, selector: str, text: str) -> None:
     element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+    _wait_for_jqx_combobox_option(driver, wait, selector, text)
     selected = driver.execute_script(
         """
         const outer = arguments[0];
@@ -660,15 +727,17 @@ def _select_jqx_combobox(driver, wait: WebDriverWait, selector: str, text: str) 
         if (window.jQuery && window.jQuery.fn && window.jQuery.fn.jqxComboBox) {
           const widget = window.jQuery(outer);
           try {
+            if (widget.jqxComboBox('disabled')) return false;
             const items = widget.jqxComboBox('getItems') || [];
             const item = items.find((candidate) => clean(candidate.label) === expected || clean(candidate.value) === expected);
-            if (item) {
-              widget.jqxComboBox('selectItem', item);
-              widget.jqxComboBox('val', item.value);
-              if (input) input.dispatchEvent(new Event('change', {bubbles: true}));
-              return true;
-            }
-          } catch (_) {}
+            if (!item) return false;
+            widget.jqxComboBox('selectItem', item);
+            widget.jqxComboBox('val', item.value);
+            if (input) input.dispatchEvent(new Event('change', {bubbles: true}));
+            return true;
+          } catch (_) {
+            return false;
+          }
         }
         if (input) {
           input.focus();
@@ -686,6 +755,38 @@ def _select_jqx_combobox(driver, wait: WebDriverWait, selector: str, text: str) 
     if not selected:
         raise RuntimeError(f"民力系統找不到單位下拉選項：{text}")
     wait.until(lambda current: _token_matches(_control_value(current, selector), text))
+
+
+def _wait_for_io_record_form_values(
+    driver,
+    wait: WebDriverWait,
+    plan: CivilpowerTaskPlan,
+    status: str,
+) -> None:
+    expected_values = {
+        "#txt_AddLogDate": plan.out_date if status == OUT_STATUS else plan.in_date,
+        "#txt_AddLogHour": plan.out_time[:2] if status == OUT_STATUS else plan.in_time[:2],
+        "#txt_AddLogMin": plan.out_time[2:] if status == OUT_STATUS else plan.in_time[2:],
+        "#txt_AddUnit": plan.home_unit,
+        "#txt_AddServeUnit": plan.serve_unit,
+        "#txt_AddReason": plan.out_reason if status == OUT_STATUS else plan.in_reason,
+    }
+    for selector, expected_value in expected_values.items():
+        wait.until(
+            lambda current, selector=selector, expected_value=expected_value: _same_value(
+                _control_value(current, selector),
+                expected_value,
+            )
+        )
+    wait.until(lambda current: plan.member_name in _control_value(current, "#txt_AddVolFMan"))
+    wait.until(lambda current: _selected_option_text(current, "#ddl_AddIO") == status)
+
+
+def _selected_option_text(driver, selector: str) -> str:
+    try:
+        return _clean_text(Select(driver.find_element(By.CSS_SELECTOR, selector)).first_selected_option.text)
+    except NoSuchElementException:
+        return ""
 
 
 def _select_option_containing(wait: WebDriverWait, selector: str, text: str, *, clear_others: bool = False) -> None:
@@ -750,9 +851,24 @@ def _element_displayed(driver, selector: str) -> bool:
 
 
 def _same_value(actual: str, expected: str) -> bool:
+    actual_date = _date_parts(actual)
+    expected_date = _date_parts(expected)
+    if actual_date is not None and expected_date is not None:
+        return actual_date == expected_date
     clean_actual = re.sub(r"\D", "", str(actual or ""))
     clean_expected = re.sub(r"\D", "", str(expected or ""))
     return clean_actual == clean_expected if clean_expected else _clean_text(actual) == _clean_text(expected)
+
+
+def _date_parts(value: object) -> tuple[int, int, int] | None:
+    match = re.fullmatch(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", _clean_text(value))
+    if match is None:
+        return None
+    try:
+        parsed = datetime(*map(int, match.groups()))
+    except ValueError:
+        return None
+    return parsed.year, parsed.month, parsed.day
 
 
 def _token_matches(text: str, token: str) -> bool:
