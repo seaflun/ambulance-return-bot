@@ -2774,7 +2774,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn(
-            ".workspace-page--ems-task #task-form .field-label-title,\n    .workspace-page--ems-task #task-form .patient-count-option > span { font-size: var(--text-label); }",
+            ".workspace-page--ems-task #task-form .field-label-title,\n    .workspace-page--ems-task #task-form .patient-count-option > span { font-size: var(--workspace-type-label); line-height: 1.4; }",
             body,
         )
 
@@ -2829,15 +2829,15 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(4, body.count('class="patient-count-select"'))
         self.assertEqual(4, body.count('<span class="patient-count-unit" aria-hidden="true">人</span>'))
         self.assertIn(
-            ".workspace-page--ems-task #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--text-md); font-weight: 700; }",
+            ".workspace-page--ems-task #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--workspace-type-label); font-weight: 700; }",
             body,
         )
         self.assertIn(
-            ".workspace-page--ems-task #task-form .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--text-md); font-weight: 700; }",
+            ".workspace-page--ems-task #task-form .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--workspace-type-label); font-weight: 700; line-height: 1.4; }",
             body,
         )
         self.assertIn(
-            ".workspace-page--ems-task #task-form label[data-field-name='mileage'] { font-size: var(--text-md); }",
+            ".workspace-page--ems-task #task-form label[data-field-name='mileage'] { font-size: var(--workspace-type-label); }",
             body,
         )
         self.assertIn("#task-form .patient-count-select select { width: 100%; margin-top: 0; padding-right: 42px; }", body)
