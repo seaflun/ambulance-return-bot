@@ -1692,6 +1692,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn("OutputDir must be a child directory of UPDATE", source)
         required_loop = source[source.index('foreach ($file in @(') : source.index('foreach ($dir in @(')]
         self.assertNotIn("if (Test-Path", required_loop)
+        self.assertIn('"civilpower.py"', required_loop)
         self.assertIn("Copy-FileToOutput -Source $source -RelativePath $file", required_loop)
 
     def test_nas_builder_stages_and_rolls_back_standalone_publish(self):

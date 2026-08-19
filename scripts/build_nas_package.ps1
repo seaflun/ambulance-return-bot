@@ -300,6 +300,7 @@ try {
 foreach ($file in @(
     "app.py",
     "worker.py",
+    "civilpower.py",
     "consumables_login.py",
     "disinfect.py",
     "requirements.txt",
