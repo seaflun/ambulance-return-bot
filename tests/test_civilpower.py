@@ -168,11 +168,39 @@ class CivilpowerPlanTests(unittest.TestCase):
             "civilpower._wait_for_rows"
         ), mock.patch("civilpower._table_rows", return_value=rows), mock.patch(
             "civilpower._row_cells", side_effect=lambda row: row.cells
+        ), mock.patch(
+            "civilpower._open_next_civilpower_roster_page", return_value=False
         ):
             members = query_civilpower_roster(driver)
 
         driver.get.assert_called_once_with(FIREMAN_URL)
         self.assertEqual(["可選人員"], [member["name"] for member in members])
+
+    def test_roster_query_combines_all_pagination_pages_before_filtering(self):
+        from civilpower import query_civilpower_roster
+
+        page_one = [
+            {"unit": "大園救護分隊", "title": "隊員", "name": "第一頁人員"},
+            {"unit": "大園救護分隊", "title": "技術顧問", "name": "排除人員"},
+        ]
+        page_two = [
+            {"unit": "大園救護分隊", "title": "隊員", "name": "第二頁人員"},
+        ]
+        driver = mock.Mock()
+        wait = object()
+
+        with mock.patch("civilpower.WebDriverWait", return_value=wait), mock.patch(
+            "civilpower._wait_for_civilpower_page"
+        ), mock.patch("civilpower._select_option_containing"), mock.patch("civilpower._click"), mock.patch(
+            "civilpower._wait_for_rows"
+        ), mock.patch(
+            "civilpower._read_civilpower_roster_page", side_effect=[page_one, page_two]
+        ), mock.patch(
+            "civilpower._open_next_civilpower_roster_page", side_effect=[True, False]
+        ):
+            members = query_civilpower_roster(driver)
+
+        self.assertEqual(["第一頁人員", "第二頁人員"], [member["name"] for member in members])
 
     def test_oa_other_menu_opens_civilpower_sso_in_its_new_tab(self):
         from civilpower import open_civilpower_from_oa_dashboard
@@ -233,6 +261,57 @@ class CivilpowerPlanTests(unittest.TestCase):
             )
 
         self.assertTrue(due)
+
+    def test_loaded_roster_without_pagination_confirmation_is_refreshed_after_update(self):
+        from civilpower import civilpower_roster_refresh_due
+
+        with TemporaryDirectory() as temporary_directory:
+            report_path = Path(temporary_directory) / "civilpower" / "roster_refresh.json"
+            report_path.parent.mkdir()
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "status": "civilpower_roster_loaded",
+                        "attempted_at": "2026-08-19T10:13:09",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                civilpower_roster_refresh_due(
+                    Path(temporary_directory),
+                    now=datetime(2026, 8, 19, 10, 14),
+                )
+            )
+
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "status": "civilpower_roster_loaded",
+                        "attempted_at": "2026-08-19T10:13:09",
+                        "pagination_complete": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertFalse(
+                civilpower_roster_refresh_due(
+                    Path(temporary_directory),
+                    now=datetime(2026, 8, 19, 10, 14),
+                )
+            )
+
+    def test_successful_roster_refresh_confirms_pagination_completion(self):
+        from civilpower import refresh_civilpower_roster
+
+        with TemporaryDirectory() as temporary_directory, mock.patch(
+            "civilpower.query_civilpower_roster",
+            return_value=[{"id": "member-1", "name": "完整名冊人員"}],
+        ):
+            report = refresh_civilpower_roster(Path(temporary_directory), driver=object())
+
+        self.assertEqual("civilpower_roster_loaded", report["status"])
+        self.assertIs(True, report["pagination_complete"])
 
 
 if __name__ == "__main__":

@@ -136,6 +136,8 @@ def civilpower_roster_refresh_due(
         return True
     if str(payload.get("status") or "") != "civilpower_roster_loaded":
         return True
+    if payload.get("pagination_complete") is not True:
+        return True
     current = now or datetime.now()
     return (current - attempted_at).total_seconds() >= max(int(interval_seconds), 60)
 
@@ -164,6 +166,7 @@ def refresh_civilpower_roster(
             "source": "public_duty_pc_worker",
             "attempted_at": attempted_at,
             "last_success_at": attempted_at,
+            "pagination_complete": True,
             "members": members,
         }
     except Exception as exc:
@@ -186,6 +189,13 @@ def query_civilpower_roster(driver) -> list[dict[str, str]]:
     _select_option_containing(wait, "#ddl_Type3Unit", HOME_RESCUE_UNIT)
     _click(wait, "#btn_Query")
     _wait_for_rows(driver, wait)
+    raw_members = _read_civilpower_roster_page(driver)
+    while _open_next_civilpower_roster_page(driver, wait):
+        raw_members.extend(_read_civilpower_roster_page(driver))
+    return normalize_roster_members(raw_members)
+
+
+def _read_civilpower_roster_page(driver) -> list[dict[str, str]]:
     raw_members: list[dict[str, str]] = []
     for row in _table_rows(driver):
         cells = [_clean_text(cell.text) for cell in _row_cells(row)]
@@ -193,7 +203,28 @@ def query_civilpower_roster(driver) -> list[dict[str, str]]:
             continue
         unit, title, name = cells[:3]
         raw_members.append({"unit": unit, "title": title, "name": name})
-    return normalize_roster_members(raw_members)
+    return raw_members
+
+
+def _open_next_civilpower_roster_page(driver, wait: WebDriverWait) -> bool:
+    next_links = driver.find_elements(
+        By.CSS_SELECTOR,
+        "#tableresult .pagination li.PagedList-skipToNext a[rel='next']",
+    )
+    if not next_links:
+        return False
+    current_page = _civilpower_roster_page_marker(driver)
+    next_links[0].click()
+    wait.until(lambda current: _civilpower_roster_page_marker(current) != current_page)
+    _wait_for_rows(driver, wait)
+    return True
+
+
+def _civilpower_roster_page_marker(driver) -> str:
+    active_pages = driver.find_elements(By.CSS_SELECTOR, "#tableresult .pagination li.active a")
+    if active_pages:
+        return _clean_text(active_pages[0].text)
+    return str(getattr(driver, "current_url", "") or "")
 
 
 def open_civilpower_from_oa_dashboard(driver, wait: WebDriverWait) -> None:
