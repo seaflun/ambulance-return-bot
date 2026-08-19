@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -140,6 +141,98 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         self.assertEqual("volunteer_assist_failed", result.status)
         self.assertIn("工作紀錄簿回查失敗", result.detail)
+
+    def test_roster_query_reads_the_first_three_columns_before_the_action_column(self):
+        from civilpower import FIREMAN_URL, query_civilpower_roster
+
+        class Cell:
+            def __init__(self, text: str):
+                self.text = text
+
+        class Row:
+            def __init__(self, *cells: str):
+                self.cells = [Cell(cell) for cell in cells]
+
+        rows = [
+            Row("單位", "職稱", "姓名", "動作"),
+            Row("大園救護分隊", "隊員", "可選人員", ""),
+            Row("大園救護分隊", "技術顧問", "排除人員", ""),
+            Row("其他分隊", "隊員", "其他人員", ""),
+        ]
+        driver = mock.Mock()
+        wait = object()
+
+        with mock.patch("civilpower.WebDriverWait", return_value=wait), mock.patch(
+            "civilpower._wait_for_civilpower_page"
+        ), mock.patch("civilpower._select_option_containing"), mock.patch("civilpower._click"), mock.patch(
+            "civilpower._wait_for_rows"
+        ), mock.patch("civilpower._table_rows", return_value=rows), mock.patch(
+            "civilpower._row_cells", side_effect=lambda row: row.cells
+        ):
+            members = query_civilpower_roster(driver)
+
+        driver.get.assert_called_once_with(FIREMAN_URL)
+        self.assertEqual(["可選人員"], [member["name"] for member in members])
+
+    def test_oa_other_menu_opens_civilpower_sso_in_its_new_tab(self):
+        from civilpower import open_civilpower_from_oa_dashboard
+
+        class FakeDriver:
+            def __init__(self):
+                self.window_handles = ["oa"]
+                self.switch_to = mock.Mock()
+
+        class FakeEntry:
+            def __init__(self, driver):
+                self.driver = driver
+
+            def click(self):
+                self.driver.window_handles.append("civilpower")
+
+        class FakeWait:
+            def __init__(self, driver):
+                self.driver = driver
+
+            def until(self, predicate):
+                result = predicate(self.driver)
+                if not result:
+                    raise AssertionError("expected the menu action to complete")
+                return result
+
+        driver = FakeDriver()
+        entry = FakeEntry(driver)
+        wait = FakeWait(driver)
+
+        with mock.patch("civilpower._click") as click, mock.patch(
+            "civilpower.EC.element_to_be_clickable", return_value=lambda _driver: entry
+        ), mock.patch("civilpower._wait_for_civilpower_page"):
+            open_civilpower_from_oa_dashboard(driver, wait)
+
+        click.assert_called_once_with(wait, "#moduleBox_other")
+        driver.switch_to.window.assert_called_once_with("civilpower")
+
+    def test_failed_roster_refresh_is_due_immediately_after_worker_restart(self):
+        from civilpower import civilpower_roster_refresh_due
+
+        with TemporaryDirectory() as temporary_directory:
+            report_path = Path(temporary_directory) / "civilpower" / "roster_refresh.json"
+            report_path.parent.mkdir()
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "status": "civilpower_roster_failed",
+                        "attempted_at": "2026-08-19T09:15:06",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            due = civilpower_roster_refresh_due(
+                Path(temporary_directory),
+                now=datetime(2026, 8, 19, 9, 16),
+            )
+
+        self.assertTrue(due)
 
 
 if __name__ == "__main__":

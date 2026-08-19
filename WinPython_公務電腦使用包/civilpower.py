@@ -38,6 +38,7 @@ from ambulance_bot.window_layout import apply_tile
 
 OA_LOGIN_URL = "https://oa.tyfd.gov.tw/login.php"
 CIVILPOWER_BASE_URL = "https://civilpower.tyfd.gov.tw/TYCC/"
+CIVILPOWER_SSO_LOGIN_URL = f"{CIVILPOWER_BASE_URL}Home/SSOLogin"
 FIREMAN_URL = f"{CIVILPOWER_BASE_URL}Home/FireMan"
 IO_WORK_LOG_URL = f"{CIVILPOWER_BASE_URL}Home/IOWorkLog"
 WORK_LOG_URL = f"{CIVILPOWER_BASE_URL}Home/WorkLog"
@@ -133,6 +134,8 @@ def civilpower_roster_refresh_due(
         attempted_at = datetime.fromisoformat(str(payload.get("attempted_at") or ""))
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return True
+    if str(payload.get("status") or "") != "civilpower_roster_loaded":
+        return True
     current = now or datetime.now()
     return (current - attempted_at).total_seconds() >= max(int(interval_seconds), 60)
 
@@ -188,9 +191,26 @@ def query_civilpower_roster(driver) -> list[dict[str, str]]:
         cells = [_clean_text(cell.text) for cell in _row_cells(row)]
         if len(cells) < 3:
             continue
-        unit, title, name = cells[-3:]
+        unit, title, name = cells[:3]
         raw_members.append({"unit": unit, "title": title, "name": name})
     return normalize_roster_members(raw_members)
+
+
+def open_civilpower_from_oa_dashboard(driver, wait: WebDriverWait) -> None:
+    _click(wait, "#moduleBox_other")
+    sso_entry = wait.until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, ".custom_icon[onclick*='SSOLogin']"))
+    )
+    existing_handles = set(driver.window_handles)
+    sso_entry.click()
+    wait.until(
+        lambda current: any(handle not in existing_handles for handle in current.window_handles)
+        or CIVILPOWER_SSO_LOGIN_URL in str(current.current_url or "")
+    )
+    new_handles = [handle for handle in driver.window_handles if handle not in existing_handles]
+    if new_handles:
+        driver.switch_to.window(new_handles[-1])
+    _wait_for_civilpower_page(driver, wait)
 
 
 def login_civilpower_and_get_driver(
@@ -220,8 +240,7 @@ def login_civilpower_and_get_driver(
         for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
             try:
                 _login_once(driver, credential.user_id, credential.password, attempt)
-                driver.get(CIVILPOWER_BASE_URL)
-                _wait_for_civilpower_page(driver, WebDriverWait(driver, DEFAULT_WAIT_SECONDS))
+                open_civilpower_from_oa_dashboard(driver, WebDriverWait(driver, DEFAULT_WAIT_SECONDS))
                 return driver
             except Exception as exc:
                 errors.append(f"第 {attempt} 次：{exc}")
@@ -319,12 +338,16 @@ def _is_oa_login_page(driver) -> bool:
 
 def _wait_for_civilpower_page(driver, wait: WebDriverWait) -> None:
     def ready(current) -> bool:
-        if _is_oa_login_page(current):
+        if _is_oa_login_page(current) or _is_civilpower_login_page(current):
             return False
         body_text = _clean_text(current.find_element(By.TAG_NAME, "body").text)
         return "民力運用" in body_text or "/TYCC/" in str(current.current_url or "")
 
     wait.until(ready)
+
+
+def _is_civilpower_login_page(driver) -> bool:
+    return _clean_text(getattr(driver, "title", "")).lower() == "login"
 
 
 def _ensure_io_record(
