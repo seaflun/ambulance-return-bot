@@ -11,6 +11,11 @@ MAX_ROSTER_MEMBERS = 200
 
 
 def roster_member_id(unit: object, title: object, name: object) -> str:
+    del unit, title
+    return _clean_text(name, limit=80)
+
+
+def _legacy_roster_member_id(unit: object, title: object, name: object) -> str:
     identity = "\x1f".join(_clean_text(value) for value in (unit, title, name))
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
     return f"civilpower-{digest}"
@@ -88,7 +93,11 @@ def roster_member_by_id(snapshot: object, member_id: object) -> dict[str, str] |
     if not target or not isinstance(snapshot, dict):
         return None
     for member in normalize_roster_members(snapshot.get("members")):
-        if member["member_id"] == target:
+        if member["member_id"] == target or _legacy_roster_member_id(
+            member["unit"],
+            member["title"],
+            member["name"],
+        ) == target:
             return member
     return None
 

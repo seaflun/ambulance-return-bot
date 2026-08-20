@@ -314,7 +314,7 @@
           <a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>
         {% endif %}
         {% if show_vehicle_settings_button() %}
-          <a class="button secondary header-navigation-button" href="/admin/vehicles">救護車設定</a>
+          <a class="button secondary header-navigation-button" href="/admin/vehicles">救護各項設定</a>
         {% endif %}
       {% endif %}
     {% endcall %}
@@ -582,11 +582,15 @@
               協勤人員<span class="field-error-mark volunteer-assist-required-mark" id="volunteer-assist-required-mark" aria-hidden="true">*</span>
               <select name="volunteer_assist_member_id" id="volunteer-assist-member">
                 <option value="">請選擇</option>
-                {% for member in civilpower_roster.members %}
-                  <option value="{{ member.member_id }}" data-name="{{ member.name }}" data-title="{{ member.title }}" data-unit="{{ member.unit }}"{% if selected_case.volunteer_assist_member_id == member.member_id %} selected{% endif %}>{{ member.name }}{% if member.title %}（{{ member.title }}）{% endif %}</option>
+                {% set frequent_member_ids = frequent_civilpower_member_ids | default([]) %}
+                {% for member in civilpower_roster.members if member.member_id in frequent_member_ids %}
+                  <option value="{{ member.member_id }}" data-name="{{ member.name }}" data-title="{{ member.title }}" data-unit="{{ member.unit }}"{% if selected_case.volunteer_assist_member_id == member.member_id %} selected{% endif %}>{{ member.name }}</option>
+                {% endfor %}
+                {% for member in civilpower_roster.members if member.member_id not in frequent_member_ids %}
+                  <option value="{{ member.member_id }}" data-name="{{ member.name }}" data-title="{{ member.title }}" data-unit="{{ member.unit }}"{% if selected_case.volunteer_assist_member_id == member.member_id %} selected{% endif %}>{{ member.name }}</option>
                 {% endfor %}
                 {% if selected_case.volunteer_assist_member_id and not civilpower_roster.members | selectattr('member_id', 'equalto', selected_case.volunteer_assist_member_id) | list %}
-                  <option value="{{ selected_case.volunteer_assist_member_id }}" selected>{{ selected_case.volunteer_assist_member_name or '原選取人員' }}（名冊待更新）</option>
+                  <option value="{{ selected_case.volunteer_assist_member_id }}" data-name="{{ selected_case.volunteer_assist_member_name or '' }}" data-title="{{ selected_case.volunteer_assist_member_title or '' }}" data-unit="{{ selected_case.volunteer_assist_member_unit or '' }}" selected>{{ selected_case.volunteer_assist_member_name or '原選取人員' }}（名冊待更新）</option>
                 {% endif %}
               </select>
             </label>

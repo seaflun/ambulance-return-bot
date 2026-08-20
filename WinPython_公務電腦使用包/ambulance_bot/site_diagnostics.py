@@ -348,7 +348,7 @@ def _next_action_for(site_key: str, category: str) -> str:
     if category == "case_detail":
         return "保留目前清單畫面，先人工開啟明細；若仍無法開啟，回報該站頁面變更。"
     if category == "vehicle_not_found":
-        return "確認任務車號與系統車輛名稱一致，必要時到救護車設定修正後重試。"
+        return "確認任務車號與系統車輛名稱一致，必要時到救護各項設定修正後重試。"
     if category == "fuel_period":
         return "將加油頁月份切到任務月份後重新查詢油卡；新版 Worker 會自動切換月份後再登打。"
     if category == "ppe_driver":

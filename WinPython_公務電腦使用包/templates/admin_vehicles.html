@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#b86b5b">
-  <title>救護車設定</title>
+  <title>救護各項設定</title>
   <style>
     :root {
       color-scheme: light;
@@ -125,10 +125,36 @@
     .pending-sync-item strong, .pending-sync-item span { display: block; }
     .pending-sync-item span { color: var(--muted); font-size: var(--text-sm); }
     .pending-sync-item .delete-form { flex: 0 0 auto; }
+    .civilpower-preferences { margin-top: 16px; }
+    .civilpower-preferences-description { margin: 0 0 12px; color: var(--muted); font-weight: 700; }
+    .civilpower-member-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .civilpower-member-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      min-height: 46px;
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      font-weight: 720;
+    }
+    .civilpower-member-option input {
+      flex: 0 0 auto;
+      width: 20px;
+      min-height: 20px;
+      height: 20px;
+      margin: 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+    .civilpower-member-option span { min-width: 0; overflow-wrap: anywhere; }
     form + .panel { margin-top: 16px; }
     @media (max-width: 560px) {
       header { align-items: stretch; flex-direction: column; }
-      .grid, .vehicle-row { grid-template-columns: 1fr; }
+      .grid, .vehicle-row, .civilpower-member-list { grid-template-columns: 1fr; }
       .vehicle-row.header-row { display: none; }
       .button { width: 100%; }
     }
@@ -138,7 +164,7 @@
 </head>
 <body class="workspace-page workspace-page--settings workspace-page--ems-settings">
   <main>
-    {% call page_chrome('救護車輛設定', '救護車設定', 'ems') %}
+    {% call page_chrome('救護各項設定', '救護各項設定', 'ems') %}
       <a class="button secondary header-navigation-button" href="/app">返回救護登打</a>
     {% endcall %}
 
@@ -213,6 +239,22 @@
         {% endfor %}
       </div>
     </section>
+
+    <form class="civilpower-preferences" method="post" action="/admin/civilpower-preferences">
+      <h2>救護義消名冊</h2>
+      <p class="civilpower-preferences-description">勾選常出勤人員，救護登打時會優先置頂顯示。</p>
+      {% set frequent_member_ids = frequent_civilpower_member_ids | default([]) %}
+      <div class="civilpower-member-list">
+        {% for member in civilpower_roster.members %}
+          <label class="civilpower-member-option">
+            <input type="checkbox" name="frequent_civilpower_member_ids" value="{{ member.member_id }}"{% if member.member_id in frequent_member_ids %} checked{% endif %}>
+            <span>{{ member.name }}</span>
+          </label>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
+      <button type="submit">儲存常出勤人員</button>
+    </form>
   </main>
 </body>
 </html>

@@ -1,8 +1,10 @@
+import hashlib
 import unittest
 
 from ambulance_bot.civilpower_roster import (
     merge_roster_report,
     normalize_roster_members,
+    roster_member_by_id,
     roster_member_id,
 )
 
@@ -22,9 +24,47 @@ class CivilPowerRosterTests(unittest.TestCase):
         self.assertEqual("可選人員", members[0]["name"])
         self.assertEqual("大園救護分隊", members[0]["unit"])
         self.assertEqual(
-            roster_member_id("大園救護分隊", "隊員", "可選人員"),
+            "可選人員",
             members[0]["member_id"],
         )
+
+    def test_member_id_is_the_normalized_name_and_deduplicates_title_variants(self):
+        members = normalize_roster_members(
+            [
+                {"unit": "大園救護分隊", "title": "隊員", "name": " 江尚諭 "},
+                {"unit": "大園救護分隊", "title": "班長", "name": "江尚諭"},
+            ]
+        )
+
+        self.assertEqual("江尚諭", roster_member_id("其他單位", "其他職稱", " 江尚諭 "))
+        self.assertEqual(1, len(members))
+        self.assertEqual("江尚諭", members[0]["member_id"])
+        self.assertEqual("隊員", members[0]["title"])
+
+    def test_roster_member_by_id_accepts_current_name_and_previous_hashed_id(self):
+        unit = "大園救護分隊"
+        title = "隊員"
+        name = "江尚諭"
+        legacy_identity = "\x1f".join((unit, title, name))
+        legacy_member_id = f"civilpower-{hashlib.sha256(legacy_identity.encode('utf-8')).hexdigest()[:20]}"
+        snapshot = {
+            "members": [
+                {
+                    "member_id": legacy_member_id,
+                    "unit": unit,
+                    "title": title,
+                    "name": name,
+                }
+            ]
+        }
+
+        current_member = roster_member_by_id(snapshot, name)
+        legacy_member = roster_member_by_id(snapshot, legacy_member_id)
+
+        self.assertIsNotNone(current_member)
+        self.assertIsNotNone(legacy_member)
+        self.assertEqual(name, current_member["member_id"])
+        self.assertEqual(current_member, legacy_member)
 
     def test_failed_refresh_retains_last_known_good_members(self):
         existing = {

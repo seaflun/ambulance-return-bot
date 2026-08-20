@@ -1579,7 +1579,11 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn('$compatibilityResultPath = Join-Path $resultDir "remote_update_result.json"', source)
         self.assertIn("$resultPath = Join-Path $uniqueResultDir", source)
         self.assertIn("$compatibilityTempPath", source)
-        self.assertLess(source.index("Move-Item -LiteralPath $tempResultPath"), source.index("Move-Item -LiteralPath $compatibilityTempPath"))
+        result_move = 'Move-FileWithRetry -SourcePath $tempResultPath -DestinationPath $resultPath'
+        compatibility_move = 'Move-FileWithRetry -SourcePath $compatibilityTempPath -DestinationPath $compatibilityResultPath'
+        self.assertIn(result_move, source)
+        self.assertIn(compatibility_move, source)
+        self.assertLess(source.index(result_move), source.index(compatibility_move))
 
     def test_remote_update_wrapper_prunes_only_expired_results(self):
         source = Path("WinPython_公務電腦使用包/REMOTE_UPDATE_PACKAGE.ps1").read_text(encoding="utf-8")

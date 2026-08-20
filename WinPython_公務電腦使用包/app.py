@@ -32,6 +32,11 @@ from ambulance_bot.civilpower_roster import (
     normalize_roster_members,
     roster_member_by_id,
 )
+from ambulance_bot.civilpower_preferences import (
+    load_frequent_member_ids,
+    normalize_frequent_member_ids,
+    save_frequent_member_ids,
+)
 from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.credential_envelope import (
     CredentialEnvelopeError,
@@ -253,7 +258,8 @@ def task_entry():
 def new_task():
     selected_case, clear_pending_cookie = selected_case_for_task_entry()
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
-    vehicle_records = effective_ems_vehicle_records()
+    nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
+    vehicle_records = effective_ems_vehicle_records(nas_settings, settings_loaded=True)
     response = make_response(render_template(
         "new_task.html",
         form_action=url_for("create_task"),
@@ -275,7 +281,11 @@ def new_task():
         last_vehicle_mileages=last_vehicle_mileages(),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
-        civilpower_roster=read_civilpower_roster(),
+        civilpower_roster=effective_civilpower_roster(),
+        frequent_civilpower_member_ids=effective_civilpower_frequent_member_ids(
+            nas_settings,
+            settings_loaded=True,
+        ),
         form_errors=[],
         page_notice=task_form_notice(),
     ))
@@ -529,7 +539,8 @@ def edit_task(task_id: str):
     if task_edit_is_locked(payload):
         return task_edit_lock_message(payload), 409
     selected_case = task_form_values(task)
-    vehicle_records = effective_ems_vehicle_records()
+    nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
+    vehicle_records = effective_ems_vehicle_records(nas_settings, settings_loaded=True)
     return render_template(
         "new_task.html",
         form_action=url_for("update_task", task_id=task_id),
@@ -551,7 +562,11 @@ def edit_task(task_id: str):
         two_vehicle_available=two_vehicle_option_available(selected_case),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task.get("disinfection_items") or []),
-        civilpower_roster=read_civilpower_roster(),
+        civilpower_roster=effective_civilpower_roster(),
+        frequent_civilpower_member_ids=effective_civilpower_frequent_member_ids(
+            nas_settings,
+            settings_loaded=True,
+        ),
         form_errors=[],
     )
 
@@ -1178,6 +1193,26 @@ def delete_vehicle_option():
     return render_vehicle_settings(message=f"已刪除 {label}")
 
 
+@app.post("/admin/civilpower-preferences")
+def save_civilpower_preferences():
+    frequent_member_ids = request.form.getlist("frequent_civilpower_member_ids")
+    if request_is_local_host():
+        command = {
+            "operation": "save_civilpower_frequent_members",
+            "frequent_civilpower_member_ids": frequent_member_ids,
+        }
+        return render_local_vehicle_command_result(
+            command,
+            success_message="已將常出勤義消同步到 NAS",
+        )
+    try:
+        with _vehicle_settings_sync_lock:
+            save_civilpower_frequent_members(frequent_member_ids)
+    except ValueError as exc:
+        return render_vehicle_settings(errors=[str(exc)]), 400
+    return render_vehicle_settings(message="已儲存常出勤義消")
+
+
 @app.get("/worker/identity")
 def worker_identity():
     if not worker_authorized():
@@ -1494,6 +1529,13 @@ def worker_cases():
     else:
         mark_case_lookup_request_failed(payload)
     return jsonify({"ok": True, "case_count": len(cases), "payload": payload})
+
+
+@app.get("/worker/civilpower-roster")
+def worker_civilpower_roster_snapshot():
+    if not worker_authorized():
+        abort(403)
+    return jsonify({"ok": True, **read_civilpower_roster()})
 
 
 @app.post("/worker/civilpower-roster")
@@ -3176,6 +3218,7 @@ def vehicle_settings_snapshot() -> dict[str, object]:
         "ems_vehicles": vehicle_admin_records(),
         "disaster_vehicles": load_disaster_vehicle_records(artifacts_dir),
         "disaster_action_packages": load_disaster_action_packages(artifacts_dir),
+        "frequent_civilpower_member_ids": load_frequent_member_ids(artifacts_dir),
     }
 
 
@@ -3204,6 +3247,9 @@ def vehicle_settings_revision(settings: Mapping[str, object]) -> str:
             for value in list(settings.get("disaster_action_packages") or [])
             if str(value or "").strip()
         ],
+        "frequent_civilpower_member_ids": sorted(
+            normalize_frequent_member_ids(settings.get("frequent_civilpower_member_ids"))
+        ),
     }
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -3216,6 +3262,9 @@ def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -
         "ems_vehicles": list(snapshot.get("ems_vehicles") or []),
         "disaster_vehicles": list(snapshot.get("disaster_vehicles") or []),
         "disaster_action_packages": list(snapshot.get("disaster_action_packages") or []),
+        "frequent_civilpower_member_ids": normalize_frequent_member_ids(
+            snapshot.get("frequent_civilpower_member_ids")
+        ),
         "revision": vehicle_settings_revision(snapshot),
     }
 
@@ -3232,6 +3281,9 @@ def normalize_remote_vehicle_settings(payload: object) -> dict[str, object] | No
         "ems_vehicles": ems_vehicles,
         "disaster_vehicles": disaster_vehicles,
         "disaster_action_packages": disaster_action_packages,
+        "frequent_civilpower_member_ids": normalize_frequent_member_ids(
+            payload.get("frequent_civilpower_member_ids")
+        ),
     }
     revision = str(payload.get("revision") or "").strip() or vehicle_settings_revision(settings)
     return {**settings, "revision": revision}
@@ -3300,7 +3352,30 @@ def normalize_vehicle_settings_command(payload: Mapping[str, object]) -> dict[st
             "operation": operation,
             "action_packages": [str(value or "").strip() for value in values],
         }
+    if operation == "save_civilpower_frequent_members":
+        values = payload.get("frequent_civilpower_member_ids")
+        if not isinstance(values, list):
+            return None
+        return {
+            "operation": operation,
+            "frequent_civilpower_member_ids": normalize_frequent_member_ids(values),
+        }
     return None
+
+
+def save_civilpower_frequent_members(member_ids: object) -> list[str]:
+    selected_ids = normalize_frequent_member_ids(member_ids)
+    if not selected_ids:
+        return save_frequent_member_ids(selected_ids, artifacts_dir)
+    available_ids = {
+        str(member.get("member_id") or "").strip()
+        for member in read_civilpower_roster().get("members") or []
+        if isinstance(member, Mapping)
+    }
+    unknown_ids = [member_id for member_id in selected_ids if member_id not in available_ids]
+    if unknown_ids:
+        raise ValueError("義消名冊已更新，請重新開啟設定頁後再儲存")
+    return save_frequent_member_ids(selected_ids, artifacts_dir)
 
 
 def apply_vehicle_settings_command(command: Mapping[str, object]) -> None:
@@ -3332,6 +3407,9 @@ def apply_vehicle_settings_command(command: Mapping[str, object]) -> None:
         return
     if operation == "save_disaster_action_packages":
         save_disaster_action_packages(list(normalized["action_packages"]), artifacts_dir)
+        return
+    if operation == "save_civilpower_frequent_members":
+        save_civilpower_frequent_members(normalized["frequent_civilpower_member_ids"])
         return
     raise ValueError("不支援的設定操作")
 
@@ -3399,6 +3477,7 @@ def vehicle_settings_command_label(command: Mapping[str, object]) -> str:
         "save_disaster_vehicle": f"新增或更新救災車：{label}",
         "delete_disaster_vehicle": f"刪除救災車：{label}",
         "save_disaster_action_packages": "更新處理情形套餐",
+        "save_civilpower_frequent_members": "更新常出勤義消",
     }
     return labels.get(operation, "車輛設定異動")
 
@@ -3425,6 +3504,7 @@ def apply_pending_vehicle_settings_command(
         "ems_vehicles": [dict(record) for record in current["ems_vehicles"]],
         "disaster_vehicles": [dict(record) for record in current["disaster_vehicles"]],
         "disaster_action_packages": list(current["disaster_action_packages"]),
+        "frequent_civilpower_member_ids": list(current["frequent_civilpower_member_ids"]),
     }
     normalized = normalize_vehicle_settings_command(command)
     if normalized is None:
@@ -3466,6 +3546,10 @@ def apply_pending_vehicle_settings_command(
     elif operation == "save_disaster_action_packages":
         packages = clean_remote_disaster_action_packages(normalized.get("action_packages"))
         result["disaster_action_packages"] = packages or list(DISASTER_ACTION_PACKAGES)
+    elif operation == "save_civilpower_frequent_members":
+        result["frequent_civilpower_member_ids"] = normalize_frequent_member_ids(
+            normalized.get("frequent_civilpower_member_ids")
+        )
     else:
         raise ValueError("不支援的設定操作")
     return {**result, "revision": vehicle_settings_revision(result)}
@@ -3613,6 +3697,10 @@ def render_local_vehicle_settings(
         sync_source=str(view["source"]),
         pending_sync_commands=pending_vehicle_settings_command_views(),
         form_values=form_values,
+        civilpower_roster=effective_civilpower_roster(),
+        frequent_civilpower_member_ids=normalize_frequent_member_ids(
+            settings.get("frequent_civilpower_member_ids")
+        ),
     )
 
 
@@ -3687,6 +3775,8 @@ def render_vehicle_settings(
     sync_source: str = "",
     pending_sync_commands: list[dict[str, str]] | None = None,
     form_values: Mapping[str, object] | None = None,
+    civilpower_roster: Mapping[str, object] | None = None,
+    frequent_civilpower_member_ids: list[str] | None = None,
 ):
     return render_template(
         "admin_vehicles.html",
@@ -3697,6 +3787,12 @@ def render_vehicle_settings(
         sync_source=sync_source,
         pending_sync_commands=pending_sync_commands or [],
         form_values=dict(form_values or {}),
+        civilpower_roster=dict(civilpower_roster or effective_civilpower_roster()),
+        frequent_civilpower_member_ids=(
+            normalize_frequent_member_ids(frequent_civilpower_member_ids)
+            if frequent_civilpower_member_ids is not None
+            else effective_civilpower_frequent_member_ids()
+        ),
     )
 
 
@@ -3705,6 +3801,18 @@ def fetch_nas_vehicle_settings() -> dict[str, object] | None:
     if result["state"] != "ok":
         return None
     return dict(result["settings"])
+
+
+def effective_civilpower_frequent_member_ids(
+    settings: Mapping[str, object] | None = None,
+    *,
+    settings_loaded: bool = False,
+) -> list[str]:
+    if settings is None and request_is_local_host() and not settings_loaded:
+        settings = fetch_nas_vehicle_settings() or cached_nas_vehicle_settings()
+    if settings is not None:
+        return normalize_frequent_member_ids(settings.get("frequent_civilpower_member_ids"))
+    return load_frequent_member_ids(artifacts_dir)
 
 
 def nas_vehicle_settings_server_url() -> str:
@@ -3747,11 +3855,17 @@ def clean_remote_disaster_action_packages(value: object) -> list[str] | None:
     return packages
 
 
-def effective_ems_vehicle_records() -> list[dict[str, str]]:
-    if request_is_local_host():
-        settings = fetch_nas_vehicle_settings()
-        if settings is not None:
-            return list(settings["ems_vehicles"])
+def effective_ems_vehicle_records(
+    nas_settings: Mapping[str, object] | None = None,
+    *,
+    settings_loaded: bool = False,
+) -> list[dict[str, str]]:
+    if nas_settings is None and request_is_local_host() and not settings_loaded:
+        nas_settings = fetch_nas_vehicle_settings()
+    if nas_settings is not None:
+        records = nas_settings.get("ems_vehicles")
+        if isinstance(records, list):
+            return [dict(record) for record in records if isinstance(record, Mapping)]
     return vehicle_admin_records()
 
 
@@ -3977,8 +4091,8 @@ def civilpower_roster_path() -> Path:
     return artifacts_dir / "civilpower" / "volunteer_roster.json"
 
 
-def read_civilpower_roster() -> dict:
-    unavailable = {
+def unavailable_civilpower_roster() -> dict[str, object]:
+    return {
         "status": "civilpower_roster_unavailable",
         "detail": "尚未收到公務電腦 Worker 的義消名冊。",
         "source": "public_duty_pc_worker",
@@ -3987,6 +4101,27 @@ def read_civilpower_roster() -> dict:
         "member_count": 0,
         "members": [],
     }
+
+
+def normalize_civilpower_roster_snapshot(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    members = normalize_roster_members(payload.get("members"))
+    return {
+        "status": str(payload.get("status") or "civilpower_roster_failed").strip(),
+        "detail": str(payload.get("detail") or "義消名冊更新失敗，保留上次成功名冊。").strip(),
+        "source": str(payload.get("source") or "public_duty_pc_worker").strip(),
+        "last_attempted_at": str(
+            payload.get("last_attempted_at") or payload.get("attempted_at") or ""
+        ).strip(),
+        "last_success_at": str(payload.get("last_success_at") or "").strip(),
+        "member_count": len(members),
+        "members": members,
+    }
+
+
+def read_civilpower_roster() -> dict:
+    unavailable = unavailable_civilpower_roster()
     path = civilpower_roster_path()
     if not path.exists():
         return unavailable
@@ -3998,32 +4133,62 @@ def read_civilpower_roster() -> dict:
             "status": "civilpower_roster_unreadable",
             "detail": "義消名冊快取讀取失敗。",
         }
-    if not isinstance(payload, dict):
-        return unavailable
-    members = normalize_roster_members(payload.get("members"))
-    return {
-        "status": str(payload.get("status") or "civilpower_roster_failed").strip(),
-        "detail": str(payload.get("detail") or "義消名冊更新失敗，保留上次成功名冊。").strip(),
-        "source": str(payload.get("source") or "public_duty_pc_worker").strip(),
-        "last_attempted_at": str(payload.get("last_attempted_at") or "").strip(),
-        "last_success_at": str(payload.get("last_success_at") or "").strip(),
-        "member_count": len(members),
-        "members": members,
-    }
+    return normalize_civilpower_roster_snapshot(payload) or unavailable
+
+
+def cache_civilpower_roster(roster: Mapping[str, object]) -> None:
+    snapshot = normalize_civilpower_roster_snapshot(roster)
+    if snapshot is None or not snapshot["members"]:
+        return
+    with _civilpower_roster_lock:
+        write_json_atomic(civilpower_roster_path(), snapshot)
+
+
+def request_nas_civilpower_roster() -> dict[str, object] | None:
+    server_url = nas_vehicle_settings_server_url()
+    headers = worker_headers()
+    if not server_url or not headers:
+        return None
+    req = urllib.request.Request(
+        f"{server_url}/worker/civilpower-roster",
+        headers=headers,
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, urllib.error.URLError):
+        return None
+    if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+        return None
+    return normalize_civilpower_roster_snapshot(payload)
+
+
+def effective_civilpower_roster() -> dict[str, object]:
+    local_roster = read_civilpower_roster()
+    if not request_is_local_host():
+        return local_roster
+    remote_roster = request_nas_civilpower_roster()
+    if remote_roster is None or not remote_roster["members"]:
+        return local_roster
+    cache_civilpower_roster(remote_roster)
+    return remote_roster
 
 
 def hydrate_volunteer_assist_member(task_request) -> None:
     if not getattr(task_request, "volunteer_assist", False):
         return
-    member = roster_member_by_id(
-        read_civilpower_roster(),
-        getattr(task_request, "volunteer_assist_member_id", ""),
-    )
+    roster = effective_civilpower_roster()
+    member_id = str(getattr(task_request, "volunteer_assist_member_id", "") or "").strip()
+    member = roster_member_by_id(roster, member_id)
+    if member is None and member_id.startswith("civilpower-"):
+        member = roster_member_by_id(roster, getattr(task_request, "volunteer_assist_member_name", ""))
     if member is None:
         task_request.volunteer_assist_member_name = ""
         task_request.volunteer_assist_member_title = ""
         task_request.volunteer_assist_member_unit = ""
         return
+    task_request.volunteer_assist_member_id = member["member_id"]
     task_request.volunteer_assist_member_name = member["name"]
     task_request.volunteer_assist_member_title = member["title"]
     task_request.volunteer_assist_member_unit = member["unit"]
@@ -5764,7 +5929,8 @@ def render_task_form_from_request(
 ) -> str:
     selected_case = task_form_values(asdict(task_request))
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
-    vehicle_records = effective_ems_vehicle_records()
+    nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
+    vehicle_records = effective_ems_vehicle_records(nas_settings, settings_loaded=True)
     return render_template(
         "new_task.html",
         form_action=form_action,
@@ -5786,7 +5952,11 @@ def render_task_form_from_request(
         last_vehicle_mileages=last_vehicle_mileages(),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task_request.disinfection_items or []),
-        civilpower_roster=read_civilpower_roster(),
+        civilpower_roster=effective_civilpower_roster(),
+        frequent_civilpower_member_ids=effective_civilpower_frequent_member_ids(
+            nas_settings,
+            settings_loaded=True,
+        ),
         form_errors=form_errors,
     )
 

@@ -89,6 +89,7 @@ class WebAppTests(unittest.TestCase):
         os.environ["DESKTOP_FAST_MODE"] = "0"
         os.environ["TASK_EXECUTION_MODE"] = "worker_queue"
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"
+        os.environ["WORKER_SERVER_URL"] = ""
         self.original_artifacts_dir = app_module.artifacts_dir
         app_module.artifacts_dir = Path(self.tmp.name)
         self.store = JsonTaskStore(Path(self.tmp.name) / "tasks")
@@ -1246,7 +1247,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(workspace_response.status_code, 200)
         workspace_css = workspace_response.data.decode("utf-8")
         self.assertIn("SinpoSmart - 救護Worker", body)
-        self.assertIn("救護車設定", body)
+        self.assertIn("救護各項設定", body)
         self.assertIn('href="/admin/vehicles"', body)
         self.assertNotIn('href="/admin/public-pc"', body)
         self.assertNotIn('href="/admin/sinposmart"', body)
@@ -1433,7 +1434,7 @@ class WebAppTests(unittest.TestCase):
         )
 
         self.assertNotIn(".app-header__eyebrow {\n    display: none;", css)
-        self.assertIn('<p class="page-chrome__eyebrow">救護車輛設定</p>', ems_settings)
+        self.assertIn('<p class="page-chrome__eyebrow">救護各項設定</p>', ems_settings)
         self.assertIn('<p class="page-chrome__eyebrow">車輛及工作設定</p>', disaster_settings)
 
     def test_home_portal_cards_use_destination_colors(self):
@@ -1506,7 +1507,7 @@ class WebAppTests(unittest.TestCase):
         pages = (
             ("/app", "ems", "救護勤務登打中心"),
             ("/app/disaster", "disaster", "救災勤務登打中心"),
-            ("/admin/vehicles", "ems", "救護車輛設定"),
+            ("/admin/vehicles", "ems", "救護各項設定"),
             ("/admin/disaster-vehicles", "disaster", "車輛及工作設定"),
         )
 
@@ -2345,7 +2346,7 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertIn('target="_blank"', body)
         self.assertIn('rel="noopener noreferrer"', body)
-        self.assertNotIn("救護車設定", body)
+        self.assertNotIn("救護各項設定", body)
         self.assertNotIn("查詢案件", body)
         self.assertIn("portal-card--duty", body)
         self.assertIn("portal-card--disaster", body)
@@ -2361,7 +2362,7 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
         disaster_body = html.unescape(disaster_response.data.decode("utf-8"))
         self.assertIn("SinpoSmart - 救護Worker", body)
-        self.assertIn("救護車設定", body)
+        self.assertIn("救護各項設定", body)
         self.assertIn('href="/admin/vehicles"', body)
         self.assertIn("車輛及工作設定", disaster_body)
         self.assertIn('href="/admin/disaster-vehicles"', disaster_body)
@@ -2373,7 +2374,7 @@ class WebAppTests(unittest.TestCase):
             self.client.get("/app/disaster", headers=headers).data.decode("utf-8")
         )
 
-        self.assertLess(ems_body.index("返回上一頁"), ems_body.index("救護車設定"))
+        self.assertLess(ems_body.index("返回上一頁"), ems_body.index("救護各項設定"))
         self.assertLess(disaster_body.index("返回上一頁"), disaster_body.index("車輛及工作設定"))
 
     def test_local_task_forms_show_back_navigation_and_vehicle_settings(self):
@@ -2387,7 +2388,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("返回首頁", entry_body)
         for body in (ems_body, disaster_body):
             self.assertIn('href="/task-entry">返回上一頁</a>', body)
-        self.assertIn("救護車設定", ems_body)
+        self.assertIn("救護各項設定", ems_body)
         self.assertIn('href="/admin/vehicles"', ems_body)
         self.assertIn("車輛及工作設定", disaster_body)
         self.assertIn('href="/admin/disaster-vehicles"', disaster_body)
@@ -2520,10 +2521,14 @@ class WebAppTests(unittest.TestCase):
         get_response.__enter__.return_value.read.return_value = json.dumps({"ok": True, **initial_settings}).encode("utf-8")
         post_response = mock.MagicMock()
         post_response.__enter__.return_value.read.return_value = json.dumps({"ok": True, **expected_settings}).encode("utf-8")
+        roster_response = mock.MagicMock()
+        roster_response.__enter__.return_value.read.return_value = json.dumps(
+            {"ok": True, "status": "civilpower_roster_failed", "members": []}
+        ).encode("utf-8")
         with mock.patch.object(
             app_module.urllib.request,
             "urlopen",
-            side_effect=[get_response, post_response],
+            side_effect=[get_response, post_response, roster_response],
         ) as urlopen:
             recovered = self.client.get("/admin/vehicles", headers={"Host": "127.0.0.1:8090"})
 
@@ -2687,10 +2692,20 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn('<option value="NAS救護91">NAS救護91 | NAS-EMS</option>', ems_body)
         self.assertIn('<option value="NAS救災11">NAS救災11 | NAS-FIRE</option>', disaster_body)
-        self.assertEqual(2, urlopen.call_count)
-        for call in urlopen.call_args_list:
-            request_object = call.args[0]
-            self.assertEqual("http://nas.test:8080/worker/vehicle-settings", request_object.full_url)
+        requests = [call.args[0] for call in urlopen.call_args_list]
+        vehicle_settings_requests = [
+            request_object
+            for request_object in requests
+            if request_object.full_url == "http://nas.test:8080/worker/vehicle-settings"
+        ]
+        roster_requests = [
+            request_object
+            for request_object in requests
+            if request_object.full_url == "http://nas.test:8080/worker/civilpower-roster"
+        ]
+        self.assertEqual(2, len(vehicle_settings_requests))
+        self.assertEqual(1, len(roster_requests))
+        for request_object in requests:
             self.assertEqual("test-token", request_object.get_header("X-worker-token"))
 
     def test_app_page_includes_consumable_package_shortcuts(self):
@@ -2994,7 +3009,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = html.unescape(response.data.decode("utf-8"))
-        self.assertIn("救護車設定", body)
+        self.assertIn("救護各項設定", body)
         self.assertIn('href="/admin/vehicles"', body)
         self.assertNotIn('href="/admin/public-pc"', body)
         self.assertNotIn('href="/admin/sinposmart"', body)
@@ -3680,7 +3695,7 @@ class WebAppTests(unittest.TestCase):
         nas_headers = {"Host": "100.114.126.58:8080"}
         page = self.client.get("/admin/vehicles", headers=nas_headers)
         page_body = html.unescape(page.data.decode("utf-8"))
-        self.assertIn("救護車設定", page_body)
+        self.assertIn("救護各項設定", page_body)
         self.assertIn("救護車代號", page_body)
         self.assertIn('href="/app">返回救護登打</a>', page_body)
         self.assertIn('<button type="submit">新增</button>', page_body)
@@ -6858,6 +6873,204 @@ class WebAppTests(unittest.TestCase):
         detail_body = html.unescape(self.client.get(f"/tasks/{task_id}").data.decode("utf-8"))
         self.assertIn("<h3>民力系統</h3>", detail_body)
 
+    def test_worker_civilpower_roster_get_requires_token_and_returns_snapshot(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        self.client.post(
+            "/worker/civilpower-roster",
+            headers=headers,
+            json={
+                "status": "civilpower_roster_loaded",
+                "attempted_at": "2026-08-20T09:00:00",
+                "last_success_at": "2026-08-20T09:00:00",
+                "members": [{"unit": "大園救護分隊", "title": "隊員", "name": "江尚諭"}],
+            },
+        )
+
+        forbidden = self.client.get("/worker/civilpower-roster")
+        response = self.client.get("/worker/civilpower-roster", headers=headers)
+
+        self.assertEqual(403, forbidden.status_code)
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(["江尚諭"], [member["member_id"] for member in payload["members"]])
+
+    def test_local_civilpower_roster_fetches_nas_snapshot_and_keeps_cache_when_offline(self):
+        os.environ["WORKER_SERVER_URL"] = "http://nas.test:8080"
+        os.environ["WORKER_TOKEN"] = "test-token"
+        remote_payload = {
+            "ok": True,
+            "status": "civilpower_roster_loaded",
+            "detail": "loaded",
+            "source": "public_duty_pc_worker",
+            "last_attempted_at": "2026-08-20T09:00:00",
+            "last_success_at": "2026-08-20T09:00:00",
+            "members": [{"unit": "大園救護分隊", "title": "隊員", "name": "江尚諭"}],
+        }
+        online_response = mock.MagicMock()
+        online_response.__enter__.return_value.read.return_value = json.dumps(remote_payload).encode("utf-8")
+
+        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=online_response) as urlopen, mock.patch.object(
+            app_module, "request_is_local_host", return_value=True
+        ):
+            roster = app_module.effective_civilpower_roster()
+
+        self.assertEqual(["江尚諭"], [member["member_id"] for member in roster["members"]])
+        self.assertEqual(
+            "http://nas.test:8080/worker/civilpower-roster",
+            urlopen.call_args.args[0].full_url,
+        )
+        self.assertEqual("test-token", urlopen.call_args.args[0].get_header("X-worker-token"))
+
+        with mock.patch.object(
+            app_module.urllib.request,
+            "urlopen",
+            side_effect=urllib.error.URLError("offline"),
+        ), mock.patch.object(app_module, "request_is_local_host", return_value=True):
+            fallback = app_module.effective_civilpower_roster()
+
+        self.assertEqual(["江尚諭"], [member["member_id"] for member in fallback["members"]])
+
+    def test_legacy_civilpower_member_id_rehydrates_by_name_after_title_change(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        os.environ["WORKER_SERVER_URL"] = ""
+        self.client.post(
+            "/worker/civilpower-roster",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "status": "civilpower_roster_loaded",
+                "attempted_at": "2026-08-20T09:00:00",
+                "last_success_at": "2026-08-20T09:00:00",
+                "members": [{"unit": "大園救護分隊", "title": "小隊長", "name": "江尚諭"}],
+            },
+        )
+        task_request = app_module.request_from_form(
+            self.valid_task_data(
+                volunteer_assist="1",
+                volunteer_assist_member_id="civilpower-legacy-member",
+                volunteer_assist_member_name="江尚諭",
+                volunteer_assist_member_title="隊員",
+                volunteer_assist_member_unit="大園救護分隊",
+            )
+        )
+
+        with app_module.app.test_request_context("/"):
+            app_module.hydrate_volunteer_assist_member(task_request)
+
+        self.assertEqual("江尚諭", task_request.volunteer_assist_member_id)
+        self.assertEqual("江尚諭", task_request.volunteer_assist_member_name)
+        self.assertEqual("小隊長", task_request.volunteer_assist_member_title)
+
+    def test_local_civilpower_roster_keeps_cache_when_nas_snapshot_is_empty(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        os.environ["WORKER_SERVER_URL"] = "http://nas.test:8080"
+        headers = {"X-Worker-Token": "test-token"}
+        self.client.post(
+            "/worker/civilpower-roster",
+            headers=headers,
+            json={
+                "status": "civilpower_roster_loaded",
+                "attempted_at": "2026-08-20T09:00:00",
+                "last_success_at": "2026-08-20T09:00:00",
+                "members": [{"unit": "大園救護分隊", "title": "隊員", "name": "江尚諭"}],
+            },
+        )
+        empty_response = mock.MagicMock()
+        empty_response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "ok": True,
+                "status": "civilpower_roster_failed",
+                "detail": "refresh failed",
+                "members": [],
+            }
+        ).encode("utf-8")
+
+        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=empty_response), mock.patch.object(
+            app_module, "request_is_local_host", return_value=True
+        ):
+            roster = app_module.effective_civilpower_roster()
+
+        self.assertEqual(["江尚諭"], [member["member_id"] for member in roster["members"]])
+
+    def test_edit_legacy_civilpower_member_keeps_identity_data_for_name_rehydration(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.client.post(
+            "/worker/civilpower-roster",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "status": "civilpower_roster_loaded",
+                "attempted_at": "2026-08-20T09:00:00",
+                "last_success_at": "2026-08-20T09:00:00",
+                "members": [{"unit": "大園救護分隊", "title": "小隊長", "name": "江尚諭"}],
+            },
+        )
+        task_request = app_module.request_from_form(self.valid_task_data())
+        task_request.task_id = "legacy-civilpower-edit"
+        payload = self.store.create(task_request)
+        task = payload["task"]
+        task.update(
+            {
+                "volunteer_assist": True,
+                "volunteer_assist_member_id": "civilpower-legacy-member",
+                "volunteer_assist_member_name": "江尚諭",
+                "volunteer_assist_member_title": "隊員",
+                "volunteer_assist_member_unit": "大園救護分隊",
+            }
+        )
+        self.store.save_payload(task_request.task_id, payload)
+
+        response = self.client.get(f"/tasks/{task_request.task_id}/edit", headers={"Host": "nas.test:8080"})
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertEqual(200, response.status_code)
+        self.assertIn(
+            'value="civilpower-legacy-member" data-name="江尚諭" data-title="隊員" data-unit="大園救護分隊" selected',
+            body,
+        )
+
+    def test_civilpower_preferences_sync_and_prioritize_names_in_ems_form(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        nas_headers = {"Host": "100.114.126.58:8080"}
+        self.client.post(
+            "/worker/civilpower-roster",
+            headers=worker_headers,
+            json={
+                "status": "civilpower_roster_loaded",
+                "attempted_at": "2026-08-20T09:00:00",
+                "last_success_at": "2026-08-20T09:00:00",
+                "members": [
+                    {"unit": "大園救護分隊", "title": "隊員", "name": "一般義消"},
+                    {"unit": "大園救護分隊", "title": "小隊長", "name": "常用義消"},
+                ],
+            },
+        )
+        settings = self.client.get("/worker/vehicle-settings", headers=worker_headers).get_json()
+
+        saved = self.client.post(
+            "/admin/civilpower-preferences",
+            headers=nas_headers,
+            data={
+                "settings_revision": settings["revision"],
+                "frequent_civilpower_member_ids": "常用義消",
+            },
+        )
+
+        self.assertEqual(200, saved.status_code)
+        settings = self.client.get("/worker/vehicle-settings", headers=worker_headers).get_json()
+        self.assertEqual(["常用義消"], settings["frequent_civilpower_member_ids"])
+        settings_body = html.unescape(self.client.get("/admin/vehicles", headers=nas_headers).data.decode("utf-8"))
+        self.assertIn("救護義消名冊", settings_body)
+        self.assertIn('value="常用義消" checked', settings_body)
+        self.assertNotIn("小隊長", settings_body)
+
+        os.environ["WORKER_SERVER_URL"] = ""
+        self.import_case_for_form(self.valid_task_data())
+        form_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        self.assertLess(form_body.index('value="常用義消"'), form_body.index('value="一般義消"'))
+        self.assertNotIn("常用義消（", form_body)
+
     def test_volunteer_assist_can_run_independently_after_duty_work_log(self):
         site_statuses = {
             "duty_work_log": {"status": "duty_work_log_saved"},
@@ -8461,7 +8674,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(edit_response.status_code, 200)
         self.assertIn("SinpoSmart - 救護Worker - 編輯狀態", edit_body)
         self.assertNotIn("勤務案件", edit_body)
-        self.assertNotIn("救護車設定", edit_body)
+        self.assertNotIn("救護各項設定", edit_body)
         self.assertNotIn("SinpoSmart - 救災救護Worker 後台", edit_body)
         self.assertIn("儲存修改", edit_body)
         self.assertIn('class="form-actions"', edit_body)
