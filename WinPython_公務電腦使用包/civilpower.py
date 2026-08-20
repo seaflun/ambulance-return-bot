@@ -261,7 +261,7 @@ def login_civilpower_and_get_driver(
     if debugger_port:
         options.add_argument(f"--remote-debugging-port={debugger_port}")
     options.add_experimental_option("detach", True)
-    driver = create_chrome_driver_with_retry(options, "民力系統")
+    driver = create_chrome_driver_with_retry(options, "民力系統", fresh_session=True)
     timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
     driver.set_page_load_timeout(timeout)
     driver.set_script_timeout(timeout)

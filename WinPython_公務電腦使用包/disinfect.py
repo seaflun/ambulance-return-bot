@@ -62,9 +62,8 @@ def login_and_get_driver(
     add_worker_chrome_options(options)
     if debugger_port:
         options.add_argument(f"--remote-debugging-port={debugger_port}")
-    options.add_experimental_option("detach", True)
 
-    driver = create_chrome_driver_with_retry(options, "緊急救護消毒")
+    driver = create_chrome_driver_with_retry(options, "緊急救護消毒", fresh_session=True)
     page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
     driver.set_page_load_timeout(page_timeout)
     driver.set_script_timeout(page_timeout)
@@ -103,8 +102,11 @@ def login_and_get_driver(
             detail = augment_failure_detail(str(exc), evidence)
         except Exception as capture_exc:
             detail = f"{exc} [failure_capture_error:{capture_exc.__class__.__name__}: {capture_exc}]"
-        if os.getenv("DISINFECTION_CLOSE_BROWSER_ON_LOGIN_FAILURE", "false").strip().lower() in {"1", "true", "yes", "on"}:
-            driver.quit()
+        if os.getenv("DISINFECTION_CLOSE_BROWSER_ON_LOGIN_FAILURE", "true").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                driver.quit()
+            except Exception as quit_exc:
+                print(f"[disinfection] driver quit skipped: {quit_exc}", flush=True)
         raise RuntimeError(f"消毒紀錄登入失敗：{detail}") from exc
 
 

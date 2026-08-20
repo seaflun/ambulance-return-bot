@@ -33,6 +33,8 @@ STARTUP_ERROR_MARKERS = (
     "no longer running",
 )
 
+_CHROME_START_LOCK = threading.Lock()
+
 
 class ChromeStartTimeoutError(TimeoutError):
     pass
@@ -45,10 +47,18 @@ def add_worker_chrome_options(options: Options) -> Options:
     return options
 
 
-def create_chrome_driver_with_retry(options: Options, label: str = "Chrome") -> webdriver.Chrome:
+def create_chrome_driver_with_retry(
+    options: Options,
+    label: str = "Chrome",
+    *,
+    fresh_session: bool = False,
+) -> webdriver.Chrome:
     attempts = max(int(os.getenv("SELENIUM_CHROME_START_ATTEMPTS", os.getenv("SELENIUM_LOCAL_SESSION_ATTEMPTS", "3"))), 1)
     delay_seconds = max(float(os.getenv("SELENIUM_CHROME_RETRY_DELAY_SECONDS", "2")), 0)
     last_error: Exception | None = None
+
+    if fresh_session:
+        _cleanup_fresh_worker_chrome_session(options, label)
 
     for attempt in range(1, attempts + 1):
         try:
@@ -77,6 +87,17 @@ def create_chrome_driver_with_retry(options: Options, label: str = "Chrome") -> 
     raise WebDriverException(f"{label} Chrome 啟動失敗，已重試 {attempts} 次：{_short_error(last_error)}") from last_error
 
 
+def _cleanup_fresh_worker_chrome_session(options: Options, label: str) -> None:
+    cleanup_label = f"{label} fresh session"
+    try:
+        killed = cleanup_worker_chrome_residue(options, cleanup_label)
+    except OSError as exc:
+        print(f"[chrome] {cleanup_label} residue cleanup skipped: {_short_error(exc)}", flush=True)
+        return
+    if killed:
+        print(f"[chrome] {cleanup_label} cleared {killed} matching process(es)", flush=True)
+
+
 def create_webdriver_chrome_with_timeout(
     options: Options,
     timeout_seconds: float | None = None,
@@ -85,22 +106,26 @@ def create_webdriver_chrome_with_timeout(
     timeout = _chrome_start_timeout_seconds() if timeout_seconds is None else max(float(timeout_seconds), 0.0)
     chrome_factory = factory or webdriver.Chrome
     if timeout <= 0:
-        return chrome_factory(options=options)
+        with _CHROME_START_LOCK:
+            return chrome_factory(options=options)
 
     result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
     timed_out = threading.Event()
 
     def _start() -> None:
-        try:
-            driver = chrome_factory(options=options)
-        except BaseException as exc:
-            if not timed_out.is_set():
-                result_queue.put(("error", exc))
-            return
-        if timed_out.is_set():
-            _quit_late_driver(driver)
-            return
-        result_queue.put(("driver", driver))
+        with _CHROME_START_LOCK:
+            if timed_out.is_set():
+                return
+            try:
+                driver = chrome_factory(options=options)
+            except BaseException as exc:
+                if not timed_out.is_set():
+                    result_queue.put(("error", exc))
+                return
+            if timed_out.is_set():
+                _quit_late_driver(driver)
+                return
+            result_queue.put(("driver", driver))
 
     thread = threading.Thread(target=_start, name="chrome-startup", daemon=True)
     thread.start()

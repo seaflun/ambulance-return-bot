@@ -93,8 +93,11 @@ class DisinfectionCredentialTests(unittest.TestCase):
 
         self.assertFalse(disinfect._is_logged_in(ErrorPageDriver()))
 
-    def test_login_failure_captures_task_and_vehicle_evidence_before_optional_quit(self):
+    def test_login_failure_captures_task_and_vehicle_evidence_and_closes_browser_by_default(self):
         class FakeDriver:
+            def __init__(self):
+                self.quit_calls = 0
+
             def set_page_load_timeout(self, _seconds):
                 pass
 
@@ -105,7 +108,7 @@ class DisinfectionCredentialTests(unittest.TestCase):
                 pass
 
             def quit(self):
-                pass
+                self.quit_calls += 1
 
         request = AmbulanceReturnRequest(
             task_id="disinfection-login",
@@ -123,7 +126,7 @@ class DisinfectionCredentialTests(unittest.TestCase):
             disinfect,
             "create_chrome_driver_with_retry",
             return_value=driver,
-        ), patch.object(
+        ) as create_driver, patch.object(
             disinfect,
             "apply_tile",
         ), patch.object(
@@ -145,6 +148,57 @@ class DisinfectionCredentialTests(unittest.TestCase):
         self.assertEqual(capture.call_args.args[2], request.task_id)
         self.assertEqual(capture.call_args.args[3], "disinfection")
         self.assertEqual(capture.call_args.kwargs["vehicle"], request.vehicle)
+        self.assertTrue(create_driver.call_args.kwargs["fresh_session"])
+        self.assertEqual(driver.quit_calls, 1)
+
+    def test_login_failure_preserves_evidence_when_browser_quit_fails(self):
+        class FakeDriver:
+            def set_page_load_timeout(self, _seconds):
+                pass
+
+            def set_script_timeout(self, _seconds):
+                pass
+
+            def get(self, _url):
+                pass
+
+            def quit(self):
+                raise RuntimeError("quit failed")
+
+        request = AmbulanceReturnRequest(
+            task_id="disinfection-login-quit-failure",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        credential = SimpleNamespace(user_id="worker", password="secret")
+        with patch.dict(
+            os.environ, {"DISINFECTION_CLOSE_BROWSER_ON_LOGIN_FAILURE": "true"}
+        ), patch.object(
+            disinfect,
+            "_disinfection_credential_attempts",
+            return_value=[(credential, "同步帳號")],
+        ), patch.object(
+            disinfect,
+            "create_chrome_driver_with_retry",
+            return_value=FakeDriver(),
+        ), patch.object(
+            disinfect,
+            "apply_tile",
+        ), patch.object(
+            disinfect,
+            "_login_once",
+            side_effect=RuntimeError("Chrome not reachable"),
+        ), patch.object(
+            disinfect,
+            "capture_failure_artifacts",
+            return_value={"category": "chrome_unresponsive", "reason": "Chrome 無回應"},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "browser_failure:chrome_unresponsive"):
+                disinfect.login_and_get_driver(
+                    request=request,
+                    artifacts_dir=Path(self.tmp.name),
+                )
 
 
 if __name__ == "__main__":

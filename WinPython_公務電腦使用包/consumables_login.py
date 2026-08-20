@@ -82,7 +82,7 @@ def login_acs_and_get_driver(
         options.add_argument(f"--remote-debugging-port={debugger_port}")
     options.add_experimental_option("detach", True)
 
-    driver = create_chrome_driver_with_retry(options, "一站通耗材")
+    driver = create_chrome_driver_with_retry(options, "一站通耗材", fresh_session=True)
     page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
     driver.set_page_load_timeout(page_timeout)
     driver.set_script_timeout(page_timeout)

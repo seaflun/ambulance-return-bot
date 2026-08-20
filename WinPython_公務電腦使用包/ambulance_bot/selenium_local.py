@@ -240,6 +240,7 @@ def run_local_selenium_task(
         "no",
         "off",
     }
+    close_driver_on_exit = not keep_browser_open
 
     try:
         if use_session_lock:
@@ -252,6 +253,7 @@ def run_local_selenium_task(
             profile_name=profile_name,
             debugger_port=debugger_port,
             attach_existing=not force_new_driver,
+            fresh_session=force_new_driver,
         )
         driver_ready = True
         mark_driver_operation_active(driver)
@@ -266,10 +268,14 @@ def run_local_selenium_task(
             summary_path,
             **({"cancel_check": cancel_check} if cancel_check is not None else {}),
         )
+        if not result.ok:
+            close_driver_on_exit = True
         return result
     except TaskCancellationError:
+        close_driver_on_exit = True
         raise
     except Exception as exc:
+        close_driver_on_exit = True
         detail = f"\u6d88\u9632\u52e4\u52d9\u5de5\u4f5c\u7d00\u9304\u64cd\u4f5c\u5931\u6557\uff1a{exc}"
         if driver is not None:
             detail = _detail_with_failure_evidence(
@@ -297,7 +303,7 @@ def run_local_selenium_task(
         )
     finally:
         mark_driver_operation_active(driver, False)
-        if not keep_browser_open:
+        if close_driver_on_exit:
             _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"task {request.task_id}")
@@ -331,13 +337,13 @@ def run_vehicle_mileage_task(
     started_at = time.monotonic()
     driver = existing_driver
     lock_acquired = False
-    owns_driver = existing_driver is None
     keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
         "0",
         "false",
         "no",
         "off",
     }
+    close_driver_on_exit = not keep_browser_open
 
     try:
         if use_session_lock:
@@ -350,6 +356,7 @@ def run_vehicle_mileage_task(
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 attach_existing=not force_new_driver,
+                fresh_session=force_new_driver,
             )
         mark_driver_operation_active(driver)
         apply_tile(driver, tile_name)
@@ -370,8 +377,10 @@ def run_vehicle_mileage_task(
         )
         return SeleniumRunResult(True, status, detail, summary_path)
     except TaskCancellationError:
+        close_driver_on_exit = True
         raise
     except Exception as exc:
+        close_driver_on_exit = True
         detail = f"車輛里程操作失敗：{exc}"
         if driver is not None:
             detail = _detail_with_failure_evidence(
@@ -387,7 +396,7 @@ def run_vehicle_mileage_task(
         return SeleniumRunResult(False, "vehicle_mileage_failed", detail, summary_path)
     finally:
         mark_driver_operation_active(driver, False)
-        if owns_driver and not keep_browser_open:
+        if close_driver_on_exit:
             _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"vehicle_mileage {request.task_id}")
@@ -421,13 +430,13 @@ def run_fuel_record_task(
     started_at = time.monotonic()
     driver = existing_driver
     lock_acquired = False
-    owns_driver = existing_driver is None
     keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
         "0",
         "false",
         "no",
         "off",
     }
+    close_driver_on_exit = not keep_browser_open
 
     try:
         if use_session_lock:
@@ -440,6 +449,7 @@ def run_fuel_record_task(
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 attach_existing=not force_new_driver,
+                fresh_session=force_new_driver,
             )
         mark_driver_operation_active(driver)
         apply_tile(driver, tile_name)
@@ -460,8 +470,10 @@ def run_fuel_record_task(
         )
         return SeleniumRunResult(True, status, detail, summary_path)
     except TaskCancellationError:
+        close_driver_on_exit = True
         raise
     except Exception as exc:
+        close_driver_on_exit = True
         detail = f"加油紀錄操作失敗：{exc}"
         if driver is not None:
             detail = _detail_with_failure_evidence(
@@ -477,7 +489,7 @@ def run_fuel_record_task(
         return SeleniumRunResult(False, "fuel_record_failed", detail, summary_path)
     finally:
         mark_driver_operation_active(driver, False)
-        if owns_driver and not keep_browser_open:
+        if close_driver_on_exit:
             _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"fuel_record {request.task_id}")
@@ -511,13 +523,13 @@ def run_disinfection_task(
     started_at = time.monotonic()
     driver = existing_driver
     lock_acquired = False
-    owns_driver = existing_driver is None
     keep_browser_open = os.getenv("WORKER_KEEP_BROWSER_OPEN_ON_TASK", "true").strip().lower() not in {
         "0",
         "false",
         "no",
         "off",
     }
+    close_driver_on_exit = not keep_browser_open
 
     try:
         if use_session_lock:
@@ -530,6 +542,7 @@ def run_disinfection_task(
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 attach_existing=not force_new_driver,
+                fresh_session=force_new_driver,
             )
         mark_driver_operation_active(driver)
         apply_tile(driver, tile_name)
@@ -549,8 +562,10 @@ def run_disinfection_task(
         )
         return SeleniumRunResult(True, status, detail, summary_path)
     except TaskCancellationError:
+        close_driver_on_exit = True
         raise
     except Exception as exc:
+        close_driver_on_exit = True
         detail = f"消毒紀錄操作失敗：{exc}"
         if driver is not None:
             detail = _detail_with_failure_evidence(
@@ -566,7 +581,7 @@ def run_disinfection_task(
         return SeleniumRunResult(False, "disinfection_failed", detail, summary_path)
     finally:
         mark_driver_operation_active(driver, False)
-        if owns_driver and not keep_browser_open:
+        if close_driver_on_exit:
             _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"disinfection {request.task_id}")
@@ -888,9 +903,12 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
 def _quit_driver(driver: webdriver.Chrome | None) -> None:
     if driver is None:
         return
+    quit_driver = getattr(driver, "quit", None)
+    if not callable(quit_driver):
+        return
     try:
-        driver.quit()
-    except WebDriverException as exc:
+        quit_driver()
+    except Exception as exc:
         print(f"[selenium] driver quit skipped: {exc}", flush=True)
 
 
@@ -900,6 +918,7 @@ def _create_driver(
     debugger_port: int | None = None,
     attach_existing: bool = False,
     headless: bool = False,
+    fresh_session: bool = False,
 ) -> webdriver.Chrome:
     remote_url = os.getenv("SELENIUM_REMOTE_URL", "").strip()
     if remote_url:
@@ -934,7 +953,12 @@ def _create_driver(
     options.add_argument("--no-default-browser-check")
     if debugger_port and not headless:
         options.add_argument(f"--remote-debugging-port={debugger_port}")
-    if not headless and os.getenv("SELENIUM_DETACH", "true").strip().lower() not in {"0", "false", "no", "off"}:
+    if fresh_session:
+        try:
+            cleanup_worker_chrome_residue(options, f"{profile_name} fresh session")
+        except OSError as exc:
+            print(f"[selenium] fresh session residue cleanup skipped: {_short_webdriver_error(exc)}", flush=True)
+    if not fresh_session and not headless and os.getenv("SELENIUM_DETACH", "true").strip().lower() not in {"0", "false", "no", "off"}:
         options.add_experimental_option("detach", True)
     driver = _create_local_driver_with_retry(options)
     if not headless:

@@ -1042,11 +1042,20 @@ class SeleniumLocalTests(unittest.TestCase):
         )
 
         class FakeDriver:
+            def __init__(self):
+                self.quit_calls = 0
+
             def implicitly_wait(self, _seconds):
                 pass
 
-        with tempfile.TemporaryDirectory() as tmp, patch.object(
-            selenium_local_module, "_create_driver", return_value=FakeDriver()
+            def quit(self):
+                self.quit_calls += 1
+
+        driver = FakeDriver()
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"WORKER_KEEP_BROWSER_OPEN_ON_TASK": "true"}
+        ), patch.object(
+            selenium_local_module, "_create_driver", return_value=driver
         ), patch.object(selenium_local_module, "apply_tile"), patch.object(
             selenium_local_module, "_set_window_size_if_enabled"
         ), patch.object(
@@ -1057,6 +1066,7 @@ class SeleniumLocalTests(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "duty_work_log_failed")
+        self.assertEqual(driver.quit_calls, 1)
 
     def test_all_four_selenium_wrappers_capture_failure_evidence(self):
         request = AmbulanceReturnRequest(
@@ -1134,6 +1144,116 @@ class SeleniumLocalTests(unittest.TestCase):
                 self.assertEqual(capture.call_args.args[3], site_key)
                 self.assertEqual(capture.call_args.kwargs["vehicle"], request.vehicle)
                 self.assertIn("[browser_failure:web_renderer_timeout]", result.detail)
+
+    def test_owned_fresh_drivers_close_after_site_failure(self):
+        request = AmbulanceReturnRequest(
+            task_id="close-failed-fresh-driver",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+
+        class FakeDriver:
+            def __init__(self):
+                self.quit_calls = 0
+
+            def implicitly_wait(self, _seconds):
+                pass
+
+            def quit(self):
+                self.quit_calls += 1
+
+        cases = (
+            (selenium_local_module.run_local_selenium_task, "_prepare_duty_work_log_form"),
+            (selenium_local_module.run_vehicle_mileage_task, "_open_vehicle_mileage_page"),
+            (selenium_local_module.run_fuel_record_task, "_open_fuel_record_page"),
+            (selenium_local_module.run_disinfection_task, "_open_disinfection_page"),
+        )
+        evidence = {"category": "chrome_unresponsive", "reason": "Chrome 無回應"}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"WORKER_KEEP_BROWSER_OPEN_ON_TASK": "true"}
+        ), patch.object(
+            selenium_local_module, "mark_driver_operation_active"
+        ), patch.object(selenium_local_module, "apply_tile"), patch.object(
+            selenium_local_module, "_set_window_size_if_enabled"
+        ):
+            for runner, open_name in cases:
+                driver = FakeDriver()
+                with self.subTest(runner=runner.__name__), patch.object(
+                    selenium_local_module, "_create_driver", return_value=driver
+                ), patch.object(
+                    selenium_local_module,
+                    open_name,
+                    side_effect=RuntimeError("Chrome not reachable"),
+                ), patch.object(
+                    selenium_local_module,
+                    "capture_failure_artifacts",
+                    return_value=evidence,
+                ):
+                    result = runner(
+                        request,
+                        Path(tmp),
+                        use_session_lock=False,
+                        force_new_driver=True,
+                    )
+
+                self.assertFalse(result.ok)
+                self.assertEqual(driver.quit_calls, 1)
+
+    def test_existing_driver_closes_after_site_failure(self):
+        request = AmbulanceReturnRequest(
+            task_id="close-failed-existing-driver",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+
+        class FakeDriver:
+            def __init__(self):
+                self.quit_calls = 0
+
+            def implicitly_wait(self, _seconds):
+                pass
+
+            def quit(self):
+                self.quit_calls += 1
+
+        cases = (
+            (selenium_local_module.run_vehicle_mileage_task, "_open_vehicle_mileage_page"),
+            (selenium_local_module.run_fuel_record_task, "_open_fuel_record_page"),
+            (selenium_local_module.run_disinfection_task, "_open_disinfection_page"),
+        )
+        evidence = {"category": "chrome_unresponsive", "reason": "Chrome 無回應"}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"WORKER_KEEP_BROWSER_OPEN_ON_TASK": "true"}
+        ), patch.object(
+            selenium_local_module, "mark_driver_operation_active"
+        ), patch.object(selenium_local_module, "apply_tile"), patch.object(
+            selenium_local_module, "_set_window_size_if_enabled"
+        ):
+            for runner, open_name in cases:
+                driver = FakeDriver()
+                with self.subTest(runner=runner.__name__), patch.object(
+                    selenium_local_module,
+                    open_name,
+                    side_effect=RuntimeError("Chrome not reachable"),
+                ), patch.object(
+                    selenium_local_module,
+                    "capture_failure_artifacts",
+                    return_value=evidence,
+                ):
+                    result = runner(
+                        request,
+                        Path(tmp),
+                        existing_driver=driver,
+                        use_session_lock=False,
+                    )
+
+                self.assertFalse(result.ok)
+                self.assertEqual(driver.quit_calls, 1)
+
     def test_ppe_option_records_decode_unicode_driver_names(self):
         source = 'dataSource: [{"DeptSeq":null,"Value":"2448","Text":"\\u90ED\\u570B\\u5075"}]'
 
@@ -1791,6 +1911,54 @@ class SeleniumLocalTests(unittest.TestCase):
             self.assertEqual(removed, [])
             self.assertTrue(locked_main.exists())
 
+    def test_fresh_driver_cleans_matching_residue_and_disables_detach(self):
+        class FakeDriver:
+            def set_page_load_timeout(self, _seconds):
+                pass
+
+            def set_script_timeout(self, _seconds):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            root.mkdir()
+            with patch.dict(
+                os.environ,
+                {
+                    "SELENIUM_PROFILE_ROOT": str(root),
+                    "SELENIUM_REMOTE_URL": "",
+                    "SELENIUM_DETACH": "true",
+                },
+            ), patch.object(
+                selenium_local_module,
+                "_create_local_driver_with_retry",
+                return_value=FakeDriver(),
+            ) as create_driver, patch.object(
+                selenium_local_module,
+                "cleanup_worker_chrome_residue",
+                return_value=1,
+            ) as cleanup, patch.object(
+                selenium_local_module,
+                "schedule_driver_auto_close",
+            ):
+                driver = _create_driver(
+                    Path(tmp),
+                    profile_name="vehicle_mileage_profile_task-new",
+                    fresh_session=True,
+                )
+
+        self.assertIsInstance(driver, FakeDriver)
+        options = create_driver.call_args.args[0]
+        self.assertIn(
+            f"--user-data-dir={root / 'vehicle_mileage_profile_task-new'}",
+            options.arguments,
+        )
+        cleanup.assert_called_once_with(
+            options,
+            "vehicle_mileage_profile_task-new fresh session",
+        )
+        self.assertNotIn("detach", options.experimental_options)
+
     def test_create_driver_cleans_stale_profiles_before_starting_chrome(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "profiles"
@@ -2270,7 +2438,7 @@ class SeleniumLocalTests(unittest.TestCase):
                 return FakeDriver()
 
             selenium_local_module.webdriver.Chrome = fake_chrome
-            selenium_local_module.time.sleep = lambda seconds: calls["sleep"].append(seconds)
+            selenium_local_module.time.sleep = lambda seconds: calls["sleep"].append(seconds) or original_sleep(0.06)
             selenium_local_module.cleanup_worker_chrome_residue = lambda opts, label="Chrome": cleanups.append((opts, label)) or 0
 
             result = _create_local_driver_with_retry(options)

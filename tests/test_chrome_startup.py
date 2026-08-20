@@ -1,4 +1,5 @@
 import os
+import threading
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -11,6 +12,102 @@ import ambulance_bot.chrome_startup as chrome_startup
 
 
 class ChromeStartupTests(unittest.TestCase):
+    def test_serializes_concurrent_chrome_start_factories(self):
+        active = 0
+        maximum_active = 0
+        calls = 0
+        count_lock = threading.Lock()
+        first_started = threading.Event()
+        second_started = threading.Event()
+        release = threading.Event()
+        results = []
+        errors = []
+
+        def fake_chrome(options=None):
+            nonlocal active, maximum_active, calls
+            with count_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+                calls += 1
+                call_number = calls
+            if call_number == 1:
+                first_started.set()
+            else:
+                second_started.set()
+            release.wait(timeout=1)
+            with count_lock:
+                active -= 1
+            return object()
+
+        def start_driver():
+            try:
+                results.append(
+                    chrome_startup.create_webdriver_chrome_with_timeout(
+                        object(),
+                        timeout_seconds=1,
+                        factory=fake_chrome,
+                    )
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        first = threading.Thread(target=start_driver)
+        second = threading.Thread(target=start_driver)
+        try:
+            first.start()
+            self.assertTrue(first_started.wait(timeout=0.2))
+            second.start()
+            self.assertFalse(second_started.wait(timeout=0.1))
+        finally:
+            release.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(maximum_active, 1)
+
+    def test_timeout_waiting_for_start_slot_does_not_create_chrome_later(self):
+        lock = chrome_startup._CHROME_START_LOCK
+        factory_called = threading.Event()
+        self.assertTrue(lock.acquire(timeout=1))
+        try:
+            with self.assertRaises(chrome_startup.ChromeStartTimeoutError):
+                chrome_startup.create_webdriver_chrome_with_timeout(
+                    object(),
+                    timeout_seconds=0.01,
+                    factory=lambda options=None: factory_called.set() or object(),
+                )
+        finally:
+            lock.release()
+
+        self.assertFalse(factory_called.wait(timeout=0.1))
+
+    def test_fresh_session_cleans_matching_browser_before_starting_chrome(self):
+        options = Options()
+        options.add_argument(r"--user-data-dir=C:\runtime\profiles\vehicle_mileage_profile_task_a")
+        calls = []
+        driver = object()
+
+        with mock.patch.object(
+            chrome_startup,
+            "cleanup_worker_chrome_residue",
+            side_effect=lambda actual_options, label="Chrome": calls.append(("cleanup", actual_options, label)) or 1,
+        ), mock.patch.object(
+            chrome_startup,
+            "create_webdriver_chrome_with_timeout",
+            side_effect=lambda actual_options: calls.append(("start", actual_options)) or driver,
+        ), mock.patch.object(chrome_startup, "schedule_driver_auto_close"):
+            result = chrome_startup.create_chrome_driver_with_retry(
+                options,
+                "vehicle mileage",
+                fresh_session=True,
+            )
+
+        self.assertIs(result, driver)
+        self.assertEqual(calls[0], ("cleanup", options, "vehicle mileage fresh session"))
+        self.assertEqual(calls[1], ("start", options))
+
     def test_cleanup_only_targets_chromedriver_that_owns_matching_worker_chrome(self):
         class FakeOptions:
             arguments = [r"--user-data-dir=C:\runtime\profiles\vehicle_mileage_profile_task_a"]
@@ -158,7 +255,7 @@ class ChromeStartupTests(unittest.TestCase):
         options = object()
         try:
             os.environ["SELENIUM_CHROME_START_ATTEMPTS"] = "2"
-            os.environ["SELENIUM_CHROME_RETRY_DELAY_SECONDS"] = "0"
+            os.environ["SELENIUM_CHROME_RETRY_DELAY_SECONDS"] = "0.06"
             os.environ["SELENIUM_CHROME_START_TIMEOUT_SECONDS"] = "0.01"
 
             def fake_chrome(options=None):
