@@ -451,7 +451,11 @@ def create_task():
             selected_consumable_packages=selected_consumable_packages_from_form(request.form),
             two_vehicle_available=form_flag_enabled(request.form.get("two_vehicle_available")) or task_request.two_vehicle,
         ), 400
-    existing = existing_task_for_case(task_request.case_id, "ems")
+    existing = existing_task_for_case(
+        task_request.case_id,
+        "ems",
+        [entry.vehicle for entry in task_request.effective_vehicle_entries()],
+    )
     if existing:
         existing_task_id = str(dict(existing.get("task") or {}).get("task_id") or "")
         return redirect(url_for("task_detail", task_id=existing_task_id))
@@ -5618,9 +5622,30 @@ def duty_item_reason_options() -> dict[str, list[str]]:
     }
 
 
-def case_entry_status_index(service_type: str = "ems") -> set[str]:
+def task_vehicle_identifiers(task: dict) -> list[str]:
+    raw_entries = task.get("vehicle_entries")
+    entries = raw_entries if isinstance(raw_entries, list) and raw_entries else [task]
+    vehicles: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        vehicle = str(entry.get("vehicle") or "").strip()
+        if vehicle and vehicle not in vehicles:
+            vehicles.append(vehicle)
+    return vehicles
+
+
+def case_entry_status_label(vehicles: list[str]) -> str:
+    labels = []
+    for vehicle in vehicles:
+        suffix = vehicle.removeprefix("新坡")
+        labels.append(f"{suffix}車已建立" if suffix.isdigit() else f"{vehicle}已建立")
+    return "、".join(labels) or "已建立"
+
+
+def case_entry_status_index(service_type: str = "ems") -> dict[str, list[str]]:
     normalized_service = "disaster" if str(service_type).strip().lower() == "disaster" else "ems"
-    case_ids: set[str] = set()
+    case_vehicles: dict[str, list[str]] = {}
     payloads = list(store.list_recent(limit=100000)) + list(public_pc_reports())
     for payload in payloads:
         task = payload.get("task") if isinstance(payload, dict) else None
@@ -5635,27 +5660,31 @@ def case_entry_status_index(service_type: str = "ems") -> set[str]:
             continue
         case_id = str(task.get("case_id") or "").strip()
         if case_id:
-            case_ids.add(case_id)
-    return case_ids
+            vehicles = case_vehicles.setdefault(case_id, [])
+            for vehicle in task_vehicle_identifiers(task):
+                if vehicle not in vehicles:
+                    vehicles.append(vehicle)
+    return case_vehicles
 
 
 def prepared_case_lookup(service_type: str = "ems") -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
     raw_cases = case_lookup.get("cases") or []
-    existing_case_ids = case_entry_status_index(service_type) if raw_cases else set()
-    cases = [
-        {
-            **case,
-            "entry_status": (
-                "established"
-                if str(case.get("case_id") or "").strip() in existing_case_ids
-                else "unestablished"
-            ),
-        }
-        for case in raw_cases
-        if isinstance(case, dict)
-    ]
+    existing_cases = case_entry_status_index(service_type) if raw_cases else {}
+    cases = []
+    for case in raw_cases:
+        if not isinstance(case, dict):
+            continue
+        case_id = str(case.get("case_id") or "").strip()
+        vehicles = existing_cases.get(case_id)
+        cases.append(
+            {
+                **case,
+                "entry_status": "established" if case_id in existing_cases else "unestablished",
+                "entry_status_label": case_entry_status_label(vehicles) if vehicles is not None else "尚未建立",
+            }
+        )
     if _case_lookup_start_error:
         case_lookup["detail"] = _case_lookup_start_error
         case_lookup["is_running"] = False
@@ -5805,9 +5834,18 @@ def validate_task_form(task_request) -> list[str]:
     return errors
 
 
-def existing_task_for_case(case_id: str, service_type: str = "ems") -> dict | None:
+def existing_task_for_case(
+    case_id: str,
+    service_type: str = "ems",
+    vehicles: list[str] | None = None,
+) -> dict | None:
     normalized = str(case_id or "").strip()
     normalized_service_type = str(service_type or "ems").strip().lower()
+    normalized_vehicles = {
+        str(vehicle or "").strip()
+        for vehicle in vehicles or []
+        if str(vehicle or "").strip()
+    }
     if not normalized:
         return None
     for payload in store.list_recent(limit=100000):
@@ -5816,6 +5854,8 @@ def existing_task_for_case(case_id: str, service_type: str = "ems") -> dict | No
             str(task.get("service_type") or "ems").strip().lower() == normalized_service_type
             and str(task.get("case_id") or "").strip() == normalized
         ):
+            if normalized_vehicles and normalized_vehicles.isdisjoint(task_vehicle_identifiers(task)):
+                continue
             return payload
     return None
 

@@ -3433,7 +3433,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("請先從上方案件按「帶入」", body)
         self.assertNotIn('id="task-form"', body)
 
-    def test_create_task_prevents_duplicate_case_submission(self):
+    def test_create_task_prevents_duplicate_vehicle_submission(self):
         data = self.valid_task_data(case_id="EMS-DUPLICATE-1")
 
         first = self.client.post("/tasks", data=data, follow_redirects=False)
@@ -3442,6 +3442,23 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(302, first.status_code)
         self.assertEqual(first.headers["Location"], second.headers["Location"])
         self.assertEqual(1, len(self.store.list_recent()))
+
+    def test_create_task_allows_same_case_for_different_vehicles(self):
+        first = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(case_id="EMS-TWO-VEHICLE-1", vehicle="新坡93"),
+            follow_redirects=False,
+        )
+        second = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(case_id="EMS-TWO-VEHICLE-1", vehicle="新坡92"),
+            follow_redirects=False,
+        )
+
+        self.assertEqual(302, first.status_code)
+        self.assertEqual(302, second.status_code)
+        self.assertNotEqual(first.headers["Location"], second.headers["Location"])
+        self.assertEqual(2, len(self.store.list_recent()))
 
     def test_create_disaster_task_builds_folders_before_storing_and_prevents_duplicate_case(self):
         data = MultiDict([
@@ -6338,7 +6355,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("服勤人員：王小明", body)
         self.assertLess(body.index("已查到 2 筆"), body.index('<div class="case-list">'))
 
-    def test_case_lookup_marks_established_status_per_service_before_import_button(self):
+    def test_case_lookup_shows_established_vehicle_per_service_before_import_button(self):
         self.store.create(
             AmbulanceReturnRequest(
                 task_id="ems-case-status",
@@ -6347,7 +6364,7 @@ class WebAppTests(unittest.TestCase):
                 service_type="ems",
                 case_id="case-ems-status",
                 case_address="桃園市觀音區救護狀態路1號",
-                vehicle="新坡91",
+                vehicle="新坡93",
             )
         )
         self.store.create(
@@ -6388,10 +6405,12 @@ class WebAppTests(unittest.TestCase):
         ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
         disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
 
-        self.assertEqual(1, ems_body.count("已建立"))
+        self.assertIn("93車已建立", ems_body)
         self.assertEqual(2, ems_body.count("尚未建立"))
-        self.assertEqual(1, disaster_body.count("已建立"))
+        self.assertNotIn("11車已建立", ems_body)
+        self.assertIn("11車已建立", disaster_body)
         self.assertEqual(2, disaster_body.count("尚未建立"))
+        self.assertNotIn("93車已建立", disaster_body)
         self.assertLess(
             ems_body.index("case-entry-status"),
             ems_body.index('action="/cases/import"'),
