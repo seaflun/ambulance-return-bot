@@ -6841,7 +6841,8 @@ class WebAppTests(unittest.TestCase):
         self.client.set_cookie(app_module.SELECTED_CASE_PENDING_COOKIE, "1")
         body = html.unescape(self.client.get("/app").data.decode("utf-8"))
         self.assertIn('id="volunteer-assist-toggle"', body)
-        self.assertIn("<h2>民力系統(測試中)</h2>", body)
+        self.assertIn("<h2>民力系統</h2>", body)
+        self.assertNotIn("民力系統(測試中)", body)
         self.assertIn(">救護義消協勤<", body)
         self.assertIn('id="volunteer-assist-unit" aria-label="所屬單位" disabled', body)
         self.assertIn('<option value="大園救護分隊" selected>大園救護分隊</option>', body)
@@ -6850,6 +6851,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="volunteer-assist-required-mark"', body)
         self.assertIn('volunteerAssistMember.required = enabled;', body)
         self.assertNotIn('id="volunteer-assist-roster-status"', body)
+        self.assertNotIn('data-civilpower-roster-divider', body)
         self.assertIn(f'value="{member_id}"', body)
         self.assertNotIn("排除顧問", body)
         self.assertNotIn("排除技術顧問", body)
@@ -7064,11 +7066,24 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("救護義消名冊", settings_body)
         self.assertIn('value="常用義消" checked', settings_body)
         self.assertNotIn("小隊長", settings_body)
+        self.assertIn(
+            ".civilpower-member-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 12px; }",
+            settings_body,
+        )
+        self.assertIn("min-height: 38px;", settings_body)
+        self.assertIn("padding: 7px 9px;", settings_body)
 
         os.environ["WORKER_SERVER_URL"] = ""
         self.import_case_for_form(self.valid_task_data())
         form_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
-        self.assertLess(form_body.index('value="常用義消"'), form_body.index('value="一般義消"'))
+        frequent_index = form_body.index('value="常用義消"')
+        divider_index = form_body.index('data-civilpower-roster-divider')
+        other_index = form_body.index('value="一般義消"')
+        self.assertIn('<optgroup label="常出勤人員">', form_body)
+        self.assertIn('<hr data-civilpower-roster-divider>', form_body)
+        self.assertIn('<optgroup label="其他人員">', form_body)
+        self.assertLess(frequent_index, divider_index)
+        self.assertLess(divider_index, other_index)
         self.assertNotIn("常用義消（", form_body)
 
     def test_volunteer_assist_can_run_independently_after_duty_work_log(self):
