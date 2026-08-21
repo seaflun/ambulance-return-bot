@@ -6420,12 +6420,25 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/app")
         body = html.unescape(response.data.decode("utf-8"))
 
-        css = self.client.get("/static/sinposmart-ui.css").data.decode("utf-8")
+        css_response = self.client.get("/static/sinposmart-ui.css")
+        css = css_response.data.decode("utf-8")
+        css_response.close()
+        workspace_css_response = self.client.get("/static/sinposmart-workspace.css")
+        workspace_css = workspace_css_response.data.decode("utf-8")
+        workspace_css_response.close()
         self.assertIn(".page-chrome {\n    align-items: stretch;\n    flex-direction: column;", css)
         self.assertIn(".page-chrome__actions .button {\n    width: 100%;", css)
         self.assertIn(".lookup-form { display: grid; grid-template-columns: 1fr; gap: 8px; width: 100%; }", body)
         self.assertIn(".time-field { grid-template-columns: 1fr; }", body)
         self.assertIn('.return-time-field input[name="return_date"] { grid-column: 1 / -1; }', body)
+        self.assertIn(
+            "@media (max-width: 560px) {\n"
+            "  .workspace-page--ems-task .case-card {\n"
+            "    grid-template-columns: minmax(0, 1fr);\n"
+            "    align-items: stretch;\n"
+            "  }",
+            workspace_css,
+        )
 
     def test_localhost_query_cases_starts_local_lookup_when_fast_mode_auto(self):
         calls = []

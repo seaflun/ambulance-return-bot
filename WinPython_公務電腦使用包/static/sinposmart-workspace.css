@@ -697,6 +697,11 @@ body.workspace-page--ems-settings {
 }
 
 @media (max-width: 560px) {
+  .workspace-page--ems-task .case-card {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
   .workspace-page .package-cluster {
     align-items: stretch;
     flex-direction: column;
