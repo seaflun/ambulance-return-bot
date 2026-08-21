@@ -59,6 +59,113 @@ class ConsumablesLoginTests(unittest.TestCase):
         self.assertEqual(capture.call_args.args[3], "consumables")
         self.assertEqual(capture.call_args.kwargs["vehicle"], request.vehicle)
 
+    def test_consumable_maintenance_page_waits_for_target_before_retrying(self):
+        class FakeElement:
+            text = "救急救難一站通首頁"
+
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS13001"
+                self.opened_urls = []
+
+            def get(self, url):
+                self.opened_urls.append(url)
+                self.current_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS13001"
+
+            def execute_script(self, _script):
+                return "complete"
+
+            def find_elements(self, _by, _value):
+                return []
+
+            def find_element(self, _by, _value):
+                return FakeElement()
+
+        class FakeWait:
+            def __init__(self, driver):
+                self.driver = driver
+                self.calls = 0
+
+            def until(self, predicate):
+                self.calls += 1
+                if predicate(self.driver):
+                    return True
+                self.driver.current_url = consumables_login_module.ACS_URL
+                return predicate(self.driver)
+
+        driver = FakeDriver()
+        wait = FakeWait(driver)
+        with patch.object(consumables_login_module.time, "sleep"):
+            consumables_login_module._open_consumable_maintenance_page(driver, wait)
+
+        self.assertEqual(driver.opened_urls, [consumables_login_module.ACS_URL])
+        self.assertEqual(wait.calls, 1)
+
+    def test_consumable_maintenance_navigation_error_includes_current_url(self):
+        class FakeDriver:
+            current_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS13001"
+
+            def __init__(self):
+                self.opened_urls = []
+
+            def get(self, url):
+                self.opened_urls.append(url)
+                raise RuntimeError("Message:")
+
+        driver = FakeDriver()
+        with self.assertRaisesRegex(RuntimeError, "ACS15001.*ACS13001.*RuntimeError.*Message"):
+            consumables_login_module._open_consumable_maintenance_page(driver, Mock())
+
+        self.assertEqual(driver.opened_urls, [consumables_login_module.ACS_URL])
+
+    def test_acs_system_waits_for_landing_page_before_clicking_card(self):
+        class Card:
+            def __init__(self, driver):
+                self.driver = driver
+
+            def click(self):
+                self.driver.ready_state_at_click = self.driver.last_ready_state
+                self.driver.current_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS13001"
+
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = "https://nfaemsap3.nfa.gov.tw/SSO/landing"
+                self.last_ready_state = ""
+                self.ready_state_at_click = ""
+                self.ready_states = iter(("interactive", "complete", "complete"))
+                self.card = Card(self)
+
+            def execute_script(self, _script):
+                self.last_ready_state = next(self.ready_states)
+                return self.last_ready_state
+
+            def find_elements(self, _by, value):
+                if "ACS.jpg" in value:
+                    return [self.card]
+                return []
+
+        class FakeWait:
+            def __init__(self, driver):
+                self.driver = driver
+
+            def until(self, predicate):
+                for _ in range(3):
+                    result = predicate(self.driver)
+                    if result:
+                        return result
+                raise AssertionError("condition did not become true")
+
+        driver = FakeDriver()
+        wait = FakeWait(driver)
+        with patch.object(consumables_login_module, "_open_consumable_maintenance_page") as open_page, patch.object(
+            consumables_login_module.time,
+            "sleep",
+        ):
+            consumables_login_module._open_acs_system(driver, wait)
+
+        self.assertEqual(driver.ready_state_at_click, "complete")
+        open_page.assert_called_once_with(driver, wait)
+
     def test_consumables_case_identity_change_fails_before_opening_maintenance_page(self):
         previous = AmbulanceReturnRequest(
             task_id="consumables-case-change",

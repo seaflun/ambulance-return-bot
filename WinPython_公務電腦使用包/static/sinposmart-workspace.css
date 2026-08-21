@@ -696,6 +696,13 @@ body.workspace-page--ems-settings {
   }
 }
 
+@media (max-width: 700px) {
+  .workspace-page--disaster-task .case-card {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+}
+
 @media (max-width: 560px) {
   .workspace-page--ems-task .case-card {
     grid-template-columns: minmax(0, 1fr);

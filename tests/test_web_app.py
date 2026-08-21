@@ -6440,6 +6440,24 @@ class WebAppTests(unittest.TestCase):
             workspace_css,
         )
 
+    def test_disaster_mobile_case_cards_stack_below_desktop_breakpoint(self):
+        response = self.client.get("/app/disaster")
+        body = html.unescape(response.data.decode("utf-8"))
+        response.close()
+        workspace_css_response = self.client.get("/static/sinposmart-workspace.css")
+        workspace_css = workspace_css_response.data.decode("utf-8")
+        workspace_css_response.close()
+
+        self.assertIn('workspace-page--disaster-task', body)
+        self.assertIn(
+            "@media (max-width: 700px) {\n"
+            "  .workspace-page--disaster-task .case-card {\n"
+            "    grid-template-columns: minmax(0, 1fr);\n"
+            "    align-items: stretch;\n"
+            "  }",
+            workspace_css,
+        )
+
     def test_localhost_query_cases_starts_local_lookup_when_fast_mode_auto(self):
         calls = []
         os.environ["DESKTOP_FAST_MODE"] = "auto"
@@ -8498,6 +8516,151 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["Location"], "/admin/ems")
         self.assertEqual(report_only_store.get(task_id)["worker_queue"]["run_site_key"], "consumables")
+
+    def test_nas_ems_admin_retry_preserves_public_pc_origin_and_syncs_completion(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(case_id="case-admin-retry-completion"),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        for site in payload["site_statuses"].values():
+            site.update(status="completed_by_user", detail="前次已完成")
+        payload["site_statuses"]["consumables"].update(
+            status="consumables_failed",
+            detail="耗材儲存失敗",
+        )
+        payload["overall_status"] = "desktop_fast_completed_with_errors"
+        self.store.save_payload(task_id, payload)
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "evt-admin-retry-completion",
+                "task_id": task_id,
+                "title": "公務電腦重送完成測試",
+                "task": payload["task"],
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": payload["site_statuses"],
+            }
+        )
+
+        report_only_store = JsonTaskStore(Path(self.tmp.name) / "report-only-completion-tasks")
+        app_module.store = report_only_store
+        app_module.runner = TaskRunner(Path(self.tmp.name), store=report_only_store)
+        app_module.desktop_runner = FakeDesktopRunner(report_only_store)
+
+        retry_response = self.client.post(
+            f"/tasks/{task_id}/sites/consumables/run",
+            base_url="http://100.114.126.58:8080",
+            data={"return_service": "ems"},
+            follow_redirects=False,
+        )
+        self.assertEqual(retry_response.status_code, 302)
+        self.assertEqual(retry_response.headers["Location"], "/admin/ems")
+
+        next_response = self.client.get(
+            "/worker/next-task?worker_id=test-worker",
+            headers=worker_headers,
+        )
+        self.assertEqual(next_response.status_code, 200)
+        claimed = next_response.get_json()["payload"]
+        status_response = self.client.post(
+            f"/worker/tasks/{task_id}/status",
+            headers=worker_headers,
+            json={
+                "status": "consumables_saved",
+                "detail": "重新送出後儲存成功",
+                "site_key": "consumables",
+                "site_name": "一站通耗材",
+                "worker_id": "test-worker",
+                "claim_id": claimed["worker_queue"]["claim_id"],
+            },
+        )
+        self.assertEqual(status_response.status_code, 200)
+
+        report = app_module.public_pc_report_for_task(task_id)
+        recent_body = html.unescape(
+            self.client.get("/app", base_url="http://100.114.126.58:8080").get_data(as_text=True)
+        )
+        success_body = html.unescape(
+            self.client.get("/admin/ems?result=success", base_url="http://100.114.126.58:8080").get_data(as_text=True)
+        )
+        failed_body = html.unescape(
+            self.client.get("/admin/ems?result=failed", base_url="http://100.114.126.58:8080").get_data(as_text=True)
+        )
+
+        with self.subTest("recent task retains public PC origin"):
+            self.assertIn("公務電腦建立", recent_body)
+            self.assertNotIn("NAS建立", recent_body)
+        with self.subTest("admin result follows the completed retry"):
+            self.assertIsNotNone(report)
+            self.assertEqual("success", app_module.public_pc_report_result(report))
+            self.assertIn("公務電腦重送完成測試", success_body)
+            self.assertNotIn("公務電腦重送完成測試", failed_body)
+
+    def test_nas_ems_admin_reconciles_completed_legacy_materialized_retry(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(case_id="case-admin-legacy-retry"),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        for site in payload["site_statuses"].values():
+            site.update(status="completed_by_user", detail="前次已完成")
+        payload["site_statuses"]["consumables"].update(
+            status="consumables_failed",
+            detail="耗材儲存失敗",
+        )
+        payload["overall_status"] = "desktop_fast_completed_with_errors"
+        self.store.save_payload(task_id, payload)
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "evt-admin-legacy-retry",
+                "task_id": task_id,
+                "title": "舊版公務電腦重送完成測試",
+                "task": payload["task"],
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": payload["site_statuses"],
+            }
+        )
+
+        report_only_store = JsonTaskStore(Path(self.tmp.name) / "legacy-report-only-tasks")
+        app_module.store = report_only_store
+        app_module.runner = TaskRunner(Path(self.tmp.name), store=report_only_store)
+        app_module.desktop_runner = FakeDesktopRunner(report_only_store)
+        retry_response = self.client.post(
+            f"/tasks/{task_id}/sites/consumables/run",
+            base_url="http://100.114.126.58:8080",
+            data={"return_service": "ems"},
+            follow_redirects=False,
+        )
+        self.assertEqual(retry_response.status_code, 302)
+
+        legacy_payload = report_only_store.get(task_id)
+        legacy_payload.pop("task_source", None)
+        legacy_payload["site_statuses"]["consumables"].update(
+            status="consumables_saved",
+            detail="舊版重送後儲存成功",
+        )
+        legacy_payload["overall_status"] = "desktop_fast_completed"
+        report_only_store.save_payload(task_id, legacy_payload)
+
+        response = self.client.get(
+            "/admin/ems?result=success",
+            base_url="http://100.114.126.58:8080",
+        )
+        body = html.unescape(response.get_data(as_text=True))
+        report = app_module.public_pc_report_for_task(task_id)
+
+        self.assertTrue(app_module.public_pc_report_retry_task(report_only_store.get(task_id)))
+        self.assertIsNotNone(report)
+        self.assertEqual("success", app_module.public_pc_report_result(report))
+        self.assertIn("舊版公務電腦重送完成測試", body)
 
     def test_task_detail_shows_chinese_statuses_without_raw_statuses(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())

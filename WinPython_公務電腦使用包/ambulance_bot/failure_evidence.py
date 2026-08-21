@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
+import time
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
 
+from PIL import Image
+
 
 BROWSER_FAILURE_MARKER = "[browser_failure:{category}]"
+FAILURE_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024
+FAILURE_SCREENSHOT_SETTLE_SECONDS = 0.8
 KNOWN_SITE_KEYS = {
     "duty_work_log",
     "vehicle_mileage",
@@ -22,6 +29,58 @@ KNOWN_SITE_KEYS = {
 def safe_evidence_token(value: object, fallback: str = "unknown") -> str:
     token = re.sub(r"[^\w.-]+", "_", str(value or "").strip(), flags=re.UNICODE).strip("._")
     return (token or fallback)[:80]
+
+
+def _fit_failure_screenshot_size(png_bytes: bytes) -> bytes:
+    if len(png_bytes) <= FAILURE_SCREENSHOT_MAX_BYTES:
+        return png_bytes
+
+    with Image.open(BytesIO(png_bytes)) as source:
+        source.load()
+        image = source.copy()
+
+    for _ in range(6):
+        buffer = BytesIO()
+        image.save(buffer, format="PNG", optimize=True)
+        candidate = buffer.getvalue()
+        if len(candidate) <= FAILURE_SCREENSHOT_MAX_BYTES:
+            return candidate
+        ratio = min(0.85, (FAILURE_SCREENSHOT_MAX_BYTES / len(candidate)) ** 0.5 * 0.9)
+        width = max(1, int(image.width * ratio))
+        height = max(1, int(image.height * ratio))
+        if (width, height) == image.size:
+            break
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+
+    raise RuntimeError("完整頁面截圖壓縮後仍超過 2 MB 上限")
+
+
+def _capture_full_page_screenshot(driver: Any, target: Path) -> bool:
+    execute_cdp_cmd = getattr(driver, "execute_cdp_cmd", None)
+    if not callable(execute_cdp_cmd):
+        return False
+
+    result = execute_cdp_cmd(
+        "Page.captureScreenshot",
+        {"format": "png", "captureBeyondViewport": True},
+    )
+    encoded = result.get("data") if isinstance(result, dict) else ""
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise RuntimeError("Chrome 未回傳完整頁面截圖資料")
+    png_bytes = base64.b64decode(encoded.strip(), validate=True)
+    if not png_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError("Chrome 回傳的完整頁面截圖不是有效 PNG")
+    target.write_bytes(_fit_failure_screenshot_size(png_bytes))
+    return True
+
+
+def _fit_failure_screenshot_file(target: Path) -> None:
+    png_bytes = target.read_bytes()
+    if len(png_bytes) <= FAILURE_SCREENSHOT_MAX_BYTES:
+        return
+    if not png_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError("瀏覽器截圖不是有效 PNG")
+    target.write_bytes(_fit_failure_screenshot_size(png_bytes))
 
 
 def probe_browser_runtime(driver: Any) -> dict[str, Any]:
@@ -155,9 +214,24 @@ def capture_failure_artifacts(
 
     screenshot_path = output_dir / f"{stem}.png"
     try:
-        saved = driver.save_screenshot(str(screenshot_path))
-        if saved is False or not screenshot_path.is_file():
-            raise RuntimeError("driver did not create a screenshot")
+        captured_full_page = False
+        if probe.get("chromedriver_alive") is not False and probe.get("devtools_reachable") is not False:
+            maximize_window = getattr(driver, "maximize_window", None)
+            if callable(maximize_window):
+                try:
+                    maximize_window()
+                    time.sleep(FAILURE_SCREENSHOT_SETTLE_SECONDS)
+                except Exception:
+                    pass
+            try:
+                captured_full_page = _capture_full_page_screenshot(driver, screenshot_path)
+            except Exception:
+                captured_full_page = False
+        if not captured_full_page:
+            saved = driver.save_screenshot(str(screenshot_path))
+            if saved is False or not screenshot_path.is_file():
+                raise RuntimeError("driver did not create a screenshot")
+        _fit_failure_screenshot_file(screenshot_path)
         evidence["screenshot_path"] = str(screenshot_path)
     except Exception as exc:
         evidence["screenshot_error"] = f"{exc.__class__.__name__}: {exc}"

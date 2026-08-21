@@ -399,9 +399,17 @@ def _is_sso_page(driver: webdriver.Chrome) -> bool:
 
 def _open_acs_system(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     if "/ACS/" not in driver.current_url:
+        wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
         cards = driver.find_elements(By.CSS_SELECTOR, "img.cardImg[src*='ACS.jpg']")
         if cards:
-            cards[0].click()
+            try:
+                cards[0].click()
+            except Exception as exc:
+                raise RuntimeError(
+                    "點選 ACS 系統失敗（"
+                    f"目前網址：{_navigation_current_url(driver)}；"
+                    f"{exc.__class__.__name__}: {str(exc).strip() or '無訊息'}）"
+                ) from exc
             wait.until(lambda d: "/ACS/" in d.current_url)
         else:
             driver.get("https://nfaemsap3.nfa.gov.tw/ACS/ACS13001")
@@ -415,19 +423,55 @@ def _open_acs_system(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
 
 
 def _open_consumable_maintenance_page(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+    navigation_errors: list[str] = []
     for attempt in range(1, 4):
-        driver.get(ACS_URL)
-        wait.until(
-            lambda d: _is_consumable_maintenance_page(d)
-            or _is_sso_page(d)
-            or d.execute_script("return document.readyState") in {"interactive", "complete"}
-        )
-        time.sleep(0.8)
-        if _is_consumable_maintenance_page(driver):
+        try:
+            driver.get(ACS_URL)
+        except TimeoutException as exc:
+            navigation_errors.append(
+                f"第 {attempt} 次導向逾時（目前網址：{_navigation_current_url(driver)}；"
+                f"{exc.__class__.__name__}: {str(exc).strip() or '無訊息'}）"
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"開啟耗材紀錄頁 ACS15001 失敗（第 {attempt} 次；"
+                f"目前網址：{_navigation_current_url(driver)}；"
+                f"{exc.__class__.__name__}: {str(exc).strip() or '無訊息'}）"
+            ) from exc
+        try:
+            wait.until(
+                lambda d: _is_sso_page(d) or _is_consumable_maintenance_page_ready(d)
+            )
+        except TimeoutException as exc:
+            navigation_errors.append(
+                f"第 {attempt} 次等待 ACS15001 逾時（目前網址：{_navigation_current_url(driver)}；"
+                f"{exc.__class__.__name__}: {str(exc).strip() or '無訊息'}）"
+            )
+            continue
+        if _is_consumable_maintenance_page_ready(driver):
             return
         if _is_sso_page(driver):
             raise RuntimeError("進入耗材紀錄頁時被導回 SSO，登入 session 尚未建立。")
-    raise RuntimeError("已登入 ACS，但無法進入耗材紀錄頁 ACS15001。")
+    diagnostics = "；".join(navigation_errors[-3:])
+    raise RuntimeError(
+        "已登入 ACS，但無法進入耗材紀錄頁 ACS15001。"
+        f"最後網址：{_navigation_current_url(driver)}"
+        + (f"；{diagnostics}" if diagnostics else "")
+    )
+
+
+def _navigation_current_url(driver: webdriver.Chrome) -> str:
+    try:
+        return str(driver.current_url or "").strip() or "空白"
+    except Exception:
+        return "無法讀取"
+
+
+def _is_consumable_maintenance_page_ready(driver: webdriver.Chrome) -> bool:
+    return (
+        _is_consumable_maintenance_page(driver)
+        and driver.execute_script("return document.readyState") == "complete"
+    )
 
 
 def _is_consumable_maintenance_page(driver: webdriver.Chrome) -> bool:

@@ -159,6 +159,7 @@ PUBLIC_PC_FAILURE_SITE_KEYS = {
     "disinfection",
     "volunteer_assist",
 }
+PUBLIC_PC_REPORT_RETRY_SOURCE = "public_pc_report_retry"
 TASK_FORM_COMPLETED_HISTORY_HOURS = 48
 TASK_FORM_RECENT_TASK_LIMIT = 5
 TASK_FORM_RECENT_TASK_SCAN_LIMIT = 500
@@ -728,6 +729,7 @@ def run_task_site(task_id: str, site_key: str):
         if payload is None:
             abort(404)
     payload = refresh_stale_running_task(payload)
+    return_service = str(request.form.get("return_service") or "").strip().lower()
     if site_key == "fuel_record" and not task_has_fuel_record(payload.get("task") or {}):
         store.set_overall_status(task_id, "desktop_fast_unavailable", "此任務未勾選加油紀錄，已略過加油登打。")
         return task_site_run_redirect(task_id)
@@ -740,6 +742,8 @@ def run_task_site(task_id: str, site_key: str):
         return task_site_run_redirect(task_id)
     if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
         return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
+    if return_service in {"ems", "disaster", "public_pc"}:
+        payload = mark_public_pc_report_retry_task(task_id, payload)
     payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
@@ -756,6 +760,11 @@ def run_task_site(task_id: str, site_key: str):
             "desktop_fast_unavailable",
             "單站登打只能在本機網頁使用；手機/NAS 請使用多站登打或公務電腦 worker。",
         )
+    sync_public_pc_report_retry_task(
+        store.get(task_id),
+        action=f"後台重新送出{site_display_name(site_key)}",
+        detail=f"後台重新送出{site_display_name(site_key)}，已排入公務電腦處理。",
+    )
     return task_site_run_redirect(task_id)
 
 
@@ -1058,7 +1067,7 @@ def admin_ems():
 
 
 def render_admin_public_pc(*, locked_service: str = ""):
-    reports = public_pc_reports()
+    reports = reconcile_public_pc_report_retries(public_pc_reports())
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()
     worker_health_enabled = not public_pc_reporting_enabled()
@@ -1409,6 +1418,16 @@ def worker_task_status(task_id: str):
             claim_id=claim_id,
             worker_id=worker_id,
             enforce_claim_identity=True,
+        )
+        report = public_pc_report_for_task(task_id)
+        if report is not None:
+            payload = recover_public_pc_report_retry_task(task_id, payload, report)
+        sync_public_pc_report_retry_task(
+            payload,
+            action=(f"公務電腦回報{site_display_name(site_key)}" if site_key else "公務電腦回報任務狀態"),
+            detail=detail or task_progress_summary(payload),
+            event_id=f"retry-status:{status_event_id}" if status_event_id else "",
+            worker_id=worker_id,
         )
     except WorkerClaimConflictError as exc:
         return jsonify({"ok": False, "error": exc.code, "detail": exc.detail}), 409
@@ -4706,6 +4725,7 @@ def materialize_public_pc_report_task(task_id: str) -> dict | None:
     report_events = report.get("events")
     payload = {
         "task": task_request.to_dict(),
+        "task_source": PUBLIC_PC_REPORT_RETRY_SOURCE,
         "created_at": task_request.created_at.isoformat(timespec="seconds"),
         "updated_at": "",
         "overall_status": str(report.get("overall_status") or "created"),
@@ -4717,6 +4737,111 @@ def materialize_public_pc_report_task(task_id: str) -> dict | None:
     }
     store.save_payload(task_request.task_id, payload)
     return payload
+
+
+def public_pc_report_retry_task(payload: Mapping[str, object]) -> bool:
+    return str(payload.get("task_source") or "").strip() == PUBLIC_PC_REPORT_RETRY_SOURCE
+
+
+def mark_public_pc_report_retry_task(task_id: str, payload: dict) -> dict:
+    if public_pc_report_retry_task(payload) or public_pc_report_for_task(task_id) is None:
+        return payload
+    marked_payload = dict(payload)
+    marked_payload["task_source"] = PUBLIC_PC_REPORT_RETRY_SOURCE
+    store.save_payload(task_id, marked_payload)
+    return marked_payload
+
+
+def legacy_materialized_public_pc_report_retry_task(
+    payload: Mapping[str, object],
+    report: Mapping[str, object],
+) -> bool:
+    queue = worker_queue_state(dict(payload))
+    if str(queue.get("run_site_key") or "").strip() not in VALID_SITE_KEYS:
+        return False
+    report_events = report.get("events")
+    payload_events = payload.get("events")
+    if not isinstance(report_events, list) or not report_events:
+        return False
+    if not isinstance(payload_events, list):
+        return False
+    return payload_events[:1] == report_events[:1]
+
+
+def recover_public_pc_report_retry_task(
+    task_id: str,
+    payload: dict,
+    report: Mapping[str, object],
+) -> dict:
+    if public_pc_report_retry_task(payload):
+        return payload
+    if not legacy_materialized_public_pc_report_retry_task(payload, report):
+        return payload
+    marked_payload = dict(payload)
+    marked_payload["task_source"] = PUBLIC_PC_REPORT_RETRY_SOURCE
+    store.save_payload(task_id, marked_payload)
+    return marked_payload
+
+
+def reconcile_public_pc_report_retries(reports: Sequence[dict]) -> list[dict]:
+    reconciled = False
+    for report in reports:
+        task = report.get("task") if isinstance(report.get("task"), dict) else {}
+        task_id = str(report.get("task_id") or task.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        try:
+            payload = store.get(task_id)
+        except FileNotFoundError:
+            continue
+        payload = recover_public_pc_report_retry_task(task_id, payload, report)
+        if not public_pc_report_retry_task(payload):
+            continue
+        if public_pc_report_result(report) == public_pc_report_result(payload):
+            continue
+        sync_public_pc_report_retry_task(
+            payload,
+            action="補正舊版後台重送狀態",
+            detail=task_progress_summary(payload),
+            event_id=f"retry-reconcile:{task_id}",
+        )
+        reconciled = True
+    return public_pc_reports() if reconciled else list(reports)
+
+
+def sync_public_pc_report_retry_task(
+    payload: Mapping[str, object],
+    *,
+    action: str,
+    detail: str,
+    event_id: str = "",
+    worker_id: str = "",
+) -> None:
+    if not public_pc_report_retry_task(payload):
+        return
+    task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+    task_id = str(task.get("task_id") or "").strip()
+    report = public_pc_report_for_task(task_id)
+    if not task_id or report is None:
+        return
+    upsert_public_pc_report(
+        {
+            "event_id": event_id or str(uuid4()),
+            "task_id": task_id,
+            "title": str(report.get("title") or ""),
+            "task": task,
+            "operator": str(report.get("operator") or report.get("user") or ""),
+            "synced_account": str(report.get("synced_account") or ""),
+            "worker_id": worker_id or str(report.get("worker_id") or ""),
+            "package_version": str(report.get("package_version") or ""),
+            "action": action,
+            "status": effective_task_status(dict(payload)),
+            "detail": detail,
+            "overall_status": str(payload.get("overall_status") or ""),
+            "site_statuses": dict(payload.get("site_statuses") or {}),
+            "created_at": str(report.get("created_at") or ""),
+        }
+    )
 
 
 def admin_retryable_site_keys(item: Mapping[str, object]) -> list[str] | None:
@@ -4940,10 +5065,11 @@ def recent_tasks_for_task_form(service_type: str = "ems") -> list[dict]:
             incomplete_tasks.append(recent_payload)
 
     for payload in refresh_recent_tasks(store.list_recent(limit=TASK_FORM_RECENT_TASK_SCAN_LIMIT)):
+        public_pc_retry = public_pc_report_retry_task(payload)
         add_recent_task(
             payload,
-            origin="public_pc" if local_view else "nas",
-            origin_label="公務電腦建立" if local_view else "NAS建立",
+            origin="public_pc" if local_view or public_pc_retry else "nas",
+            origin_label="公務電腦建立" if local_view or public_pc_retry else "NAS建立",
             read_only=False,
             expire_all_statuses=True,
         )
