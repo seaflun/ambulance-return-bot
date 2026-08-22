@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,15 +22,40 @@ class DisasterSettingsTests(unittest.TestCase):
         self.assertEqual(["新坡11", "新坡15", "新坡16", "新坡91", "新坡92", "新坡93"], [item["label"] for item in records])
         self.assertEqual("15", records[1]["recorder_code"])
 
-    def test_save_updates_recorder_code_and_delete_hides_record(self):
+    def test_current_rescue_vehicles_are_built_in_and_only_new_custom_can_be_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
-            save_disaster_vehicle_record("新坡15", "FIRE-15", "CAM15", base_dir)
+            self.assertTrue(
+                all(record["vehicle_type"] == "內建" for record in load_disaster_vehicle_records(base_dir))
+            )
+            save_disaster_vehicle_record("新坡15", "FIRE-15", "CAM15", base_dir, vehicle_type="自訂")
 
             self.assertEqual("CAM15", disaster_vehicle_recorder_codes(base_dir)["新坡15"])
             self.assertIn("新坡15", disaster_vehicle_options(base_dir))
-            self.assertTrue(delete_disaster_vehicle_record("新坡15", base_dir))
-            self.assertNotIn("新坡15", disaster_vehicle_options(base_dir))
+            newpo_15 = next(
+                record for record in load_disaster_vehicle_records(base_dir) if record["label"] == "新坡15"
+            )
+            self.assertEqual("內建", newpo_15["vehicle_type"])
+            self.assertFalse(delete_disaster_vehicle_record("新坡15", base_dir))
+            save_disaster_vehicle_record("測試自訂救災車", "CUSTOM-FIRE", "CAM-CUSTOM", base_dir, vehicle_type="自訂")
+            self.assertTrue(delete_disaster_vehicle_record("測試自訂救災車", base_dir))
+            self.assertNotIn("測試自訂救災車", disaster_vehicle_options(base_dir))
+
+    def test_legacy_deleted_builtin_rescue_vehicle_is_restored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            settings_path = base_dir / "settings" / "disaster_vehicles.json"
+            settings_path.parent.mkdir(parents=True)
+            settings_path.write_text(
+                json.dumps({"vehicles": [], "deleted": ["新坡15"]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            self.assertIn("新坡15", disaster_vehicle_options(base_dir))
+            save_disaster_vehicle_record("新坡15", "FIRE-15", "15", base_dir)
+
+            persisted = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertNotIn("新坡15", persisted["deleted"])
 
     def test_action_packages_can_be_saved_without_overwriting_vehicle_settings(self):
         with tempfile.TemporaryDirectory() as tmp:

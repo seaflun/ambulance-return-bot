@@ -64,7 +64,20 @@ VEHICLE_PPE_NAMES = {
     "\u65b0\u576192": "BXB-7593",
     "\u65b0\u576193": "BSL-9230",
 }
-DEFAULT_CUSTOM_VEHICLES = [{"label": "\u65b0\u576195", "ppe_name": "BPE-5951"}]
+VEHICLE_TYPE_BUILT_IN = "內建"
+VEHICLE_TYPE_CUSTOM = "自訂"
+VEHICLE_TYPE_OPTIONS = (VEHICLE_TYPE_BUILT_IN, VEHICLE_TYPE_CUSTOM)
+# Keep the legacy constant name for compatibility. Existing vehicles are all built-in.
+DEFAULT_CUSTOM_VEHICLES = [
+    {
+        "label": "\u65b0\u576195",
+        "ppe_name": "BPE-5951",
+        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
+    }
+]
+BUILT_IN_VEHICLE_LABELS = frozenset(
+    [*VEHICLE_OPTIONS, *(record["label"] for record in DEFAULT_CUSTOM_VEHICLES)]
+)
 PERSON_OPTIONS = [
     ("6", "\u5433\u5b97\u8015"),
     ("7", "\u5305\u83ef\u5148"),
@@ -164,6 +177,12 @@ def summary_type_for_duty_item(duty_item: object, fallback: str = "救護") -> s
         "其他類災害": "災害搶救",
         "救護": "救護",
     }.get(str(duty_item or "").strip(), fallback)
+
+
+def normalize_vehicle_type(value: object) -> str:
+    return VEHICLE_TYPE_CUSTOM if str(value or "").strip() == VEHICLE_TYPE_CUSTOM else VEHICLE_TYPE_BUILT_IN
+
+
 DISASTER_ACTION_PACKAGES = [
     "中途取消", "到場不需支援", "誤報／警報器誤動作", "到達現場時火勢已熄滅", "到達現場未發現火煙",
     "出一水線執行滅火攻擊", "執行殘火處理", "現場待命", "協助布署／收拾水帶", "水源供給／中繼",
@@ -211,7 +230,13 @@ def _clean_vehicle_records(records: Any) -> list[dict[str, str]]:
         label = str(record.get("label") or "").strip()
         ppe_name = str(record.get("ppe_name") or record.get("plate") or "").strip()
         if label:
-            cleaned.append({"label": label, "ppe_name": ppe_name})
+            cleaned.append(
+                {
+                    "label": label,
+                    "ppe_name": ppe_name,
+                    "vehicle_type": normalize_vehicle_type(record.get("vehicle_type")),
+                }
+            )
     return cleaned
 
 
@@ -221,7 +246,11 @@ def write_vehicle_settings(settings: dict[str, Any], base_dir: Path | None = Non
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "vehicles": _clean_vehicle_records(settings.get("vehicles")),
-            "deleted": [str(label).strip() for label in settings.get("deleted", []) if str(label).strip()],
+            "deleted": [
+                str(label).strip()
+                for label in settings.get("deleted", [])
+                if str(label).strip() and str(label).strip() not in BUILT_IN_VEHICLE_LABELS
+            ],
         }
         tmp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
@@ -237,27 +266,42 @@ def write_vehicle_settings(settings: dict[str, Any], base_dir: Path | None = Non
 def load_vehicle_records(base_dir: Path | None = None) -> list[dict[str, str]]:
     with _VEHICLE_SETTINGS_LOCK:
         settings = read_vehicle_settings(base_dir)
-        deleted = {str(label).strip() for label in settings.get("deleted", []) if str(label).strip()}
-        records = [record for record in DEFAULT_CUSTOM_VEHICLES if record["label"] not in deleted]
+        records = [dict(record) for record in DEFAULT_CUSTOM_VEHICLES]
         for record in _clean_vehicle_records(settings.get("vehicles")):
+            if record["label"] in BUILT_IN_VEHICLE_LABELS:
+                record["vehicle_type"] = VEHICLE_TYPE_BUILT_IN
             records = [existing for existing in records if existing["label"] != record["label"]]
             records.append(record)
         return records
 
 
-def save_vehicle_record(label: str, ppe_name: str = "", base_dir: Path | None = None) -> None:
+def save_vehicle_record(
+    label: str,
+    ppe_name: str = "",
+    base_dir: Path | None = None,
+    vehicle_type: str = VEHICLE_TYPE_BUILT_IN,
+) -> None:
     label = label.strip()
     ppe_name = ppe_name.strip()
     if not label:
         raise ValueError("missing vehicle label")
     with _VEHICLE_SETTINGS_LOCK:
         records = load_vehicle_records(base_dir)
-        for record in records:
-            if record["label"] == label:
-                record["ppe_name"] = ppe_name
-                break
+        existing = next((record for record in records if record["label"] == label), None)
+        if existing is not None:
+            existing["ppe_name"] = ppe_name
         else:
-            records.append({"label": label, "ppe_name": ppe_name})
+            records.append(
+                {
+                    "label": label,
+                    "ppe_name": ppe_name,
+                    "vehicle_type": (
+                        VEHICLE_TYPE_BUILT_IN
+                        if label in BUILT_IN_VEHICLE_LABELS
+                        else normalize_vehicle_type(vehicle_type)
+                    ),
+                }
+            )
         settings = read_vehicle_settings(base_dir)
         settings["vehicles"] = records
         settings["deleted"] = [deleted for deleted in settings.get("deleted", []) if deleted != label]
@@ -266,16 +310,19 @@ def save_vehicle_record(label: str, ppe_name: str = "", base_dir: Path | None = 
 
 def delete_vehicle_record(label: str, base_dir: Path | None = None) -> bool:
     label = label.strip()
-    if not label or label in VEHICLE_OPTIONS:
+    if not label:
         return False
     with _VEHICLE_SETTINGS_LOCK:
+        record = next((item for item in load_vehicle_records(base_dir) if item["label"] == label), None)
+        if (
+            record is None
+            or label in BUILT_IN_VEHICLE_LABELS
+            or normalize_vehicle_type(record.get("vehicle_type")) != VEHICLE_TYPE_CUSTOM
+        ):
+            return False
         settings = read_vehicle_settings(base_dir)
         records = [record for record in _clean_vehicle_records(settings.get("vehicles")) if record["label"] != label]
-        deleted = [str(item).strip() for item in settings.get("deleted", []) if str(item).strip()]
-        if label in {record["label"] for record in DEFAULT_CUSTOM_VEHICLES} and label not in deleted:
-            deleted.append(label)
         settings["vehicles"] = records
-        settings["deleted"] = deleted
         write_vehicle_settings(settings, base_dir)
         return True
 

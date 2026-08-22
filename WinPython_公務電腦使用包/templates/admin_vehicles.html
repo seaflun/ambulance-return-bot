@@ -29,6 +29,8 @@
       --text-md: 15px;
       --text-lg: 17px;
       --text-xl: 28px;
+      --vehicle-row-height: 68px;
+      --vehicle-card-height: 318px;
     }
     * { box-sizing: border-box; }
     body {
@@ -54,7 +56,7 @@
       box-shadow: var(--shadow);
     }
     label { display: block; margin: 0 0 13px; font-weight: 720; }
-    input {
+    input, select {
       width: 100%;
       min-width: 0;
       margin-top: 6px;
@@ -65,7 +67,7 @@
       background: #fff;
       color: var(--ink);
     }
-    input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
     button, .button {
       display: inline-flex;
       align-items: center;
@@ -82,7 +84,7 @@
       box-shadow: 0 8px 18px rgba(184, 107, 91, .18);
     }
     .secondary { background: #fff; color: var(--ink); border-color: var(--line-strong); box-shadow: none; }
-    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
     .notice, .errors {
       margin: 0 0 14px;
       padding: 10px 12px;
@@ -94,7 +96,7 @@
     .vehicle-list { display: grid; gap: 8px; }
     .vehicle-row {
       display: grid;
-      grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 64px minmax(88px, 110px) minmax(150px, 1fr) 76px;
+      grid-template-columns: minmax(88px, .95fr) minmax(104px, 1.1fr) minmax(102px, 1fr) 56px minmax(84px, .85fr) minmax(124px, 1.2fr) 88px;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -102,6 +104,7 @@
       border-radius: 12px;
       background: #fff;
     }
+    .vehicle-row:not(.header-row) { height: var(--vehicle-row-height); }
     .vehicle-row.header-row {
       min-height: 34px;
       padding-top: 0;
@@ -112,14 +115,17 @@
       font-size: var(--text-sm);
       font-weight: 760;
     }
-    .vehicle-row > * { min-width: 0; }
-    .vehicle-label { font-weight: 780; overflow-wrap: anywhere; }
-    .vehicle-plate { color: var(--muted); font-weight: 700; overflow-wrap: anywhere; }
+    .vehicle-row > * { min-width: 0; overflow: hidden; }
+    .vehicle-label { font-weight: 780; }
+    .vehicle-plate, .vehicle-recorder { color: var(--muted); font-weight: 700; }
     .vehicle-kind { min-width: 48px; text-align: center; color: var(--muted); font-size: var(--text-sm); }
-    .vehicle-mileage { font-variant-numeric: tabular-nums; font-weight: 780; white-space: nowrap; }
-    .vehicle-sync { color: var(--muted); font-size: var(--text-sm); font-weight: 700; overflow-wrap: anywhere; }
-    .delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 36px; padding: 0; border: 0; background: transparent; box-shadow: none; }
-    .delete-button { min-width: 64px; min-height: 34px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; white-space: nowrap; }
+    .vehicle-mileage { font-variant-numeric: tabular-nums; font-weight: 780; }
+    .vehicle-sync { color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
+    .vehicle-action { display: flex; align-items: center; justify-content: flex-end; color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
+    .vehicle-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 44px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+    .delete-button { min-width: 72px; min-height: 44px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; white-space: nowrap; }
+    .form-hint { margin: -2px 0 12px; color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
     .sync-panel { margin-bottom: 16px; }
     .sync-panel p { margin: 0; color: var(--muted); font-weight: 720; }
     .pending-sync-list { display: grid; gap: 8px; margin-top: 12px; }
@@ -154,10 +160,51 @@
     }
     .civilpower-member-option span { min-width: 0; overflow-wrap: anywhere; }
     form + .panel { margin-top: 16px; }
-    @media (max-width: 560px) {
+    @media (max-width: 780px) {
       header { align-items: stretch; flex-direction: column; }
-      .grid, .vehicle-row, .civilpower-member-list { grid-template-columns: 1fr; }
+      .grid, .civilpower-member-list { grid-template-columns: 1fr; }
       .vehicle-row.header-row { display: none; }
+      .vehicle-row:not(.header-row) {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: repeat(4, 68px);
+        align-items: stretch;
+        gap: 8px;
+        height: var(--vehicle-card-height);
+        padding: 10px;
+      }
+      .vehicle-row:not(.header-row) > [data-field] {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: flex-start;
+        gap: 2px;
+        padding: 4px 8px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--bg-top);
+      }
+      .vehicle-row:not(.header-row) > [data-field]::before {
+        content: attr(data-field);
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 760;
+        line-height: 1.2;
+      }
+      .vehicle-row:not(.header-row) .vehicle-value {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        white-space: normal;
+        line-height: 1.35;
+      }
+      .vehicle-row:not(.header-row) .vehicle-action,
+      .vehicle-row:not(.header-row) .delete-form { grid-column: 1 / -1; }
+      .vehicle-row:not(.header-row) .delete-form {
+        overflow: visible;
+        padding: 3px 8px;
+      }
+      .vehicle-row:not(.header-row) .delete-button { width: 100%; }
       .button { width: 100%; }
     }
   </style>
@@ -166,7 +213,7 @@
 </head>
 <body class="workspace-page workspace-page--settings workspace-page--ems-settings">
   <main>
-    {% call page_chrome('救護各項設定', '救護各項設定', 'ems') %}
+    {% call page_chrome('救護登打設定', '救護各項設定', 'ems') %}
       <a class="button secondary header-navigation-button" href="/app">返回救護登打</a>
     {% endcall %}
 
@@ -191,7 +238,7 @@
     {% endif %}
 
     <form method="post" action="/admin/vehicles">
-      <h2>新增救護車</h2>
+      <h2>新增或更新車輛</h2>
       {% if message %}
         <div class="notice">{{ message }}</div>
       {% endif %}
@@ -203,43 +250,52 @@
         </div>
       {% endif %}
       <div class="grid">
-        <label>救護車代號
+        <label>車輛代號
           <input name="label" autocomplete="off" value="{{ form_values.get('label', '') }}">
         </label>
-        <label>車牌 / 里程系統名稱
+        <label>車牌號碼／里程系統名稱
           <input name="ppe_name" autocomplete="off" value="{{ form_values.get('ppe_name', '') }}">
         </label>
+        <label>類型
+          <select name="vehicle_type">
+            <option value="內建"{% if form_values.get('vehicle_type', '內建') == '內建' %} selected{% endif %}>內建</option>
+            <option value="自訂"{% if form_values.get('vehicle_type') == '自訂' %} selected{% endif %}>自訂</option>
+          </select>
+        </label>
       </div>
+      <p class="form-hint">現有車輛皆為內建；建立自訂車輛後才可刪除。</p>
       <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
-      <button type="submit">新增</button>
+      <button type="submit">儲存車輛</button>
     </form>
 
     <section class="panel">
       <h2>目前車輛</h2>
       <div class="vehicle-list">
         <div class="vehicle-row header-row">
-          <div class="vehicle-label">救護車代號</div>
+          <div class="vehicle-label">車輛代號</div>
           <div class="vehicle-plate">車牌號碼</div>
+          <div class="vehicle-recorder">行車紀錄器車號</div>
           <div class="vehicle-kind">類型</div>
           <div class="vehicle-mileage">最新里程</div>
           <div class="vehicle-sync">同步狀態</div>
-          <div></div>
+          <div class="vehicle-action">操作</div>
         </div>
         {% for vehicle in vehicles %}
           <div class="vehicle-row">
-            <div class="vehicle-label">{{ vehicle.label }}</div>
-            <div class="vehicle-plate">{{ vehicle.ppe_name or "使用名稱查詢" }}</div>
-            <div class="vehicle-kind">{{ "自訂" if vehicle.is_custom else "內建" }}</div>
-            <div class="vehicle-mileage">{{ vehicle.daily_mileage_label }}</div>
-            <div class="vehicle-sync">{{ vehicle.daily_mileage_status }}</div>
+            <div class="vehicle-label" data-field="車輛代號"><span class="vehicle-value" title="{{ vehicle.label }}">{{ vehicle.label }}</span></div>
+            <div class="vehicle-plate" data-field="車牌號碼"><span class="vehicle-value" title="{{ vehicle.ppe_name or '—' }}">{{ vehicle.ppe_name or "—" }}</span></div>
+            <div class="vehicle-recorder" data-field="行車紀錄器車號"><span class="vehicle-value">—</span></div>
+            <div class="vehicle-kind" data-field="類型"><span class="vehicle-value">{{ vehicle.vehicle_type }}</span></div>
+            <div class="vehicle-mileage" data-field="最新里程"><span class="vehicle-value" title="{{ vehicle.daily_mileage_label }}">{{ vehicle.daily_mileage_label }}</span></div>
+            <div class="vehicle-sync" data-field="同步狀態"><span class="vehicle-value" title="{{ vehicle.daily_mileage_status }}">{{ vehicle.daily_mileage_status }}</span></div>
             {% if vehicle.is_custom %}
-              <form class="delete-form" method="post" action="/admin/vehicles/delete">
+              <form class="delete-form" data-field="操作" method="post" action="/admin/vehicles/delete">
                 <input type="hidden" name="label" value="{{ vehicle.label }}">
                 <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
                 <button class="delete-button" type="submit">刪除</button>
               </form>
             {% else %}
-              <span></span>
+              <div class="vehicle-action" data-field="操作"><span class="vehicle-value">內建車輛</span></div>
             {% endif %}
           </div>
         {% endfor %}

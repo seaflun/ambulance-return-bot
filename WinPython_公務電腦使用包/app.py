@@ -54,6 +54,7 @@ from ambulance_bot.credential_envelope import (
 )
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
 from ambulance_bot.disaster_settings import (
+    DEFAULT_DISASTER_VEHICLE_LABELS,
     delete_disaster_vehicle_record,
     disaster_vehicle_options,
     disaster_vehicle_recorder_codes,
@@ -77,6 +78,7 @@ from ambulance_bot.manual_task_lock import (
 )
 from ambulance_bot.models import (
     AmbulanceReturnRequest,
+    BUILT_IN_VEHICLE_LABELS,
     CASE_REASON_OPTIONS,
     COMMAND_PREFIX,
     DEFAULT_DISINFECTION_ITEMS,
@@ -87,12 +89,15 @@ from ambulance_bot.models import (
     DISINFECTION_ITEM_OPTIONS,
     DUTY_ITEM_OPTIONS,
     PERSON_OPTIONS,
+    VEHICLE_TYPE_BUILT_IN,
+    VEHICLE_TYPE_CUSTOM,
     apply_disaster_vehicle_mileage_system_names,
     example_command,
     clean_case_address,
     delete_vehicle_record,
     load_vehicle_records,
     normalize_hhmm,
+    normalize_vehicle_type,
     parse_case_date,
     parse_request,
     patient_counts_from_summary,
@@ -990,6 +995,7 @@ def save_disaster_vehicle_option():
             "label": str(request.form.get("label") or "").strip(),
             "ppe_name": str(request.form.get("ppe_name") or "").strip(),
             "recorder_code": str(request.form.get("recorder_code") or "").strip(),
+            "vehicle_type": normalize_vehicle_type(request.form.get("vehicle_type")),
         }
         return render_local_disaster_vehicle_command_result(
             command,
@@ -999,9 +1005,16 @@ def save_disaster_vehicle_option():
     label = str(request.form.get("label") or "").strip()
     ppe_name = str(request.form.get("ppe_name") or "").strip()
     recorder_code = str(request.form.get("recorder_code") or "").strip()
+    vehicle_type = normalize_vehicle_type(request.form.get("vehicle_type"))
     try:
         with _vehicle_settings_sync_lock:
-            save_disaster_vehicle_record(label, ppe_name, recorder_code, artifacts_dir)
+            save_disaster_vehicle_record(
+                label,
+                ppe_name,
+                recorder_code,
+                artifacts_dir,
+                vehicle_type=vehicle_type,
+            )
     except ValueError as exc:
         return render_disaster_vehicle_settings(errors=[str(exc)]), 400
     return render_disaster_vehicle_settings(message=f"已儲存 {label}")
@@ -1019,7 +1032,7 @@ def delete_disaster_vehicle_option():
     with _vehicle_settings_sync_lock:
         deleted = delete_disaster_vehicle_record(label, artifacts_dir)
     if not deleted:
-        return render_disaster_vehicle_settings(errors=["找不到要刪除的救災車輛"]), 400
+        return render_disaster_vehicle_settings(errors=["內建救災車不能刪除"]), 400
     return render_disaster_vehicle_settings(message=f"已刪除 {label}")
 
 
@@ -1226,6 +1239,7 @@ def create_vehicle_option():
             "operation": "save_ems_vehicle",
             "label": str(request.form.get("label") or "").strip(),
             "ppe_name": str(request.form.get("ppe_name") or "").strip().upper(),
+            "vehicle_type": normalize_vehicle_type(request.form.get("vehicle_type")),
         }
         return render_local_vehicle_command_result(
             command,
@@ -1234,10 +1248,11 @@ def create_vehicle_option():
         )
     label = str(request.form.get("label") or "").strip()
     ppe_name = str(request.form.get("ppe_name") or "").strip().upper()
+    vehicle_type = normalize_vehicle_type(request.form.get("vehicle_type"))
     if not label:
         return render_vehicle_settings(errors=["請輸入救護車代號"]), 400
     with _vehicle_settings_sync_lock:
-        save_vehicle_record(label, ppe_name, artifacts_dir)
+        save_vehicle_record(label, ppe_name, artifacts_dir, vehicle_type=vehicle_type)
     return render_vehicle_settings(message=f"已新增或更新 {label}")
 
 
@@ -3322,13 +3337,26 @@ def vehicle_settings_snapshot() -> dict[str, object]:
     }
 
 
+def vehicle_settings_record_type(label: object, vehicle_type: object, *, disaster: bool) -> str:
+    normalized_label = str(label or "").strip()
+    built_in_labels = DEFAULT_DISASTER_VEHICLE_LABELS if disaster else BUILT_IN_VEHICLE_LABELS
+    if normalized_label in built_in_labels:
+        return VEHICLE_TYPE_BUILT_IN
+    return normalize_vehicle_type(vehicle_type)
+
+
 def vehicle_settings_revision(settings: Mapping[str, object]) -> str:
     payload = {
         "ems_vehicles": [
             {
                 "label": str(record.get("label") or "").strip(),
                 "ppe_name": str(record.get("ppe_name") or "").strip(),
-                "is_custom": bool(record.get("is_custom")),
+                "vehicle_type": vehicle_settings_record_type(
+                    record.get("label"), record.get("vehicle_type"), disaster=False
+                ),
+                "is_custom": vehicle_settings_record_type(
+                    record.get("label"), record.get("vehicle_type"), disaster=False
+                ) == VEHICLE_TYPE_CUSTOM,
             }
             for record in list(settings.get("ems_vehicles") or [])
             if isinstance(record, Mapping) and str(record.get("label") or "").strip()
@@ -3338,6 +3366,9 @@ def vehicle_settings_revision(settings: Mapping[str, object]) -> str:
                 "label": str(record.get("label") or "").strip(),
                 "ppe_name": str(record.get("ppe_name") or "").strip(),
                 "recorder_code": str(record.get("recorder_code") or "").strip(),
+                "vehicle_type": vehicle_settings_record_type(
+                    record.get("label"), record.get("vehicle_type"), disaster=True
+                ),
             }
             for record in list(settings.get("disaster_vehicles") or [])
             if isinstance(record, Mapping) and str(record.get("label") or "").strip()
@@ -3438,6 +3469,7 @@ def normalize_vehicle_settings_command(payload: Mapping[str, object]) -> dict[st
             "operation": operation,
             "label": label,
             "ppe_name": str(payload.get("ppe_name") or "").strip().upper(),
+            "vehicle_type": normalize_vehicle_type(payload.get("vehicle_type")),
         }
     if operation == "delete_ems_vehicle":
         return {"operation": operation, "label": label}
@@ -3447,6 +3479,7 @@ def normalize_vehicle_settings_command(payload: Mapping[str, object]) -> dict[st
             "label": label,
             "ppe_name": str(payload.get("ppe_name") or "").strip().upper(),
             "recorder_code": str(payload.get("recorder_code") or "").strip(),
+            "vehicle_type": normalize_vehicle_type(payload.get("vehicle_type")),
         }
     if operation == "delete_disaster_vehicle":
         return {"operation": operation, "label": label}
@@ -3493,7 +3526,12 @@ def apply_vehicle_settings_command(command: Mapping[str, object]) -> None:
     if operation == "save_ems_vehicle":
         if not label:
             raise ValueError("請輸入救護車代號")
-        save_vehicle_record(label, str(normalized.get("ppe_name") or ""), artifacts_dir)
+        save_vehicle_record(
+            label,
+            str(normalized.get("ppe_name") or ""),
+            artifacts_dir,
+            vehicle_type=str(normalized.get("vehicle_type") or ""),
+        )
         return
     if operation == "delete_ems_vehicle":
         if not delete_vehicle_record(label, artifacts_dir):
@@ -3505,11 +3543,12 @@ def apply_vehicle_settings_command(command: Mapping[str, object]) -> None:
             str(normalized.get("ppe_name") or ""),
             str(normalized.get("recorder_code") or ""),
             artifacts_dir,
+            vehicle_type=str(normalized.get("vehicle_type") or ""),
         )
         return
     if operation == "delete_disaster_vehicle":
         if not delete_disaster_vehicle_record(label, artifacts_dir):
-            raise ValueError("找不到要刪除的救災車輛")
+            raise ValueError("內建救災車不能刪除")
         return
     if operation == "save_disaster_action_packages":
         save_disaster_action_packages(list(normalized["action_packages"]), artifacts_dir)
@@ -3622,32 +3661,45 @@ def apply_pending_vehicle_settings_command(
             raise ValueError("請輸入救護車代號")
         existing = next((record for record in result["ems_vehicles"] if record["label"] == label), {})
         result["ems_vehicles"] = [record for record in result["ems_vehicles"] if record["label"] != label]
+        vehicle_type = vehicle_settings_record_type(
+            label,
+            existing.get("vehicle_type") if existing else normalized.get("vehicle_type"),
+            disaster=False,
+        )
         result["ems_vehicles"].append(
             {
                 "label": label,
                 "ppe_name": str(normalized.get("ppe_name") or ""),
-                "is_custom": bool(existing.get("is_custom", True)),
+                "vehicle_type": vehicle_type,
+                "is_custom": vehicle_type == VEHICLE_TYPE_CUSTOM,
             }
         )
     elif operation == "delete_ems_vehicle":
         vehicle = next((record for record in result["ems_vehicles"] if record["label"] == label), None)
-        if vehicle is None or not vehicle.get("is_custom"):
+        if vehicle is None or normalize_vehicle_type(vehicle.get("vehicle_type")) != VEHICLE_TYPE_CUSTOM:
             raise ValueError("內建救護車不能刪除")
         result["ems_vehicles"] = [record for record in result["ems_vehicles"] if record["label"] != label]
     elif operation == "save_disaster_vehicle":
         if not label or not str(normalized.get("recorder_code") or "").strip():
             raise ValueError("請完整填寫救災車輛資料")
+        existing = next((record for record in result["disaster_vehicles"] if record["label"] == label), {})
         result["disaster_vehicles"] = [record for record in result["disaster_vehicles"] if record["label"] != label]
         result["disaster_vehicles"].append(
             {
                 "label": label,
                 "ppe_name": str(normalized.get("ppe_name") or ""),
                 "recorder_code": str(normalized.get("recorder_code") or ""),
+                "vehicle_type": vehicle_settings_record_type(
+                    label,
+                    existing.get("vehicle_type") if existing else normalized.get("vehicle_type"),
+                    disaster=True,
+                ),
             }
         )
     elif operation == "delete_disaster_vehicle":
-        if label not in {record["label"] for record in result["disaster_vehicles"]}:
-            raise ValueError("找不到要刪除的救災車輛")
+        vehicle = next((record for record in result["disaster_vehicles"] if record["label"] == label), None)
+        if vehicle is None or normalize_vehicle_type(vehicle.get("vehicle_type")) != VEHICLE_TYPE_CUSTOM:
+            raise ValueError("內建救災車不能刪除")
         result["disaster_vehicles"] = [record for record in result["disaster_vehicles"] if record["label"] != label]
     elif operation == "save_disaster_action_packages":
         packages = clean_remote_disaster_action_packages(normalized.get("action_packages"))
@@ -3942,14 +3994,16 @@ def clean_remote_vehicle_records(value: object, *, disaster: bool) -> list[dict[
         label = str(item.get("label") or "").strip()
         if not label:
             continue
+        vehicle_type = vehicle_settings_record_type(label, item.get("vehicle_type"), disaster=disaster)
         record = {
             "label": label,
             "ppe_name": str(item.get("ppe_name") or "").strip(),
+            "vehicle_type": vehicle_type,
         }
         if disaster:
             record["recorder_code"] = str(item.get("recorder_code") or "").strip()
         else:
-            record["is_custom"] = bool(item.get("is_custom"))
+            record["is_custom"] = record["vehicle_type"] == VEHICLE_TYPE_CUSTOM
         records.append(record)
     return records
 
@@ -6319,19 +6373,23 @@ def render_task_form_from_request(
 
 
 def vehicle_admin_records() -> list[dict[str, str]]:
-    custom_names = {
-        record["label"]: record.get("ppe_name", "")
+    records_by_label = {
+        record["label"]: record
         for record in load_vehicle_records(artifacts_dir)
     }
     ppe_names = vehicle_ppe_names(artifacts_dir)
-    return [
-        {
-            "label": label,
-            "ppe_name": ppe_names.get(label, ""),
-            "is_custom": label in custom_names,
-        }
-        for label in vehicle_options(artifacts_dir)
-    ]
+    records: list[dict[str, str]] = []
+    for label in vehicle_options(artifacts_dir):
+        vehicle_type = normalize_vehicle_type(records_by_label.get(label, {}).get("vehicle_type"))
+        records.append(
+            {
+                "label": label,
+                "ppe_name": ppe_names.get(label, ""),
+                "vehicle_type": vehicle_type,
+                "is_custom": vehicle_type == VEHICLE_TYPE_CUSTOM,
+            }
+        )
+    return records
 
 
 def pop_selected_case() -> dict:

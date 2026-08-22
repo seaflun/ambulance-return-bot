@@ -175,7 +175,7 @@
   {% call page_chrome('救災勤務登打中心', 'SinpoSmart - 救災Worker', 'disaster') %}
     {% if show_nas_home_button() or show_vehicle_settings_button() or show_task_entry_controls() %}
       {% if show_nas_home_button() or show_task_entry_controls() %}<a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>{% endif %}
-      {% if show_vehicle_settings_button() %}<a class="button secondary header-navigation-button" href="/admin/disaster-vehicles">車輛及工作設定</a>{% endif %}
+      {% if show_vehicle_settings_button() %}<a class="button secondary header-navigation-button" href="/admin/disaster-vehicles">救災各項設定</a>{% endif %}
     {% endif %}
   {% endcall %}
   {% if page_notice %}

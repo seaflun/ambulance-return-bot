@@ -1434,8 +1434,8 @@ class WebAppTests(unittest.TestCase):
         )
 
         self.assertNotIn(".app-header__eyebrow {\n    display: none;", css)
-        self.assertIn('<p class="page-chrome__eyebrow">救護各項設定</p>', ems_settings)
-        self.assertIn('<p class="page-chrome__eyebrow">車輛及工作設定</p>', disaster_settings)
+        self.assertIn('<p class="page-chrome__eyebrow">救護登打設定</p>', ems_settings)
+        self.assertIn('<p class="page-chrome__eyebrow">救災登打設定</p>', disaster_settings)
 
     def test_home_portal_cards_use_destination_colors(self):
         response = self.client.get("/static/sinposmart-ui.css")
@@ -1507,8 +1507,8 @@ class WebAppTests(unittest.TestCase):
         pages = (
             ("/app", "ems", "救護勤務登打中心"),
             ("/app/disaster", "disaster", "救災勤務登打中心"),
-            ("/admin/vehicles", "ems", "救護各項設定"),
-            ("/admin/disaster-vehicles", "disaster", "車輛及工作設定"),
+            ("/admin/vehicles", "ems", "救護登打設定"),
+            ("/admin/disaster-vehicles", "disaster", "救災登打設定"),
         )
 
         for path, accent, eyebrow in pages:
@@ -1821,7 +1821,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("textarea { width: 100%; min-height: 240px;", settings_body)
         self.assertIn("#action-packages { min-height: 360px; }", settings_body)
         self.assertIn('id="action-packages" name="action_packages" rows="12"', settings_body)
-        self.assertIn(".delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 36px;", settings_body)
+        self.assertIn(".delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 44px;", settings_body)
         self.assertIn("white-space: nowrap;", settings_body)
 
     def test_disaster_page_hides_form_until_case_is_imported(self):
@@ -2104,8 +2104,9 @@ class WebAppTests(unittest.TestCase):
         nas_headers = {"Host": "100.114.126.58:8080"}
         page = self.client.get("/admin/disaster-vehicles", headers=nas_headers)
         body = html.unescape(page.data.decode("utf-8"))
-        self.assertIn("救災車設定", body)
+        self.assertIn("救災各項設定", body)
         self.assertIn("行車紀錄器車號", body)
+        self.assertIn('name="vehicle_type"', body)
         self.assertIn("main { max-width: 960px;", body)
         self.assertIn("repeating-linear-gradient", body)
         self.assertIn('class="vehicle-row header-row"', body)
@@ -2113,13 +2114,19 @@ class WebAppTests(unittest.TestCase):
 
         response = self.client.post(
             "/admin/disaster-vehicles",
-            data={"label": "新坡71", "ppe_name": "FIRE-71", "recorder_code": "CAM71"},
+            data={
+                "label": "新坡71",
+                "ppe_name": "FIRE-71",
+                "recorder_code": "CAM71",
+                "vehicle_type": "自訂",
+            },
             headers=nas_headers,
         )
         self.assertEqual(200, response.status_code)
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn("新坡71", body)
         self.assertIn("CAM71", body)
+        self.assertIn("自訂", body)
 
         self.import_case_for_form(
             {
@@ -2132,6 +2139,64 @@ class WebAppTests(unittest.TestCase):
         )
         disaster_page = self.client.get("/app/disaster")
         self.assertIn("新坡71", html.unescape(disaster_page.data.decode("utf-8")))
+
+    def test_vehicle_settings_pages_share_columns_and_fixed_vehicle_card_height(self):
+        nas_headers = {"Host": "100.114.126.58:8080"}
+        ems_body = html.unescape(self.client.get("/admin/vehicles", headers=nas_headers).data.decode("utf-8"))
+        disaster_body = html.unescape(
+            self.client.get("/admin/disaster-vehicles", headers=nas_headers).data.decode("utf-8")
+        )
+        vehicle_headers = [
+            "車輛代號",
+            "車牌號碼",
+            "行車紀錄器車號",
+            "類型",
+            "最新里程",
+            "同步狀態",
+            "操作",
+        ]
+
+        self.assertIn("救護登打設定", ems_body)
+        self.assertIn("救護各項設定", ems_body)
+        self.assertIn("救災登打設定", disaster_body)
+        self.assertIn("救災各項設定", disaster_body)
+        for body in (ems_body, disaster_body):
+            self.assertIn('name="vehicle_type"', body)
+            self.assertIn("--vehicle-row-height: 68px;", body)
+            self.assertIn("--vehicle-card-height: 318px;", body)
+            self.assertIn(".vehicle-row:not(.header-row) { height: var(--vehicle-row-height); }", body)
+            self.assertIn("grid-template-rows: repeat(4, 68px);", body)
+            for heading in vehicle_headers:
+                self.assertIn(heading, body)
+                self.assertIn(f'data-field="{heading}"', body)
+        self.assertNotIn('action="/admin/vehicles/delete"', ems_body)
+        self.assertNotIn('action="/admin/disaster-vehicles/delete"', disaster_body)
+
+    def test_remote_current_vehicles_remain_built_in_when_legacy_snapshot_marks_them_custom(self):
+        settings = app_module.normalize_remote_vehicle_settings(
+            {
+                "ems_vehicles": [
+                    {"label": "新坡91", "ppe_name": "BGV-2310", "vehicle_type": "自訂"},
+                    {"label": "自訂救護車", "ppe_name": "CUSTOM-EMS", "vehicle_type": "自訂"},
+                ],
+                "disaster_vehicles": [
+                    {
+                        "label": "新坡15",
+                        "ppe_name": "FIRE-15",
+                        "recorder_code": "15",
+                        "vehicle_type": "自訂",
+                    }
+                ],
+                "disaster_action_packages": ["現場待命"],
+            }
+        )
+
+        self.assertIsNotNone(settings)
+        assert settings is not None
+        self.assertEqual("內建", settings["ems_vehicles"][0]["vehicle_type"])
+        self.assertFalse(settings["ems_vehicles"][0]["is_custom"])
+        self.assertEqual("自訂", settings["ems_vehicles"][1]["vehicle_type"])
+        self.assertEqual("內建", settings["disaster_vehicles"][0]["vehicle_type"])
 
     def test_record_folder_preview_uses_shared_ems_and_disaster_rules(self):
         blank_disaster = self.client.post(
@@ -2364,7 +2429,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("SinpoSmart - 救護Worker", body)
         self.assertIn("救護各項設定", body)
         self.assertIn('href="/admin/vehicles"', body)
-        self.assertIn("車輛及工作設定", disaster_body)
+        self.assertIn("救災各項設定", disaster_body)
         self.assertIn('href="/admin/disaster-vehicles"', disaster_body)
 
     def test_nas_task_headers_keep_back_link_before_vehicle_settings(self):
@@ -2375,7 +2440,7 @@ class WebAppTests(unittest.TestCase):
         )
 
         self.assertLess(ems_body.index("返回上一頁"), ems_body.index("救護各項設定"))
-        self.assertLess(disaster_body.index("返回上一頁"), disaster_body.index("車輛及工作設定"))
+        self.assertLess(disaster_body.index("返回上一頁"), disaster_body.index("救災各項設定"))
 
     def test_local_task_forms_show_back_navigation_and_vehicle_settings(self):
         headers = {"Host": "127.0.0.1:8090"}
@@ -2390,7 +2455,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn('href="/task-entry">返回上一頁</a>', body)
         self.assertIn("救護各項設定", ems_body)
         self.assertIn('href="/admin/vehicles"', ems_body)
-        self.assertIn("車輛及工作設定", disaster_body)
+        self.assertIn("救災各項設定", disaster_body)
         self.assertIn('href="/admin/disaster-vehicles"', disaster_body)
 
     def test_local_vehicle_settings_routes_are_available_for_synced_edits(self):
@@ -2453,8 +2518,10 @@ class WebAppTests(unittest.TestCase):
         os.environ["WORKER_SERVER_URL"] = "http://nas.test:8080"
         os.environ["WORKER_TOKEN"] = "test-token"
         remote_settings = {
-            "ems_vehicles": [{"label": "NAS救護91", "ppe_name": "NAS-EMS", "is_custom": True}],
-            "disaster_vehicles": [{"label": "NAS救災11", "ppe_name": "NAS-FIRE", "recorder_code": "NAS11"}],
+            "ems_vehicles": [{"label": "NAS救護91", "ppe_name": "NAS-EMS", "vehicle_type": "內建"}],
+            "disaster_vehicles": [
+                {"label": "NAS救災11", "ppe_name": "NAS-FIRE", "recorder_code": "NAS11", "vehicle_type": "內建"}
+            ],
             "disaster_action_packages": ["NAS 現場待命"],
         }
         remote_settings["revision"] = app_module.vehicle_settings_revision(remote_settings)
@@ -2482,6 +2549,7 @@ class WebAppTests(unittest.TestCase):
                 "operation": "save_ems_vehicle",
                 "label": "NAS救護91",
                 "ppe_name": "NAS-EMS",
+                "vehicle_type": "內建",
                 "revision": remote_settings["revision"],
             },
             json.loads(post_request.data.decode("utf-8")),
@@ -2493,8 +2561,10 @@ class WebAppTests(unittest.TestCase):
         os.environ["WORKER_SERVER_URL"] = "http://nas.test:8080"
         os.environ["WORKER_TOKEN"] = "test-token"
         initial_settings = {
-            "ems_vehicles": [{"label": "NAS救護91", "ppe_name": "NAS-EMS", "is_custom": True}],
-            "disaster_vehicles": [{"label": "NAS救災11", "ppe_name": "NAS-FIRE", "recorder_code": "NAS11"}],
+            "ems_vehicles": [{"label": "NAS救護91", "ppe_name": "NAS-EMS", "vehicle_type": "內建"}],
+            "disaster_vehicles": [
+                {"label": "NAS救災11", "ppe_name": "NAS-FIRE", "recorder_code": "NAS11", "vehicle_type": "內建"}
+            ],
             "disaster_action_packages": ["NAS 現場待命"],
         }
         initial_settings["revision"] = app_module.vehicle_settings_revision(initial_settings)
@@ -3740,14 +3810,14 @@ class WebAppTests(unittest.TestCase):
         page = self.client.get("/admin/vehicles", headers=nas_headers)
         page_body = html.unescape(page.data.decode("utf-8"))
         self.assertIn("救護各項設定", page_body)
-        self.assertIn("救護車代號", page_body)
+        self.assertIn("車輛代號", page_body)
         self.assertIn('href="/app">返回救護登打</a>', page_body)
-        self.assertIn('<button type="submit">新增</button>', page_body)
+        self.assertIn('<button type="submit">儲存車輛</button>', page_body)
         self.assertIn("目前車輛", page_body)
-        self.assertIn('<div class="vehicle-label">救護車代號</div>', page_body)
+        self.assertIn('<div class="vehicle-label">車輛代號</div>', page_body)
         self.assertIn("車牌號碼", page_body)
         self.assertIn("header-row", page_body)
-        self.assertNotIn("新增或更新", page_body)
+        self.assertIn("新增或更新車輛", page_body)
         self.assertNotIn("返回 APP", page_body)
         self.assertNotIn('placeholder="新坡95"', page_body)
         self.assertNotIn('placeholder="BPE-5951"', page_body)
@@ -3797,18 +3867,17 @@ class WebAppTests(unittest.TestCase):
             self.assertIn('href="/static/sinposmart-ui.css"', body)
             self.assertIn('href="/static/sinposmart-workspace.css"', body)
             self.assertIn('class="workspace-page', body)
-        self.assertIn(
-            "grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 64px minmax(88px, 110px) minmax(150px, 1fr) 76px;",
-            vehicle_body,
-        )
-        self.assertIn(
-            "grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) minmax(120px, 180px) minmax(88px, 110px) minmax(150px, 1fr) 76px;",
-            disaster_vehicle_body,
+        shared_columns = (
+            "grid-template-columns: minmax(88px, .95fr) minmax(104px, 1.1fr) minmax(102px, 1fr) "
+            "56px minmax(84px, .85fr) minmax(124px, 1.2fr) 88px;"
         )
         for body in (vehicle_body, disaster_vehicle_body):
+            self.assertIn(shared_columns, body)
+            self.assertIn("--vehicle-row-height: 68px;", body)
+            self.assertIn("--vehicle-card-height: 318px;", body)
             self.assertIn("最新里程", body)
             self.assertIn("同步狀態", body)
-        self.assertIn(".delete-button { min-width: 64px; min-height: 34px;", vehicle_body)
+        self.assertIn(".delete-button { min-width: 72px; min-height: 44px;", vehicle_body)
         self.assertIn("white-space: nowrap;", vehicle_body)
 
         admin_css = self.client.get("/static/sinposmart-admin.css").data.decode("utf-8")
@@ -3838,18 +3907,36 @@ class WebAppTests(unittest.TestCase):
 
     def test_admin_vehicle_delete_removes_custom_vehicle_only(self):
         nas_headers = {"Host": "100.114.126.58:8080"}
-        response = self.client.post(
+        protected_response = self.client.post(
             "/admin/vehicles/delete",
             data={"label": "新坡95"},
+            headers=nas_headers,
+            follow_redirects=False,
+        )
+        protected_body = html.unescape(protected_response.data.decode("utf-8"))
+
+        self.assertEqual(protected_response.status_code, 400)
+        self.assertIn("內建救護車不能刪除", protected_body)
+        self.assertIn("新坡95", protected_body)
+
+        self.client.post(
+            "/admin/vehicles",
+            data={"label": "自訂救護車", "ppe_name": "CUSTOM-EMS", "vehicle_type": "自訂"},
+            headers=nas_headers,
+            follow_redirects=False,
+        )
+        response = self.client.post(
+            "/admin/vehicles/delete",
+            data={"label": "自訂救護車"},
             headers=nas_headers,
             follow_redirects=False,
         )
         body = html.unescape(response.data.decode("utf-8"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("已刪除 新坡95", body)
+        self.assertIn("已刪除 自訂救護車", body)
         app_response = self.client.get("/app")
-        self.assertNotIn("新坡95", html.unescape(app_response.data.decode("utf-8")))
+        self.assertNotIn("自訂救護車", html.unescape(app_response.data.decode("utf-8")))
 
         builtin_response = self.client.post(
             "/admin/vehicles/delete",

@@ -7,17 +7,53 @@ import threading
 from typing import Any
 from uuid import uuid4
 
-from .models import DISASTER_ACTION_PACKAGES
+from .models import (
+    DISASTER_ACTION_PACKAGES,
+    VEHICLE_TYPE_BUILT_IN,
+    VEHICLE_TYPE_CUSTOM,
+    normalize_vehicle_type,
+)
 
 
 DEFAULT_DISASTER_VEHICLES = [
-    {"label": "新坡11", "ppe_name": "", "recorder_code": "11"},
-    {"label": "新坡15", "ppe_name": "", "recorder_code": "15"},
-    {"label": "新坡16", "ppe_name": "", "recorder_code": "16"},
-    {"label": "新坡91", "ppe_name": "", "recorder_code": "91"},
-    {"label": "新坡92", "ppe_name": "", "recorder_code": "92"},
-    {"label": "新坡93", "ppe_name": "", "recorder_code": "93"},
+    {
+        "label": "新坡11",
+        "ppe_name": "",
+        "recorder_code": "11",
+        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
+    },
+    {
+        "label": "新坡15",
+        "ppe_name": "",
+        "recorder_code": "15",
+        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
+    },
+    {
+        "label": "新坡16",
+        "ppe_name": "",
+        "recorder_code": "16",
+        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
+    },
+    {
+        "label": "新坡91",
+        "ppe_name": "",
+        "recorder_code": "91",
+        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
+    },
+    {
+        "label": "新坡92",
+        "ppe_name": "",
+        "recorder_code": "92",
+        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
+    },
+    {
+        "label": "新坡93",
+        "ppe_name": "",
+        "recorder_code": "93",
+        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
+    },
 ]
+DEFAULT_DISASTER_VEHICLE_LABELS = frozenset(record["label"] for record in DEFAULT_DISASTER_VEHICLES)
 _SETTINGS_LOCK = threading.RLock()
 
 
@@ -45,6 +81,7 @@ def clean_disaster_vehicle_records(records: Any) -> list[dict[str, str]]:
                 "label": label,
                 "ppe_name": str(record.get("ppe_name") or "").strip().upper(),
                 "recorder_code": str(record.get("recorder_code") or "").strip(),
+                "vehicle_type": normalize_vehicle_type(record.get("vehicle_type")),
             }
         )
     return cleaned
@@ -66,7 +103,11 @@ def write_disaster_vehicle_settings(settings: dict[str, Any], base_dir: Path | N
     path = disaster_vehicle_settings_path(base_dir)
     payload = {
         "vehicles": clean_disaster_vehicle_records(settings.get("vehicles")),
-        "deleted": [str(label).strip() for label in settings.get("deleted", []) if str(label).strip()],
+        "deleted": [
+            str(label).strip()
+            for label in settings.get("deleted", [])
+            if str(label).strip() and str(label).strip() not in DEFAULT_DISASTER_VEHICLE_LABELS
+        ],
         "action_packages": clean_disaster_action_packages(settings.get("action_packages")),
     }
     with _SETTINGS_LOCK:
@@ -85,9 +126,10 @@ def write_disaster_vehicle_settings(settings: dict[str, Any], base_dir: Path | N
 def load_disaster_vehicle_records(base_dir: Path | None = None) -> list[dict[str, str]]:
     with _SETTINGS_LOCK:
         settings = read_disaster_vehicle_settings(base_dir)
-        deleted = {str(label).strip() for label in settings.get("deleted", []) if str(label).strip()}
-        records = [dict(record) for record in DEFAULT_DISASTER_VEHICLES if record["label"] not in deleted]
+        records = [dict(record) for record in DEFAULT_DISASTER_VEHICLES]
         for record in clean_disaster_vehicle_records(settings.get("vehicles")):
+            if record["label"] in DEFAULT_DISASTER_VEHICLE_LABELS:
+                record["vehicle_type"] = VEHICLE_TYPE_BUILT_IN
             records = [existing for existing in records if existing["label"] != record["label"]]
             records.append(record)
         return records
@@ -98,15 +140,29 @@ def save_disaster_vehicle_record(
     ppe_name: str,
     recorder_code: str,
     base_dir: Path | None = None,
+    vehicle_type: str = VEHICLE_TYPE_BUILT_IN,
 ) -> None:
     record = clean_disaster_vehicle_records(
-        [{"label": label, "ppe_name": ppe_name, "recorder_code": recorder_code}]
+        [
+            {
+                "label": label,
+                "ppe_name": ppe_name,
+                "recorder_code": recorder_code,
+                "vehicle_type": vehicle_type,
+            }
+        ]
     )
     if not record:
         raise ValueError("請輸入車輛名稱")
     if not record[0]["recorder_code"]:
         raise ValueError("請輸入行車紀錄器車號")
     with _SETTINGS_LOCK:
+        existing = next(
+            (item for item in load_disaster_vehicle_records(base_dir) if item["label"] == record[0]["label"]),
+            None,
+        )
+        if existing is not None:
+            record[0]["vehicle_type"] = normalize_vehicle_type(existing.get("vehicle_type"))
         settings = read_disaster_vehicle_settings(base_dir)
         records = clean_disaster_vehicle_records(settings.get("vehicles"))
         records = [item for item in records if item["label"] != record[0]["label"]]
@@ -121,15 +177,15 @@ def delete_disaster_vehicle_record(label: str, base_dir: Path | None = None) -> 
     if not label:
         return False
     with _SETTINGS_LOCK:
-        settings = read_disaster_vehicle_settings(base_dir)
-        known = label in {item["label"] for item in load_disaster_vehicle_records(base_dir)}
-        if not known:
+        record = next((item for item in load_disaster_vehicle_records(base_dir) if item["label"] == label), None)
+        if (
+            record is None
+            or label in DEFAULT_DISASTER_VEHICLE_LABELS
+            or normalize_vehicle_type(record.get("vehicle_type")) != VEHICLE_TYPE_CUSTOM
+        ):
             return False
+        settings = read_disaster_vehicle_settings(base_dir)
         settings["vehicles"] = [item for item in clean_disaster_vehicle_records(settings.get("vehicles")) if item["label"] != label]
-        deleted = [str(item).strip() for item in settings.get("deleted", []) if str(item).strip()]
-        if label not in deleted:
-            deleted.append(label)
-        settings["deleted"] = deleted
         write_disaster_vehicle_settings(settings, base_dir)
         return True
 

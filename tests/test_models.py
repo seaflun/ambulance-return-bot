@@ -333,15 +333,43 @@ class ModelParsingTests(unittest.TestCase):
         self.assertIn("新坡95", vehicle_options())
         self.assertEqual(vehicle_ppe_names()["新坡95"], "BPE-5951")
 
-    def test_borrowed_ambulance_can_be_deleted_but_builtin_cannot(self):
+    def test_current_ambulances_are_built_in_and_only_new_custom_can_be_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
 
             self.assertIn("新坡95", vehicle_options(base_dir))
-            self.assertTrue(delete_vehicle_record("新坡95", base_dir))
-            self.assertNotIn("新坡95", vehicle_options(base_dir))
+            self.assertTrue(
+                all(record["vehicle_type"] == "內建" for record in load_vehicle_records(base_dir))
+            )
+            save_vehicle_record("新坡95", "BPE-9595", base_dir, vehicle_type="自訂")
+            newpo_95 = next(record for record in load_vehicle_records(base_dir) if record["label"] == "新坡95")
+            self.assertEqual("內建", newpo_95["vehicle_type"])
+            self.assertFalse(delete_vehicle_record("新坡95", base_dir))
             self.assertFalse(delete_vehicle_record("新坡91", base_dir))
             self.assertIn("新坡91", vehicle_options(base_dir))
+            save_vehicle_record("測試自訂救護車", "CUSTOM-EMS", base_dir, vehicle_type="自訂")
+            custom = next(
+                record for record in load_vehicle_records(base_dir) if record["label"] == "測試自訂救護車"
+            )
+            self.assertEqual("自訂", custom["vehicle_type"])
+            self.assertTrue(delete_vehicle_record("測試自訂救護車", base_dir))
+            self.assertNotIn("測試自訂救護車", vehicle_options(base_dir))
+
+    def test_legacy_deleted_builtin_ambulance_is_restored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            settings_path = base_dir / "settings" / "vehicles.json"
+            settings_path.parent.mkdir(parents=True)
+            settings_path.write_text(
+                json.dumps({"vehicles": [], "deleted": ["新坡95"]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            self.assertIn("新坡95", vehicle_options(base_dir))
+            save_vehicle_record("新坡95", "BPE-5951", base_dir)
+
+            persisted = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertNotIn("新坡95", persisted["deleted"])
 
     def test_concurrent_vehicle_settings_updates_do_not_lose_records(self):
         with tempfile.TemporaryDirectory() as tmp:
