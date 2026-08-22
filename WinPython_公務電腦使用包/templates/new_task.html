@@ -868,6 +868,8 @@
     const baselineConsumablesLoaded = {{ baseline_consumables_loaded | default(false) | tojson }};
     const selectedConsumablePackages = {{ selected_consumable_packages | default([]) | tojson }};
     const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
+    const maxVehicleMileageChangeKm = 300;
+    const enforceMileageChangeLimit = {{ enforce_mileage_change_limit | default(true) | tojson }};
     const twoVehicleToggle = document.getElementById("two-vehicle-toggle");
     const secondVehicleSection = document.getElementById("second-vehicle-section");
     const fuelRecordToggle = document.getElementById("fuel-record-toggle");
@@ -1039,8 +1041,8 @@
       const select = document.querySelector(`select[name="${vehicleFieldName}"]`);
       const hint = document.querySelector(`[data-last-mileage-for="${vehicleFieldName}"]`);
       if (!select || !hint) return;
-      const mileage = lastVehicleMileages[select.value] || "";
-      hint.textContent = mileage ? `上次該車輛登打的里程：${mileage}` : "";
+      const mileage = String(lastVehicleMileages[select.value] || "").trim();
+      hint.textContent = /^\d+$/.test(mileage) ? `上次該車輛登打的里程：${mileage}` : "";
     }
 
     function updateReasonOptionsForSummaryType() {
@@ -1184,6 +1186,27 @@
         errors.push(`${label}單價需為數字`);
       }
       return errors;
+    }
+
+    function mileageChangeErrors(vehicleFieldName, mileageFieldName, label = "") {
+      if (!enforceMileageChangeLimit) return [];
+      const vehicle = document.querySelector(`select[name="${vehicleFieldName}"]`);
+      const mileageInput = document.querySelector(`input[name="${mileageFieldName}"]`);
+      if (!vehicle || !mileageInput || !vehicle.value) return [];
+      const previousMileageText = String(lastVehicleMileages[vehicle.value] || "").trim();
+      const currentMileageText = mileageInput.value.trim();
+      if (!/^\d+$/.test(previousMileageText) || !/^\d+$/.test(currentMileageText)) return [];
+      const previousMileage = Number(previousMileageText);
+      const currentMileage = Number(currentMileageText);
+      if (!Number.isSafeInteger(previousMileage) || !Number.isSafeInteger(currentMileage)) return [];
+      const fieldLabel = label ? `${label}里程` : "里程";
+      if (currentMileage < previousMileage) {
+        return [`${fieldLabel}不能小於上次登打的里程（${previousMileage}）`];
+      }
+      if (currentMileage - previousMileage > maxVehicleMileageChangeKm) {
+        return [`${fieldLabel}與上次登打相差不可超過 ${maxVehicleMileageChangeKm} 公里（上次 ${previousMileage}）`];
+      }
+      return [];
     }
 
     function showClientFormErrors(errors) {
@@ -1375,6 +1398,8 @@
         const errors = [
           ...fuelRecordErrors("", "1車"),
           ...fuelRecordErrors("_2", "2車"),
+          ...mileageChangeErrors("vehicle", "mileage"),
+          ...(twoVehicleToggle?.checked ? mileageChangeErrors("vehicle_2", "mileage_2", "2車") : []),
           ...volunteerAssistErrors()
         ];
         showClientFormErrors(errors);

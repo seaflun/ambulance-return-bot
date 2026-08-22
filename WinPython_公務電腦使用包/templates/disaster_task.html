@@ -360,6 +360,7 @@
   const reason = document.getElementById('case-reason');
   const reasonOptionsByType = {{ disaster_reason_options_by_type | tojson }};
   const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
+  const maxVehicleMileageChangeKm = 300;
   const lockedSubcategory = document.getElementById('locked-recorder-subcategory');
   const folderPreview = document.getElementById('disaster-folder-preview');
   const clientFormErrors = document.getElementById('client-form-errors');
@@ -425,8 +426,8 @@
     const vehicle=card.querySelector('[name="vehicle"]');
     const hint=card.querySelector('[data-last-mileage-for="vehicle"]');
     if(!vehicle||!hint) return;
-    const mileage=lastVehicleMileages[vehicle.value]||'';
-    hint.textContent=mileage?`上次該車輛登打的里程：${mileage}`:'';
+    const mileage=String(lastVehicleMileages[vehicle.value]||'').trim();
+    hint.textContent=/^\d+$/.test(mileage)?`上次該車輛登打的里程：${mileage}`:'';
   }
   function bindCard(card){
     if(card.dataset.bound==='1') return;
@@ -554,6 +555,21 @@
     clientFormErrors.hidden=errors.length===0;
     if(errors.length) clientFormErrors.scrollIntoView({block:'start'});
   }
+  function mileageChangeErrors(card,index){
+    const vehicle=card.querySelector('[name="vehicle"]');
+    const mileageInput=card.querySelector('[name="mileage"]');
+    if(!vehicle||!mileageInput||!vehicle.value) return [];
+    const previousMileageText=String(lastVehicleMileages[vehicle.value]||'').trim();
+    const currentMileageText=mileageInput.value.trim();
+    if(!/^\d+$/.test(previousMileageText)||!/^\d+$/.test(currentMileageText)) return [];
+    const previousMileage=Number(previousMileageText);
+    const currentMileage=Number(currentMileageText);
+    if(!Number.isSafeInteger(previousMileage)||!Number.isSafeInteger(currentMileage)) return [];
+    const fieldLabel=`第${index+1}車里程`;
+    if(currentMileage<previousMileage) return [`${fieldLabel}不能小於上次登打的里程（${previousMileage}）`];
+    if(currentMileage-previousMileage>maxVehicleMileageChangeKm) return [`${fieldLabel}與上次登打相差不可超過 ${maxVehicleMileageChangeKm} 公里（上次 ${previousMileage}）`];
+    return [];
+  }
   form.addEventListener('submit',event=>{
     if(event.submitter?.formAction.endsWith('/cases/clear')) return;
     reindexCards();
@@ -566,6 +582,7 @@
       wrapper.classList.toggle('is-pending',invalid);
       if(invalid) errors.push(wrapper.dataset.requiredMessage||'請完成必填欄位');
     });
+    Array.from(list.querySelectorAll('.vehicle-card')).forEach((card,index)=>errors.push(...mileageChangeErrors(card,index)));
     showClientFormErrors([...new Set(errors)]);
     if(errors.length) event.preventDefault();
   });

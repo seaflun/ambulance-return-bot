@@ -308,6 +308,7 @@ def new_task():
         selected_consumable_packages=[],
         two_vehicle_available=two_vehicle_option_available(selected_case),
         last_vehicle_mileages=last_vehicle_mileages(nas_settings=nas_settings),
+        enforce_mileage_change_limit=True,
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
         civilpower_roster=effective_civilpower_roster(),
@@ -595,6 +596,7 @@ def edit_task(task_id: str):
         baseline_consumables_loaded=False,
         selected_consumable_packages=[],
         two_vehicle_available=two_vehicle_option_available(selected_case),
+        enforce_mileage_change_limit=False,
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task.get("disinfection_items") or []),
         civilpower_roster=effective_civilpower_roster(),
@@ -620,7 +622,7 @@ def update_task(task_id: str):
         return task_edit_lock_message(previous_payload), 409
     task_request = request_from_form(request.form)
     hydrate_volunteer_assist_member(task_request)
-    errors = validate_task_form(task_request)
+    errors = validate_task_form(task_request, enforce_mileage_change_limit=False)
     if errors:
         return render_task_form_from_request(
             task_request,
@@ -633,6 +635,7 @@ def update_task(task_id: str):
             baseline_consumables_loaded=form_flag_enabled(request.form.get("baseline_consumables_loaded")),
             selected_consumable_packages=selected_consumable_packages_from_form(request.form),
             two_vehicle_available=form_flag_enabled(request.form.get("two_vehicle_available")) or task_request.two_vehicle,
+            enforce_mileage_change_limit=False,
         ), 400
     current_task = task_request.to_dict()
     edit_impact = analyze_task_edit(previous_task, current_task)
@@ -5959,6 +5962,36 @@ def last_vehicle_mileages(
     return {vehicle: mileage for vehicle, (mileage, _occurred_at) in records.items()}
 
 
+MAX_VEHICLE_MILEAGE_CHANGE_KM = 300
+
+
+def validate_vehicle_mileage_change(
+    vehicle_entries: Sequence[object],
+    labels: Sequence[str],
+    *,
+    previous_mileages: Mapping[str, object] | None = None,
+) -> list[str]:
+    references = previous_mileages if previous_mileages is not None else last_vehicle_mileages()
+    errors: list[str] = []
+    for index, entry in enumerate(vehicle_entries):
+        vehicle = str(getattr(entry, "vehicle", "") or "").strip()
+        mileage = str(getattr(entry, "mileage", "") or "").strip()
+        previous_mileage = str(references.get(vehicle) or "").strip()
+        if not vehicle or not re.fullmatch(r"\d+", mileage) or not re.fullmatch(r"\d+", previous_mileage):
+            continue
+        label = str(labels[index] if index < len(labels) else "").strip()
+        current_value = int(mileage)
+        previous_value = int(previous_mileage)
+        field_label = f"{label}里程" if label else "里程"
+        if current_value < previous_value:
+            errors.append(f"{field_label}不能小於上次登打的里程（{previous_value}）")
+        elif current_value - previous_value > MAX_VEHICLE_MILEAGE_CHANGE_KM:
+            errors.append(
+                f"{field_label}與上次登打相差不可超過 {MAX_VEHICLE_MILEAGE_CHANGE_KM} 公里（上次 {previous_value}）"
+            )
+    return errors
+
+
 def _positive_quantity(value: object) -> bool:
     try:
         return int(value) > 0
@@ -6520,7 +6553,7 @@ def prepared_case_lookup(service_type: str = "ems") -> dict:
     return case_lookup
 
 
-def validate_task_form(task_request) -> list[str]:
+def validate_task_form(task_request, *, enforce_mileage_change_limit: bool = True) -> list[str]:
     errors: list[str] = []
     if not task_request.case_id.strip():
         errors.append("請先從上方案件按「帶入」")
@@ -6581,6 +6614,13 @@ def validate_task_form(task_request) -> list[str]:
                 )
                 if return_datetime < case_datetime:
                     errors.append(f"{label}\u8fd4\u968a\u6642\u9593\u4e0d\u80fd\u65e9\u65bc\u6848\u4ef6\u6642\u9593")
+        if enforce_mileage_change_limit:
+            errors.extend(
+                validate_vehicle_mileage_change(
+                    vehicle_requests,
+                    [f"{index}車" for index in range(1, len(vehicle_requests) + 1)],
+                )
+            )
         return errors
 
     if not task_request.return_time.strip():
@@ -6616,6 +6656,8 @@ def validate_task_form(task_request) -> list[str]:
         )
         if return_datetime < case_datetime:
             errors.append("返隊日期時間不能早於案件日期時間")
+    if enforce_mileage_change_limit:
+        errors.extend(validate_vehicle_mileage_change([task_request], [""]))
     return errors
 
 
@@ -6704,6 +6746,12 @@ def validate_disaster_task_form(task_request) -> list[str]:
         if not re.fullmatch(r"\d+", entry.mileage.strip()):
             errors.append(f"{label}里程只能輸入數字")
         errors.extend(validate_fuel_record(entry.fuel_record, label))
+    errors.extend(
+        validate_vehicle_mileage_change(
+            entries,
+            [f"第{index}車" for index in range(1, len(entries) + 1)],
+        )
+    )
     return errors
 
 
@@ -6751,6 +6799,7 @@ def render_task_form_from_request(
     baseline_consumables_loaded: bool = False,
     selected_consumable_packages: list[str] | None = None,
     two_vehicle_available: bool = False,
+    enforce_mileage_change_limit: bool = True,
 ) -> str:
     selected_case = task_form_values(asdict(task_request))
     person_options = selected_case.get("person_options") or PERSON_OPTIONS
@@ -6775,6 +6824,7 @@ def render_task_form_from_request(
         selected_consumable_packages=selected_consumable_packages or [],
         two_vehicle_available=two_vehicle_available,
         last_vehicle_mileages=last_vehicle_mileages(nas_settings=nas_settings),
+        enforce_mileage_change_limit=enforce_mileage_change_limit,
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task_request.disinfection_items or []),
         civilpower_roster=effective_civilpower_roster(),

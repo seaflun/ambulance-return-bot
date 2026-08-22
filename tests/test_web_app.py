@@ -2746,6 +2746,37 @@ class WebAppTests(unittest.TestCase):
             compact_body,
         )
 
+    def test_entry_forms_block_mileage_changes_outside_previous_300km_range(self):
+        self.import_case_for_form(
+            {
+                "case_id": "EMS-MILEAGE-GUARD",
+                "case_date": "2026/08/22",
+                "case_time": "0900",
+                "address": "桃園市觀音區",
+                "personnel": ["甲"],
+                "summary_type": "緊急救護",
+            }
+        )
+        ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        self.import_case_for_form(
+            {
+                "case_id": "DISASTER-MILEAGE-GUARD",
+                "case_date": "2026/08/22",
+                "case_time": "0900",
+                "address": "桃園市觀音區",
+                "personnel": ["甲"],
+                "summary_type": "火災",
+            }
+        )
+        disaster_body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        for body in (ems_body, disaster_body):
+            self.assertIn("const maxVehicleMileageChangeKm = 300;", body)
+            self.assertIn("function mileageChangeErrors", body)
+            self.assertIn("不能小於上次登打的里程", body)
+            self.assertIn("與上次登打相差不可超過", body)
+            self.assertNotIn("可輸入", body)
+
     def test_disaster_case_import_derives_address_from_selected_case_description(self):
         self.import_case_for_form(
             {
@@ -3594,6 +3625,47 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual("disaster", payload["task"]["service_type"])
         self.assertEqual(2, len(payload["task"]["vehicle_entries"]))
 
+    def test_create_disaster_task_rejects_mileage_below_or_more_than_300_from_previous_entry(self):
+        self.store.create(
+            AmbulanceReturnRequest(
+                task_id="previous-disaster-mileage",
+                created_at=datetime(2026, 7, 20, 8, 0),
+                raw_text="",
+                service_type="disaster",
+                case_id="FIRE-PREVIOUS-MILEAGE",
+                case_date="2026/07/20",
+                case_time="0800",
+                vehicle_entries=[
+                    {"vehicle": "新坡11", "driver": "甲", "mileage": "12000", "return_time": "0830"}
+                ],
+            )
+        )
+
+        def data_for(case_id: str, mileage: str) -> MultiDict:
+            return MultiDict([
+                ("case_id", case_id), ("case_date", "2026/07/22"), ("case_time", "1207"),
+                ("return_time", "1300"), ("case_address", "桃園市觀音區金華路31號"),
+                ("summary_type", "火災"), ("case_reason", "一般(集合)住宅"),
+                ("personnel", "甲,乙"), ("personnel_accounts", "TYFD-A,TYFD-B"),
+                ("commander", "乙"), ("action_note", "現場待命"), ("recorder_category", "轄內A3"),
+                ("vehicle", "新坡11"), ("driver", "甲"), ("vehicle_return_time", "1300"), ("mileage", mileage),
+            ])
+
+        for mileage, expected_error in (
+            ("11999", "第1車里程不能小於上次登打的里程（12000）"),
+            ("12301", "第1車里程與上次登打相差不可超過 300 公里（上次 12000）"),
+        ):
+            with self.subTest(mileage=mileage), mock.patch.object(app_module, "ensure_disaster_media_folders", return_value=[]):
+                response = self.client.post("/tasks/disaster", data=data_for(f"fire-mileage-{mileage}", mileage))
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(expected_error, html.unescape(response.data.decode("utf-8")))
+
+        with mock.patch.object(app_module, "ensure_disaster_media_folders", return_value=[]):
+            allowed = self.client.post("/tasks/disaster", data=data_for("fire-mileage-allowed", "12300"))
+
+        self.assertEqual(allowed.status_code, 302)
+
     def test_create_disaster_task_snapshots_each_nas_mileage_system_name(self):
         data = MultiDict([
             ("case_id", "FIRE-MILEAGE-NAMES"), ("case_date", "2026/07/22"), ("case_time", "1207"),
@@ -3775,6 +3847,41 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(self.store.list_recent(), [])
         self.assertIn("里程只能輸入數字", body)
         self.assertIn('"里程只能輸入數字": { name: "mileage", message: "里程只能輸入數字" }', body)
+
+    def test_create_task_rejects_mileage_below_or_more_than_300_from_previous_entry(self):
+        self.store.create(
+            AmbulanceReturnRequest(
+                task_id="previous-ems-mileage",
+                created_at=datetime(2026, 6, 6, 8, 0),
+                raw_text="",
+                vehicle="新坡91",
+                mileage="12000",
+                case_date="2026/06/06",
+                case_time="0800",
+            )
+        )
+
+        for mileage, expected_error in (
+            ("11999", "里程不能小於上次登打的里程（12000）"),
+            ("12301", "里程與上次登打相差不可超過 300 公里（上次 12000）"),
+        ):
+            with self.subTest(mileage=mileage):
+                response = self.client.post(
+                    "/tasks",
+                    data=self.valid_task_data(case_id=f"ems-mileage-{mileage}", mileage=mileage),
+                    follow_redirects=False,
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(expected_error, html.unescape(response.data.decode("utf-8")))
+
+        allowed = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(case_id="ems-mileage-allowed", mileage="12300"),
+            follow_redirects=False,
+        )
+
+        self.assertEqual(allowed.status_code, 302)
 
     def test_create_task_validation_preserves_consumable_package_state(self):
         response = self.client.post(
@@ -9068,6 +9175,43 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["update_context"]["current_task"]["mileage"], "200")
         self.assertEqual(payload["site_statuses"]["duty_work_log"]["status"], "not_started")
         self.assertEqual(payload["site_statuses"]["consumables"]["status"], "not_started")
+
+    def test_edit_task_does_not_compare_mileage_with_later_entry(self):
+        older_data = self.valid_task_data(
+            case_id="mileage-edit-older",
+            case_date="2026-08-20",
+            case_time="0900",
+            return_date="2026-08-20",
+            return_time="0930",
+            mileage="12000",
+        )
+        older_response = self.client.post("/tasks", data=older_data, follow_redirects=False)
+        older_task_id = older_response.headers["Location"].rstrip("/").split("/")[-1]
+        newer_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                case_id="mileage-edit-newer",
+                case_date="2026-08-21",
+                case_time="0900",
+                return_date="2026-08-21",
+                return_time="0930",
+                mileage="12100",
+            ),
+            follow_redirects=False,
+        )
+
+        self.assertEqual(302, older_response.status_code)
+        self.assertEqual(302, newer_response.status_code)
+        edit_body = html.unescape(self.client.get(f"/tasks/{older_task_id}/edit").data.decode("utf-8"))
+        update_response = self.client.post(
+            f"/tasks/{older_task_id}/edit",
+            data=older_data,
+            follow_redirects=False,
+        )
+
+        self.assertIn("const enforceMileageChangeLimit = false;", edit_body)
+        self.assertEqual(302, update_response.status_code)
+        self.assertEqual(f"/tasks/{older_task_id}", update_response.headers["Location"])
 
     def test_queued_task_can_be_opened_and_submitted_for_edit(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data(mileage="100"))
