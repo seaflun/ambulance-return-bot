@@ -2562,6 +2562,33 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-action-text="先鋒搶救"', body)
         self.assertIn('name="firecam_person" value="甲"', body)
 
+    def test_disaster_task_offers_current_vehicles_and_personnel_as_separate_packages(self):
+        self.import_case_for_form(
+            {
+                "case_id": "FIRE-CURRENT-ASSIGNMENTS",
+                "case_date": "2026/07/24",
+                "case_time": "1437",
+                "address": "桃園市觀音區廣大路102號",
+                "personnel": ["曾彥綸", "王治任"],
+                "summary_type": "火災",
+                "vehicle_entries": [
+                    {"vehicle": "新坡11", "driver": "曾彥綸"},
+                    {"vehicle": "新坡15", "driver": "王治任"},
+                ],
+            }
+        )
+
+        response = self.client.get("/app/disaster")
+        body = html.unescape(response.data.decode("utf-8"))
+
+        self.assertIn('id="current-vehicle-packages"', body)
+        self.assertIn('data-current-vehicle-package="新坡11"', body)
+        self.assertIn('data-current-vehicle-package="新坡15"', body)
+        self.assertIn('id="current-personnel-packages"', body)
+        self.assertIn('data-current-personnel-package="曾彥綸"', body)
+        self.assertIn('data-current-personnel-package="王治任"', body)
+        self.assertNotIn('data-current-assignment-package=', body)
+
     def test_disaster_task_renders_compact_horizontal_firecam_selector(self):
         self.import_case_for_form(
             {
@@ -3770,7 +3797,17 @@ class WebAppTests(unittest.TestCase):
             self.assertIn('href="/static/sinposmart-ui.css"', body)
             self.assertIn('href="/static/sinposmart-workspace.css"', body)
             self.assertIn('class="workspace-page', body)
-        self.assertIn("grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 64px 76px;", vehicle_body)
+        self.assertIn(
+            "grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 64px minmax(88px, 110px) minmax(150px, 1fr) 76px;",
+            vehicle_body,
+        )
+        self.assertIn(
+            "grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) minmax(120px, 180px) minmax(88px, 110px) minmax(150px, 1fr) 76px;",
+            disaster_vehicle_body,
+        )
+        for body in (vehicle_body, disaster_vehicle_body):
+            self.assertIn("最新里程", body)
+            self.assertIn("同步狀態", body)
         self.assertIn(".delete-button { min-width: 64px; min-height: 34px;", vehicle_body)
         self.assertIn("white-space: nowrap;", vehicle_body)
 
@@ -9230,6 +9267,133 @@ class WebAppTests(unittest.TestCase):
         )
 
         self.assertEqual(app_module.last_vehicle_mileages()["新坡91"], "11000")
+
+    def test_last_vehicle_mileage_uses_ppe_record_datetime_not_snapshot_fetch_datetime(self):
+        request = AmbulanceReturnRequest(
+            task_id="mileage-history-after-ppe-record",
+            created_at=datetime(2026, 8, 22, 10, 0),
+            raw_text="",
+            vehicle="新坡91",
+            mileage="20000",
+            case_date="2026-08-22",
+            case_time="1000",
+        )
+        app_module.store.create(request)
+        nas_settings = {
+            "ems_vehicles": [{"label": "新坡91", "ppe_name": "KEC-2608"}],
+            "disaster_vehicles": [],
+            "daily_vehicle_mileage_snapshot": {
+                "vehicles": [
+                    {
+                        "vehicle_key": "KEC-2608",
+                        "ppe_name": "KEC-2608",
+                        "labels": ["新坡91"],
+                        "status": "daily_vehicle_mileage_synced",
+                        "mileage": "12345",
+                        "record_end_date": "20260821",
+                        "record_end_time": "1800",
+                        "last_success_at": "2026-08-23T06:03:00",
+                        "last_success_business_date": "2026-08-23",
+                    }
+                ]
+            },
+        }
+
+        mileages = app_module.last_vehicle_mileages(nas_settings=nas_settings)
+
+        self.assertEqual("20000", mileages["新坡91"])
+
+    def test_worker_daily_vehicle_mileage_snapshot_requires_token_and_preserves_last_success(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        success = {
+            "business_date": "2026-08-22",
+            "attempted_at": "2026-08-22T06:03:00",
+            "vehicles": [
+                {
+                    "vehicle_key": "KEC-2608",
+                    "ppe_name": "KEC-2608",
+                    "labels": ["新坡91"],
+                    "status": "daily_vehicle_mileage_synced",
+                    "mileage": "12345",
+                    "record_end_date": "20260821",
+                    "record_end_time": "1800",
+                }
+            ],
+        }
+        failure = {
+            "business_date": "2026-08-22",
+            "attempted_at": "2026-08-22T06:30:00",
+            "vehicles": [
+                {
+                    "vehicle_key": "KEC-2608",
+                    "ppe_name": "KEC-2608",
+                    "status": "daily_vehicle_mileage_failed",
+                    "detail": "PPE 登入失敗",
+                }
+            ],
+        }
+
+        forbidden = self.client.post("/worker/daily-vehicle-mileage", json=success)
+        saved = self.client.post("/worker/daily-vehicle-mileage", headers=headers, json=success)
+        failed = self.client.post("/worker/daily-vehicle-mileage", headers=headers, json=failure)
+        snapshot = self.client.get("/worker/daily-vehicle-mileage", headers=headers)
+
+        self.assertEqual(403, forbidden.status_code)
+        self.assertEqual(200, saved.status_code)
+        self.assertEqual(200, failed.status_code)
+        self.assertEqual(200, snapshot.status_code)
+        record = snapshot.get_json()["snapshot"]["vehicles"][0]
+        self.assertEqual("daily_vehicle_mileage_failed", record["status"])
+        self.assertEqual("12345", record["mileage"])
+        self.assertEqual("2026-08-22T06:03:00", record["last_success_at"])
+
+    def test_ems_and_disaster_vehicle_settings_show_shared_daily_mileage_and_forms_use_it(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        nas_headers = {"Host": "100.114.126.58:8080"}
+        self.client.post(
+            "/admin/vehicles",
+            data={"label": "同步救護車", "ppe_name": "SYNC-001"},
+            headers=nas_headers,
+        )
+        self.client.post(
+            "/admin/disaster-vehicles",
+            data={"label": "同步救災車", "ppe_name": "SYNC-001", "recorder_code": "CAM-001"},
+            headers=nas_headers,
+        )
+        self.client.post(
+            "/worker/daily-vehicle-mileage",
+            headers=worker_headers,
+            json={
+                "business_date": "2026-08-22",
+                "attempted_at": "2026-08-22T06:03:00",
+                "vehicles": [
+                    {
+                        "vehicle_key": "SYNC-001",
+                        "ppe_name": "SYNC-001",
+                        "labels": ["同步救護車", "同步救災車"],
+                        "status": "daily_vehicle_mileage_synced",
+                        "mileage": "12345",
+                        "record_end_date": "20260821",
+                        "record_end_time": "1800",
+                    }
+                ],
+            },
+        )
+
+        ems_body = html.unescape(self.client.get("/admin/vehicles", headers=nas_headers).data.decode("utf-8"))
+        disaster_body = html.unescape(
+            self.client.get("/admin/disaster-vehicles", headers=nas_headers).data.decode("utf-8")
+        )
+        mileages = app_module.last_vehicle_mileages()
+
+        for body in (ems_body, disaster_body):
+            self.assertIn("最新里程", body)
+            self.assertIn("12345", body)
+            self.assertIn("PPE 同步", body)
+        self.assertEqual("12345", mileages["同步救護車"])
+        self.assertEqual("12345", mileages["同步救災車"])
 
     def test_task_edit_second_vehicle_fields_mark_saved_sites_for_update(self):
         previous_request = app_module.request_from_form(

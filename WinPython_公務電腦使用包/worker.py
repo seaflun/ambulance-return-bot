@@ -28,6 +28,11 @@ from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 from ambulance_bot import worker_control, worker_health, worker_routes
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult
 from ambulance_bot.credential_envelope import open_credential_payload
+from ambulance_bot.daily_vehicle_mileage import (
+    DAILY_VEHICLE_MILEAGE_RETRY_SECONDS,
+    daily_vehicle_targets,
+    vehicle_mileage_sync_due,
+)
 from ambulance_bot.duty_credentials import save_credential_sync_payload
 from ambulance_bot.login_audit import login_audit_for_site, with_login_audit
 from ambulance_bot.manual_task_lock import (
@@ -40,6 +45,7 @@ from ambulance_bot.manual_task_lock import (
 )
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
+    query_daily_vehicle_mileages,
     query_duty_emergency_cases,
     run_disinfection_task,
     run_fuel_record_task,
@@ -112,6 +118,7 @@ def main() -> None:
     last_case_lookup_at = time.time()
     last_case_hash = load_last_case_hash(artifacts_dir)
     last_civilpower_roster_refresh_at = 0.0
+    last_daily_vehicle_mileage_check_at = 0.0
 
     if os.getenv("WORKER_USE_LOCAL_CHROME", "true").strip().lower() not in {"0", "false", "no", "off"}:
         os.environ["SELENIUM_REMOTE_URL"] = ""
@@ -187,6 +194,20 @@ def main() -> None:
                         finally:
                             runtime_state.set("idle")
                             end_manual_task_execution(execution_key, execution_event, artifacts_dir)
+                if not run_once:
+                    runtime_state.set(
+                        "busy",
+                        activity="daily_vehicle_mileage",
+                        busy_reason="checking daily vehicle mileage",
+                    )
+                    try:
+                        last_daily_vehicle_mileage_check_at = maybe_run_daily_vehicle_mileage_sync(
+                            server_url,
+                            artifacts_dir,
+                            last_daily_vehicle_mileage_check_at,
+                        )
+                    finally:
+                        runtime_state.set("idle")
                 command = control.pending_command()
                 if command is not None:
                     request_id = str(command.get("request_id") or "").strip()
@@ -1045,6 +1066,93 @@ def maybe_run_civilpower_roster_refresh(
     finally:
         worker_health.clear_activity(activity_owner)
     return now
+
+
+def fetch_daily_vehicle_mileage_state(server_url: str) -> dict[str, object]:
+    payload = request_json(f"{str(server_url).rstrip('/')}/worker/daily-vehicle-mileage")
+    if payload.get("ok") is not True:
+        raise RuntimeError("NAS 未提供每日車輛里程同步資料")
+    snapshot = payload.get("snapshot")
+    settings = payload.get("settings")
+    if not isinstance(snapshot, dict) or not isinstance(settings, dict):
+        raise RuntimeError("NAS 每日車輛里程同步資料格式不正確")
+    return {
+        "snapshot": snapshot,
+        "targets": daily_vehicle_targets(settings),
+    }
+
+
+def post_daily_vehicle_mileage_report(server_url: str, payload: Mapping[str, object]) -> None:
+    post_json(f"{str(server_url).rstrip('/')}/worker/daily-vehicle-mileage", payload)
+
+
+def maybe_run_daily_vehicle_mileage_sync(
+    server_url: str,
+    artifacts_dir: Path,
+    last_check_at: float,
+    *,
+    now: datetime | None = None,
+    interval_seconds: int = DAILY_VEHICLE_MILEAGE_RETRY_SECONDS,
+) -> float:
+    current = now or datetime.now()
+    if current.hour < 6:
+        return last_check_at
+    monotonic_now = time.time()
+    if monotonic_now - last_check_at < max(int(interval_seconds), DAILY_VEHICLE_MILEAGE_RETRY_SECONDS):
+        return last_check_at
+    if MANUAL_TASK_ACTIVE.is_set() or manual_task_lock_active(artifacts_dir):
+        print("[worker] daily vehicle mileage skipped: manual task active", flush=True)
+        return monotonic_now
+    try:
+        state = fetch_daily_vehicle_mileage_state(server_url)
+    except Exception as exc:
+        print(f"[worker] daily vehicle mileage state deferred: {exc}", flush=True)
+        return monotonic_now
+    snapshot = state["snapshot"]
+    targets = [
+        target
+        for target in state["targets"]
+        if isinstance(target, dict) and vehicle_mileage_sync_due(snapshot, target, now=current)
+    ]
+    if not targets:
+        return monotonic_now
+    activity_owner = f"daily_vehicle_mileage:{os.getpid()}:{int(monotonic_now)}"
+    worker_health.write_activity(activity="daily_vehicle_mileage", owner=activity_owner)
+    attempted_at = current.isoformat(timespec="seconds")
+    try:
+        try:
+            reports = query_daily_vehicle_mileages(targets, artifacts_dir)
+        except Exception as exc:
+            reports = [
+                {
+                    **target,
+                    "status": "daily_vehicle_mileage_failed",
+                    "mileage": "",
+                    "record_end_date": "",
+                    "record_end_time": "",
+                    "detail": f"PPE 車輛里程查詢失敗：{exc}",
+                }
+                for target in targets
+            ]
+        for report in reports:
+            if not isinstance(report, Mapping):
+                continue
+            try:
+                post_daily_vehicle_mileage_report(
+                    server_url,
+                    {
+                        "business_date": current.date().isoformat(),
+                        "attempted_at": attempted_at,
+                        "source": "public_duty_pc_worker",
+                        "vehicles": [dict(report)],
+                    },
+                )
+            except Exception as exc:
+                print(f"[worker] daily vehicle mileage report deferred: {exc}", flush=True)
+        print(f"[worker] daily vehicle mileage queried count={len(reports)}", flush=True)
+    finally:
+        worker_health.clear_activity(activity_owner)
+    return monotonic_now
 
 
 def fetch_next_task(server_url: str, worker_id: str) -> dict[str, object] | None:

@@ -3417,6 +3417,80 @@ class SeleniumLocalTests(unittest.TestCase):
             details = _previous_case_details(path)
             self.assertEqual(details["20260603080000001"]["personnel"], ["曾彥綸"])
 
+    def test_daily_vehicle_mileage_query_reads_without_preparing_or_saving_a_record(self):
+        class FakeDriver:
+            def implicitly_wait(self, _seconds):
+                pass
+
+            def get(self, _url):
+                pass
+
+        target = {"vehicle_key": "KEC-2608", "ppe_name": "KEC-2608", "labels": ["新坡91"]}
+        driver = FakeDriver()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            selenium_local_module,
+            "_acquire_selenium_session",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_create_driver",
+            return_value=driver,
+        ), patch.object(
+            selenium_local_module,
+            "_ensure_ppe_vehicle_mileage_session",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_wait_for_ppe_vehicle_mileage_page",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_click_text_if_present",
+        ), patch.object(
+            selenium_local_module.time,
+            "sleep",
+        ), patch.object(
+            selenium_local_module,
+            "_select_vehicle_record",
+        ) as select_vehicle, patch.object(
+            selenium_local_module,
+            "_extract_latest_vehicle_mileage_record",
+            return_value={"mileage": "12345", "record_end_date": "20260821", "record_end_time": "1800"},
+        ), patch.object(
+            selenium_local_module,
+            "_prepare_vehicle_mileage_form",
+        ) as prepare, patch.object(
+            selenium_local_module,
+            "_save_vehicle_mileage_form",
+        ) as save, patch.object(
+            selenium_local_module,
+            "_release_selenium_session",
+        ), patch.object(
+            selenium_local_module,
+            "_quit_driver",
+        ) as quit_driver:
+            results = selenium_local_module.query_daily_vehicle_mileages([target], Path(tmp))
+
+        self.assertEqual(
+            [
+                {
+                    "vehicle_key": "KEC-2608",
+                    "ppe_name": "KEC-2608",
+                    "labels": ["新坡91"],
+                    "status": "daily_vehicle_mileage_synced",
+                    "mileage": "12345",
+                    "record_end_date": "20260821",
+                    "record_end_time": "1800",
+                    "detail": "已讀取 PPE 最新里程。",
+                }
+            ],
+            results,
+        )
+        select_vehicle.assert_called_once_with(driver, "KEC-2608")
+        prepare.assert_not_called()
+        save.assert_not_called()
+        quit_driver.assert_called_once_with(driver)
+
 
 if __name__ == "__main__":
     unittest.main()

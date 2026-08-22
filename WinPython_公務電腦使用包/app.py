@@ -22,7 +22,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from flask import Flask, abort, jsonify, make_response, redirect, render_template, request, send_from_directory, url_for
+from flask import Flask, abort, has_request_context, jsonify, make_response, redirect, render_template, request, send_from_directory, url_for
 
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
@@ -31,6 +31,15 @@ from ambulance_bot.civilpower_roster import (
     merge_roster_report,
     normalize_roster_members,
     roster_member_by_id,
+)
+from ambulance_bot.daily_vehicle_mileage import (
+    DAILY_VEHICLE_MILEAGE_FAILED,
+    DAILY_VEHICLE_MILEAGE_NO_RECORD,
+    DAILY_VEHICLE_MILEAGE_SYNCED,
+    merge_vehicle_mileage_report,
+    normalize_vehicle_mileage_snapshot,
+    unavailable_vehicle_mileage_snapshot,
+    vehicle_mileage_snapshot_record,
 )
 from ambulance_bot.civilpower_preferences import (
     load_frequent_member_ids,
@@ -139,6 +148,7 @@ runner = TaskRunner(artifacts_dir, store=store)
 desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 _vehicle_settings_sync_lock = threading.RLock()
 _civilpower_roster_lock = threading.RLock()
+_daily_vehicle_mileage_lock = threading.RLock()
 _local_case_lookup_thread_lock = threading.Lock()
 _local_case_lookup_thread: threading.Thread | None = None
 _public_pc_report_lock = threading.Lock()
@@ -279,7 +289,7 @@ def new_task():
         baseline_consumables_loaded=bool(selected_case),
         selected_consumable_packages=[],
         two_vehicle_available=two_vehicle_option_available(selected_case),
-        last_vehicle_mileages=last_vehicle_mileages(),
+        last_vehicle_mileages=last_vehicle_mileages(nas_settings=nas_settings),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=DEFAULT_DISINFECTION_ITEMS if selected_case else [],
         civilpower_roster=effective_civilpower_roster(),
@@ -319,7 +329,7 @@ def disaster_task():
         disaster_reason_options=DISASTER_REASON_OPTIONS,
         disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
         disaster_action_packages=action_packages,
-        last_vehicle_mileages=last_vehicle_mileages(),
+        last_vehicle_mileages=last_vehicle_mileages(nas_settings=nas_settings),
         form_errors=[],
         page_notice=task_form_notice(),
     ))
@@ -474,7 +484,8 @@ def create_disaster_task():
     apply_disaster_vehicle_mileage_system_names(task_request, effective_disaster_vehicle_records())
     errors = validate_disaster_task_form(task_request)
     if errors:
-        vehicle_records = effective_disaster_vehicle_records()
+        nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
+        vehicle_records = effective_disaster_vehicle_records(nas_settings)
         return render_template(
             "disaster_task.html",
             form_action=url_for("create_disaster_task"),
@@ -486,8 +497,8 @@ def create_disaster_task():
             vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
             disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
-            disaster_action_packages=effective_disaster_action_packages(),
-            last_vehicle_mileages=last_vehicle_mileages(),
+            disaster_action_packages=effective_disaster_action_packages(nas_settings),
+            last_vehicle_mileages=last_vehicle_mileages(nas_settings=nas_settings),
             form_errors=errors,
         ), 400
     existing = existing_disaster_task_for_case(task_request.case_id)
@@ -500,7 +511,8 @@ def create_disaster_task():
             recorder_codes=effective_disaster_vehicle_recorder_codes(),
         )
     except (OSError, RecordFolderError) as exc:
-        vehicle_records = effective_disaster_vehicle_records()
+        nas_settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
+        vehicle_records = effective_disaster_vehicle_records(nas_settings)
         return render_template(
             "disaster_task.html",
             form_action=url_for("create_disaster_task"),
@@ -512,8 +524,8 @@ def create_disaster_task():
             vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
             disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
-            disaster_action_packages=effective_disaster_action_packages(),
-            last_vehicle_mileages=last_vehicle_mileages(),
+            disaster_action_packages=effective_disaster_action_packages(nas_settings),
+            last_vehicle_mileages=last_vehicle_mileages(nas_settings=nas_settings),
             form_errors=[f"行車紀錄器資料夾建立失敗：{exc}"],
         ), 400
     payload = store.create(task_request)
@@ -1027,6 +1039,43 @@ def save_disaster_action_package_options():
     return render_disaster_vehicle_settings(message="已儲存處理情形套餐")
 
 
+def vehicle_records_with_daily_mileage(
+    records: list[dict[str, object]],
+    snapshot: Mapping[str, object] | None = None,
+) -> list[dict[str, object]]:
+    effective_snapshot = (
+        normalize_vehicle_mileage_snapshot(snapshot) or unavailable_vehicle_mileage_snapshot()
+        if snapshot is not None
+        else read_daily_vehicle_mileage_snapshot()
+    )
+    decorated: list[dict[str, object]] = []
+    for raw_record in records:
+        record = dict(raw_record)
+        mileage_record = vehicle_mileage_snapshot_record(effective_snapshot, record.get("ppe_name"))
+        mileage = str((mileage_record or {}).get("mileage") or "").strip()
+        record["daily_mileage"] = mileage
+        record["daily_mileage_label"] = f"{mileage} km" if mileage else "尚無資料"
+        record["daily_mileage_status"] = daily_vehicle_mileage_status_label(mileage_record)
+        decorated.append(record)
+    return decorated
+
+
+def daily_vehicle_mileage_status_label(record: Mapping[str, object] | None) -> str:
+    if not isinstance(record, Mapping):
+        return "尚未同步"
+    status = str(record.get("status") or "")
+    attempted_at = str(record.get("last_attempted_at") or "").replace("T", " ")
+    success_at = str(record.get("last_success_at") or "").replace("T", " ")
+    detail = str(record.get("detail") or "").strip()
+    if status == DAILY_VEHICLE_MILEAGE_SYNCED:
+        return f"PPE 同步｜{success_at or attempted_at or '完成'}"
+    if status == DAILY_VEHICLE_MILEAGE_NO_RECORD:
+        return f"PPE 同步｜尚無紀錄｜{attempted_at or '完成'}"
+    if status == DAILY_VEHICLE_MILEAGE_FAILED:
+        return f"PPE 同步失敗｜{attempted_at or '待重試'}{f'｜{detail}' if detail else ''}"
+    return "尚未同步"
+
+
 def render_disaster_vehicle_settings(
     *,
     vehicles: list[dict[str, object]] | None = None,
@@ -1037,10 +1086,12 @@ def render_disaster_vehicle_settings(
     sync_source: str = "",
     pending_sync_commands: list[dict[str, str]] | None = None,
     form_values: Mapping[str, object] | None = None,
+    daily_vehicle_mileage_snapshot: Mapping[str, object] | None = None,
 ):
+    records = vehicles if vehicles is not None else load_disaster_vehicle_records(artifacts_dir)
     return render_template(
         "admin_disaster_vehicles.html",
-        vehicles=vehicles if vehicles is not None else load_disaster_vehicle_records(artifacts_dir),
+        vehicles=vehicle_records_with_daily_mileage(records, daily_vehicle_mileage_snapshot),
         action_packages=action_packages if action_packages is not None else load_disaster_action_packages(artifacts_dir),
         errors=errors or [],
         message=message,
@@ -1263,6 +1314,32 @@ def update_worker_vehicle_settings():
         except ValueError as exc:
             return jsonify({"ok": False, "error": "invalid_command", "detail": str(exc)}), 400
         return jsonify(vehicle_settings_api_payload())
+
+
+@app.get("/worker/daily-vehicle-mileage")
+def worker_daily_vehicle_mileage_snapshot():
+    if not worker_authorized():
+        abort(403)
+    return jsonify(
+        {
+            "ok": True,
+            "settings": vehicle_settings_api_payload(),
+            "snapshot": read_daily_vehicle_mileage_snapshot(),
+        }
+    )
+
+
+@app.post("/worker/daily-vehicle-mileage")
+def worker_daily_vehicle_mileage_report():
+    if not worker_authorized():
+        abort(403)
+    data = request.get_json(silent=True)
+    if not isinstance(data, Mapping) or not isinstance(data.get("vehicles"), list):
+        abort(400)
+    with _daily_vehicle_mileage_lock:
+        snapshot = merge_vehicle_mileage_report(read_daily_vehicle_mileage_snapshot(), data)
+        write_json_atomic(daily_vehicle_mileage_snapshot_path(), snapshot)
+    return jsonify({"ok": True, "snapshot": snapshot})
 
 
 @app.post("/admin/vehicle-settings/pending/delete")
@@ -3280,6 +3357,9 @@ def vehicle_settings_revision(settings: Mapping[str, object]) -> str:
 
 def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -> dict[str, object]:
     snapshot = dict(settings or vehicle_settings_snapshot())
+    daily_snapshot = daily_vehicle_mileage_snapshot_from_settings(snapshot)
+    if daily_snapshot is None:
+        daily_snapshot = read_daily_vehicle_mileage_snapshot()
     return {
         "ok": True,
         "ems_vehicles": list(snapshot.get("ems_vehicles") or []),
@@ -3288,6 +3368,7 @@ def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -
         "frequent_civilpower_member_ids": normalize_frequent_member_ids(
             snapshot.get("frequent_civilpower_member_ids")
         ),
+        "daily_vehicle_mileage_snapshot": daily_snapshot,
         "revision": vehicle_settings_revision(snapshot),
     }
 
@@ -3300,6 +3381,7 @@ def normalize_remote_vehicle_settings(payload: object) -> dict[str, object] | No
     disaster_action_packages = clean_remote_disaster_action_packages(payload.get("disaster_action_packages"))
     if ems_vehicles is None or disaster_vehicles is None or disaster_action_packages is None:
         return None
+    daily_snapshot = normalize_vehicle_mileage_snapshot(payload.get("daily_vehicle_mileage_snapshot"))
     settings = {
         "ems_vehicles": ems_vehicles,
         "disaster_vehicles": disaster_vehicles,
@@ -3307,6 +3389,7 @@ def normalize_remote_vehicle_settings(payload: object) -> dict[str, object] | No
         "frequent_civilpower_member_ids": normalize_frequent_member_ids(
             payload.get("frequent_civilpower_member_ids")
         ),
+        "daily_vehicle_mileage_snapshot": daily_snapshot or unavailable_vehicle_mileage_snapshot(),
     }
     revision = str(payload.get("revision") or "").strip() or vehicle_settings_revision(settings)
     return {**settings, "revision": revision}
@@ -3721,6 +3804,7 @@ def render_local_vehicle_settings(
         pending_sync_commands=pending_vehicle_settings_command_views(),
         form_values=form_values,
         civilpower_roster=effective_civilpower_roster(),
+        daily_vehicle_mileage_snapshot=daily_vehicle_mileage_snapshot_from_settings(settings),
         frequent_civilpower_member_ids=normalize_frequent_member_ids(
             settings.get("frequent_civilpower_member_ids")
         ),
@@ -3745,6 +3829,7 @@ def render_local_disaster_vehicle_settings(
         sync_source=str(view["source"]),
         pending_sync_commands=pending_vehicle_settings_command_views(),
         form_values=form_values,
+        daily_vehicle_mileage_snapshot=daily_vehicle_mileage_snapshot_from_settings(settings),
     )
 
 
@@ -3800,10 +3885,12 @@ def render_vehicle_settings(
     form_values: Mapping[str, object] | None = None,
     civilpower_roster: Mapping[str, object] | None = None,
     frequent_civilpower_member_ids: list[str] | None = None,
+    daily_vehicle_mileage_snapshot: Mapping[str, object] | None = None,
 ):
+    records = vehicles if vehicles is not None else vehicle_admin_records()
     return render_template(
         "admin_vehicles.html",
-        vehicles=vehicles if vehicles is not None else vehicle_admin_records(),
+        vehicles=vehicle_records_with_daily_mileage(records, daily_vehicle_mileage_snapshot),
         errors=errors or [],
         message=message,
         settings_revision=settings_revision,
@@ -4165,6 +4252,46 @@ def cache_civilpower_roster(roster: Mapping[str, object]) -> None:
         return
     with _civilpower_roster_lock:
         write_json_atomic(civilpower_roster_path(), snapshot)
+
+
+def daily_vehicle_mileage_snapshot_path() -> Path:
+    return artifacts_dir / "vehicle_mileage" / "daily_snapshot.json"
+
+
+def read_daily_vehicle_mileage_snapshot() -> dict[str, object]:
+    path = daily_vehicle_mileage_snapshot_path()
+    if not path.exists():
+        return unavailable_vehicle_mileage_snapshot()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return unavailable_vehicle_mileage_snapshot()
+    return normalize_vehicle_mileage_snapshot(payload) or unavailable_vehicle_mileage_snapshot()
+
+
+def daily_vehicle_mileage_snapshot_from_settings(settings: Mapping[str, object] | None) -> dict[str, object] | None:
+    if not isinstance(settings, Mapping):
+        return None
+    snapshot = normalize_vehicle_mileage_snapshot(settings.get("daily_vehicle_mileage_snapshot"))
+    if snapshot is None:
+        return None
+    return snapshot
+
+
+def effective_daily_vehicle_mileage_snapshot(
+    settings: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    supplied = daily_vehicle_mileage_snapshot_from_settings(settings)
+    if supplied is not None:
+        return supplied
+    local_snapshot = read_daily_vehicle_mileage_snapshot()
+    if not has_request_context() or not request_is_local_host():
+        return local_snapshot
+    remote_settings = fetch_nas_vehicle_settings()
+    remote_snapshot = daily_vehicle_mileage_snapshot_from_settings(remote_settings)
+    if remote_snapshot is not None:
+        return remote_snapshot
+    return local_snapshot
 
 
 def request_nas_civilpower_roster() -> dict[str, object] | None:
@@ -5279,8 +5406,8 @@ def _last_vehicle_mileage_sort_key(payload: object) -> tuple[datetime, datetime]
     return case_datetime, created_at
 
 
-def last_vehicle_mileages(limit: int = 300) -> dict[str, str]:
-    mileages: dict[str, str] = {}
+def _stored_last_vehicle_mileage_records(limit: int) -> dict[str, tuple[str, datetime]]:
+    mileages: dict[str, tuple[str, datetime]] = {}
     recent_payloads = sorted(
         store.list_recent(limit=limit),
         key=_last_vehicle_mileage_sort_key,
@@ -5292,12 +5419,76 @@ def last_vehicle_mileages(limit: int = 300) -> dict[str, str]:
         task = payload.get("task")
         if not isinstance(task, dict):
             continue
+        occurred_at = _last_vehicle_mileage_sort_key(payload)[0]
         for entry in task_vehicle_display_entries(task):
             vehicle = str(entry.get("vehicle") or "").strip()
             mileage = str(entry.get("mileage") or "").strip()
             if vehicle and mileage and vehicle not in mileages:
-                mileages[vehicle] = mileage
+                mileages[vehicle] = (mileage, occurred_at)
     return mileages
+
+
+def configured_vehicle_mileage_system_names(
+    settings: Mapping[str, object] | None = None,
+) -> dict[str, str]:
+    records: list[Mapping[str, object]] = []
+    if settings is not None:
+        records.extend(effective_ems_vehicle_records(settings, settings_loaded=True))
+        records.extend(effective_disaster_vehicle_records(dict(settings)))
+    else:
+        records.extend(vehicle_admin_records())
+        records.extend(load_disaster_vehicle_records(artifacts_dir))
+    names: dict[str, str] = {}
+    for record in records:
+        label = str(record.get("label") or "").strip()
+        ppe_name = str(record.get("ppe_name") or "").strip()
+        if label and ppe_name:
+            names[label] = ppe_name
+    return names
+
+
+def _daily_vehicle_mileage_record_time(record: Mapping[str, object]) -> datetime:
+    record_date = parse_case_date(str(record.get("record_end_date") or ""))
+    record_time = normalize_hhmm(str(record.get("record_end_time") or ""))
+    if record_date is not None:
+        if len(record_time) == 4:
+            try:
+                return record_date.replace(hour=int(record_time[:2]), minute=int(record_time[2:]))
+            except ValueError:
+                pass
+        return record_date
+    try:
+        return datetime.fromisoformat(str(record.get("last_success_at") or "").strip()).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return datetime.min
+
+
+def last_vehicle_mileages(
+    limit: int = 300,
+    nas_settings: Mapping[str, object] | None = None,
+) -> dict[str, str]:
+    records = _stored_last_vehicle_mileage_records(limit)
+    snapshot = effective_daily_vehicle_mileage_snapshot(nas_settings)
+    mileage_system_names = configured_vehicle_mileage_system_names(nas_settings)
+    for snapshot_record in snapshot.get("vehicles") or []:
+        if not isinstance(snapshot_record, Mapping):
+            continue
+        ppe_name = str(snapshot_record.get("ppe_name") or "").strip()
+        for label in snapshot_record.get("labels") or []:
+            if ppe_name and str(label or "").strip():
+                mileage_system_names.setdefault(str(label).strip(), ppe_name)
+    for vehicle, ppe_name in mileage_system_names.items():
+        snapshot_record = vehicle_mileage_snapshot_record(snapshot, ppe_name)
+        if not isinstance(snapshot_record, Mapping):
+            continue
+        mileage = str(snapshot_record.get("mileage") or "").strip()
+        occurred_at = _daily_vehicle_mileage_record_time(snapshot_record)
+        if not mileage:
+            continue
+        existing = records.get(vehicle)
+        if existing is None or occurred_at >= existing[1]:
+            records[vehicle] = (mileage, occurred_at)
+    return {vehicle: mileage for vehicle, (mileage, _occurred_at) in records.items()}
 
 
 def _positive_quantity(value: object) -> bool:
@@ -6115,7 +6306,7 @@ def render_task_form_from_request(
         baseline_consumables_loaded=baseline_consumables_loaded,
         selected_consumable_packages=selected_consumable_packages or [],
         two_vehicle_available=two_vehicle_available,
-        last_vehicle_mileages=last_vehicle_mileages(),
+        last_vehicle_mileages=last_vehicle_mileages(nas_settings=nas_settings),
         disinfection_item_options=DISINFECTION_ITEM_OPTIONS,
         default_disinfection_items=list(task_request.disinfection_items or []),
         civilpower_roster=effective_civilpower_roster(),

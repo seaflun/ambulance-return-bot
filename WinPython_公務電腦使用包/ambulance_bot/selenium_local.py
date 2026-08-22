@@ -32,6 +32,12 @@ from .chrome_startup import (
     mark_driver_operation_active,
     schedule_driver_auto_close,
 )
+from .daily_vehicle_mileage import (
+    DAILY_VEHICLE_MILEAGE_FAILED,
+    DAILY_VEHICLE_MILEAGE_NO_RECORD,
+    DAILY_VEHICLE_MILEAGE_SYNCED,
+    vehicle_mileage_key,
+)
 from .duty_credentials import (
     DutyCredential,
     load_duty_credential,
@@ -56,6 +62,7 @@ _SELENIUM_SESSION_LOCK = threading.Lock()
 _GENERATED_SELENIUM_PROFILE_NAMES = {
     "chrome_profile",
     "case_lookup_profile",
+    "daily_vehicle_mileage_profile",
     "duty_work_log_profile",
     "vehicle_mileage_profile",
     "fuel_record_profile",
@@ -66,6 +73,7 @@ _GENERATED_SELENIUM_PROFILE_NAMES = {
 }
 _GENERATED_SELENIUM_PROFILE_PREFIXES = (
     "case_lookup_profile_",
+    "daily_vehicle_mileage_profile_",
     "duty_work_log_profile_",
     "vehicle_mileage_profile_",
     "fuel_record_profile_",
@@ -400,6 +408,163 @@ def run_vehicle_mileage_task(
             _quit_driver(driver)
         if lock_acquired:
             _release_selenium_session(f"vehicle_mileage {request.task_id}")
+
+
+def query_daily_vehicle_mileages(
+    targets: list[dict[str, object]],
+    artifacts_dir: Path,
+    *,
+    profile_name: str = "daily_vehicle_mileage_profile",
+) -> list[dict[str, object]]:
+    normalized_targets = _daily_vehicle_mileage_targets(targets)
+    if not normalized_targets:
+        return []
+    driver = None
+    lock_acquired = False
+    results: list[dict[str, object]] = []
+    try:
+        lock_acquired = _acquire_selenium_session("daily vehicle mileage")
+        driver = _create_driver(
+            artifacts_dir,
+            profile_name=profile_name,
+            debugger_port=None,
+            attach_existing=False,
+            fresh_session=True,
+        )
+        mark_driver_operation_active(driver)
+        driver.implicitly_wait(2)
+        if not _ensure_ppe_vehicle_mileage_session(driver):
+            raise WebDriverException("PPE login did not reach vehicle mileage page")
+        for target in normalized_targets:
+            results.append(_query_daily_vehicle_mileage(driver, target))
+        return results
+    except Exception as exc:
+        completed_keys = {str(result["vehicle_key"]) for result in results}
+        results.extend(
+            _daily_vehicle_mileage_failure(target, exc)
+            for target in normalized_targets
+            if str(target["vehicle_key"]) not in completed_keys
+        )
+        return results
+    finally:
+        mark_driver_operation_active(driver, False)
+        if driver is not None:
+            _quit_driver(driver)
+        if lock_acquired:
+            _release_selenium_session("daily vehicle mileage")
+
+
+def _daily_vehicle_mileage_targets(targets: object) -> list[dict[str, object]]:
+    if not isinstance(targets, list):
+        return []
+    normalized: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        ppe_name = vehicle_mileage_key(target.get("ppe_name") or target.get("vehicle_key"))
+        if not ppe_name or ppe_name in seen_keys:
+            continue
+        seen_keys.add(ppe_name)
+        labels = [
+            " ".join(str(label or "").split())
+            for label in list(target.get("labels") or [])
+            if " ".join(str(label or "").split())
+        ]
+        normalized.append(
+            {
+                "vehicle_key": ppe_name,
+                "ppe_name": ppe_name,
+                "labels": labels,
+            }
+        )
+    return normalized
+
+
+def _query_daily_vehicle_mileage(driver: webdriver.Chrome, target: dict[str, object]) -> dict[str, object]:
+    try:
+        driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
+        if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
+            raise WebDriverException("PPE session returned to login page before vehicle mileage query")
+        _click_text_if_present(driver, ["車輛管理"])
+        _click_text_if_present(driver, ["車輛使用紀錄"])
+        time.sleep(1)
+        _select_vehicle_record(driver, str(target["ppe_name"]))
+        record = _extract_latest_vehicle_mileage_record(driver)
+        if not record["mileage"]:
+            return {
+                **target,
+                "status": DAILY_VEHICLE_MILEAGE_NO_RECORD,
+                "mileage": "",
+                "record_end_date": "",
+                "record_end_time": "",
+                "detail": "PPE 尚無可用車輛里程紀錄。",
+            }
+        return {
+            **target,
+            "status": DAILY_VEHICLE_MILEAGE_SYNCED,
+            **record,
+            "detail": "已讀取 PPE 最新里程。",
+        }
+    except Exception as exc:
+        return _daily_vehicle_mileage_failure(target, exc)
+
+
+def _daily_vehicle_mileage_failure(target: dict[str, object], exc: Exception) -> dict[str, object]:
+    return {
+        **target,
+        "status": DAILY_VEHICLE_MILEAGE_FAILED,
+        "mileage": "",
+        "record_end_date": "",
+        "record_end_time": "",
+        "detail": f"PPE 車輛里程查詢失敗：{exc}",
+    }
+
+
+def _extract_latest_vehicle_mileage_record(driver: webdriver.Chrome) -> dict[str, str]:
+    result = driver.execute_script(
+        """
+        const grid = window.$ && $("#grid").data("kendoGrid");
+        if (!grid) return {ok: false, reason: "grid not found"};
+        const text = value => String(value ?? "").trim();
+        const digits = value => text(value).replace(/\\D/g, "");
+        const read = (row, field) => row && row.get ? row.get(field) : row && row[field];
+        const records = grid.dataSource.data().map((row, index) => {
+          const mileage = text(read(row, "EndMileage"));
+          const numericMileage = Number(mileage);
+          return {
+            mileage,
+            numericMileage,
+            endDate: digits(read(row, "EndDay")),
+            endTime: digits(read(row, "EndTime")).padStart(4, "0"),
+            id: text(read(row, "Id")),
+            index,
+          };
+        }).filter(record => Number.isFinite(record.numericMileage) && record.numericMileage > 0);
+        if (!records.length) return {ok: true, mileage: "", record_end_date: "", record_end_time: ""};
+        records.sort((left, right) => {
+          const leftTime = `${left.endDate}${left.endTime}`;
+          const rightTime = `${right.endDate}${right.endTime}`;
+          if (leftTime !== rightTime) return rightTime.localeCompare(leftTime);
+          if (left.id !== right.id) return right.id.localeCompare(left.id, undefined, {numeric: true});
+          return left.index - right.index;
+        });
+        const latest = records[0];
+        return {
+          ok: true,
+          mileage: latest.mileage,
+          record_end_date: latest.endDate,
+          record_end_time: latest.endTime,
+        };
+        """
+    )
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise WebDriverException(f"vehicle mileage grid unavailable: {result}")
+    return {
+        "mileage": str(result.get("mileage") or "").strip(),
+        "record_end_date": str(result.get("record_end_date") or "").strip(),
+        "record_end_time": str(result.get("record_end_time") or "").strip(),
+    }
 
 
 def run_fuel_record_task(

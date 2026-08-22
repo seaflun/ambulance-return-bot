@@ -96,7 +96,7 @@
     .vehicle-list { display: grid; gap: 8px; }
     .vehicle-row {
       display: grid;
-      grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) minmax(120px, 180px) 76px;
+      grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) minmax(120px, 180px) minmax(88px, 110px) minmax(150px, 1fr) 76px;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -117,6 +117,8 @@
     .vehicle-row > * { min-width: 0; }
     .vehicle-label { font-weight: 780; overflow-wrap: anywhere; }
     .vehicle-plate, .vehicle-recorder { color: var(--muted); font-weight: 700; overflow-wrap: anywhere; }
+    .vehicle-mileage { font-variant-numeric: tabular-nums; font-weight: 780; white-space: nowrap; }
+    .vehicle-sync { color: var(--muted); font-size: var(--text-sm); font-weight: 700; overflow-wrap: anywhere; }
     .delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 36px; padding: 0; border: 0; background: transparent; box-shadow: none; }
     .delete-button { min-width: 64px; min-height: 36px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; white-space: nowrap; }
     .sync-panel { margin-bottom: 16px; }
@@ -197,6 +199,8 @@
           <div class="vehicle-label">車輛名稱</div>
           <div class="vehicle-plate">里程系統名稱</div>
           <div class="vehicle-recorder">行車紀錄器車號</div>
+          <div class="vehicle-mileage">最新里程</div>
+          <div class="vehicle-sync">同步狀態</div>
           <div></div>
         </div>
         {% for vehicle in vehicles %}
@@ -204,6 +208,8 @@
             <div class="vehicle-label">{{ vehicle.label }}</div>
             <div class="vehicle-plate">{{ vehicle.ppe_name or "使用名稱查詢" }}</div>
             <div class="vehicle-recorder">{{ vehicle.recorder_code }}</div>
+            <div class="vehicle-mileage">{{ vehicle.daily_mileage_label }}</div>
+            <div class="vehicle-sync">{{ vehicle.daily_mileage_status }}</div>
             <form class="delete-form" method="post" action="/admin/disaster-vehicles/delete">
               <input type="hidden" name="label" value="{{ vehicle.label }}">
               <input type="hidden" name="settings_revision" value="{{ settings_revision }}">

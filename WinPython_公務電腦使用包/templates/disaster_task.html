@@ -216,6 +216,16 @@
   {% if task_form_enabled %}
       {% set default_disaster_entries = [{'vehicle': '新坡11'}, {'vehicle': '新坡15'}] %}
       {% set disaster_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else default_disaster_entries %}
+      {% set current_vehicle_count = namespace(value=0) %}
+      {% for entry in disaster_entries %}
+        {% if entry.vehicle %}
+          {% set current_vehicle_count.value = current_vehicle_count.value + 1 %}
+        {% endif %}
+      {% endfor %}
+      {% set current_personnel = selected_case.personnel or [] %}
+      {% if current_personnel is string %}
+        {% set current_personnel = current_personnel.split(',') %}
+      {% endif %}
   {% set selected_summary_type = selected_case.summary_type if selected_case.summary_type in disaster_reason_options_by_type else '火災' %}
   {% set selected_reason = selected_case.reason or selected_case.case_reason or '' %}
   {% set selected_reason_options = disaster_reason_options_by_type[selected_summary_type] %}
@@ -270,6 +280,27 @@
       <h2>工作紀錄</h2>
       <div class="package-cluster">
         <span class="package-group-label">套餐帶入</span><div class="package-buttons" aria-label="處理情形套餐">{% for text in disaster_action_packages %}<button type="button" class="secondary package-button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
+      </div>
+      <div class="package-cluster" id="current-vehicle-packages"{% if not current_vehicle_count.value %} hidden{% endif %}>
+        <span class="package-group-label">本次出勤車輛</span>
+        <div class="package-buttons" aria-label="本次出勤車輛">
+          {% for entry in disaster_entries %}
+            {% if entry.vehicle %}
+              <button type="button" class="secondary package-button" data-action-text="{{ entry.vehicle }}" data-current-vehicle-package="{{ entry.vehicle }}">{{ entry.vehicle }}</button>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      <div class="package-cluster" id="current-personnel-packages"{% if not current_personnel %} hidden{% endif %}>
+        <span class="package-group-label">本次出勤人員</span>
+        <div class="package-buttons" aria-label="本次出勤人員">
+          {% for person in current_personnel %}
+            {% set person_name = person | string | trim %}
+            {% if person_name %}
+              <button type="button" class="secondary package-button" data-action-text="{{ person_name }}" data-current-personnel-package="{{ person_name }}">{{ person_name }}</button>
+            {% endif %}
+          {% endfor %}
+        </div>
       </div>
       <label class="field-visual{% if not selected_case.action_note %} is-pending{% endif %}" data-required-message="請填寫處理情形"><span class="field-label-title processing-section-title">處理情形補充 <small class="field-label-helper">（可以自行輸入增減）</small><span class="field-error-mark" aria-hidden="true">*</span></span><textarea name="action_note" id="action-note" required>{{ selected_case.action_note or '' }}</textarea></label>
       <h3 class="processing-section-title">處理情形預覽</h3><div class="preview" id="processing-preview"></div>
@@ -332,6 +363,10 @@
   const lockedSubcategory = document.getElementById('locked-recorder-subcategory');
   const folderPreview = document.getElementById('disaster-folder-preview');
   const clientFormErrors = document.getElementById('client-form-errors');
+  const currentVehiclePackages = document.getElementById('current-vehicle-packages');
+  const currentVehicleButtons = currentVehiclePackages.querySelector('.package-buttons');
+  const currentPersonnelPackages = document.getElementById('current-personnel-packages');
+  const currentPersonnelButtons = currentPersonnelPackages.querySelector('.package-buttons');
   function hhmmNow(){ const now=new Date(); return String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0'); }
   function dateNow(){ const now=new Date(); return `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}/${String(now.getDate()).padStart(2,'0')}`; }
   document.getElementById('now-time').addEventListener('click',()=>{ topReturnDate.value=dateNow(); topReturn.value=hhmmNow(); list.querySelectorAll('[name="vehicle_return_date"]').forEach(input=>{if(!input.value) input.value=topReturnDate.value;}); list.querySelectorAll('[name="vehicle_return_time"]').forEach(input=>{if(!input.value) input.value=topReturn.value;}); });
@@ -411,6 +446,7 @@
       updateFuelFields(card);
       updateLastMileageHint(card);
     });
+    updateCurrentPackages();
     updateRequiredHints();
   }
   document.getElementById('add-vehicle').addEventListener('click',()=>{
@@ -432,6 +468,35 @@
     if(commander) assignments.push(`指揮官:${commander}`);
     const assignmentText=assignments.length?assignments.join('、'):'尚未選擇車輛／司機／指揮官';
     document.getElementById('processing-preview').textContent=`1.${assignmentText}\n2.${document.getElementById('action-note').value}`;
+  }
+  function appendActionText(text){
+    const note=document.getElementById('action-note');
+    note.value=[note.value.trim(),text].filter(Boolean).join('，');
+    updatePreview();
+    updateRequiredHints();
+  }
+  function updateCurrentPackageButtons(container, buttons, values, dataKey){
+    buttons.replaceChildren();
+    values.forEach(value=>{
+      const button=document.createElement('button');
+      button.type='button';
+      button.className='secondary package-button';
+      button.dataset.actionText=value;
+      button.dataset[dataKey]=value;
+      button.textContent=value;
+      button.addEventListener('click',()=>appendActionText(value));
+      buttons.appendChild(button);
+    });
+    container.hidden=values.length===0;
+  }
+  function currentFormValues(name){
+    return Array.from(form.querySelectorAll(`[name="${name}"]`)).map(input=>input.value.trim()).filter(Boolean);
+  }
+  function updateCurrentPackages(){
+    const vehicles=[...new Set(currentFormValues('vehicle'))];
+    const personnel=[...new Set(String(form.elements.personnel.value||'').split(',').map(value=>value.trim()).filter(Boolean))];
+    updateCurrentPackageButtons(currentVehiclePackages,currentVehicleButtons,vehicles,'currentVehiclePackage');
+    updateCurrentPackageButtons(currentPersonnelPackages,currentPersonnelButtons,personnel,'currentPersonnelPackage');
   }
   function escapeHtml(value){ return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
   let folderTimer=0;
@@ -469,7 +534,7 @@
     },120);
   }
   form.addEventListener('input',()=>{updatePreview();updateFolderPreview();updateRequiredHints();});
-  form.addEventListener('change',()=>{updatePreview();updateFolderPreview();updateRequiredHints();});
+  form.addEventListener('change',()=>{updatePreview();updateFolderPreview();updateCurrentPackages();updateRequiredHints();});
   function requiredControl(wrapper){
     return Array.from(wrapper.querySelectorAll('input,select,textarea')).find(input=>input.required&&!input.disabled);
   }
@@ -508,7 +573,7 @@
     input.addEventListener('input',updateRequiredHints);
     input.addEventListener('change',updateRequiredHints);
   });
-  document.querySelectorAll('[data-action-text]').forEach(button=>button.addEventListener('click',()=>{ const note=document.getElementById('action-note'); note.value=[note.value.trim(),button.dataset.actionText].filter(Boolean).join('，'); updatePreview(); updateRequiredHints(); }));
+  document.querySelectorAll('[data-action-text]').forEach(button=>button.addEventListener('click',()=>appendActionText(button.dataset.actionText)));
   updateConditionalFields();
   reindexCards();
   updatePreview();

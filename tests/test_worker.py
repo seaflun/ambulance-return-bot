@@ -3787,6 +3787,77 @@ class WorkerTests(unittest.TestCase):
 
         runner.assert_not_called()
 
+    def test_daily_vehicle_mileage_retries_only_failed_vehicle_after_thirty_minutes(self):
+        now = datetime(2026, 8, 22, 6, 30)
+        target = {"vehicle_key": "KEC-2608", "ppe_name": "KEC-2608", "labels": ["新坡91"]}
+        snapshot = {
+            "vehicles": [
+                {
+                    "vehicle_key": "KEC-2608",
+                    "ppe_name": "KEC-2608",
+                    "status": "daily_vehicle_mileage_failed",
+                    "last_attempted_at": "2026-08-22T06:00:00",
+                },
+                {
+                    "vehicle_key": "FIRE-11",
+                    "ppe_name": "FIRE-11",
+                    "status": "daily_vehicle_mileage_synced",
+                    "last_success_business_date": "2026-08-22",
+                },
+            ]
+        }
+        report = {
+            "vehicle_key": "KEC-2608",
+            "ppe_name": "KEC-2608",
+            "status": "daily_vehicle_mileage_synced",
+            "mileage": "12345",
+            "record_end_date": "20260821",
+            "record_end_time": "1800",
+            "detail": "已讀取 PPE 最新里程。",
+        }
+        posted: list[dict[str, object]] = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            worker_module,
+            "fetch_daily_vehicle_mileage_state",
+            return_value={"targets": [target, {"vehicle_key": "FIRE-11", "ppe_name": "FIRE-11", "labels": ["救災11"]}], "snapshot": snapshot},
+        ), mock.patch.object(
+            worker_module,
+            "query_daily_vehicle_mileages",
+            return_value=[report],
+        ) as query, mock.patch.object(
+            worker_module,
+            "post_daily_vehicle_mileage_report",
+            side_effect=lambda _server, payload: posted.append(payload),
+        ):
+            last_check_at = worker_module.maybe_run_daily_vehicle_mileage_sync(
+                "http://nas",
+                Path(tmp),
+                0,
+                now=now,
+            )
+
+        query.assert_called_once_with([target], Path(tmp))
+        self.assertEqual(1, len(posted))
+        self.assertEqual("2026-08-22", posted[0]["business_date"])
+        self.assertEqual([report], posted[0]["vehicles"])
+        self.assertGreater(last_check_at, 0)
+
+    def test_daily_vehicle_mileage_waits_thirty_minutes_before_next_state_check(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            worker_module.time,
+            "time",
+            return_value=1_100.0,
+        ), mock.patch.object(worker_module, "fetch_daily_vehicle_mileage_state") as fetch:
+            last_check_at = worker_module.maybe_run_daily_vehicle_mileage_sync(
+                "http://nas",
+                Path(tmp),
+                1_000.0,
+                now=datetime(2026, 8, 22, 6, 10),
+            )
+
+        self.assertEqual(1_000.0, last_check_at)
+        fetch.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
