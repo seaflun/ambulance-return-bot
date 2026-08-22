@@ -27,8 +27,10 @@ from consumables_login import login_acs_and_get_driver, open_consumable_record_f
 from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 from ambulance_bot import worker_control, worker_health, worker_routes
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult
+from ambulance_bot.civilpower_roster import ROSTER_LOADED_STATUS
 from ambulance_bot.credential_envelope import open_credential_payload
 from ambulance_bot.daily_vehicle_mileage import (
+    DAILY_VEHICLE_MILEAGE_FAILED,
     DAILY_VEHICLE_MILEAGE_RETRY_SECONDS,
     daily_vehicle_targets,
     vehicle_mileage_sync_due,
@@ -42,6 +44,13 @@ from ambulance_bot.manual_task_lock import (
     manual_task_lock_active,
     manual_task_lock_max_age_seconds,
     refresh_manual_task_lock,
+)
+from ambulance_bot.manual_refresh import (
+    MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER,
+    MANUAL_REFRESH_KIND_VEHICLE_MILEAGE,
+    MANUAL_REFRESH_STATUS_COMPLETED,
+    MANUAL_REFRESH_STATUS_FAILED,
+    normalize_manual_refresh_command,
 )
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.selenium_local import (
@@ -158,6 +167,12 @@ def main() -> None:
                     )
                 finally:
                     runtime_state.set("idle")
+                if not run_once:
+                    runtime_state.set("busy", activity="manual_refresh", busy_reason="checking manual refresh requests")
+                    try:
+                        maybe_run_manual_refresh_command(server_url, artifacts_dir)
+                    finally:
+                        runtime_state.set("idle")
                 if not run_once:
                     runtime_state.set("busy", activity="civilpower_roster", busy_reason="checking civilpower roster")
                     try:
@@ -1084,6 +1099,137 @@ def fetch_daily_vehicle_mileage_state(server_url: str) -> dict[str, object]:
 
 def post_daily_vehicle_mileage_report(server_url: str, payload: Mapping[str, object]) -> None:
     post_json(f"{str(server_url).rstrip('/')}/worker/daily-vehicle-mileage", payload)
+
+
+def fetch_manual_refresh_commands(server_url: str) -> list[dict[str, str]]:
+    payload = request_json(f"{str(server_url).rstrip('/')}/worker/manual-refreshes")
+    if payload.get("ok") is not True or not isinstance(payload.get("commands"), list):
+        raise RuntimeError("NAS 未提供手動查詢命令")
+    commands: list[dict[str, str]] = []
+    for raw_command in payload["commands"]:
+        command = normalize_manual_refresh_command(raw_command)
+        if command is not None:
+            commands.append(command)
+    return commands
+
+
+def post_manual_refresh_status(server_url: str, request_id: str, status: str, detail: str) -> None:
+    post_json(
+        f"{str(server_url).rstrip('/')}/worker/manual-refreshes/{urllib.parse.quote(request_id, safe='')}/status",
+        {"status": status, "detail": detail},
+    )
+
+
+def maybe_run_manual_refresh_command(server_url: str, artifacts_dir: Path) -> bool:
+    if MANUAL_TASK_ACTIVE.is_set() or manual_task_lock_active(artifacts_dir):
+        print("[worker] manual refresh skipped: manual task active", flush=True)
+        return False
+    try:
+        commands = fetch_manual_refresh_commands(server_url)
+    except Exception as exc:
+        print(f"[worker] manual refresh command deferred: {exc}", flush=True)
+        return False
+    if not commands:
+        return False
+    command = commands[0]
+    request_id = command["request_id"]
+    kind = command["kind"]
+    activity = (
+        "manual_vehicle_mileage"
+        if kind == MANUAL_REFRESH_KIND_VEHICLE_MILEAGE
+        else "manual_civilpower_roster"
+    )
+    activity_owner = f"{activity}:{os.getpid()}:{int(time.time())}"
+    worker_health.write_activity(activity=activity, owner=activity_owner)
+    try:
+        if kind == MANUAL_REFRESH_KIND_VEHICLE_MILEAGE:
+            state = fetch_daily_vehicle_mileage_state(server_url)
+            target = next(
+                (
+                    item
+                    for item in state["targets"]
+                    if str(item.get("vehicle_key") or "") == command["vehicle_key"]
+                ),
+                None,
+            )
+            if target is None:
+                post_manual_refresh_status(
+                    server_url,
+                    request_id,
+                    MANUAL_REFRESH_STATUS_FAILED,
+                    "車輛設定已移除，無法查詢最新里程。",
+                )
+                return True
+            attempted_at = datetime.now().isoformat(timespec="seconds")
+            try:
+                reports = query_daily_vehicle_mileages([target], artifacts_dir)
+            except Exception as exc:
+                reports = [
+                    {
+                        **target,
+                        "status": DAILY_VEHICLE_MILEAGE_FAILED,
+                        "mileage": "",
+                        "record_end_date": "",
+                        "record_end_time": "",
+                        "detail": f"PPE 車輛里程查詢失敗：{exc}",
+                    }
+                ]
+            report = next(
+                (
+                    item
+                    for item in reports
+                    if isinstance(item, Mapping)
+                    and str(item.get("vehicle_key") or "") == str(target.get("vehicle_key") or "")
+                ),
+                None,
+            )
+            if report is None:
+                report = {
+                    **target,
+                    "status": DAILY_VEHICLE_MILEAGE_FAILED,
+                    "mileage": "",
+                    "record_end_date": "",
+                    "record_end_time": "",
+                    "detail": "PPE 車輛里程查詢沒有回傳結果。",
+                }
+            post_daily_vehicle_mileage_report(
+                server_url,
+                {
+                    "business_date": datetime.now().date().isoformat(),
+                    "attempted_at": attempted_at,
+                    "source": "public_duty_pc_worker",
+                    "vehicles": [dict(report)],
+                },
+            )
+            status = (
+                MANUAL_REFRESH_STATUS_FAILED
+                if str(report.get("status") or "") == DAILY_VEHICLE_MILEAGE_FAILED
+                else MANUAL_REFRESH_STATUS_COMPLETED
+            )
+            post_manual_refresh_status(server_url, request_id, status, str(report.get("detail") or ""))
+            return True
+        if kind == MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER:
+            report = refresh_civilpower_roster(artifacts_dir)
+            post_civilpower_roster(server_url, report)
+            status = (
+                MANUAL_REFRESH_STATUS_COMPLETED
+                if str(report.get("status") or "") == ROSTER_LOADED_STATUS
+                else MANUAL_REFRESH_STATUS_FAILED
+            )
+            post_manual_refresh_status(server_url, request_id, status, str(report.get("detail") or ""))
+            return True
+        post_manual_refresh_status(server_url, request_id, MANUAL_REFRESH_STATUS_FAILED, "不支援的手動查詢命令。")
+        return True
+    except Exception as exc:
+        detail = f"手動查詢失敗：{exc}"
+        try:
+            post_manual_refresh_status(server_url, request_id, MANUAL_REFRESH_STATUS_FAILED, detail)
+        except Exception as status_exc:
+            print(f"[worker] manual refresh status deferred: {status_exc}", flush=True)
+        print(f"[worker] manual refresh failed kind={kind}: {exc}", flush=True)
+        return True
+    finally:
+        worker_health.clear_activity(activity_owner)
 
 
 def maybe_run_daily_vehicle_mileage_sync(

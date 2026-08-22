@@ -34,6 +34,7 @@ from .chrome_startup import (
 )
 from .daily_vehicle_mileage import (
     DAILY_VEHICLE_MILEAGE_FAILED,
+    DAILY_VEHICLE_MILEAGE_MAX_PREVIOUS_MONTHS,
     DAILY_VEHICLE_MILEAGE_NO_RECORD,
     DAILY_VEHICLE_MILEAGE_SYNCED,
     vehicle_mileage_key,
@@ -490,36 +491,32 @@ def _query_daily_vehicle_mileage(
     query_now: datetime | None = None,
 ) -> dict[str, object]:
     try:
-        current_month = (query_now or datetime.now()).strftime("%Y/%m")
-        record = _read_daily_vehicle_mileage_for_month(driver, target, current_month)
-        if not record["mileage"]:
-            previous_month = _daily_vehicle_mileage_previous_month(query_now or datetime.now())
-            record = _read_daily_vehicle_mileage_for_month(driver, target, previous_month)
-            if record["mileage"]:
-                if not _daily_vehicle_mileage_record_matches_month(record, previous_month):
-                    raise WebDriverException(
-                        "PPE previous-month vehicle mileage query returned an unexpected record month: "
-                        f"requested={previous_month} record_end_date={record['record_end_date']}"
-                    )
-                return {
-                    **target,
-                    "status": DAILY_VEHICLE_MILEAGE_SYNCED,
-                    **record,
-                    "detail": f"已讀取 PPE {previous_month} 最新里程。",
-                }
+        query_time = query_now or datetime.now()
+        months = _daily_vehicle_mileage_months_to_search(query_time)
+        for month_index, target_month in enumerate(months):
+            record = _read_daily_vehicle_mileage_for_month(driver, target, target_month)
+            if not record["mileage"]:
+                continue
+            if month_index and not _daily_vehicle_mileage_record_matches_month(record, target_month):
+                raise WebDriverException(
+                    "PPE historical vehicle mileage query returned an unexpected record month: "
+                    f"requested={target_month} record_end_date={record['record_end_date']}"
+                )
             return {
                 **target,
-                "status": DAILY_VEHICLE_MILEAGE_NO_RECORD,
-                "mileage": "",
-                "record_end_date": "",
-                "record_end_time": "",
-                "detail": f"PPE 本月及 {previous_month} 尚無可用車輛里程紀錄。",
+                "status": DAILY_VEHICLE_MILEAGE_SYNCED,
+                **record,
+                "detail": "已讀取 PPE 最新里程。"
+                if not month_index
+                else f"已讀取 PPE {target_month} 最新里程。",
             }
         return {
             **target,
-            "status": DAILY_VEHICLE_MILEAGE_SYNCED,
-            **record,
-            "detail": "已讀取 PPE 最新里程。",
+            "status": DAILY_VEHICLE_MILEAGE_NO_RECORD,
+            "mileage": "",
+            "record_end_date": "",
+            "record_end_time": "",
+            "detail": f"PPE 本月起往前 {DAILY_VEHICLE_MILEAGE_MAX_PREVIOUS_MONTHS} 個月尚無可用車輛里程紀錄。",
         }
     except Exception as exc:
         return _daily_vehicle_mileage_failure(target, exc)
@@ -543,6 +540,15 @@ def _read_daily_vehicle_mileage_for_month(
 
 def _daily_vehicle_mileage_previous_month(value: datetime) -> str:
     return (value.replace(day=1) - timedelta(days=1)).strftime("%Y/%m")
+
+
+def _daily_vehicle_mileage_months_to_search(value: datetime) -> list[str]:
+    months: list[str] = []
+    current = value
+    for _ in range(DAILY_VEHICLE_MILEAGE_MAX_PREVIOUS_MONTHS + 1):
+        months.append(current.strftime("%Y/%m"))
+        current = current.replace(day=1) - timedelta(days=1)
+    return months
 
 
 def _daily_vehicle_mileage_record_matches_month(record: dict[str, str], target_month: str) -> bool:

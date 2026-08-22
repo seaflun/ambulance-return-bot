@@ -36,9 +36,11 @@ from ambulance_bot.daily_vehicle_mileage import (
     DAILY_VEHICLE_MILEAGE_FAILED,
     DAILY_VEHICLE_MILEAGE_NO_RECORD,
     DAILY_VEHICLE_MILEAGE_SYNCED,
+    daily_vehicle_targets,
     merge_vehicle_mileage_report,
     normalize_vehicle_mileage_snapshot,
     unavailable_vehicle_mileage_snapshot,
+    vehicle_mileage_key,
     vehicle_mileage_snapshot_record,
 )
 from ambulance_bot.civilpower_preferences import (
@@ -75,6 +77,16 @@ from ambulance_bot.manual_task_lock import (
     manual_task_lock_snapshot,
     run_with_manual_task_lock_absent,
     run_with_manual_task_lock_owner,
+)
+from ambulance_bot.manual_refresh import (
+    MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER,
+    MANUAL_REFRESH_KIND_VEHICLE_MILEAGE,
+    MANUAL_REFRESH_STATUS_COMPLETED,
+    MANUAL_REFRESH_STATUS_FAILED,
+    MANUAL_REFRESH_STATUS_PENDING,
+    manual_refresh_command_is_active,
+    manual_refresh_command_key,
+    normalize_manual_refresh_command,
 )
 from ambulance_bot.models import (
     AmbulanceReturnRequest,
@@ -154,6 +166,7 @@ desktop_runner = DesktopFastRunner(artifacts_dir, store=store)
 _vehicle_settings_sync_lock = threading.RLock()
 _civilpower_roster_lock = threading.RLock()
 _daily_vehicle_mileage_lock = threading.RLock()
+_manual_refresh_lock = threading.RLock()
 _local_case_lookup_thread_lock = threading.Lock()
 _local_case_lookup_thread: threading.Thread | None = None
 _public_pc_report_lock = threading.Lock()
@@ -1036,6 +1049,14 @@ def delete_disaster_vehicle_option():
     return render_disaster_vehicle_settings(message=f"已刪除 {label}")
 
 
+@app.post("/admin/disaster-vehicles/mileage-query")
+def request_disaster_vehicle_mileage_query():
+    return submit_manual_vehicle_mileage_query(
+        "disaster",
+        str(request.form.get("ppe_name") or ""),
+    )
+
+
 @app.post("/admin/disaster-vehicles/action-packages")
 def save_disaster_action_package_options():
     if request_is_local_host():
@@ -1055,20 +1076,41 @@ def save_disaster_action_package_options():
 def vehicle_records_with_daily_mileage(
     records: list[dict[str, object]],
     snapshot: Mapping[str, object] | None = None,
+    manual_refresh_commands: list[Mapping[str, object]] | None = None,
+    manual_refresh_errors: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
     effective_snapshot = (
         normalize_vehicle_mileage_snapshot(snapshot) or unavailable_vehicle_mileage_snapshot()
         if snapshot is not None
         else read_daily_vehicle_mileage_snapshot()
     )
+    commands = (
+        normalize_manual_refresh_commands(manual_refresh_commands)
+        if manual_refresh_commands is not None
+        else read_manual_refresh_commands()
+    )
+    error_messages = dict(manual_refresh_errors or {})
     decorated: list[dict[str, object]] = []
     for raw_record in records:
         record = dict(raw_record)
         mileage_record = vehicle_mileage_snapshot_record(effective_snapshot, record.get("ppe_name"))
+        query_command = manual_refresh_command_for(
+            MANUAL_REFRESH_KIND_VEHICLE_MILEAGE,
+            record.get("ppe_name"),
+            commands=commands,
+        )
+        query_key = manual_refresh_command_key(
+            MANUAL_REFRESH_KIND_VEHICLE_MILEAGE,
+            record.get("ppe_name"),
+        )
         mileage = str((mileage_record or {}).get("mileage") or "").strip()
         record["daily_mileage"] = mileage
         record["daily_mileage_label"] = f"{mileage} km" if mileage else "尚無資料"
         record["daily_mileage_status"] = daily_vehicle_mileage_status_label(mileage_record)
+        record["manual_mileage_query_active"] = manual_refresh_command_is_active(query_command)
+        record["manual_mileage_query_message"] = manual_refresh_error_message(query_command) or str(
+            error_messages.get(query_key) or ""
+        )
         decorated.append(record)
     return decorated
 
@@ -1100,11 +1142,23 @@ def render_disaster_vehicle_settings(
     pending_sync_commands: list[dict[str, str]] | None = None,
     form_values: Mapping[str, object] | None = None,
     daily_vehicle_mileage_snapshot: Mapping[str, object] | None = None,
+    manual_refresh_commands: list[Mapping[str, object]] | None = None,
+    manual_refresh_errors: Mapping[str, object] | None = None,
 ):
     records = vehicles if vehicles is not None else load_disaster_vehicle_records(artifacts_dir)
+    commands = (
+        normalize_manual_refresh_commands(manual_refresh_commands)
+        if manual_refresh_commands is not None
+        else read_manual_refresh_commands()
+    )
     return render_template(
         "admin_disaster_vehicles.html",
-        vehicles=vehicle_records_with_daily_mileage(records, daily_vehicle_mileage_snapshot),
+        vehicles=vehicle_records_with_daily_mileage(
+            records,
+            daily_vehicle_mileage_snapshot,
+            commands,
+            manual_refresh_errors,
+        ),
         action_packages=action_packages if action_packages is not None else load_disaster_action_packages(artifacts_dir),
         errors=errors or [],
         message=message,
@@ -1112,6 +1166,7 @@ def render_disaster_vehicle_settings(
         sync_source=sync_source,
         pending_sync_commands=pending_sync_commands or [],
         form_values=dict(form_values or {}),
+        refresh_manual_queries=any(manual_refresh_command_is_active(command) for command in commands),
     )
 
 
@@ -1272,6 +1327,14 @@ def delete_vehicle_option():
     return render_vehicle_settings(message=f"已刪除 {label}")
 
 
+@app.post("/admin/vehicles/mileage-query")
+def request_vehicle_mileage_query():
+    return submit_manual_vehicle_mileage_query(
+        "ems",
+        str(request.form.get("ppe_name") or ""),
+    )
+
+
 @app.post("/admin/civilpower-preferences")
 def save_civilpower_preferences():
     frequent_member_ids = request.form.getlist("frequent_civilpower_member_ids")
@@ -1290,6 +1353,11 @@ def save_civilpower_preferences():
     except ValueError as exc:
         return render_vehicle_settings(errors=[str(exc)]), 400
     return render_vehicle_settings(message="已儲存常出勤義消")
+
+
+@app.post("/admin/civilpower-roster/query")
+def request_civilpower_roster_query():
+    return submit_manual_civilpower_roster_query()
 
 
 @app.get("/worker/identity")
@@ -1355,6 +1423,57 @@ def worker_daily_vehicle_mileage_report():
         snapshot = merge_vehicle_mileage_report(read_daily_vehicle_mileage_snapshot(), data)
         write_json_atomic(daily_vehicle_mileage_snapshot_path(), snapshot)
     return jsonify({"ok": True, "snapshot": snapshot})
+
+
+@app.get("/worker/manual-refreshes")
+def worker_manual_refreshes():
+    if not worker_authorized():
+        abort(403)
+    commands = [
+        command
+        for command in read_manual_refresh_commands()
+        if manual_refresh_command_is_active(command)
+    ]
+    return jsonify({"ok": True, "commands": commands})
+
+
+@app.post("/worker/manual-refreshes")
+def worker_create_manual_refresh():
+    if not worker_authorized():
+        abort(403)
+    data = request.get_json(silent=True)
+    if not isinstance(data, Mapping):
+        abort(400)
+    try:
+        command = queue_manual_refresh_command(
+            str(data.get("kind") or ""),
+            vehicle_key=data.get("vehicle_key"),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": "invalid_command", "detail": str(exc)}), 400
+    return jsonify({"ok": True, "command": command})
+
+
+@app.post("/worker/manual-refreshes/<request_id>/status")
+def worker_manual_refresh_status(request_id: str):
+    if not worker_authorized():
+        abort(403)
+    data = request.get_json(silent=True)
+    if not isinstance(data, Mapping):
+        abort(400)
+    status = str(data.get("status") or "").strip().lower()
+    if status not in {MANUAL_REFRESH_STATUS_COMPLETED, MANUAL_REFRESH_STATUS_FAILED}:
+        abort(400)
+    command, outcome = complete_manual_refresh_command(
+        request_id,
+        status=status,
+        detail=str(data.get("detail") or ""),
+    )
+    if outcome == "not_found":
+        abort(404)
+    if outcome != "updated" or command is None:
+        abort(409)
+    return jsonify({"ok": True, "command": command, "ack_id": request_id})
 
 
 @app.post("/admin/vehicle-settings/pending/delete")
@@ -3386,11 +3505,34 @@ def vehicle_settings_revision(settings: Mapping[str, object]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def normalize_manual_refresh_commands(value: object) -> list[dict[str, str]]:
+    if isinstance(value, Mapping):
+        raw_commands = value.get("commands")
+    else:
+        raw_commands = value
+    if not isinstance(raw_commands, list):
+        return []
+    commands_by_key: dict[str, dict[str, str]] = {}
+    for raw_command in raw_commands:
+        command = normalize_manual_refresh_command(raw_command)
+        if command is None:
+            continue
+        command_key = manual_refresh_command_key(command["kind"], command["vehicle_key"])
+        if command_key:
+            commands_by_key[command_key] = command
+    return [commands_by_key[key] for key in sorted(commands_by_key)]
+
+
 def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -> dict[str, object]:
     snapshot = dict(settings or vehicle_settings_snapshot())
     daily_snapshot = daily_vehicle_mileage_snapshot_from_settings(snapshot)
     if daily_snapshot is None:
         daily_snapshot = read_daily_vehicle_mileage_snapshot()
+    manual_refreshes = (
+        normalize_manual_refresh_commands(snapshot.get("manual_refresh_commands"))
+        if "manual_refresh_commands" in snapshot
+        else read_manual_refresh_commands()
+    )
     return {
         "ok": True,
         "ems_vehicles": list(snapshot.get("ems_vehicles") or []),
@@ -3400,6 +3542,7 @@ def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -
             snapshot.get("frequent_civilpower_member_ids")
         ),
         "daily_vehicle_mileage_snapshot": daily_snapshot,
+        "manual_refresh_commands": manual_refreshes,
         "revision": vehicle_settings_revision(snapshot),
     }
 
@@ -3421,6 +3564,7 @@ def normalize_remote_vehicle_settings(payload: object) -> dict[str, object] | No
             payload.get("frequent_civilpower_member_ids")
         ),
         "daily_vehicle_mileage_snapshot": daily_snapshot or unavailable_vehicle_mileage_snapshot(),
+        "manual_refresh_commands": normalize_manual_refresh_commands(payload.get("manual_refresh_commands")),
     }
     revision = str(payload.get("revision") or "").strip() or vehicle_settings_revision(settings)
     return {**settings, "revision": revision}
@@ -3756,6 +3900,50 @@ def request_nas_vehicle_settings(command: Mapping[str, object] | None = None) ->
     return {"state": "ok", "settings": settings}
 
 
+def request_nas_manual_refresh_command(kind: object, *, vehicle_key: object = "") -> dict[str, object]:
+    server_url = nas_vehicle_settings_server_url()
+    if not server_url:
+        return {"state": "unavailable", "detail": "尚未設定 NAS 連線位置"}
+    payload = {
+        "kind": str(kind or "").strip(),
+        "vehicle_key": vehicle_mileage_key(vehicle_key),
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{server_url}/worker/manual-refreshes",
+        data=body,
+        headers={**worker_headers(), "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            response_payload = json.loads(exc.read().decode("utf-8"))
+        except (UnicodeError, ValueError):
+            response_payload = {}
+        if exc.code in {401, 403}:
+            return {"state": "failed", "detail": "NAS 拒絕手動查詢，請確認公務電腦授權"}
+        detail = (
+            response_payload.get("detail")
+            if isinstance(response_payload, Mapping)
+            else ""
+        )
+        return {
+            "state": "failed",
+            "detail": str(detail or "NAS 無法接受手動查詢"),
+        }
+    except (OSError, UnicodeError, ValueError, urllib.error.URLError):
+        return {"state": "unavailable", "detail": "目前無法連線 NAS"}
+    command = normalize_manual_refresh_command(
+        response_payload.get("command") if isinstance(response_payload, Mapping) else None
+    )
+    if not isinstance(response_payload, Mapping) or response_payload.get("ok") is not True or command is None:
+        return {"state": "failed", "detail": "NAS 回覆的手動查詢資料不正確"}
+    return {"state": "ok", "command": command}
+
+
 def flush_pending_nas_vehicle_settings(settings: Mapping[str, object]) -> tuple[dict[str, object], str, list[str]]:
     current = normalize_remote_vehicle_settings(settings)
     if current is None:
@@ -3843,6 +4031,7 @@ def render_local_vehicle_settings(
     errors: list[str] | None = None,
     message: str = "",
     form_values: Mapping[str, object] | None = None,
+    manual_refresh_errors: Mapping[str, object] | None = None,
 ):
     view = local_vehicle_settings_view()
     settings = dict(view["settings"])
@@ -3857,6 +4046,8 @@ def render_local_vehicle_settings(
         form_values=form_values,
         civilpower_roster=effective_civilpower_roster(),
         daily_vehicle_mileage_snapshot=daily_vehicle_mileage_snapshot_from_settings(settings),
+        manual_refresh_commands=settings.get("manual_refresh_commands"),
+        manual_refresh_errors=manual_refresh_errors,
         frequent_civilpower_member_ids=normalize_frequent_member_ids(
             settings.get("frequent_civilpower_member_ids")
         ),
@@ -3868,6 +4059,7 @@ def render_local_disaster_vehicle_settings(
     errors: list[str] | None = None,
     message: str = "",
     form_values: Mapping[str, object] | None = None,
+    manual_refresh_errors: Mapping[str, object] | None = None,
 ):
     view = local_vehicle_settings_view()
     settings = dict(view["settings"])
@@ -3882,6 +4074,8 @@ def render_local_disaster_vehicle_settings(
         pending_sync_commands=pending_vehicle_settings_command_views(),
         form_values=form_values,
         daily_vehicle_mileage_snapshot=daily_vehicle_mileage_snapshot_from_settings(settings),
+        manual_refresh_commands=settings.get("manual_refresh_commands"),
+        manual_refresh_errors=manual_refresh_errors,
     )
 
 
@@ -3926,6 +4120,69 @@ def render_local_disaster_vehicle_command_result(
     ), 400
 
 
+def submit_manual_vehicle_mileage_query(service_type: str, ppe_name: object):
+    vehicle_key = vehicle_mileage_key(ppe_name)
+    if not vehicle_key:
+        if service_type == "disaster":
+            return render_disaster_vehicle_settings(errors=["找不到可查詢的車輛里程系統名稱"]), 400
+        return render_vehicle_settings(errors=["找不到可查詢的車輛里程系統名稱"]), 400
+    if request_is_local_host():
+        result = request_nas_manual_refresh_command(
+            MANUAL_REFRESH_KIND_VEHICLE_MILEAGE,
+            vehicle_key=vehicle_key,
+        )
+    else:
+        try:
+            command = queue_manual_refresh_command(
+                MANUAL_REFRESH_KIND_VEHICLE_MILEAGE,
+                vehicle_key=vehicle_key,
+            )
+        except ValueError as exc:
+            result = {"state": "failed", "detail": str(exc)}
+        else:
+            result = {"state": "ok", "command": command}
+    errors = (
+        {}
+        if result["state"] == "ok"
+        else {
+            manual_refresh_command_key(MANUAL_REFRESH_KIND_VEHICLE_MILEAGE, vehicle_key): str(
+                result.get("detail") or "手動查詢送出失敗"
+            )
+        }
+    )
+    if service_type == "disaster":
+        if request_is_local_host():
+            return render_local_disaster_vehicle_settings(manual_refresh_errors=errors)
+        return render_disaster_vehicle_settings(manual_refresh_errors=errors)
+    if request_is_local_host():
+        return render_local_vehicle_settings(manual_refresh_errors=errors)
+    return render_vehicle_settings(manual_refresh_errors=errors)
+
+
+def submit_manual_civilpower_roster_query():
+    if request_is_local_host():
+        result = request_nas_manual_refresh_command(MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER)
+    else:
+        try:
+            command = queue_manual_refresh_command(MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER)
+        except ValueError as exc:
+            result = {"state": "failed", "detail": str(exc)}
+        else:
+            result = {"state": "ok", "command": command}
+    errors = (
+        {}
+        if result["state"] == "ok"
+        else {
+            manual_refresh_command_key(MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER): str(
+                result.get("detail") or "義消名冊查詢送出失敗"
+            )
+        }
+    )
+    if request_is_local_host():
+        return render_local_vehicle_settings(manual_refresh_errors=errors)
+    return render_vehicle_settings(manual_refresh_errors=errors)
+
+
 def render_vehicle_settings(
     *,
     vehicles: list[dict[str, object]] | None = None,
@@ -3938,23 +4195,46 @@ def render_vehicle_settings(
     civilpower_roster: Mapping[str, object] | None = None,
     frequent_civilpower_member_ids: list[str] | None = None,
     daily_vehicle_mileage_snapshot: Mapping[str, object] | None = None,
+    manual_refresh_commands: list[Mapping[str, object]] | None = None,
+    manual_refresh_errors: Mapping[str, object] | None = None,
 ):
     records = vehicles if vehicles is not None else vehicle_admin_records()
+    commands = (
+        normalize_manual_refresh_commands(manual_refresh_commands)
+        if manual_refresh_commands is not None
+        else read_manual_refresh_commands()
+    )
+    roster = dict(civilpower_roster or effective_civilpower_roster())
+    roster_command = manual_refresh_command_for(
+        MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER,
+        commands=commands,
+    )
+    roster_error_key = manual_refresh_command_key(MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER)
+    roster["manual_query_active"] = manual_refresh_command_is_active(roster_command)
+    roster["manual_query_message"] = manual_refresh_error_message(roster_command) or str(
+        dict(manual_refresh_errors or {}).get(roster_error_key) or ""
+    )
     return render_template(
         "admin_vehicles.html",
-        vehicles=vehicle_records_with_daily_mileage(records, daily_vehicle_mileage_snapshot),
+        vehicles=vehicle_records_with_daily_mileage(
+            records,
+            daily_vehicle_mileage_snapshot,
+            commands,
+            manual_refresh_errors,
+        ),
         errors=errors or [],
         message=message,
         settings_revision=settings_revision,
         sync_source=sync_source,
         pending_sync_commands=pending_sync_commands or [],
         form_values=dict(form_values or {}),
-        civilpower_roster=dict(civilpower_roster or effective_civilpower_roster()),
+        civilpower_roster=roster,
         frequent_civilpower_member_ids=(
             normalize_frequent_member_ids(frequent_civilpower_member_ids)
             if frequent_civilpower_member_ids is not None
             else effective_civilpower_frequent_member_ids()
         ),
+        refresh_manual_queries=any(manual_refresh_command_is_active(command) for command in commands),
     )
 
 
@@ -4321,6 +4601,140 @@ def read_daily_vehicle_mileage_snapshot() -> dict[str, object]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return unavailable_vehicle_mileage_snapshot()
     return normalize_vehicle_mileage_snapshot(payload) or unavailable_vehicle_mileage_snapshot()
+
+
+def manual_refresh_commands_path() -> Path:
+    return artifacts_dir / "manual_refresh" / "commands.json"
+
+
+def _read_manual_refresh_commands_unlocked() -> list[dict[str, str]]:
+    path = manual_refresh_commands_path()
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    return normalize_manual_refresh_commands(payload)
+
+
+def read_manual_refresh_commands() -> list[dict[str, str]]:
+    with _manual_refresh_lock:
+        return _read_manual_refresh_commands_unlocked()
+
+
+def _write_manual_refresh_commands_unlocked(commands: list[Mapping[str, object]]) -> None:
+    write_json_atomic(manual_refresh_commands_path(), {"commands": list(commands)})
+
+
+def manual_refresh_command_for(
+    kind: object,
+    vehicle_key: object = "",
+    *,
+    commands: list[Mapping[str, object]] | None = None,
+) -> dict[str, str] | None:
+    command_key = manual_refresh_command_key(kind, vehicle_key)
+    if not command_key:
+        return None
+    source = commands if commands is not None else read_manual_refresh_commands()
+    for raw_command in source:
+        command = normalize_manual_refresh_command(raw_command)
+        if command is None:
+            continue
+        if manual_refresh_command_key(command["kind"], command["vehicle_key"]) == command_key:
+            return command
+    return None
+
+
+def manual_refresh_error_message(command: Mapping[str, object] | None) -> str:
+    if not isinstance(command, Mapping) or str(command.get("status") or "") != MANUAL_REFRESH_STATUS_FAILED:
+        return ""
+    return str(command.get("detail") or "查詢失敗，請稍後再試。")
+
+
+def _manual_vehicle_mileage_target(vehicle_key: object) -> dict[str, object]:
+    key = vehicle_mileage_key(vehicle_key)
+    target = next(
+        (
+            item
+            for item in daily_vehicle_targets(vehicle_settings_snapshot())
+            if str(item.get("vehicle_key") or "") == key
+        ),
+        None,
+    )
+    if target is None:
+        raise ValueError("找不到可查詢的車輛里程系統名稱")
+    return dict(target)
+
+
+def queue_manual_refresh_command(kind: object, *, vehicle_key: object = "") -> dict[str, str]:
+    normalized_kind = str(kind or "").strip()
+    normalized_vehicle_key = ""
+    if normalized_kind == MANUAL_REFRESH_KIND_VEHICLE_MILEAGE:
+        normalized_vehicle_key = str(_manual_vehicle_mileage_target(vehicle_key)["vehicle_key"])
+    elif normalized_kind != MANUAL_REFRESH_KIND_CIVILPOWER_ROSTER:
+        raise ValueError("不支援的手動查詢")
+    command_key = manual_refresh_command_key(normalized_kind, normalized_vehicle_key)
+    if not command_key:
+        raise ValueError("手動查詢資料不完整")
+    with _manual_refresh_lock:
+        commands = _read_manual_refresh_commands_unlocked()
+        existing = manual_refresh_command_for(
+            normalized_kind,
+            normalized_vehicle_key,
+            commands=commands,
+        )
+        if manual_refresh_command_is_active(existing):
+            return existing
+        requested_at = datetime.now().isoformat(timespec="seconds")
+        command = {
+            "request_id": uuid4().hex,
+            "kind": normalized_kind,
+            "vehicle_key": normalized_vehicle_key,
+            "status": MANUAL_REFRESH_STATUS_PENDING,
+            "requested_at": requested_at,
+            "completed_at": "",
+            "detail": "",
+        }
+        commands = [
+            item
+            for item in commands
+            if manual_refresh_command_key(item["kind"], item["vehicle_key"]) != command_key
+        ]
+        commands.append(command)
+        _write_manual_refresh_commands_unlocked(normalize_manual_refresh_commands(commands))
+        return command
+
+
+def complete_manual_refresh_command(
+    request_id: object,
+    *,
+    status: object,
+    detail: object = "",
+) -> tuple[dict[str, str] | None, str]:
+    normalized_request_id = str(request_id or "").strip()
+    normalized_status = str(status or "").strip().lower()
+    if not normalized_request_id:
+        return None, "not_found"
+    if normalized_status not in {MANUAL_REFRESH_STATUS_COMPLETED, MANUAL_REFRESH_STATUS_FAILED}:
+        return None, "invalid"
+    with _manual_refresh_lock:
+        commands = _read_manual_refresh_commands_unlocked()
+        for index, command in enumerate(commands):
+            if command["request_id"] != normalized_request_id:
+                continue
+            if not manual_refresh_command_is_active(command):
+                return command, "terminal"
+            updated = {
+                **command,
+                "status": normalized_status,
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+                "detail": " ".join(str(detail or "").split())[:500],
+            }
+            commands[index] = updated
+            _write_manual_refresh_commands_unlocked(commands)
+            return updated, "updated"
+    return None, "not_found"
 
 
 def daily_vehicle_mileage_snapshot_from_settings(settings: Mapping[str, object] | None) -> dict[str, object] | None:

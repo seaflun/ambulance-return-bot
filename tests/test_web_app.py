@@ -2171,10 +2171,12 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn('name="vehicle_type"', body)
             self.assertNotIn("現有車輛皆為內建；建立自訂車輛後才可刪除。", body)
             self.assertIn("--vehicle-row-height: 68px;", body)
-            self.assertIn("--vehicle-card-height: 242px;", body)
+            self.assertIn("--vehicle-card-height: 300px;", body)
             self.assertIn(".vehicle-row:not(.header-row) { height: var(--vehicle-row-height); }", body)
-            self.assertIn("grid-template-rows: repeat(3, 68px);", body)
+            self.assertIn("grid-template-rows: repeat(3, 68px) 52px;", body)
+            self.assertIn('"action action";', body)
             self.assertIn(".vehicle-sync .vehicle-value {", body)
+            self.assertIn(".mileage-query-message {", body)
             self.assertNotIn('data-field="類型"', body)
             self.assertNotIn("vehicle-kind", body)
             for heading in vehicle_headers:
@@ -3883,17 +3885,19 @@ class WebAppTests(unittest.TestCase):
             self.assertIn('href="/static/sinposmart-workspace.css"', body)
             self.assertIn('class="workspace-page', body)
         shared_columns = (
-            "grid-template-columns: minmax(70px, .65fr) minmax(88px, .82fr) minmax(88px, .85fr) "
-            "minmax(78px, .72fr) minmax(190px, 1.9fr) 80px;"
+            "grid-template-columns: minmax(64px, .55fr) minmax(78px, .7fr) minmax(78px, .7fr) "
+            "minmax(72px, .62fr) minmax(154px, 1.3fr) minmax(254px, 2.1fr);"
         )
         for body in (vehicle_body, disaster_vehicle_body):
             self.assertIn(shared_columns, body)
             self.assertIn("--vehicle-row-height: 68px;", body)
-            self.assertIn("--vehicle-card-height: 242px;", body)
-            self.assertIn("grid-template-rows: repeat(3, 68px);", body)
+            self.assertIn("--vehicle-card-height: 300px;", body)
+            self.assertIn("grid-template-rows: repeat(3, 68px) 52px;", body)
+            self.assertIn("grid-template-areas:", body)
             self.assertIn("最新里程", body)
             self.assertIn("同步狀態", body)
             self.assertIn(".vehicle-sync .vehicle-value {", body)
+            self.assertIn(".mileage-query-button {", body)
             self.assertNotIn('name="vehicle_type"', body)
             self.assertNotIn('data-field="類型"', body)
         self.assertIn(".delete-button { min-width: 72px; min-height: 44px;", vehicle_body)
@@ -9453,6 +9457,120 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual("daily_vehicle_mileage_failed", record["status"])
         self.assertEqual("12345", record["mileage"])
         self.assertEqual("2026-08-22T06:03:00", record["last_success_at"])
+
+    def test_manual_vehicle_mileage_query_uses_worker_command_and_refreshes_card_status(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        nas_headers = {"Host": "100.114.126.58:8080"}
+        self.client.post(
+            "/admin/vehicles",
+            data={"label": "手動查詢救護車", "ppe_name": "MANUAL-001"},
+            headers=nas_headers,
+        )
+
+        queued = self.client.post(
+            "/admin/vehicles/mileage-query",
+            data={"ppe_name": "MANUAL-001"},
+            headers=nas_headers,
+        )
+        forbidden = self.client.get("/worker/manual-refreshes")
+        commands_response = self.client.get("/worker/manual-refreshes", headers=worker_headers)
+        command = commands_response.get_json()["commands"][0]
+        self.client.post(
+            "/worker/daily-vehicle-mileage",
+            headers=worker_headers,
+            json={
+                "business_date": "2026-08-22",
+                "attempted_at": "2026-08-22T10:03:00",
+                "vehicles": [
+                    {
+                        "vehicle_key": "MANUAL-001",
+                        "ppe_name": "MANUAL-001",
+                        "labels": ["手動查詢救護車"],
+                        "status": "daily_vehicle_mileage_synced",
+                        "mileage": "56789",
+                        "record_end_date": "20260821",
+                        "record_end_time": "1800",
+                    }
+                ],
+            },
+        )
+        acknowledged = self.client.post(
+            f"/worker/manual-refreshes/{command['request_id']}/status",
+            headers=worker_headers,
+            json={"status": "completed", "detail": "已讀取 PPE 最新里程。"},
+        )
+        page = self.client.get("/admin/vehicles", headers=nas_headers)
+        queued_body = html.unescape(queued.data.decode("utf-8"))
+        page_body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertEqual(200, queued.status_code)
+        self.assertEqual(403, forbidden.status_code)
+        self.assertEqual(200, commands_response.status_code)
+        self.assertEqual("vehicle_mileage", command["kind"])
+        self.assertEqual("MANUAL-001", command["vehicle_key"])
+        self.assertEqual(200, acknowledged.status_code)
+        self.assertIn('action="/admin/vehicles/mileage-query"', queued_body)
+        self.assertIn("查詢中…", queued_body)
+        self.assertIn("56789 km", page_body)
+        self.assertIn("PPE 同步", page_body)
+        self.assertIn("查詢最新里程", page_body)
+
+    def test_manual_disaster_vehicle_mileage_query_queues_rescue_target(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        nas_headers = {"Host": "100.114.126.58:8080"}
+        self.client.post(
+            "/admin/disaster-vehicles",
+            data={
+                "label": "手動查詢救災車",
+                "ppe_name": "RESCUE-MANUAL-001",
+                "recorder_code": "RESCUE-CAM-001",
+            },
+            headers=nas_headers,
+        )
+
+        queued = self.client.post(
+            "/admin/disaster-vehicles/mileage-query",
+            data={"ppe_name": "RESCUE-MANUAL-001"},
+            headers=nas_headers,
+        )
+        commands_response = self.client.get("/worker/manual-refreshes", headers=worker_headers)
+        command = commands_response.get_json()["commands"][0]
+        queued_body = html.unescape(queued.data.decode("utf-8"))
+
+        self.assertEqual(200, queued.status_code)
+        self.assertEqual("vehicle_mileage", command["kind"])
+        self.assertEqual("RESCUE-MANUAL-001", command["vehicle_key"])
+        self.assertIn('action="/admin/disaster-vehicles/mileage-query"', queued_body)
+        self.assertIn("查詢中…", queued_body)
+
+    def test_manual_civilpower_roster_query_shows_worker_error_next_to_button(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        nas_headers = {"Host": "100.114.126.58:8080"}
+
+        queued = self.client.post("/admin/civilpower-roster/query", headers=nas_headers)
+        commands_response = self.client.get("/worker/manual-refreshes", headers=worker_headers)
+        command = commands_response.get_json()["commands"][0]
+        acknowledged = self.client.post(
+            f"/worker/manual-refreshes/{command['request_id']}/status",
+            headers=worker_headers,
+            json={"status": "failed", "detail": "民力系統登入失敗"},
+        )
+        page = self.client.get("/admin/vehicles", headers=nas_headers)
+        queued_body = html.unescape(queued.data.decode("utf-8"))
+        page_body = html.unescape(page.data.decode("utf-8"))
+
+        self.assertEqual(200, queued.status_code)
+        self.assertEqual("civilpower_roster", command["kind"])
+        self.assertEqual(200, acknowledged.status_code)
+        self.assertIn('formaction="/admin/civilpower-roster/query"', queued_body)
+        self.assertIn("event.submitter", queued_body)
+        self.assertIn("button.textContent='查詢中…';", queued_body)
+        self.assertIn("查詢中…", queued_body)
+        self.assertIn("查詢義消名冊", page_body)
+        self.assertIn("民力系統登入失敗", page_body)
 
     def test_ems_and_disaster_vehicle_settings_show_shared_daily_mileage_and_forms_use_it(self):
         os.environ["WORKER_TOKEN"] = "test-token"

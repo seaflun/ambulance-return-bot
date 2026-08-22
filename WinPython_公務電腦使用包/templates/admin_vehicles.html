@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#b86b5b">
   <title>救護各項設定</title>
+  {% if refresh_manual_queries %}<meta http-equiv="refresh" content="4">{% endif %}
   <style>
     :root {
       color-scheme: light;
@@ -30,7 +31,7 @@
       --text-lg: 17px;
       --text-xl: 28px;
       --vehicle-row-height: 68px;
-      --vehicle-card-height: 242px;
+      --vehicle-card-height: 300px;
     }
     * { box-sizing: border-box; }
     body {
@@ -96,7 +97,7 @@
     .vehicle-list { display: grid; gap: 8px; }
     .vehicle-row {
       display: grid;
-      grid-template-columns: minmax(70px, .65fr) minmax(88px, .82fr) minmax(88px, .85fr) minmax(78px, .72fr) minmax(190px, 1.9fr) 80px;
+      grid-template-columns: minmax(64px, .55fr) minmax(78px, .7fr) minmax(78px, .7fr) minmax(72px, .62fr) minmax(154px, 1.3fr) minmax(254px, 2.1fr);
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -120,11 +121,16 @@
     .vehicle-plate, .vehicle-recorder { color: var(--muted); font-weight: 700; }
     .vehicle-mileage { font-variant-numeric: tabular-nums; font-weight: 780; }
     .vehicle-sync { color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
-    .vehicle-action { display: flex; align-items: center; justify-content: flex-end; color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
+    .vehicle-action { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
+    .vehicle-row.header-row .vehicle-action { display: block; }
     .vehicle-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .vehicle-sync .vehicle-value { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; white-space: normal; line-height: 1.35; }
     .delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 44px; padding: 0; border: 0; background: transparent; box-shadow: none; }
     .delete-button { min-width: 72px; min-height: 44px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; white-space: nowrap; }
+    .mileage-query-form { display: flex; align-items: center; min-height: 44px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+    .mileage-query-message { min-width: 0; overflow: hidden; color: var(--failed); font-size: var(--text-sm); font-weight: 720; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+    .mileage-query-button { min-width: 112px; min-height: 44px; padding: 0 12px; font-size: var(--text-sm); white-space: nowrap; }
+    .mileage-query-button[disabled] { cursor: wait; opacity: .72; }
     .sync-panel { margin-bottom: 16px; }
     .sync-panel p { margin: 0; color: var(--muted); font-weight: 720; }
     .pending-sync-list { display: grid; gap: 8px; margin-top: 12px; }
@@ -133,6 +139,9 @@
     .pending-sync-item span { color: var(--muted); font-size: var(--text-sm); }
     .pending-sync-item .delete-form { flex: 0 0 auto; }
     .civilpower-preferences { margin-top: 16px; }
+    .civilpower-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .civilpower-heading h2 { margin-bottom: 4px; }
+    .civilpower-query { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: min(100%, 320px); }
     .civilpower-preferences-description { margin: 0 0 12px; color: var(--muted); font-weight: 700; }
     .civilpower-member-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 12px; }
     .civilpower-member-option {
@@ -165,7 +174,12 @@
       .vehicle-row.header-row { display: none; }
       .vehicle-row:not(.header-row) {
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        grid-template-rows: repeat(3, 68px);
+        grid-template-areas:
+          "label plate"
+          "recorder mileage"
+          "sync sync"
+          "action action";
+        grid-template-rows: repeat(3, 68px) 52px;
         align-items: stretch;
         gap: 8px;
         height: var(--vehicle-card-height);
@@ -197,13 +211,25 @@
         white-space: normal;
         line-height: 1.35;
       }
-      .vehicle-row:not(.header-row) .vehicle-action,
-      .vehicle-row:not(.header-row) .delete-form { grid-column: 1 / -1; }
-      .vehicle-row:not(.header-row) .delete-form {
-        overflow: visible;
-        padding: 3px 8px;
+      .vehicle-row:not(.header-row) .vehicle-label { grid-area: label; }
+      .vehicle-row:not(.header-row) .vehicle-plate { grid-area: plate; }
+      .vehicle-row:not(.header-row) .vehicle-recorder { grid-area: recorder; }
+      .vehicle-row:not(.header-row) .vehicle-mileage { grid-area: mileage; }
+      .vehicle-row:not(.header-row) .vehicle-sync { grid-area: sync; }
+      .vehicle-row:not(.header-row) > .vehicle-action {
+        display: grid;
+        grid-area: action;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
       }
-      .vehicle-row:not(.header-row) .delete-button { width: 100%; }
+      .vehicle-row:not(.header-row) > .vehicle-action::before { display: none; }
+      .vehicle-row:not(.header-row) .mileage-query-form,
+      .vehicle-row:not(.header-row) .delete-form { overflow: visible; padding: 0; }
+      .vehicle-row:not(.header-row) .mileage-query-message { text-align: right; }
+      .civilpower-heading { align-items: stretch; flex-direction: column; }
+      .civilpower-query { min-width: 0; }
       .button { width: 100%; }
     }
   </style>
@@ -278,23 +304,36 @@
             <div class="vehicle-recorder" data-field="行車紀錄器車號"><span class="vehicle-value">—</span></div>
             <div class="vehicle-mileage" data-field="最新里程"><span class="vehicle-value" title="{{ vehicle.daily_mileage_label }}">{{ vehicle.daily_mileage_label }}</span></div>
             <div class="vehicle-sync" data-field="同步狀態"><span class="vehicle-value" title="{{ vehicle.daily_mileage_status }}">{{ vehicle.daily_mileage_status }}</span></div>
-            {% if vehicle.is_custom %}
-              <form class="delete-form" data-field="操作" method="post" action="/admin/vehicles/delete">
-                <input type="hidden" name="label" value="{{ vehicle.label }}">
-                <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
-                <button class="delete-button" type="submit">刪除</button>
+            <div class="vehicle-action" data-field="操作">
+              <span class="mileage-query-message" aria-live="polite" title="{{ vehicle.manual_mileage_query_message }}">{{ vehicle.manual_mileage_query_message }}</span>
+              <form class="mileage-query-form" method="post" action="/admin/vehicles/mileage-query" onsubmit="const button=this.querySelector('button');button.disabled=true;button.textContent='查詢中…';">
+                <input type="hidden" name="ppe_name" value="{{ vehicle.ppe_name }}">
+                <button class="mileage-query-button" type="submit"{% if vehicle.manual_mileage_query_active %} disabled aria-busy="true"{% endif %}>{{ "查詢中…" if vehicle.manual_mileage_query_active else "查詢最新里程" }}</button>
               </form>
-            {% else %}
-              <div class="vehicle-action" data-field="操作"><span class="vehicle-value">內建車輛</span></div>
-            {% endif %}
+              {% if vehicle.is_custom %}
+                <form class="delete-form" method="post" action="/admin/vehicles/delete">
+                  <input type="hidden" name="label" value="{{ vehicle.label }}">
+                  <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
+                  <button class="delete-button" type="submit">刪除</button>
+                </form>
+              {% endif %}
+            </div>
           </div>
         {% endfor %}
       </div>
     </section>
 
-    <form class="civilpower-preferences" method="post" action="/admin/civilpower-preferences">
-      <h2>救護義消名冊</h2>
-      <p class="civilpower-preferences-description">勾選常出勤人員，救護登打時會優先置頂顯示。</p>
+    <form class="civilpower-preferences" method="post" action="/admin/civilpower-preferences" onsubmit="const button=event.submitter;if(button && button.formAction.endsWith('/admin/civilpower-roster/query')){button.disabled=true;button.textContent='查詢中…';}">
+      <div class="civilpower-heading">
+        <div>
+          <h2>救護義消名冊</h2>
+          <p class="civilpower-preferences-description">勾選常出勤人員，救護登打時會優先置頂顯示。</p>
+        </div>
+        <div class="civilpower-query">
+          <span class="mileage-query-message" aria-live="polite" title="{{ civilpower_roster.manual_query_message }}">{{ civilpower_roster.manual_query_message }}</span>
+          <button class="mileage-query-button" type="submit" formaction="/admin/civilpower-roster/query" formmethod="post"{% if civilpower_roster.manual_query_active %} disabled aria-busy="true"{% endif %}>{{ "查詢中…" if civilpower_roster.manual_query_active else "查詢義消名冊" }}</button>
+        </div>
+      </div>
       {% set frequent_member_ids = frequent_civilpower_member_ids | default([]) %}
       <div class="civilpower-member-list">
         {% for member in civilpower_roster.members %}

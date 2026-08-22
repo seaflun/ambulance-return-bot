@@ -3566,6 +3566,39 @@ class SeleniumLocalTests(unittest.TestCase):
             select_month.call_args_list,
         )
 
+    def test_daily_vehicle_mileage_looks_back_up_to_six_previous_months_when_needed(self):
+        target = {"vehicle_key": "KEC-2608", "ppe_name": "KEC-2608", "labels": ["新坡91"]}
+        driver = object()
+        empty_record = {"mileage": "", "record_end_date": "", "record_end_time": ""}
+        recovered_record = {"mileage": "12345", "record_end_date": "20260228", "record_end_time": "1800"}
+
+        with patch.object(
+            selenium_local_module,
+            "_read_daily_vehicle_mileage_for_month",
+            side_effect=[empty_record, empty_record, empty_record, empty_record, empty_record, empty_record, recovered_record],
+        ) as read_month:
+            result = selenium_local_module._query_daily_vehicle_mileage(
+                driver,
+                target,
+                query_now=datetime(2026, 8, 22, 6, 0),
+            )
+
+        self.assertEqual("daily_vehicle_mileage_synced", result["status"])
+        self.assertEqual("12345", result["mileage"])
+        self.assertEqual("已讀取 PPE 2026/02 最新里程。", result["detail"])
+        self.assertEqual(
+            [
+                call(driver, target, "2026/08"),
+                call(driver, target, "2026/07"),
+                call(driver, target, "2026/06"),
+                call(driver, target, "2026/05"),
+                call(driver, target, "2026/04"),
+                call(driver, target, "2026/03"),
+                call(driver, target, "2026/02"),
+            ],
+            read_month.call_args_list,
+        )
+
     def test_daily_vehicle_mileage_does_not_fallback_after_query_error(self):
         class FakeDriver:
             def implicitly_wait(self, _seconds):

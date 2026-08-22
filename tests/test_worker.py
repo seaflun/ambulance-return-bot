@@ -3842,6 +3842,91 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual([report], posted[0]["vehicles"])
         self.assertGreater(last_check_at, 0)
 
+    def test_manual_vehicle_mileage_refresh_queries_one_requested_target_and_updates_status(self):
+        target = {"vehicle_key": "MANUAL-001", "ppe_name": "MANUAL-001", "labels": ["手動查詢救護車"]}
+        report = {
+            **target,
+            "status": "daily_vehicle_mileage_synced",
+            "mileage": "56789",
+            "record_end_date": "20260821",
+            "record_end_time": "1800",
+            "detail": "已讀取 PPE 最新里程。",
+        }
+        command = {"request_id": "manual-mileage-1", "kind": "vehicle_mileage", "vehicle_key": "MANUAL-001"}
+        acknowledgements: list[tuple[str, str, str]] = []
+        posted: list[dict[str, object]] = []
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            worker_module,
+            "fetch_manual_refresh_commands",
+            return_value=[command],
+        ), mock.patch.object(
+            worker_module,
+            "fetch_daily_vehicle_mileage_state",
+            return_value={"targets": [target], "snapshot": {"vehicles": []}},
+        ), mock.patch.object(
+            worker_module,
+            "query_daily_vehicle_mileages",
+            return_value=[report],
+        ) as query, mock.patch.object(
+            worker_module,
+            "post_daily_vehicle_mileage_report",
+            side_effect=lambda _server, value: posted.append(value),
+        ), mock.patch.object(
+            worker_module,
+            "post_manual_refresh_status",
+            side_effect=lambda _server, request_id, status, detail: acknowledgements.append(
+                (request_id, status, detail)
+            ),
+        ):
+            ran = worker_module.maybe_run_manual_refresh_command("http://nas", Path(tmp))
+
+        self.assertTrue(ran)
+        query.assert_called_once_with([target], Path(tmp))
+        self.assertEqual(1, len(posted))
+        self.assertEqual([report], posted[0]["vehicles"])
+        self.assertEqual(
+            [("manual-mileage-1", "completed", "已讀取 PPE 最新里程。")],
+            acknowledgements,
+        )
+
+    def test_manual_civilpower_roster_refresh_posts_report_and_surfaces_failure(self):
+        command = {"request_id": "manual-roster-1", "kind": "civilpower_roster", "vehicle_key": ""}
+        report = {
+            "status": "civilpower_roster_failed",
+            "detail": "民力系統登入失敗",
+            "members": [],
+        }
+        acknowledgements: list[tuple[str, str, str]] = []
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            worker_module,
+            "fetch_manual_refresh_commands",
+            return_value=[command],
+        ), mock.patch.object(
+            worker_module,
+            "refresh_civilpower_roster",
+            return_value=report,
+        ) as refresh, mock.patch.object(
+            worker_module,
+            "post_civilpower_roster",
+        ) as post_roster, mock.patch.object(
+            worker_module,
+            "post_manual_refresh_status",
+            side_effect=lambda _server, request_id, status, detail: acknowledgements.append(
+                (request_id, status, detail)
+            ),
+        ):
+            ran = worker_module.maybe_run_manual_refresh_command("http://nas", Path(tmp))
+
+        self.assertTrue(ran)
+        refresh.assert_called_once_with(Path(tmp))
+        post_roster.assert_called_once_with("http://nas", report)
+        self.assertEqual(
+            [("manual-roster-1", "failed", "民力系統登入失敗")],
+            acknowledgements,
+        )
+
     def test_daily_vehicle_mileage_waits_thirty_minutes_before_next_state_check(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             worker_module.time,
