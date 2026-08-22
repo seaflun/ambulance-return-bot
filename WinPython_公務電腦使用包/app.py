@@ -995,7 +995,7 @@ def save_disaster_vehicle_option():
             "label": str(request.form.get("label") or "").strip(),
             "ppe_name": str(request.form.get("ppe_name") or "").strip(),
             "recorder_code": str(request.form.get("recorder_code") or "").strip(),
-            "vehicle_type": normalize_vehicle_type(request.form.get("vehicle_type")),
+            "vehicle_type": VEHICLE_TYPE_CUSTOM,
         }
         return render_local_disaster_vehicle_command_result(
             command,
@@ -1005,7 +1005,7 @@ def save_disaster_vehicle_option():
     label = str(request.form.get("label") or "").strip()
     ppe_name = str(request.form.get("ppe_name") or "").strip()
     recorder_code = str(request.form.get("recorder_code") or "").strip()
-    vehicle_type = normalize_vehicle_type(request.form.get("vehicle_type"))
+    vehicle_type = VEHICLE_TYPE_CUSTOM
     try:
         with _vehicle_settings_sync_lock:
             save_disaster_vehicle_record(
@@ -1239,7 +1239,7 @@ def create_vehicle_option():
             "operation": "save_ems_vehicle",
             "label": str(request.form.get("label") or "").strip(),
             "ppe_name": str(request.form.get("ppe_name") or "").strip().upper(),
-            "vehicle_type": normalize_vehicle_type(request.form.get("vehicle_type")),
+            "vehicle_type": VEHICLE_TYPE_CUSTOM,
         }
         return render_local_vehicle_command_result(
             command,
@@ -1248,7 +1248,7 @@ def create_vehicle_option():
         )
     label = str(request.form.get("label") or "").strip()
     ppe_name = str(request.form.get("ppe_name") or "").strip().upper()
-    vehicle_type = normalize_vehicle_type(request.form.get("vehicle_type"))
+    vehicle_type = VEHICLE_TYPE_CUSTOM
     if not label:
         return render_vehicle_settings(errors=["請輸入救護車代號"]), 400
     with _vehicle_settings_sync_lock:

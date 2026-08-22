@@ -30,7 +30,7 @@
       --text-lg: 17px;
       --text-xl: 28px;
       --vehicle-row-height: 68px;
-      --vehicle-card-height: 318px;
+      --vehicle-card-height: 242px;
     }
     * { box-sizing: border-box; }
     body {
@@ -98,7 +98,7 @@
     .vehicle-list { display: grid; gap: 8px; }
     .vehicle-row {
       display: grid;
-      grid-template-columns: minmax(88px, .95fr) minmax(104px, 1.1fr) minmax(102px, 1fr) 56px minmax(84px, .85fr) minmax(124px, 1.2fr) 88px;
+      grid-template-columns: minmax(70px, .65fr) minmax(88px, .82fr) minmax(88px, .85fr) minmax(78px, .72fr) minmax(190px, 1.9fr) 80px;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -120,14 +120,13 @@
     .vehicle-row > * { min-width: 0; overflow: hidden; }
     .vehicle-label { font-weight: 780; }
     .vehicle-plate, .vehicle-recorder { color: var(--muted); font-weight: 700; }
-    .vehicle-kind { min-width: 48px; text-align: center; color: var(--muted); font-size: var(--text-sm); }
     .vehicle-mileage { font-variant-numeric: tabular-nums; font-weight: 780; }
     .vehicle-sync { color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
     .vehicle-action { display: flex; align-items: center; justify-content: flex-end; color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
     .vehicle-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vehicle-sync .vehicle-value { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; white-space: normal; line-height: 1.35; }
     .delete-form { display: flex; align-items: center; justify-content: flex-end; min-height: 44px; padding: 0; border: 0; background: transparent; box-shadow: none; }
     .delete-button { min-width: 72px; min-height: 44px; padding: 0 12px; background: #fff; color: var(--failed); border-color: var(--line-strong); box-shadow: none; white-space: nowrap; }
-    .form-hint { margin: -2px 0 12px; color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
     .sync-panel { margin-bottom: 16px; }
     .sync-panel p { margin: 0; color: var(--muted); font-weight: 720; }
     .pending-sync-list { display: grid; gap: 8px; margin-top: 12px; }
@@ -142,7 +141,7 @@
       .vehicle-row.header-row { display: none; }
       .vehicle-row:not(.header-row) {
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        grid-template-rows: repeat(4, 68px);
+        grid-template-rows: repeat(3, 68px);
         align-items: stretch;
         gap: 8px;
         height: var(--vehicle-card-height);
@@ -235,14 +234,7 @@
         <label>行車紀錄器車號
           <input name="recorder_code" autocomplete="off" value="{{ form_values.get('recorder_code', '') }}" required>
         </label>
-        <label>類型
-          <select name="vehicle_type">
-            <option value="內建"{% if form_values.get('vehicle_type', '內建') == '內建' %} selected{% endif %}>內建</option>
-            <option value="自訂"{% if form_values.get('vehicle_type') == '自訂' %} selected{% endif %}>自訂</option>
-          </select>
-        </label>
       </div>
-      <p class="form-hint">現有車輛皆為內建；建立自訂車輛後才可刪除。</p>
       <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
       <button type="submit">儲存車輛</button>
     </form>
@@ -254,7 +246,6 @@
           <div class="vehicle-label">車輛代號</div>
           <div class="vehicle-plate">車牌號碼</div>
           <div class="vehicle-recorder">行車紀錄器車號</div>
-          <div class="vehicle-kind">類型</div>
           <div class="vehicle-mileage">最新里程</div>
           <div class="vehicle-sync">同步狀態</div>
           <div class="vehicle-action">操作</div>
@@ -264,7 +255,6 @@
             <div class="vehicle-label" data-field="車輛代號"><span class="vehicle-value" title="{{ vehicle.label }}">{{ vehicle.label }}</span></div>
             <div class="vehicle-plate" data-field="車牌號碼"><span class="vehicle-value" title="{{ vehicle.ppe_name or '—' }}">{{ vehicle.ppe_name or "—" }}</span></div>
             <div class="vehicle-recorder" data-field="行車紀錄器車號"><span class="vehicle-value" title="{{ vehicle.recorder_code or '—' }}">{{ vehicle.recorder_code or "—" }}</span></div>
-            <div class="vehicle-kind" data-field="類型"><span class="vehicle-value">{{ vehicle.vehicle_type }}</span></div>
             <div class="vehicle-mileage" data-field="最新里程"><span class="vehicle-value" title="{{ vehicle.daily_mileage_label }}">{{ vehicle.daily_mileage_label }}</span></div>
             <div class="vehicle-sync" data-field="同步狀態"><span class="vehicle-value" title="{{ vehicle.daily_mileage_status }}">{{ vehicle.daily_mileage_status }}</span></div>
             {% if vehicle.vehicle_type == '自訂' %}

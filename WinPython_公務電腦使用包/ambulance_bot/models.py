@@ -279,7 +279,7 @@ def save_vehicle_record(
     label: str,
     ppe_name: str = "",
     base_dir: Path | None = None,
-    vehicle_type: str = VEHICLE_TYPE_BUILT_IN,
+    vehicle_type: str = VEHICLE_TYPE_CUSTOM,
 ) -> None:
     label = label.strip()
     ppe_name = ppe_name.strip()

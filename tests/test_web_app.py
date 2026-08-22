@@ -2106,7 +2106,10 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(page.data.decode("utf-8"))
         self.assertIn("救災各項設定", body)
         self.assertIn("行車紀錄器車號", body)
-        self.assertIn('name="vehicle_type"', body)
+        self.assertNotIn('name="vehicle_type"', body)
+        self.assertNotIn("現有車輛皆為內建；建立自訂車輛後才可刪除。", body)
+        for retired_vehicle in ("新坡16", "新坡91", "新坡92", "新坡93"):
+            self.assertNotIn(retired_vehicle, body)
         self.assertIn("main { max-width: 960px;", body)
         self.assertIn("repeating-linear-gradient", body)
         self.assertIn('class="vehicle-row header-row"', body)
@@ -2118,7 +2121,7 @@ class WebAppTests(unittest.TestCase):
                 "label": "新坡71",
                 "ppe_name": "FIRE-71",
                 "recorder_code": "CAM71",
-                "vehicle_type": "自訂",
+                "vehicle_type": "內建",
             },
             headers=nas_headers,
         )
@@ -2126,7 +2129,12 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(response.data.decode("utf-8"))
         self.assertIn("新坡71", body)
         self.assertIn("CAM71", body)
-        self.assertIn("自訂", body)
+        self.assertIn('action="/admin/disaster-vehicles/delete"', body)
+        settings = json.loads(
+            (Path(self.tmp.name) / "settings" / "disaster_vehicles.json").read_text(encoding="utf-8")
+        )
+        saved_vehicle = next(item for item in settings["vehicles"] if item["label"] == "新坡71")
+        self.assertEqual("自訂", saved_vehicle["vehicle_type"])
 
         self.import_case_for_form(
             {
@@ -2150,7 +2158,6 @@ class WebAppTests(unittest.TestCase):
             "車輛代號",
             "車牌號碼",
             "行車紀錄器車號",
-            "類型",
             "最新里程",
             "同步狀態",
             "操作",
@@ -2161,11 +2168,15 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("救災登打設定", disaster_body)
         self.assertIn("救災各項設定", disaster_body)
         for body in (ems_body, disaster_body):
-            self.assertIn('name="vehicle_type"', body)
+            self.assertNotIn('name="vehicle_type"', body)
+            self.assertNotIn("現有車輛皆為內建；建立自訂車輛後才可刪除。", body)
             self.assertIn("--vehicle-row-height: 68px;", body)
-            self.assertIn("--vehicle-card-height: 318px;", body)
+            self.assertIn("--vehicle-card-height: 242px;", body)
             self.assertIn(".vehicle-row:not(.header-row) { height: var(--vehicle-row-height); }", body)
-            self.assertIn("grid-template-rows: repeat(4, 68px);", body)
+            self.assertIn("grid-template-rows: repeat(3, 68px);", body)
+            self.assertIn(".vehicle-sync .vehicle-value {", body)
+            self.assertNotIn('data-field="類型"', body)
+            self.assertNotIn("vehicle-kind", body)
             for heading in vehicle_headers:
                 self.assertIn(heading, body)
                 self.assertIn(f'data-field="{heading}"', body)
@@ -2549,7 +2560,7 @@ class WebAppTests(unittest.TestCase):
                 "operation": "save_ems_vehicle",
                 "label": "NAS救護91",
                 "ppe_name": "NAS-EMS",
-                "vehicle_type": "內建",
+                "vehicle_type": "自訂",
                 "revision": remote_settings["revision"],
             },
             json.loads(post_request.data.decode("utf-8")),
@@ -3824,14 +3835,16 @@ class WebAppTests(unittest.TestCase):
 
         response = self.client.post(
             "/admin/vehicles",
-            data={"label": "新坡96", "ppe_name": "BPE-5960"},
+            data={"label": "新坡96", "ppe_name": "BPE-5960", "vehicle_type": "內建"},
             headers=nas_headers,
             follow_redirects=False,
         )
 
         self.assertEqual(response.status_code, 200)
         settings_path = Path(self.tmp.name) / "settings" / "vehicles.json"
-        self.assertIn("新坡96", settings_path.read_text(encoding="utf-8"))
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        saved_vehicle = next(item for item in settings["vehicles"] if item["label"] == "新坡96")
+        self.assertEqual("自訂", saved_vehicle["vehicle_type"])
         app_response = self.client.get("/app")
         body = html.unescape(app_response.data.decode("utf-8"))
         self.assertIn("請先從上方案件按「帶入」", body)
@@ -3845,7 +3858,9 @@ class WebAppTests(unittest.TestCase):
         app_response = self.client.get("/app")
         body = html.unescape(app_response.data.decode("utf-8"))
         self.assertIn('<option value="新坡96">新坡96 | BPE-5960</option>', body)
-        self.assertIn("BPE-5960", html.unescape(response.data.decode("utf-8")))
+        response_body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn("BPE-5960", response_body)
+        self.assertIn('action="/admin/vehicles/delete"', response_body)
 
     def test_admin_pages_share_layout_tokens(self):
         vehicle_body = html.unescape(
@@ -3868,15 +3883,19 @@ class WebAppTests(unittest.TestCase):
             self.assertIn('href="/static/sinposmart-workspace.css"', body)
             self.assertIn('class="workspace-page', body)
         shared_columns = (
-            "grid-template-columns: minmax(88px, .95fr) minmax(104px, 1.1fr) minmax(102px, 1fr) "
-            "56px minmax(84px, .85fr) minmax(124px, 1.2fr) 88px;"
+            "grid-template-columns: minmax(70px, .65fr) minmax(88px, .82fr) minmax(88px, .85fr) "
+            "minmax(78px, .72fr) minmax(190px, 1.9fr) 80px;"
         )
         for body in (vehicle_body, disaster_vehicle_body):
             self.assertIn(shared_columns, body)
             self.assertIn("--vehicle-row-height: 68px;", body)
-            self.assertIn("--vehicle-card-height: 318px;", body)
+            self.assertIn("--vehicle-card-height: 242px;", body)
+            self.assertIn("grid-template-rows: repeat(3, 68px);", body)
             self.assertIn("最新里程", body)
             self.assertIn("同步狀態", body)
+            self.assertIn(".vehicle-sync .vehicle-value {", body)
+            self.assertNotIn('name="vehicle_type"', body)
+            self.assertNotIn('data-field="類型"', body)
         self.assertIn(".delete-button { min-width: 72px; min-height: 44px;", vehicle_body)
         self.assertIn("white-space: nowrap;", vehicle_body)
 
@@ -3921,7 +3940,7 @@ class WebAppTests(unittest.TestCase):
 
         self.client.post(
             "/admin/vehicles",
-            data={"label": "自訂救護車", "ppe_name": "CUSTOM-EMS", "vehicle_type": "自訂"},
+            data={"label": "自訂救護車", "ppe_name": "CUSTOM-EMS"},
             headers=nas_headers,
             follow_redirects=False,
         )

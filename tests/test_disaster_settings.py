@@ -19,8 +19,9 @@ class DisasterSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             records = load_disaster_vehicle_records(Path(tmp))
 
-        self.assertEqual(["新坡11", "新坡15", "新坡16", "新坡91", "新坡92", "新坡93"], [item["label"] for item in records])
+        self.assertEqual(["新坡11", "新坡15", "新坡85"], [item["label"] for item in records])
         self.assertEqual("15", records[1]["recorder_code"])
+        self.assertEqual("85", records[2]["recorder_code"])
 
     def test_current_rescue_vehicles_are_built_in_and_only_new_custom_can_be_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -37,7 +38,11 @@ class DisasterSettingsTests(unittest.TestCase):
             )
             self.assertEqual("內建", newpo_15["vehicle_type"])
             self.assertFalse(delete_disaster_vehicle_record("新坡15", base_dir))
-            save_disaster_vehicle_record("測試自訂救災車", "CUSTOM-FIRE", "CAM-CUSTOM", base_dir, vehicle_type="自訂")
+            save_disaster_vehicle_record("測試自訂救災車", "CUSTOM-FIRE", "CAM-CUSTOM", base_dir)
+            custom = next(
+                record for record in load_disaster_vehicle_records(base_dir) if record["label"] == "測試自訂救災車"
+            )
+            self.assertEqual("自訂", custom["vehicle_type"])
             self.assertTrue(delete_disaster_vehicle_record("測試自訂救災車", base_dir))
             self.assertNotIn("測試自訂救災車", disaster_vehicle_options(base_dir))
 

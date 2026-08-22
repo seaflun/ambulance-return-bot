@@ -347,7 +347,7 @@ class ModelParsingTests(unittest.TestCase):
             self.assertFalse(delete_vehicle_record("新坡95", base_dir))
             self.assertFalse(delete_vehicle_record("新坡91", base_dir))
             self.assertIn("新坡91", vehicle_options(base_dir))
-            save_vehicle_record("測試自訂救護車", "CUSTOM-EMS", base_dir, vehicle_type="自訂")
+            save_vehicle_record("測試自訂救護車", "CUSTOM-EMS", base_dir)
             custom = next(
                 record for record in load_vehicle_records(base_dir) if record["label"] == "測試自訂救護車"
             )

@@ -415,10 +415,12 @@ def query_daily_vehicle_mileages(
     artifacts_dir: Path,
     *,
     profile_name: str = "daily_vehicle_mileage_profile",
+    now: datetime | None = None,
 ) -> list[dict[str, object]]:
     normalized_targets = _daily_vehicle_mileage_targets(targets)
     if not normalized_targets:
         return []
+    query_now = now or datetime.now()
     driver = None
     lock_acquired = False
     results: list[dict[str, object]] = []
@@ -436,7 +438,7 @@ def query_daily_vehicle_mileages(
         if not _ensure_ppe_vehicle_mileage_session(driver):
             raise WebDriverException("PPE login did not reach vehicle mileage page")
         for target in normalized_targets:
-            results.append(_query_daily_vehicle_mileage(driver, target))
+            results.append(_query_daily_vehicle_mileage(driver, target, query_now=query_now))
         return results
     except Exception as exc:
         completed_keys = {str(result["vehicle_key"]) for result in results}
@@ -481,24 +483,37 @@ def _daily_vehicle_mileage_targets(targets: object) -> list[dict[str, object]]:
     return normalized
 
 
-def _query_daily_vehicle_mileage(driver: webdriver.Chrome, target: dict[str, object]) -> dict[str, object]:
+def _query_daily_vehicle_mileage(
+    driver: webdriver.Chrome,
+    target: dict[str, object],
+    *,
+    query_now: datetime | None = None,
+) -> dict[str, object]:
     try:
-        driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
-        if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
-            raise WebDriverException("PPE session returned to login page before vehicle mileage query")
-        _click_text_if_present(driver, ["車輛管理"])
-        _click_text_if_present(driver, ["車輛使用紀錄"])
-        time.sleep(1)
-        _select_vehicle_record(driver, str(target["ppe_name"]))
-        record = _extract_latest_vehicle_mileage_record(driver)
+        current_month = (query_now or datetime.now()).strftime("%Y/%m")
+        record = _read_daily_vehicle_mileage_for_month(driver, target, current_month)
         if not record["mileage"]:
+            previous_month = _daily_vehicle_mileage_previous_month(query_now or datetime.now())
+            record = _read_daily_vehicle_mileage_for_month(driver, target, previous_month)
+            if record["mileage"]:
+                if not _daily_vehicle_mileage_record_matches_month(record, previous_month):
+                    raise WebDriverException(
+                        "PPE previous-month vehicle mileage query returned an unexpected record month: "
+                        f"requested={previous_month} record_end_date={record['record_end_date']}"
+                    )
+                return {
+                    **target,
+                    "status": DAILY_VEHICLE_MILEAGE_SYNCED,
+                    **record,
+                    "detail": f"已讀取 PPE {previous_month} 最新里程。",
+                }
             return {
                 **target,
                 "status": DAILY_VEHICLE_MILEAGE_NO_RECORD,
                 "mileage": "",
                 "record_end_date": "",
                 "record_end_time": "",
-                "detail": "PPE 尚無可用車輛里程紀錄。",
+                "detail": f"PPE 本月及 {previous_month} 尚無可用車輛里程紀錄。",
             }
         return {
             **target,
@@ -508,6 +523,71 @@ def _query_daily_vehicle_mileage(driver: webdriver.Chrome, target: dict[str, obj
         }
     except Exception as exc:
         return _daily_vehicle_mileage_failure(target, exc)
+
+
+def _read_daily_vehicle_mileage_for_month(
+    driver: webdriver.Chrome,
+    target: dict[str, object],
+    target_month: str,
+) -> dict[str, str]:
+    driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
+    if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
+        raise WebDriverException("PPE session returned to login page before vehicle mileage query")
+    _click_text_if_present(driver, ["車輛管理"])
+    _click_text_if_present(driver, ["車輛使用紀錄"])
+    time.sleep(1)
+    _select_daily_vehicle_mileage_month(driver, target_month)
+    _select_vehicle_record(driver, str(target["ppe_name"]))
+    return _extract_latest_vehicle_mileage_record(driver)
+
+
+def _daily_vehicle_mileage_previous_month(value: datetime) -> str:
+    return (value.replace(day=1) - timedelta(days=1)).strftime("%Y/%m")
+
+
+def _daily_vehicle_mileage_record_matches_month(record: dict[str, str], target_month: str) -> bool:
+    digits = re.sub(r"\D", "", str(record.get("record_end_date") or ""))
+    month_digits = re.sub(r"\D", "", target_month)
+    if len(month_digits) != 6 or not digits:
+        return False
+    roc_month_digits = f"{int(month_digits[:4]) - 1911:03d}{month_digits[4:]}"
+    return digits.startswith(month_digits) or digits.startswith(roc_month_digits)
+
+
+def _select_daily_vehicle_mileage_month(driver: webdriver.Chrome, target_month: str) -> None:
+    result = dict(
+        driver.execute_script(
+            r"""
+            const targetMonth = String(arguments[0] || '').trim();
+            if (!/^\d{4}\/\d{2}$/.test(targetMonth)) {
+              return {ok: false, reason: 'invalid target month'};
+            }
+            const period = document.getElementById('period');
+            if (!period) return {ok: false, reason: 'vehicle mileage period control not found'};
+            const $period = window.jQuery ? window.jQuery(period) : null;
+            const picker = $period && $period.data('kendoDatePicker');
+            if (!picker || typeof picker.value !== 'function') {
+              return {ok: false, reason: 'vehicle mileage period picker not found'};
+            }
+            const [year, month] = targetMonth.split('/').map(Number);
+            picker.value(new Date(year, month - 1, 1));
+            if (typeof picker.trigger === 'function') picker.trigger('change');
+            period.dispatchEvent(new Event('change', {bubbles: true}));
+            return {ok: true, value: String(period.value || '').trim()};
+            """,
+            target_month,
+        )
+        or {}
+    )
+    if not result.get("ok"):
+        raise WebDriverException(
+            f"vehicle mileage period control unavailable: {result.get('reason') or result}"
+        )
+    if str(result.get("value") or "").strip() != target_month:
+        raise WebDriverException(
+            "vehicle mileage period did not change: "
+            f"expected={target_month} actual={result.get('value')}"
+        )
 
 
 def _daily_vehicle_mileage_failure(target: dict[str, object], exc: Exception) -> dict[str, object]:

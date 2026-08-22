@@ -29,27 +29,9 @@ DEFAULT_DISASTER_VEHICLES = [
         "vehicle_type": VEHICLE_TYPE_BUILT_IN,
     },
     {
-        "label": "新坡16",
+        "label": "新坡85",
         "ppe_name": "",
-        "recorder_code": "16",
-        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
-    },
-    {
-        "label": "新坡91",
-        "ppe_name": "",
-        "recorder_code": "91",
-        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
-    },
-    {
-        "label": "新坡92",
-        "ppe_name": "",
-        "recorder_code": "92",
-        "vehicle_type": VEHICLE_TYPE_BUILT_IN,
-    },
-    {
-        "label": "新坡93",
-        "ppe_name": "",
-        "recorder_code": "93",
+        "recorder_code": "85",
         "vehicle_type": VEHICLE_TYPE_BUILT_IN,
     },
 ]
@@ -140,7 +122,7 @@ def save_disaster_vehicle_record(
     ppe_name: str,
     recorder_code: str,
     base_dir: Path | None = None,
-    vehicle_type: str = VEHICLE_TYPE_BUILT_IN,
+    vehicle_type: str = VEHICLE_TYPE_CUSTOM,
 ) -> None:
     record = clean_disaster_vehicle_records(
         [

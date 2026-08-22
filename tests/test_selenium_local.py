@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import ambulance_bot.selenium_local as selenium_local_module
 from ambulance_bot.models import AmbulanceReturnRequest
@@ -3454,6 +3454,9 @@ class SeleniumLocalTests(unittest.TestCase):
             "_select_vehicle_record",
         ) as select_vehicle, patch.object(
             selenium_local_module,
+            "_select_daily_vehicle_mileage_month",
+        ) as select_month, patch.object(
+            selenium_local_module,
             "_extract_latest_vehicle_mileage_record",
             return_value={"mileage": "12345", "record_end_date": "20260821", "record_end_time": "1800"},
         ), patch.object(
@@ -3469,7 +3472,11 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module,
             "_quit_driver",
         ) as quit_driver:
-            results = selenium_local_module.query_daily_vehicle_mileages([target], Path(tmp))
+            results = selenium_local_module.query_daily_vehicle_mileages(
+                [target],
+                Path(tmp),
+                now=datetime(2026, 8, 22, 6, 0),
+            )
 
         self.assertEqual(
             [
@@ -3486,10 +3493,164 @@ class SeleniumLocalTests(unittest.TestCase):
             ],
             results,
         )
+        select_month.assert_called_once_with(driver, "2026/08")
         select_vehicle.assert_called_once_with(driver, "KEC-2608")
         prepare.assert_not_called()
         save.assert_not_called()
         quit_driver.assert_called_once_with(driver)
+
+    def test_daily_vehicle_mileage_uses_previous_month_when_current_month_is_empty(self):
+        class FakeDriver:
+            def implicitly_wait(self, _seconds):
+                pass
+
+            def get(self, _url):
+                pass
+
+        target = {"vehicle_key": "KEC-2608", "ppe_name": "KEC-2608", "labels": ["新坡91"]}
+        driver = FakeDriver()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            selenium_local_module,
+            "_acquire_selenium_session",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_create_driver",
+            return_value=driver,
+        ), patch.object(
+            selenium_local_module,
+            "_ensure_ppe_vehicle_mileage_session",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_wait_for_ppe_vehicle_mileage_page",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_click_text_if_present",
+        ), patch.object(
+            selenium_local_module.time,
+            "sleep",
+        ), patch.object(
+            selenium_local_module,
+            "_select_vehicle_record",
+        ), patch.object(
+            selenium_local_module,
+            "_extract_latest_vehicle_mileage_record",
+            side_effect=[
+                {"mileage": "", "record_end_date": "", "record_end_time": ""},
+                {"mileage": "12345", "record_end_date": "20260731", "record_end_time": "1800"},
+            ],
+        ), patch.object(
+            selenium_local_module,
+            "_select_daily_vehicle_mileage_month",
+        ) as select_month, patch.object(
+            selenium_local_module,
+            "_release_selenium_session",
+        ), patch.object(
+            selenium_local_module,
+            "_quit_driver",
+        ):
+            results = selenium_local_module.query_daily_vehicle_mileages(
+                [target],
+                Path(tmp),
+                now=datetime(2026, 8, 22, 6, 0),
+            )
+
+        self.assertEqual("daily_vehicle_mileage_synced", results[0]["status"])
+        self.assertEqual("12345", results[0]["mileage"])
+        self.assertEqual("20260731", results[0]["record_end_date"])
+        self.assertEqual("已讀取 PPE 2026/07 最新里程。", results[0]["detail"])
+        self.assertEqual(
+            [call(driver, "2026/08"), call(driver, "2026/07")],
+            select_month.call_args_list,
+        )
+
+    def test_daily_vehicle_mileage_does_not_fallback_after_query_error(self):
+        class FakeDriver:
+            def implicitly_wait(self, _seconds):
+                pass
+
+            def get(self, _url):
+                pass
+
+        target = {"vehicle_key": "KEC-2608", "ppe_name": "KEC-2608", "labels": ["新坡91"]}
+        driver = FakeDriver()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            selenium_local_module,
+            "_acquire_selenium_session",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_create_driver",
+            return_value=driver,
+        ), patch.object(
+            selenium_local_module,
+            "_ensure_ppe_vehicle_mileage_session",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_wait_for_ppe_vehicle_mileage_page",
+            return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_click_text_if_present",
+        ), patch.object(
+            selenium_local_module.time,
+            "sleep",
+        ), patch.object(
+            selenium_local_module,
+            "_select_vehicle_record",
+        ), patch.object(
+            selenium_local_module,
+            "_extract_latest_vehicle_mileage_record",
+            side_effect=selenium_local_module.WebDriverException("PPE grid unavailable"),
+        ), patch.object(
+            selenium_local_module,
+            "_select_daily_vehicle_mileage_month",
+        ) as select_month, patch.object(
+            selenium_local_module,
+            "_release_selenium_session",
+        ), patch.object(
+            selenium_local_module,
+            "_quit_driver",
+        ):
+            results = selenium_local_module.query_daily_vehicle_mileages(
+                [target],
+                Path(tmp),
+                now=datetime(2026, 8, 22, 6, 0),
+            )
+
+        self.assertEqual("daily_vehicle_mileage_failed", results[0]["status"])
+        self.assertEqual([call(driver, "2026/08")], select_month.call_args_list)
+
+    def test_daily_vehicle_mileage_previous_month_handles_year_boundary_and_roc_dates(self):
+        self.assertEqual(
+            "2025/12",
+            selenium_local_module._daily_vehicle_mileage_previous_month(datetime(2026, 1, 1, 6, 0)),
+        )
+        self.assertTrue(
+            selenium_local_module._daily_vehicle_mileage_record_matches_month(
+                {"record_end_date": "1141231"},
+                "2025/12",
+            )
+        )
+
+    def test_daily_vehicle_mileage_period_switch_uses_live_kendo_period_picker(self):
+        class FakeDriver:
+            def execute_script(self, script, target_month):
+                self.script = script
+                self.target_month = target_month
+                return {"ok": True, "value": target_month}
+
+        driver = FakeDriver()
+
+        selenium_local_module._select_daily_vehicle_mileage_month(driver, "2026/07")
+
+        self.assertEqual("2026/07", driver.target_month)
+        self.assertIn("getElementById('period')", driver.script)
+        self.assertIn("kendoDatePicker", driver.script)
+        self.assertNotIn("query.click()", driver.script)
 
 
 if __name__ == "__main__":
