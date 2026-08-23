@@ -9705,7 +9705,11 @@ class WebAppTests(unittest.TestCase):
             "/admin/vehicles/mileage-query",
             data={"ppe_name": "MANUAL-001"},
             headers=nas_headers,
+            follow_redirects=False,
         )
+        self.assertEqual(303, queued.status_code)
+        self.assertEqual("/admin/vehicles", queued.headers["Location"])
+        queued_page = self.client.get(queued.headers["Location"], headers=nas_headers)
         forbidden = self.client.get("/worker/manual-refreshes")
         commands_response = self.client.get("/worker/manual-refreshes", headers=worker_headers)
         command = commands_response.get_json()["commands"][0]
@@ -9734,10 +9738,9 @@ class WebAppTests(unittest.TestCase):
             json={"status": "completed", "detail": "已讀取 PPE 最新里程。"},
         )
         page = self.client.get("/admin/vehicles", headers=nas_headers)
-        queued_body = html.unescape(queued.data.decode("utf-8"))
+        queued_body = html.unescape(queued_page.data.decode("utf-8"))
         page_body = html.unescape(page.data.decode("utf-8"))
 
-        self.assertEqual(200, queued.status_code)
         self.assertEqual(403, forbidden.status_code)
         self.assertEqual(200, commands_response.status_code)
         self.assertEqual("vehicle_mileage", command["kind"])
@@ -9745,6 +9748,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(200, acknowledged.status_code)
         self.assertIn('action="/admin/vehicles/mileage-query"', queued_body)
         self.assertIn("查詢中…", queued_body)
+        self.assertIn('http-equiv="refresh" content="4;url=/admin/vehicles"', queued_body)
         self.assertIn("56789 km", page_body)
         self.assertIn("PPE 同步", page_body)
         self.assertIn("查詢最新里程", page_body)
@@ -9767,23 +9771,34 @@ class WebAppTests(unittest.TestCase):
             "/admin/disaster-vehicles/mileage-query",
             data={"ppe_name": "RESCUE-MANUAL-001"},
             headers=nas_headers,
+            follow_redirects=False,
         )
+        self.assertEqual(303, queued.status_code)
+        self.assertEqual("/admin/disaster-vehicles", queued.headers["Location"])
+        queued_page = self.client.get(queued.headers["Location"], headers=nas_headers)
         commands_response = self.client.get("/worker/manual-refreshes", headers=worker_headers)
         command = commands_response.get_json()["commands"][0]
-        queued_body = html.unescape(queued.data.decode("utf-8"))
+        queued_body = html.unescape(queued_page.data.decode("utf-8"))
 
-        self.assertEqual(200, queued.status_code)
         self.assertEqual("vehicle_mileage", command["kind"])
         self.assertEqual("RESCUE-MANUAL-001", command["vehicle_key"])
         self.assertIn('action="/admin/disaster-vehicles/mileage-query"', queued_body)
         self.assertIn("查詢中…", queued_body)
+        self.assertIn('http-equiv="refresh" content="4;url=/admin/disaster-vehicles"', queued_body)
 
     def test_manual_civilpower_roster_query_shows_worker_error_next_to_button(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         worker_headers = {"X-Worker-Token": "test-token"}
         nas_headers = {"Host": "100.114.126.58:8080"}
 
-        queued = self.client.post("/admin/civilpower-roster/query", headers=nas_headers)
+        queued = self.client.post(
+            "/admin/civilpower-roster/query",
+            headers=nas_headers,
+            follow_redirects=False,
+        )
+        self.assertEqual(303, queued.status_code)
+        self.assertEqual("/admin/vehicles", queued.headers["Location"])
+        queued_page = self.client.get(queued.headers["Location"], headers=nas_headers)
         commands_response = self.client.get("/worker/manual-refreshes", headers=worker_headers)
         command = commands_response.get_json()["commands"][0]
         acknowledged = self.client.post(
@@ -9792,16 +9807,16 @@ class WebAppTests(unittest.TestCase):
             json={"status": "failed", "detail": "民力系統登入失敗"},
         )
         page = self.client.get("/admin/vehicles", headers=nas_headers)
-        queued_body = html.unescape(queued.data.decode("utf-8"))
+        queued_body = html.unescape(queued_page.data.decode("utf-8"))
         page_body = html.unescape(page.data.decode("utf-8"))
 
-        self.assertEqual(200, queued.status_code)
         self.assertEqual("civilpower_roster", command["kind"])
         self.assertEqual(200, acknowledged.status_code)
         self.assertIn('formaction="/admin/civilpower-roster/query"', queued_body)
         self.assertIn("event.submitter", queued_body)
         self.assertIn("button.textContent='查詢中…';", queued_body)
         self.assertIn("查詢中…", queued_body)
+        self.assertIn('http-equiv="refresh" content="4;url=/admin/vehicles"', queued_body)
         self.assertIn("查詢義消名冊", page_body)
         self.assertIn("民力系統登入失敗", page_body)
 

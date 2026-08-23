@@ -4147,6 +4147,9 @@ def submit_manual_vehicle_mileage_query(service_type: str, ppe_name: object):
             result = {"state": "failed", "detail": str(exc)}
         else:
             result = {"state": "ok", "command": command}
+    if result["state"] == "ok":
+        endpoint = "admin_disaster_vehicles" if service_type == "disaster" else "admin_vehicles"
+        return redirect(url_for(endpoint), code=303)
     errors = (
         {}
         if result["state"] == "ok"
@@ -4175,6 +4178,8 @@ def submit_manual_civilpower_roster_query():
             result = {"state": "failed", "detail": str(exc)}
         else:
             result = {"state": "ok", "command": command}
+    if result["state"] == "ok":
+        return redirect(url_for("admin_vehicles"), code=303)
     errors = (
         {}
         if result["state"] == "ok"
