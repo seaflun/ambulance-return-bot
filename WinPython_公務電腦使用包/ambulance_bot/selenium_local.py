@@ -1695,16 +1695,20 @@ def _work_log_summary_with_return_time(summary: str, return_line: str) -> str:
 
 def _work_log_summary_with_disaster_reason(summary: str, reason: str) -> str:
     value = str(summary or "")
-    suffix = str(reason or "").strip()
-    if not suffix:
+    first_line = str(reason or "").strip()
+    if not first_line:
         return value
-    return value.replace("災害搶救", f"災害搶救-{suffix}")
+    lines = value.splitlines()
+    if lines and lines[0].strip() == first_line:
+        return value
+    return f"{first_line}\n{value}" if value else first_line
 
 
 def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> list[str]:
     status_text = request.duty_status_text
     duty_item = request.duty_item or ("火警" if request.service_type == "disaster" else "救護")
-    preserve_summary = duty_item == "其他類災害"
+    preserve_summary = True
+    skip_reason = duty_item == "其他類災害"
     imported_summary = ""
     if preserve_summary:
         imported_summary = str(
@@ -1807,7 +1811,7 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
             )
             if not summary_restored:
                 item_missing = list(item_missing or []) + ["工作概述"]
-    if not item_missing and not preserve_summary:
+    if not item_missing and not skip_reason:
         try:
             WebDriverWait(driver, 6).until(
                 lambda current: len(current.find_elements(By.CSS_SELECTOR, "#_selList2 option")) > 1
@@ -1815,7 +1819,7 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
         except TimeoutException:
             time.sleep(1)
 
-    reason_missing = [] if preserve_summary else driver.execute_script(
+    reason_missing = [] if skip_reason else driver.execute_script(
         """
         const value = arguments[0];
         function writable(el) {
@@ -4185,6 +4189,13 @@ def _click_query_if_present(driver: webdriver.Chrome) -> None:
 
 
 def _case_query_start_at(request: AmbulanceReturnRequest) -> datetime | None:
+    case_id = "".join(ch for ch in str(request.case_id or "") if ch.isdigit())
+    if len(case_id) >= 14:
+        try:
+            case_at = datetime.strptime(case_id[:14], "%Y%m%d%H%M%S")
+            return case_at - timedelta(minutes=1)
+        except ValueError:
+            pass
     case_hhmm = normalize_hhmm_local(request.case_time)
     if len(case_hhmm) != 4:
         return None
@@ -4261,9 +4272,9 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
     for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
       const row = rows[rowIndex];
       const cells = Array.from(row.querySelectorAll('td, th')).map(textOf).filter(Boolean);
-      const joined = cells.join(' ');
-      const isSalvagedBody = joined.includes('其他-打撈浮屍');
-      const isSupportedCase = joined.includes('緊急救護') || joined.includes('火災') || joined.includes('災害搶救') || isSalvagedBody;
+      const category = cells.find(cell => cell.includes('緊急救護') || cell.includes('火災') || cell.includes('災害搶救') || cell.startsWith('其他-')) || '';
+      const isSalvagedBody = category.includes('其他-打撈浮屍');
+      const isSupportedCase = Boolean(category);
       if (!isSupportedCase) continue;
       const caseId = cells[0] || '';
       if (!/^\\d{17}$/.test(caseId)) continue;
@@ -4273,8 +4284,6 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
       });
       const chooseDataMatch = String(choose ? (choose.getAttribute('onclick') || '') : '').match(/choose\\('([\\s\\S]*)'\\)/);
       const chooseParts = chooseDataMatch ? chooseDataMatch[1].split('(^w^)') : [];
-      const category = cells.find(cell => cell.includes('緊急救護') || cell.includes('火災') || cell.includes('災害搶救') || cell.includes('其他-打撈浮屍')) || '';
-      if (!category.startsWith('緊急救護') && !category.includes('火災') && !category.includes('災害搶救') && !category.includes('其他-打撈浮屍')) continue;
       const reason = isSalvagedBody ? '溺水' : (category.includes('-') ? category.split('-').slice(1).join('-').trim() : (category.includes('火災') ? '火災' : ''));
       const personnelRaw = chooseParts[34] || '';
       cases.push({
@@ -4292,7 +4301,7 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
         case_date: chooseParts[1] || '',
         case_time_h: chooseParts[2] || '',
         case_time_m: chooseParts[3] || '',
-        summary_type: category.includes('災害搶救') ? '災害搶救' : (category.includes('火災') ? '火災' : (category.includes('緊急救護') ? '救護' : '')),
+        summary_type: category.includes('災害搶救') ? '災害搶救' : (category.includes('火災') ? '火災' : (category.includes('緊急救護') ? '救護' : (category.startsWith('其他-') ? '災害搶救' : ''))),
         description: chooseParts.length ? ['119案件', chooseParts[5] || '', `返隊時間:${chooseParts[35] || ''}`, `地點:${chooseParts[8] || ''}`].join('\\n') : '',
         personnel_raw: personnelRaw,
         personnel_hidden_raw: chooseParts[33] || '',

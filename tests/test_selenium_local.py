@@ -179,6 +179,20 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIsNotNone(matched)
         self.assertEqual(matched["case_id"], request.case_id)
 
+    def test_work_log_case_query_uses_case_id_timestamp_after_metadata_changes(self):
+        request = AmbulanceReturnRequest(
+            task_id="query-from-case-id",
+            created_at=datetime(2026, 8, 23, 12, 0),
+            raw_text="",
+            case_id="20260713080500002",
+            case_date="2026-08-23",
+            case_time="1159",
+        )
+
+        query_start = selenium_local_module._case_query_start_at(request)
+
+        self.assertEqual(datetime(2026, 7, 13, 8, 4), query_start)
+
     def test_click_case_choose_retries_when_button_is_not_ready_yet(self):
         class FakeDriver:
             def __init__(self):
@@ -1019,7 +1033,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertFalse(any("_selList2" in script for script, _args in driver.scripts))
         self.assertTrue(
             any(
-                args and args[0] == "119案件\n災害搶救-溺水\n返隊時間:2026/07/25 13:06:00\n地點：桃園市觀音區"
+                args and args[0] == "溺水\n119案件\n災害搶救\n返隊時間:2026/07/25 13:06:00\n地點：桃園市觀音區"
                 for _script, args in driver.scripts
             )
         )
@@ -1033,6 +1047,94 @@ class SeleniumLocalTests(unittest.TestCase):
         )
 
         self.assertEqual(summary, updated)
+
+    def test_ems_restores_imported_summary_and_sets_reason_after_duty_item_change(self):
+        request = AmbulanceReturnRequest(
+            task_id="ems-work-log",
+            created_at=datetime.now(),
+            raw_text="",
+            duty_item="救護",
+            summary_type="救護",
+            case_reason="溺水",
+            case_date="2026/07/25",
+            return_date="2026/07/25",
+            return_time="1306",
+        )
+
+        class Alert:
+            text = "您目前所輸入的工作概述將會被取代"
+
+            def __init__(self):
+                self.accepted = False
+
+            def accept(self):
+                self.accepted = True
+
+        class FakeDriver:
+            def __init__(self):
+                self.alert = Alert()
+                self.switch_to = SimpleNamespace(alert=self.alert)
+                self.scripts = []
+
+            def execute_script(self, script, *args):
+                self.scripts.append((script, args))
+                if "return String(el.value || '')" in script:
+                    return "119案件\n救護\n地點：桃園市觀音區"
+                if "return selected ? [] : ['勤務項目'];" in script:
+                    return []
+                if "return missing;" in script:
+                    return []
+                if "el.value = value;" in script:
+                    return True
+                return True
+
+            def find_elements(self, *_args):
+                return [object(), object()]
+
+        driver = FakeDriver()
+        with patch.object(selenium_local_module.time, "sleep"), patch.object(
+            selenium_local_module,
+            "WebDriverWait",
+            side_effect=lambda *_args, **_kwargs: SimpleNamespace(until=lambda condition: condition(driver)),
+        ):
+            missing = selenium_local_module._fill_duty_work_log_values(driver, request)
+
+        self.assertEqual([], missing)
+        self.assertTrue(driver.alert.accepted)
+        self.assertTrue(any("_selList2" in script for script, _args in driver.scripts))
+        self.assertTrue(
+            any(
+                args and args[0] == "119案件\n救護\n返隊時間:2026/07/25 13:06:00\n地點：桃園市觀音區"
+                for _script, args in driver.scripts
+            )
+        )
+
+    def test_disaster_reason_is_added_as_first_line_without_rewriting_original_summary(self):
+        summary = "119案件\n災害搶救\n返隊時間:2026/07/25 13:05:00\n地點：桃園市觀音區"
+
+        updated = selenium_local_module._work_log_summary_with_disaster_reason(summary, "溺水")
+
+        self.assertEqual("溺水\n" + summary, updated)
+
+    def test_extract_emergency_cases_includes_other_false_alarm_as_disaster_rescue(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                self.script = script
+                return [
+                    {
+                        "case_id": "20260723170000001",
+                        "category": "其他-誤(謊)報",
+                        "reason": "誤(謊)報",
+                        "summary_type": "災害搶救",
+                    }
+                ]
+
+        driver = FakeDriver()
+        cases = selenium_local_module._extract_emergency_cases(driver)
+
+        self.assertEqual(cases[0]["category"], "其他-誤(謊)報")
+        self.assertEqual(cases[0]["summary_type"], "災害搶救")
+        self.assertIn("startsWith('其他-')", driver.script)
 
     def test_operation_failure_after_driver_creation_is_not_chrome_start_failed(self):
         request = AmbulanceReturnRequest(

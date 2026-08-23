@@ -2044,6 +2044,25 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('<option value="救護" selected>救護</option>', body)
         self.assertIn('<option value="特殊救護事由" selected>特殊救護事由</option>', body)
 
+    def test_other_false_alarm_import_is_classified_as_disaster_rescue(self):
+        self.import_case_for_form(
+            {
+                "case_id": "other-false-alarm",
+                "case_date": "2026/07/22",
+                "case_time_hhmm": "1207",
+                "return_time_hhmm": "1300",
+                "address": "桃園市觀音區",
+                "category": "其他-誤(謊)報",
+                "reason": "誤(謊)報",
+                "personnel": ["甲"],
+            }
+        )
+
+        body = html.unescape(self.client.get("/app/disaster").data.decode("utf-8"))
+
+        self.assertIn('<option value="災害搶救" selected>災害搶救</option>', body)
+        self.assertIn('<option value="誤(謊)報" selected>誤(謊)報</option>', body)
+
     def test_disaster_false_alarm_uses_false_alarm_recorder_folder(self):
         self.import_case_for_form(
             {

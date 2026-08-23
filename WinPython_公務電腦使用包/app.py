@@ -6348,7 +6348,7 @@ def write_selected_case_from_lookup(case_id: str) -> bool:
         str(selected.get(key) or "")
         for key in ("category", "case_type", "title", "summary_type")
     )
-    if "災害搶救" in category_text or "其他-打撈浮屍" in category_text:
+    if "災害搶救" in category_text or "其他-" in category_text:
         selected["summary_type"] = "災害搶救"
     elif "火災" in category_text:
         selected["summary_type"] = "火災"
