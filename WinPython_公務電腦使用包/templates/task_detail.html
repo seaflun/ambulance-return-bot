@@ -437,13 +437,16 @@
             {% endif %}
             {% if vehicle_entries|length > 1 %}
               {% for entry in vehicle_entries %}
-                <li><span class="label">{{ entry.label }}</span><span class="value">{{ entry.vehicle or '未填' }} / {{ entry.driver or '未填' }}{% if payload.task.service_type != 'disaster' %} / {{ entry.patient_summary or '未填' }}{% endif %}</span></li>
+                <li><span class="label">{{ entry.label }}</span><span class="value">{{ entry.vehicle or '未填' }} / {{ entry.driver or '未填' }}{% if payload.task.service_type != 'disaster' %} / 送醫：{{ entry.patient_summary or '無' }} / 拒送：{{ entry.refusal_summary or '無' }}{% endif %}</span></li>
               {% endfor %}
             {% else %}
               {% set entry = vehicle_entries[0] %}
               <li><span class="label">車輛</span><span class="value">{{ entry.vehicle or '未填' }}</span></li>
               <li><span class="label">司機</span><span class="value">{{ entry.driver or '未填' }}</span></li>
-              {% if payload.task.service_type != 'disaster' %}<li><span class="label">傷病患</span><span class="value">{{ entry.patient_summary or '未填' }}</span></li>{% endif %}
+              {% if payload.task.service_type != 'disaster' %}
+                <li><span class="label">送醫人數</span><span class="value">{{ entry.patient_summary or '無' }}</span></li>
+                <li><span class="label">拒送人數</span><span class="value">{{ entry.refusal_summary or '無' }}</span></li>
+              {% endif %}
             {% endif %}
           </ul>
         </article>

@@ -1612,6 +1612,7 @@ def _vehicle_checkpoint_signature(request: AmbulanceReturnRequest, site_key: str
             str(request.vehicle or "").strip(),
             str(request.driver or "").strip(),
             str(request.patient_summary or "").strip(),
+            str(request.refusal_summary or "").strip(),
             str(request.case_reason or "").strip(),
             str(request.work_note or "").strip(),
         )

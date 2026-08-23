@@ -486,6 +486,60 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(request.case_date, "2026/06/07")
         self.assertEqual(request.return_date, "2026/06/08")
 
+    def test_request_from_form_composes_refusal_summary_and_work_status(self):
+        request = request_from_form(
+            {
+                "vehicle": "\u65b0\u576691",
+                "driver": "\u66fe\u5f65\u7db8",
+                "patient_male_count": "1",
+                "patient_female_count": "0",
+                "refusal_male_count": "0",
+                "refusal_female_count": "1",
+            }
+        )
+
+        self.assertEqual("\u75371\u540d", request.patient_summary)
+        self.assertEqual("\u59731\u540d\u62d2\u9001", request.refusal_summary)
+        restored = AmbulanceReturnRequest.from_dict(request.to_dict())
+        self.assertEqual("\u59731\u540d\u62d2\u9001", restored.refusal_summary)
+        self.assertEqual(
+            "1.\u65b0\u576691:\u66fe\u5f65\u7db8\n2.\u75371\u540d\uff1b\u59731\u540d\u62d2\u9001",
+            request.duty_status_text,
+        )
+
+    def test_all_patient_and_refusal_counts_zero_use_only_vehicle_driver(self):
+        request = request_from_form(
+            {
+                "vehicle": "\u65b0\u576691",
+                "driver": "\u66fe\u5f65\u7db8",
+                "patient_male_count": "0",
+                "patient_female_count": "0",
+                "refusal_male_count": "0",
+                "refusal_female_count": "0",
+            }
+        )
+
+        self.assertEqual("\u7121", request.patient_summary)
+        self.assertEqual("\u7121", request.refusal_summary)
+        self.assertEqual("\u65b0\u576691:\u66fe\u5f65\u7db8", request.duty_status_text)
+
+    def test_work_status_separates_multiple_send_and_refusal_genders(self):
+        request = request_from_form(
+            {
+                "vehicle": "\u65b0\u576691",
+                "driver": "\u66fe\u5f65\u7db8",
+                "patient_male_count": "2",
+                "patient_female_count": "1",
+                "refusal_male_count": "1",
+                "refusal_female_count": "3",
+            }
+        )
+
+        self.assertEqual(
+            "1.\u65b0\u576691:\u66fe\u5f65\u7db8\n2.\u75372\u540d\u3001\u59731\u540d\uff1b\u75371\u540d\u62d2\u9001\u3001\u59733\u540d\u62d2\u9001",
+            request.duty_status_text,
+        )
+
     def test_request_from_form_keeps_personnel_accounts_by_type(self):
         request = request_from_form(
             {
@@ -556,7 +610,7 @@ class ModelParsingTests(unittest.TestCase):
     def test_no_patient_uses_short_duty_status_text(self):
         request = request_from_form({"vehicle": "\u65b0\u576191", "driver": "\u66fe\u5f65\u7db8", "patient_summary": "\u7121"})
 
-        self.assertEqual(request.duty_status_text, "\u65b0\u576191;\u66fe\u5f65\u7db8")
+        self.assertEqual(request.duty_status_text, "\u65b0\u576191:\u66fe\u5f65\u7db8")
 
     def test_two_vehicle_form_parses_independent_vehicle_entries(self):
         request = request_from_form(

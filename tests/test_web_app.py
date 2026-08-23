@@ -2994,15 +2994,19 @@ class WebAppTests(unittest.TestCase):
             'name="driver"',
             'name="case_reason"',
             'name="patient_summary"',
+            'name="refusal_summary"',
             'name="mileage"',
         ]
         primary_field_positions = [body.index(field) for field in primary_field_order]
         self.assertEqual(primary_field_positions, sorted(primary_field_positions))
-        self.assertIn("傷病患人數", body)
+        self.assertIn("送醫人數", body)
+        self.assertIn("拒送人數", body)
         self.assertEqual(2, body.count('data-patient-count="male"'))
         self.assertEqual(2, body.count('data-patient-count="female"'))
-        self.assertEqual(4, body.count('class="patient-count-select"'))
-        self.assertEqual(4, body.count('<span class="patient-count-unit" aria-hidden="true">人</span>'))
+        self.assertEqual(2, body.count('data-refusal-count="male"'))
+        self.assertEqual(2, body.count('data-refusal-count="female"'))
+        self.assertEqual(8, body.count('class="patient-count-select"'))
+        self.assertEqual(8, body.count('<span class="patient-count-unit" aria-hidden="true">人</span>'))
         self.assertIn(
             ".workspace-page--ems-task #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--workspace-type-label); font-weight: 700; }",
             body,
@@ -3028,6 +3032,7 @@ class WebAppTests(unittest.TestCase):
             'name="vehicle_2"',
             'name="driver_2"',
             'name="patient_summary_2"',
+            'name="refusal_summary_2"',
             'name="mileage_2"',
         ]
         second_field_positions = [body.index(field) for field in second_field_order]
@@ -3037,6 +3042,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="return_time_2"', body)
         self.assertIn('name="mileage_2"', body)
         self.assertIn('name="patient_summary_2"', body)
+        self.assertIn('name="refusal_summary_2"', body)
         self.assertIn('name="consumables_2"', body)
         self.assertIn('name="disinfection_items_2"', body)
         self.assertIn('data-consumable-target="1"', body)
@@ -3834,11 +3840,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('"請填寫返隊時間": { name: "return_time"', body)
         self.assertIn('"請選擇出動車輛": { name: "vehicle"', body)
         self.assertIn('"請選擇司機": { name: "driver"', body)
-        self.assertIn('"請選擇傷病患": { name: "patient_summary"', body)
+        self.assertIn('"請確認送醫／拒送人數": { name: "patient_summary"', body)
         self.assertIn('"請填寫里程": { name: "mileage"', body)
         self.assertIn('setFieldState(field.name, "error");', body)
         self.assertNotIn("錯誤：${errorMessage}", body)
-        expected_order = ["請填寫返隊時間", "請選擇出動車輛", "請選擇司機", "請選擇傷病患", "請填寫里程"]
+        expected_order = ["請填寫返隊時間", "請選擇出動車輛", "請選擇司機", "請確認送醫／拒送人數", "請填寫里程"]
         positions = [body.index(message) for message in expected_order]
         self.assertEqual(positions, sorted(positions))
 
@@ -9898,6 +9904,18 @@ class WebAppTests(unittest.TestCase):
             {"duty_work_log", "vehicle_mileage", "consumables", "disinfection"},
         )
 
+    def test_task_edit_refusal_summary_marks_work_site_for_update(self):
+        previous_request = app_module.request_from_form(
+            self.valid_task_data(refusal_summary="無")
+        )
+        current_request = app_module.request_from_form(
+            self.valid_task_data(refusal_summary="女1名拒送")
+        )
+
+        changed = app_module.changed_sites_for_task_edit(previous_request.to_dict(), current_request.to_dict())
+
+        self.assertEqual(changed, {"duty_work_log"})
+
     def test_task_edit_second_vehicle_identity_marks_consumables_for_update(self):
         previous_request = app_module.request_from_form(
             self.valid_task_data(
@@ -10024,7 +10042,8 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(work.index("\u5730\u5740"), work.index("\u4e8b\u7531"))
         self.assertLess(work.index("\u4e8b\u7531"), work.index("\u8eca\u8f1b"))
         self.assertLess(work.index("\u8eca\u8f1b"), work.index("\u53f8\u6a5f"))
-        self.assertLess(work.index("\u53f8\u6a5f"), work.index("\u50b7\u75c5\u60a3"))
+        self.assertLess(work.index("\u53f8\u6a5f"), work.index("\u9001\u91ab\u4eba\u6578"))
+        self.assertLess(work.index("\u9001\u91ab\u4eba\u6578"), work.index("\u62d2\u9001\u4eba\u6578"))
         mileage = task_section[task_section.index("<h3>\u91cc\u7a0b+\u52a0\u6cb9</h3>") : task_section.index("<h3>\u8017\u6750</h3>")]
         self.assertLess(mileage.index(">\u8eca\u8f1b</span>"), mileage.index(">\u51fa\u52d5</span>"))
         self.assertLess(mileage.index(">\u51fa\u52d5</span>"), mileage.index(">\u8fd4\u968a</span>"))

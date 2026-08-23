@@ -85,6 +85,8 @@
     #task-form select { min-height: 46px; padding: 10px 12px; }
     #task-form .grid { gap: 10px; }
     .workspace-page--ems-task #task-form .patient-summary-field { min-width: 0; margin: 0 0 11px; color: var(--ink); font-size: var(--workspace-type-label); font-weight: 700; }
+    .patient-count-section { min-width: 0; }
+    .patient-count-section + .patient-count-section { margin-top: 10px; }
     .patient-count-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
     .workspace-page--ems-task #task-form .patient-count-option { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: var(--workspace-type-label); font-weight: 700; line-height: 1.4; }
     .workspace-page--ems-task #task-form label[data-field-name='mileage'] { font-size: var(--workspace-type-label); }
@@ -483,33 +485,64 @@
       <div data-site-card="mileage">
       <div class="grid">
         {% set primary_patient_counts = patient_counts_from_summary(selected_case.patient_summary) %}
+        {% set primary_refusal_counts = patient_counts_from_summary(selected_case.refusal_summary) %}
         <div class="field-visual patient-summary-field" data-field-name="patient_summary">
-          <span class="field-label-title">傷病患人數<span class="field-error-mark" aria-hidden="true">*</span></span>
-          <div class="patient-count-grid" role="group" aria-label="傷病患人數">
-            <div class="patient-count-option">
-              <span>男</span>
-              <div class="patient-count-select">
-                <select name="patient_male_count" data-patient-count="male" aria-label="男性傷病患人數">
-                  {% for count in range(6) %}
-                    <option value="{{ count }}"{% if primary_patient_counts[0] == count %} selected{% endif %}>{{ count }}</option>
-                  {% endfor %}
-                </select>
-                <span class="patient-count-unit" aria-hidden="true">人</span>
+          <div class="patient-count-section">
+            <span class="field-label-title">送醫人數<span class="field-error-mark" aria-hidden="true">*</span></span>
+            <div class="patient-count-grid" role="group" aria-label="送醫人數">
+              <div class="patient-count-option">
+                <span>男</span>
+                <div class="patient-count-select">
+                  <select name="patient_male_count" data-patient-count="male" aria-label="男性送醫人數">
+                    {% for count in range(6) %}
+                      <option value="{{ count }}"{% if primary_patient_counts[0] == count %} selected{% endif %}>{{ count }}</option>
+                    {% endfor %}
+                  </select>
+                  <span class="patient-count-unit" aria-hidden="true">人</span>
+                </div>
+              </div>
+              <div class="patient-count-option">
+                <span>女</span>
+                <div class="patient-count-select">
+                  <select name="patient_female_count" data-patient-count="female" aria-label="女性送醫人數">
+                    {% for count in range(6) %}
+                      <option value="{{ count }}"{% if primary_patient_counts[1] == count %} selected{% endif %}>{{ count }}</option>
+                    {% endfor %}
+                  </select>
+                  <span class="patient-count-unit" aria-hidden="true">人</span>
+                </div>
               </div>
             </div>
-            <div class="patient-count-option">
-              <span>女</span>
-              <div class="patient-count-select">
-                <select name="patient_female_count" data-patient-count="female" aria-label="女性傷病患人數">
-                  {% for count in range(6) %}
-                    <option value="{{ count }}"{% if primary_patient_counts[1] == count %} selected{% endif %}>{{ count }}</option>
-                  {% endfor %}
-                </select>
-                <span class="patient-count-unit" aria-hidden="true">人</span>
+          </div>
+          <div class="patient-count-section refusal-count-section" data-field-name="refusal_summary">
+            <span class="field-label-title">拒送人數</span>
+            <div class="patient-count-grid" role="group" aria-label="拒送人數">
+              <div class="patient-count-option">
+                <span>男</span>
+                <div class="patient-count-select">
+                  <select name="refusal_male_count" data-refusal-count="male" aria-label="男性拒送人數">
+                    {% for count in range(6) %}
+                      <option value="{{ count }}"{% if primary_refusal_counts[0] == count %} selected{% endif %}>{{ count }}</option>
+                    {% endfor %}
+                  </select>
+                  <span class="patient-count-unit" aria-hidden="true">人</span>
+                </div>
+              </div>
+              <div class="patient-count-option">
+                <span>女</span>
+                <div class="patient-count-select">
+                  <select name="refusal_female_count" data-refusal-count="female" aria-label="女性拒送人數">
+                    {% for count in range(6) %}
+                      <option value="{{ count }}"{% if primary_refusal_counts[1] == count %} selected{% endif %}>{{ count }}</option>
+                    {% endfor %}
+                  </select>
+                  <span class="patient-count-unit" aria-hidden="true">人</span>
+                </div>
               </div>
             </div>
           </div>
           <input type="hidden" name="patient_summary" value="{{ selected_case.patient_summary or '無' }}">
+          <input type="hidden" name="refusal_summary" value="{{ selected_case.refusal_summary or '無' }}">
         </div>
         <label class="field-visual" data-field-name="mileage">
           <span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span>
@@ -704,33 +737,64 @@
         <div data-site-card="mileage-2">
         <div class="grid mileage-grid">
           {% set second_patient_counts = patient_counts_from_summary(second_vehicle.patient_summary) %}
+          {% set second_refusal_counts = patient_counts_from_summary(second_vehicle.refusal_summary) %}
           <div class="field-visual patient-summary-field" data-field-name="patient_summary_2">
-            <span class="field-label-title">傷病患人數<span class="field-error-mark" aria-hidden="true">*</span></span>
-            <div class="patient-count-grid" role="group" aria-label="2車傷病患人數">
-              <div class="patient-count-option">
-                <span>男</span>
-                <div class="patient-count-select">
-                  <select name="patient_male_count_2" data-patient-count="male" aria-label="2車男性傷病患人數">
-                    {% for count in range(6) %}
-                      <option value="{{ count }}"{% if second_patient_counts[0] == count %} selected{% endif %}>{{ count }}</option>
-                    {% endfor %}
-                  </select>
-                  <span class="patient-count-unit" aria-hidden="true">人</span>
+            <div class="patient-count-section">
+              <span class="field-label-title">送醫人數<span class="field-error-mark" aria-hidden="true">*</span></span>
+              <div class="patient-count-grid" role="group" aria-label="2車送醫人數">
+                <div class="patient-count-option">
+                  <span>男</span>
+                  <div class="patient-count-select">
+                    <select name="patient_male_count_2" data-patient-count="male" aria-label="2車男性送醫人數">
+                      {% for count in range(6) %}
+                        <option value="{{ count }}"{% if second_patient_counts[0] == count %} selected{% endif %}>{{ count }}</option>
+                      {% endfor %}
+                    </select>
+                    <span class="patient-count-unit" aria-hidden="true">人</span>
+                  </div>
+                </div>
+                <div class="patient-count-option">
+                  <span>女</span>
+                  <div class="patient-count-select">
+                    <select name="patient_female_count_2" data-patient-count="female" aria-label="2車女性送醫人數">
+                      {% for count in range(6) %}
+                        <option value="{{ count }}"{% if second_patient_counts[1] == count %} selected{% endif %}>{{ count }}</option>
+                      {% endfor %}
+                    </select>
+                    <span class="patient-count-unit" aria-hidden="true">人</span>
+                  </div>
                 </div>
               </div>
-              <div class="patient-count-option">
-                <span>女</span>
-                <div class="patient-count-select">
-                  <select name="patient_female_count_2" data-patient-count="female" aria-label="2車女性傷病患人數">
-                    {% for count in range(6) %}
-                      <option value="{{ count }}"{% if second_patient_counts[1] == count %} selected{% endif %}>{{ count }}</option>
-                    {% endfor %}
-                  </select>
-                  <span class="patient-count-unit" aria-hidden="true">人</span>
+            </div>
+            <div class="patient-count-section refusal-count-section" data-field-name="refusal_summary_2">
+              <span class="field-label-title">拒送人數</span>
+              <div class="patient-count-grid" role="group" aria-label="2車拒送人數">
+                <div class="patient-count-option">
+                  <span>男</span>
+                  <div class="patient-count-select">
+                    <select name="refusal_male_count_2" data-refusal-count="male" aria-label="2車男性拒送人數">
+                      {% for count in range(6) %}
+                        <option value="{{ count }}"{% if second_refusal_counts[0] == count %} selected{% endif %}>{{ count }}</option>
+                      {% endfor %}
+                    </select>
+                    <span class="patient-count-unit" aria-hidden="true">人</span>
+                  </div>
+                </div>
+                <div class="patient-count-option">
+                  <span>女</span>
+                  <div class="patient-count-select">
+                    <select name="refusal_female_count_2" data-refusal-count="female" aria-label="2車女性拒送人數">
+                      {% for count in range(6) %}
+                        <option value="{{ count }}"{% if second_refusal_counts[1] == count %} selected{% endif %}>{{ count }}</option>
+                      {% endfor %}
+                    </select>
+                    <span class="patient-count-unit" aria-hidden="true">人</span>
+                  </div>
                 </div>
               </div>
             </div>
             <input type="hidden" name="patient_summary_2" value="{{ second_vehicle.patient_summary or '無' }}">
+            <input type="hidden" name="refusal_summary_2" value="{{ second_vehicle.refusal_summary or '無' }}">
           </div>
           <div class="mileage-row">
             <label class="field-visual" data-field-name="mileage_2">
@@ -994,7 +1058,7 @@
       { name: "driver", label: "司機", selector: 'select[name="driver"]' },
       { name: "summary_type", label: "案件類型", selector: 'select[name="summary_type"]' },
       { name: "case_reason", label: "事由", selector: 'select[name="case_reason"]' },
-      { name: "patient_summary", label: "傷病患人數", selector: 'input[name="patient_summary"]' },
+      { name: "patient_summary", label: "送醫／拒送人數", selector: 'input[name="patient_summary"]' },
       { name: "mileage", label: "里程", selector: 'input[name="mileage"]' }
     ];
     const formErrorFieldMap = {
@@ -1003,7 +1067,7 @@
       "請選擇司機": { name: "driver", message: "請選擇司機" },
       "請選擇案件類型": { name: "summary_type", message: "請選擇案件類型" },
       "請選擇事由": { name: "case_reason", message: "請選擇事由" },
-      "請選擇傷病患": { name: "patient_summary", message: "請選擇傷病患" },
+      "請確認送醫／拒送人數": { name: "patient_summary", message: "請確認送醫／拒送人數" },
       "請填寫里程": { name: "mileage", message: "請填寫里程" },
       "里程只能輸入數字": { name: "mileage", message: "里程只能輸入數字" },
       "返隊日期時間不能早於案件日期時間": { name: "return_time", message: "返隊時間不能早於案件時間" }
@@ -1273,21 +1337,36 @@
       return parts.join("、") || "無";
     }
 
+    function refusalSummaryFromCounts(maleCount, femaleCount) {
+      const male = Number.parseInt(maleCount, 10) || 0;
+      const female = Number.parseInt(femaleCount, 10) || 0;
+      const parts = [];
+      if (male > 0 && male <= 5) parts.push(`男${male}名拒送`);
+      if (female > 0 && female <= 5) parts.push(`女${female}名拒送`);
+      return parts.join("、") || "無";
+    }
+
     function syncPatientSummary(suffix = "") {
       const male = document.querySelector(`select[name="patient_male_count${suffix}"]`);
       const female = document.querySelector(`select[name="patient_female_count${suffix}"]`);
+      const refusalMale = document.querySelector(`select[name="refusal_male_count${suffix}"]`);
+      const refusalFemale = document.querySelector(`select[name="refusal_female_count${suffix}"]`);
       const summary = document.querySelector(`input[name="patient_summary${suffix}"]`);
-      if (!male || !female || !summary) return;
+      const refusalSummary = document.querySelector(`input[name="refusal_summary${suffix}"]`);
+      if (!male || !female || !refusalMale || !refusalFemale || !summary || !refusalSummary) return;
       summary.value = patientSummaryFromCounts(male.value, female.value);
+      refusalSummary.value = refusalSummaryFromCounts(refusalMale.value, refusalFemale.value);
     }
 
     function bindPatientSummaryCounts(suffix = "") {
       ["male", "female"].forEach((gender) => {
-        const select = document.querySelector(`select[name="patient_${gender}_count${suffix}"]`);
-        if (!select) return;
-        select.addEventListener("change", () => {
-          syncPatientSummary(suffix);
-          updateFieldVisualHints();
+        ["patient", "refusal"].forEach((countType) => {
+          const select = document.querySelector(`select[name="${countType}_${gender}_count${suffix}"]`);
+          if (!select) return;
+          select.addEventListener("change", () => {
+            syncPatientSummary(suffix);
+            updateFieldVisualHints();
+          });
         });
       });
     }

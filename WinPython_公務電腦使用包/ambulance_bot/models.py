@@ -379,6 +379,7 @@ class VehicleEntry:
     return_date: str = ""
     return_time: str = ""
     patient_summary: str = "\u7537\u4e00\u540d"
+    refusal_summary: str = ""
     disinfection: str = "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002"
     disinfection_items: list[str] = field(default_factory=lambda: list(DEFAULT_DISINFECTION_ITEMS))
     consumables: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_CONSUMABLES))
@@ -398,6 +399,7 @@ class VehicleEntry:
             return_date=normalize_case_date(str(payload.get("return_date") or "")),
             return_time=str(payload.get("return_time") or "").strip(),
             patient_summary=str(payload.get("patient_summary") or cls.__dataclass_fields__["patient_summary"].default).strip(),
+            refusal_summary=str(payload.get("refusal_summary") or "").strip(),
             disinfection=str(payload.get("disinfection") or cls.__dataclass_fields__["disinfection"].default).strip(),
             disinfection_items=parse_list(payload.get("disinfection_items") or DEFAULT_DISINFECTION_ITEMS),
             consumables=parse_consumable_payload(payload.get("consumables"), default=DEFAULT_CONSUMABLES),
@@ -430,6 +432,7 @@ class AmbulanceReturnRequest:
     return_time: str = ""
     case_address: str = ""
     patient_summary: str = "\u7537\u4e00\u540d"
+    refusal_summary: str = ""
     case_reason: str = "\u6025\u75c5"
     disinfection: str = "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002"
     disinfection_items: list[str] = field(default_factory=lambda: list(DEFAULT_DISINFECTION_ITEMS))
@@ -554,7 +557,8 @@ class AmbulanceReturnRequest:
             f"\u56de\u7a0b\u6642\u9593\uff1a{self.return_time or missing}",
             f"\u6848\u767c\u5730\u5740\uff1a{clean_case_address(self.case_address) or missing}",
             f"\u4e8b\u7531\uff1a{self.case_reason or missing}",
-            f"\u50b7\u75c5\u60a3\uff1a{self.patient_summary or missing}",
+            f"\u9001\u91ab\u4eba\u6578\uff1a{self.patient_summary or missing}",
+            f"\u62d2\u9001\u4eba\u6578\uff1a{self.refusal_summary or missing}",
             f"\u8017\u6750\uff1a{self.consumable_summary}",
             f"\u6d88\u6bd2\uff1a{self.disinfection}",
             f"\u6d88\u6bd2\u9805\u76ee\uff1a{self.disinfection_items_summary or '\u672a\u9078'}",
@@ -577,11 +581,11 @@ class AmbulanceReturnRequest:
             return f"1.{assignment_text}\n2.{self.action_note}".rstrip()
         if len(entries) > 1:
             vehicle_line = " ".join(_vehicle_driver_text(entry) for entry in entries if entry.vehicle or entry.driver).strip()
-            patient_entries = [
-                (entry.vehicle, (entry.patient_summary or "").strip())
-                for entry in entries
-                if (entry.patient_summary or "").strip() and (entry.patient_summary or "").strip() != "\u7121"
-            ]
+            patient_entries = []
+            for entry in entries:
+                patient_text = _patient_status_text(entry.patient_summary, entry.refusal_summary)
+                if patient_text:
+                    patient_entries.append((entry.vehicle, patient_text))
             if not patient_entries:
                 status_text = " ".join(
                     _vehicle_driver_short_text(entry) for entry in entries if entry.vehicle or entry.driver
@@ -594,10 +598,11 @@ class AmbulanceReturnRequest:
             return self._with_volunteer_assist_duty_status(f"1.{vehicle_line}\n2.{patient_text}")
         vehicle = self.vehicle or "\u672a\u586b\u8eca\u8f1b"
         driver = self.driver or "\u672a\u586b\u53f8\u6a5f"
-        patient = self.patient_summary or "\u7537\u4e00\u540d"
-        if patient == "\u7121":
-            return self._with_volunteer_assist_duty_status(f"{vehicle};{driver}")
-        return self._with_volunteer_assist_duty_status(f"1.{vehicle}:{driver}\n2.{patient}")
+        patient = _patient_status_text(self.patient_summary, self.refusal_summary)
+        vehicle_driver = f"{vehicle}:{driver}"
+        if not patient:
+            return self._with_volunteer_assist_duty_status(vehicle_driver)
+        return self._with_volunteer_assist_duty_status(f"1.{vehicle_driver}\n2.{patient}")
 
     def _with_volunteer_assist_duty_status(self, status_text: str) -> str:
         if self.service_type != "ems" or not self.volunteer_assist:
@@ -614,6 +619,7 @@ class AmbulanceReturnRequest:
             return_date=self.return_date,
             return_time=self.return_time,
             patient_summary=self.patient_summary,
+            refusal_summary=self.refusal_summary,
             disinfection=self.disinfection,
             disinfection_items=list(self.disinfection_items),
             consumables=dict(self.consumables),
@@ -652,6 +658,7 @@ class AmbulanceReturnRequest:
                     return_date=entry.return_date,
                     return_time=entry.return_time,
                     patient_summary=entry.patient_summary,
+                    refusal_summary=entry.refusal_summary,
                     disinfection=entry.disinfection,
                     disinfection_items=list(entry.disinfection_items),
                     consumables=dict(entry.consumables),
@@ -726,6 +733,7 @@ class AmbulanceReturnRequest:
             return_time=str(payload.get("return_time") or ""),
             case_address=clean_case_address(str(payload.get("case_address") or "")),
             patient_summary=str(payload.get("patient_summary") or cls.__dataclass_fields__["patient_summary"].default),
+            refusal_summary=str(payload.get("refusal_summary") or "").strip(),
             case_reason=str(payload.get("case_reason") or cls.__dataclass_fields__["case_reason"].default),
             disinfection=str(payload.get("disinfection") or cls.__dataclass_fields__["disinfection"].default),
             disinfection_items=parse_list(payload.get("disinfection_items") or DEFAULT_DISINFECTION_ITEMS),
@@ -853,6 +861,17 @@ def patient_summary_from_counts(male_count: object, female_count: object) -> str
     return "、".join(parts) or "無"
 
 
+def refusal_summary_from_counts(male_count: object, female_count: object) -> str:
+    male = _normalize_patient_count(male_count)
+    female = _normalize_patient_count(female_count)
+    parts = []
+    if male:
+        parts.append(f"男{male}名拒送")
+    if female:
+        parts.append(f"女{female}名拒送")
+    return "、".join(parts) or "無"
+
+
 def patient_counts_from_summary(summary: object) -> tuple[int, int]:
     text = str(summary or "").strip()
     counts = {"男": 0, "女": 0}
@@ -870,6 +889,29 @@ def patient_summary_from_form(form: dict[str, Any], field_name: str, *, count_su
     if male_field in form or female_field in form:
         return patient_summary_from_counts(form.get(male_field), form.get(female_field))
     return ""
+
+
+def refusal_summary_from_form(form: dict[str, Any], field_name: str, *, count_suffix: str = "") -> str:
+    summary = str(form.get(field_name) or "").strip()
+    if summary:
+        return summary
+    male_field = f"refusal_male_count{count_suffix}"
+    female_field = f"refusal_female_count{count_suffix}"
+    if male_field in form or female_field in form:
+        return refusal_summary_from_counts(form.get(male_field), form.get(female_field))
+    return ""
+
+
+def _patient_status_text(patient_summary: object, refusal_summary: object) -> str:
+    patient = str(patient_summary or "").strip()
+    refusal = str(refusal_summary or "").strip()
+    if patient == "無":
+        patient = ""
+    if refusal == "無":
+        refusal = ""
+    if patient and refusal:
+        return f"{patient}；{refusal}"
+    return patient or refusal
 
 
 def fuel_record_from_form(
@@ -917,7 +959,7 @@ def _vehicle_driver_text(entry: VehicleEntry) -> str:
 def _vehicle_driver_short_text(entry: VehicleEntry) -> str:
     vehicle = entry.vehicle or "\u672a\u586b\u8eca\u8f1b"
     driver = entry.driver or "\u672a\u586b\u53f8\u6a5f"
-    return f"{vehicle};{driver}"
+    return f"{vehicle}:{driver}"
 
 
 def example_command() -> str:
@@ -930,7 +972,8 @@ def example_command() -> str:
         "\u56de\u7a0b\u6642\u9593:1505\n"
         "\u6848\u767c\u5730\u5740:\u6843\u5712\u5e02\u89c0\u97f3\u5340\n"
         "\u4e8b\u7531:\u6025\u75c5\n"
-        "\u50b7\u75c5\u60a3:\u7537\u4e00\u540d\n"
+        "\u9001\u91ab\u4eba\u6578:\u7537\u4e00\u540d\n"
+        "\u62d2\u9001\u4eba\u6578:\u7121\n"
         "\u8017\u6750:\u53e3\u7f69=2,\u624b\u5957=2,\u6c27\u6c23\u9762\u7f69=1\n"
         "\u6d88\u6bd2:\u8eca\u5167\u3001\u64d4\u67b6\u3001\u76e3\u8996\u5668\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\n"
         "\u5de5\u4f5c\u7d00\u9304:\u6551\u8b77\u8fd4\u968a\u5b8c\u6210\u88dc\u767b"
@@ -951,6 +994,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         return_date=normalize_case_date(str(form.get("return_date") or "")),
         return_time=str(form.get("return_time") or "").strip(),
         patient_summary=patient_summary_from_form(form, "patient_summary"),
+        refusal_summary=refusal_summary_from_form(form, "refusal_summary"),
         disinfection=str(form.get("disinfection") or "").strip()
         or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
         disinfection_items=list(disinfection_items),
@@ -969,6 +1013,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
                 return_date=normalize_case_date(str(form.get("return_date_2") or "")),
                 return_time=str(form.get("return_time_2") or "").strip(),
                 patient_summary=patient_summary_from_form(form, "patient_summary_2", count_suffix="_2"),
+                refusal_summary=refusal_summary_from_form(form, "refusal_summary_2", count_suffix="_2"),
                 disinfection=str(form.get("disinfection_2") or "").strip()
                 or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
                 disinfection_items=parse_disinfection_items_from_form(
@@ -1000,6 +1045,7 @@ def request_from_form(form: dict[str, Any]) -> AmbulanceReturnRequest:
         return_time=str(form.get("return_time") or "").strip(),
         case_address=clean_case_address(str(form.get("case_address") or "")),
         patient_summary=patient_summary_from_form(form, "patient_summary"),
+        refusal_summary=refusal_summary_from_form(form, "refusal_summary"),
         case_reason=str(form.get("case_reason") or "").strip(),
         disinfection=str(form.get("disinfection") or "").strip()
         or "\u6551\u8b77\u8fd4\u968a\u5f8c\u8eca\u5167\u3001\u64d4\u67b6\u53ca\u63a5\u89f8\u9762\u5b8c\u6210\u6d88\u6bd2\u3002",
@@ -1128,8 +1174,10 @@ def parse_request(text: str) -> AmbulanceReturnRequest:
             request.case_address = clean_case_address(value)
         elif normalized in {"\u4e8b\u7531", "\u6848\u4ef6\u985e\u5225", "\u6551\u8b77\u4e8b\u7531"}:
             request.case_reason = value
-        elif normalized in {"\u50b7\u75c5\u60a3", "\u6027\u5225\u4eba\u6578", "\u7537\u5973"}:
+        elif normalized in {"\u9001\u91ab\u4eba\u6578", "\u50b7\u75c5\u60a3", "\u6027\u5225\u4eba\u6578", "\u7537\u5973"}:
             request.patient_summary = value
+        elif normalized in {"\u62d2\u9001\u4eba\u6578", "\u62d2\u9001"}:
+            request.refusal_summary = value
         elif normalized == "\u8017\u6750":
             parsed = parse_consumables(value)
             if parsed:

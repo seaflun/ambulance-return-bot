@@ -5950,6 +5950,7 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
         ]
         patient_summary = str(entry.get("patient_summary") or "").strip()
         patient_gender = patient_summary.removesuffix("\u4e00\u540d")
+        refusal_summary = str(entry.get("refusal_summary") or "").strip()
         disinfection_items = [
             str(item).strip()
             for item in entry.get("disinfection_items", [])
@@ -5966,6 +5967,7 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
                 "return_time": normalize_hhmm(str(entry.get("return_time") or "")),
                 "patient_summary": patient_summary,
                 "patient_gender": patient_gender,
+                "refusal_summary": refusal_summary,
                 "consumables_items": list(consumable_parts),
                 "consumables_summary": "\u3001".join(consumable_parts),
                 "fuel_enabled": fuel_enabled,
@@ -6749,7 +6751,7 @@ def validate_task_form(task_request, *, enforce_mileage_change_limit: bool = Tru
             if not vehicle_request.driver.strip():
                 errors.append(f"\u8acb\u9078\u64c7{label}\u53f8\u6a5f")
             if not vehicle_request.patient_summary.strip():
-                errors.append(f"\u8acb\u9078\u64c7{label}\u50b7\u75c5\u60a3")
+                errors.append(f"\u8acb\u78ba\u8a8d{label}\u9001\u91ab\uff0f\u62d2\u9001\u4eba\u6578")
             if not vehicle_request.mileage.strip():
                 errors.append(f"\u8acb\u586b\u5beb{label}\u91cc\u7a0b")
             elif not re.fullmatch(r"\d+", vehicle_request.mileage.strip()):
@@ -6791,7 +6793,7 @@ def validate_task_form(task_request, *, enforce_mileage_change_limit: bool = Tru
     if not task_request.driver.strip():
         errors.append("請選擇司機")
     if not task_request.patient_summary.strip():
-        errors.append("請選擇傷病患")
+        errors.append("請確認送醫／拒送人數")
     if not task_request.mileage.strip():
         errors.append("請填寫里程")
     elif not re.fullmatch(r"\d+", task_request.mileage.strip()):
