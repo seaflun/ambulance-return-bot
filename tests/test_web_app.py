@@ -8893,10 +8893,16 @@ class WebAppTests(unittest.TestCase):
             status="duty_work_log_failed",
             detail="前次工作紀錄登打失敗",
         )
+        local_payload["site_statuses"]["vehicle_mileage"]["vehicle_results"] = {
+            "vehicle-1": {"status": "vehicle_mileage_saved", "detail": "本機車輛明細"}
+        }
+        local_payload["site_attempts"]["duty_work_log"] = [{"attempt_id": "local-attempt"}]
         local_payload["overall_status"] = "desktop_fast_completed_with_errors"
         self.store.save_payload(task_id, local_payload)
 
         nas_payload = json.loads(json.dumps(local_payload, ensure_ascii=False))
+        nas_payload["site_statuses"]["vehicle_mileage"].pop("vehicle_results", None)
+        nas_payload["site_attempts"]["duty_work_log"] = [{"attempt_id": "nas-attempt"}]
         nas_payload["site_statuses"]["duty_work_log"].update(
             status="duty_work_log_saved",
             detail="NAS 重送後已完成",
@@ -8927,6 +8933,15 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(
             self.store.get(task_id)["site_statuses"]["duty_work_log"]["status"],
             "duty_work_log_saved",
+        )
+        synced_payload = self.store.get(task_id)
+        self.assertIn(
+            "vehicle-1",
+            synced_payload["site_statuses"]["vehicle_mileage"]["vehicle_results"],
+        )
+        self.assertEqual(
+            [item["attempt_id"] for item in synced_payload["site_attempts"]["duty_work_log"]],
+            ["local-attempt", "nas-attempt"],
         )
 
     def test_nas_ems_admin_reconciles_completed_legacy_materialized_retry(self):

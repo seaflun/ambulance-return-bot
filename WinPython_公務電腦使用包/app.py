@@ -143,6 +143,7 @@ from ambulance_bot.task_cancellation import clear_task_cancellation, request_tas
 from ambulance_bot.task_edit_impact import analyze_task_edit, changed_site_keys
 from ambulance_bot.task_store import (
     JsonTaskStore,
+    RECENT_STATUS_EVENT_ID_LIMIT,
     SiteCompletionConflictError,
     TaskActiveError,
     WorkerClaimConflictError,
@@ -5638,16 +5639,67 @@ def _public_pc_remote_payload_is_newer(local_payload: dict, remote_payload: dict
 
 def _merge_public_pc_remote_payload(local_payload: dict, remote_payload: dict) -> dict:
     merged = dict(local_payload)
-    for key in (
-        "task_source",
-        "overall_status",
-        "worker_queue",
-        "site_statuses",
-        "site_attempts",
-        "recent_status_event_ids",
-    ):
+    for key in ("overall_status", "worker_queue"):
         if key in remote_payload:
             merged[key] = deepcopy(remote_payload[key])
+    local_site_statuses = local_payload.get("site_statuses")
+    local_site_statuses = deepcopy(local_site_statuses) if isinstance(local_site_statuses, dict) else {}
+    remote_site_statuses = remote_payload.get("site_statuses")
+    remote_site_statuses = remote_site_statuses if isinstance(remote_site_statuses, dict) else {}
+    for raw_site_key, remote_site in remote_site_statuses.items():
+        if not isinstance(remote_site, dict):
+            continue
+        site_key = str(raw_site_key)
+        local_site = dict(local_site_statuses.get(site_key) or {})
+        local_vehicle_results = local_site.get("vehicle_results")
+        local_vehicle_results = (
+            deepcopy(local_vehicle_results) if isinstance(local_vehicle_results, dict) else {}
+        )
+        remote_vehicle_results = remote_site.get("vehicle_results")
+        remote_vehicle_results = (
+            deepcopy(remote_vehicle_results) if isinstance(remote_vehicle_results, dict) else {}
+        )
+        local_site.update(deepcopy(remote_site))
+        if local_vehicle_results or remote_vehicle_results:
+            local_site["vehicle_results"] = {
+                **local_vehicle_results,
+                **remote_vehicle_results,
+            }
+        local_site_statuses[site_key] = local_site
+    if remote_site_statuses:
+        merged["site_statuses"] = local_site_statuses
+    local_attempts = local_payload.get("site_attempts")
+    local_attempts = deepcopy(local_attempts) if isinstance(local_attempts, dict) else {}
+    remote_attempts = remote_payload.get("site_attempts")
+    remote_attempts = remote_attempts if isinstance(remote_attempts, dict) else {}
+    for raw_site_key, remote_items in remote_attempts.items():
+        if not isinstance(remote_items, list):
+            continue
+        site_key = str(raw_site_key)
+        existing_items = [
+            item for item in list(local_attempts.get(site_key) or []) if isinstance(item, dict)
+        ]
+        existing_items.extend(
+            deepcopy(item)
+            for item in remote_items
+            if isinstance(item, dict) and item not in existing_items
+        )
+        local_attempts[site_key] = existing_items
+    if remote_attempts:
+        merged["site_attempts"] = local_attempts
+    local_event_ids = [
+        str(item or "").strip()
+        for item in list(local_payload.get("recent_status_event_ids") or [])
+        if str(item or "").strip()
+    ]
+    remote_event_ids = [
+        str(item or "").strip()
+        for item in list(remote_payload.get("recent_status_event_ids") or [])
+        if str(item or "").strip()
+    ]
+    merged["recent_status_event_ids"] = list(
+        dict.fromkeys(local_event_ids + remote_event_ids)
+    )[-RECENT_STATUS_EVENT_ID_LIMIT:]
     remote_updated_at = str(remote_payload.get("updated_at") or "").strip()
     if remote_updated_at:
         merged["updated_at"] = remote_updated_at
