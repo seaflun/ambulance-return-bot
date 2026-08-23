@@ -8874,6 +8874,61 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("公務電腦重送完成測試", success_body)
             self.assertNotIn("公務電腦重送完成測試", failed_body)
 
+    def test_local_public_pc_task_detail_syncs_newer_nas_completion(self):
+        os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"
+        os.environ["WORKER_SERVER_URL"] = "http://nas.example:8080"
+        os.environ["WORKER_TOKEN"] = "test-token"
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(case_id="case-local-task-sync"),
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        local_payload = self.store.get(task_id)
+        for site_key in ("vehicle_mileage", "consumables", "disinfection"):
+            local_payload["site_statuses"][site_key].update(
+                status=f"{site_key}_saved",
+                detail="前次已完成",
+            )
+        local_payload["site_statuses"]["duty_work_log"].update(
+            status="duty_work_log_failed",
+            detail="前次工作紀錄登打失敗",
+        )
+        local_payload["overall_status"] = "desktop_fast_completed_with_errors"
+        self.store.save_payload(task_id, local_payload)
+
+        nas_payload = json.loads(json.dumps(local_payload, ensure_ascii=False))
+        nas_payload["site_statuses"]["duty_work_log"].update(
+            status="duty_work_log_saved",
+            detail="NAS 重送後已完成",
+        )
+        nas_payload["overall_status"] = "desktop_fast_completed"
+        nas_payload["updated_at"] = "2099-01-01T00:00:00"
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self):
+                return json.dumps({"ok": True, "payload": nas_payload}).encode("utf-8")
+
+        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=FakeResponse()):
+            response = self.client.get(
+                f"/tasks/{task_id}",
+                base_url="http://127.0.0.1:8090",
+            )
+
+        body = html.unescape(response.get_data(as_text=True))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("✓ 四站登打完成", body)
+        self.assertNotIn("已完成 3/4", body)
+        self.assertEqual(
+            self.store.get(task_id)["site_statuses"]["duty_work_log"]["status"],
+            "duty_work_log_saved",
+        )
+
     def test_nas_ems_admin_reconciles_completed_legacy_materialized_retry(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         create_response = self.client.post(

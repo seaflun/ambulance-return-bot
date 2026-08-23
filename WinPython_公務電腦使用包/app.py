@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
@@ -667,6 +668,7 @@ def task_detail(task_id: str):
         payload = materialize_public_pc_report_task(task_id)
         if payload is None:
             abort(404)
+    payload = sync_local_public_pc_task_from_nas(task_id, payload)
     payload = refresh_stale_running_task(payload)
     return render_template("task_detail.html", payload=payload, site_can_run_individually=site_can_run_individually)
 
@@ -5606,6 +5608,106 @@ def refresh_stale_running_task(payload: dict) -> dict:
     return refreshed
 
 
+def _fetch_public_pc_worker_json(path: str) -> dict | None:
+    server_url = public_pc_report_server_url()
+    headers = worker_headers()
+    if not server_url or not headers:
+        return None
+    req = urllib.request.Request(
+        f"{server_url}{path}",
+        headers=headers,
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _public_pc_remote_payload_is_newer(local_payload: dict, remote_payload: dict) -> bool:
+    local_snapshot = task_completion_snapshot(local_payload)
+    remote_snapshot = task_completion_snapshot(remote_payload)
+    if remote_snapshot["all_complete"] and not local_snapshot["all_complete"]:
+        return True
+    remote_updated_at = str(remote_payload.get("updated_at") or "").strip()
+    local_updated_at = str(local_payload.get("updated_at") or "").strip()
+    return bool(remote_updated_at and remote_updated_at > local_updated_at)
+
+
+def _merge_public_pc_remote_payload(local_payload: dict, remote_payload: dict) -> dict:
+    merged = dict(local_payload)
+    for key in (
+        "task_source",
+        "overall_status",
+        "worker_queue",
+        "site_statuses",
+        "site_attempts",
+        "recent_status_event_ids",
+    ):
+        if key in remote_payload:
+            merged[key] = deepcopy(remote_payload[key])
+    remote_updated_at = str(remote_payload.get("updated_at") or "").strip()
+    if remote_updated_at:
+        merged["updated_at"] = remote_updated_at
+    local_events = [event for event in list(local_payload.get("events") or []) if isinstance(event, dict)]
+    remote_events = [event for event in list(remote_payload.get("events") or []) if isinstance(event, dict)]
+    merged["events"] = local_events + [event for event in remote_events if event not in local_events]
+    return merged
+
+
+def sync_local_public_pc_task_from_nas(
+    task_id: str,
+    local_payload: dict,
+    remote_payload: dict | None = None,
+) -> dict:
+    if not request_is_local_host() or not public_pc_reporting_enabled():
+        return local_payload
+    if task_payload_is_active(local_payload):
+        return local_payload
+    if remote_payload is None:
+        data = _fetch_public_pc_worker_json(
+            f"/worker/tasks/{urllib.parse.quote(str(task_id or '').strip(), safe='')}"
+        )
+        remote_payload = data.get("payload") if isinstance(data, dict) and data.get("ok") else None
+    if not isinstance(remote_payload, dict):
+        return local_payload
+    remote_task = remote_payload.get("task") if isinstance(remote_payload.get("task"), dict) else {}
+    remote_task_id = str(remote_task.get("task_id") or "").strip()
+    if remote_task_id != str(task_id or "").strip():
+        return local_payload
+    if not _public_pc_remote_payload_is_newer(local_payload, remote_payload):
+        return local_payload
+    merged = _merge_public_pc_remote_payload(local_payload, remote_payload)
+    try:
+        store.save_payload(task_id, merged)
+    except OSError:
+        return merged
+    return merged
+
+
+def sync_local_public_pc_recent_tasks(limit: int) -> None:
+    if not request_is_local_host() or not public_pc_reporting_enabled():
+        return
+    bounded_limit = max(1, min(int(limit), 50))
+    data = _fetch_public_pc_worker_json(f"/worker/tasks?limit={bounded_limit}")
+    remote_tasks = data.get("tasks") if isinstance(data, dict) and data.get("ok") else None
+    if not isinstance(remote_tasks, list):
+        return
+    remote_by_id = {
+        str((payload.get("task") or {}).get("task_id") or "").strip(): payload
+        for payload in remote_tasks
+        if isinstance(payload, dict) and isinstance(payload.get("task"), dict)
+    }
+    for local_payload in store.list_recent(limit=bounded_limit):
+        task = local_payload.get("task") if isinstance(local_payload, dict) else None
+        local_task_id = str(task.get("task_id") or "").strip() if isinstance(task, dict) else ""
+        remote_payload = remote_by_id.get(local_task_id)
+        if local_task_id and isinstance(remote_payload, dict):
+            sync_local_public_pc_task_from_nas(local_task_id, local_payload, remote_payload)
+
+
 def refresh_recent_tasks(recent_tasks: list[dict]) -> list[dict]:
     return [refresh_stale_running_task(dict(item or {})) for item in recent_tasks]
 
@@ -5625,6 +5727,8 @@ def recent_tasks_for_task_form(service_type: str = "ems") -> list[dict]:
     normalized_service = "disaster" if str(service_type).strip().lower() == "disaster" else "ems"
     cutoff = datetime.now() - timedelta(hours=TASK_FORM_COMPLETED_HISTORY_HOURS)
     local_view = request_is_local_host()
+    if local_view:
+        sync_local_public_pc_recent_tasks(TASK_FORM_RECENT_TASK_SCAN_LIMIT)
     incomplete_tasks: list[dict] = []
     recent_completed_tasks: list[dict] = []
     known_task_ids: set[str] = set()
