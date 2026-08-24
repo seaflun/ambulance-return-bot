@@ -4681,6 +4681,63 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("結果：勤務表登打完成：115/06/19", body)
         self.assertNotIn("duty_sheet", body)
 
+    def test_sinposmart_admin_shows_each_rescue_video_summary_separately(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        fire_day = datetime.now().date().isoformat()
+        for run_id, case_count, total_count, usage_seconds in (
+            ("rescue-web-run-1", 2, 5, 65),
+            ("rescue-web-run-2", 1, 2, 30),
+        ):
+            shared_snapshot = {
+                "tool_name": "rescue_video",
+                "tool_label": "救護行車紀錄器",
+                "run_id": run_id,
+            }
+            for record_type, status, snapshot in (
+                ("tool_action_started", "started", shared_snapshot),
+                (
+                    "tool_action_finished",
+                    "completed",
+                    {
+                        **shared_snapshot,
+                        "target_date": "2026-08-24",
+                        "vehicle": "92",
+                        "case_count": case_count,
+                        "total_count": total_count,
+                        "usage_seconds": usage_seconds,
+                    },
+                ),
+            ):
+                response = self.client.post(
+                    "/api/sinposmart/events",
+                    headers=headers,
+                    json={
+                        "event_id": f"{run_id}-{record_type}",
+                        "occurred_at": f"{fire_day}T16:30:52",
+                        "record_type": record_type,
+                        "trigger_type": "tool_start" if record_type.endswith("started") else "tool_finish",
+                        "status": status,
+                        "content": "救護行車紀錄器完成" if record_type.endswith("finished") else "",
+                        "actor_no": "27",
+                        "display_name": "27番 隊員 林宏為",
+                        "snapshot": snapshot,
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+
+        self.assertEqual(body.count('<h3 class="event-title">救護行車紀錄器</h3>'), 2)
+        self.assertIn("日期：2026-08-24", body)
+        self.assertIn("車輛：92", body)
+        self.assertIn("案件數：2", body)
+        self.assertIn("總數量：5", body)
+        self.assertIn("使用時間：1 分 5 秒", body)
+        self.assertIn("案件數：1", body)
+        self.assertIn("總數量：2", body)
+        self.assertIn("使用時間：30 秒", body)
+
     def test_sinposmart_admin_tool_start_shows_waiting_state_not_pause_reason(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()

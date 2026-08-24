@@ -338,6 +338,81 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["tool_events"][0]["result_text"], "勤務表登打完成：115/06/19")
         self.assertEqual([step["label"] for step in view["tool_events"][0]["steps"]], ["開始執行", "結束執行"])
 
+    def test_admin_view_keeps_rescue_video_runs_separate_with_summary(self):
+        events = []
+        for run_id, occurred_at, case_count, total_count, usage_seconds in (
+            ("rescue-run-1", "2026-08-24T10:00:00", 2, 5, 65),
+            ("rescue-run-2", "2026-08-24T10:10:00", 1, 2, 30),
+        ):
+            shared_snapshot = {
+                "tool_name": "rescue_video",
+                "tool_label": "救護行車紀錄器",
+                "run_id": run_id,
+            }
+            events.append(
+                normalize_sinposmart_event(
+                    {
+                        "event_id": f"{run_id}-started",
+                        "occurred_at": occurred_at,
+                        "record_type": "tool_action_started",
+                        "trigger_type": "tool_start",
+                        "status": "started",
+                        "actor_no": "27",
+                        "display_name": "27番 隊員 林宏為",
+                        "snapshot": shared_snapshot,
+                    },
+                    now=datetime(2026, 8, 24, 10, 0),
+                )
+            )
+            events.append(
+                normalize_sinposmart_event(
+                    {
+                        "event_id": f"{run_id}-finished",
+                        "occurred_at": occurred_at,
+                        "record_type": "tool_action_finished",
+                        "trigger_type": "tool_finish",
+                        "status": "completed",
+                        "content": "救護行車紀錄器完成",
+                        "actor_no": "27",
+                        "display_name": "27番 隊員 林宏為",
+                        "snapshot": {
+                            **shared_snapshot,
+                            "target_date": "2026-08-24",
+                            "vehicle": "92",
+                            "case_count": case_count,
+                            "total_count": total_count,
+                            "usage_seconds": usage_seconds,
+                        },
+                    },
+                    now=datetime(2026, 8, 24, 10, 0),
+                )
+            )
+
+        view = build_sinposmart_admin_view(events)
+
+        self.assertEqual(len(view["tool_events"]), 2)
+        summaries = {
+            event["rescue_video_summary"]["total_count"]: event["rescue_video_summary"]
+            for event in view["tool_events"]
+        }
+        self.assertEqual(
+            summaries[5],
+            {
+                "target_date": "2026-08-24",
+                "vehicle": "92",
+                "case_count": 2,
+                "total_count": 5,
+                "usage_time": "1 分 5 秒",
+            },
+        )
+        self.assertEqual(summaries[2]["usage_time"], "30 秒")
+        self.assertTrue(
+            all(
+                [step["label"] for step in event["steps"]] == ["開始執行", "結束執行"]
+                for event in view["tool_events"]
+            )
+        )
+
     def test_admin_view_shows_safe_tool_failure_stage(self):
         view = build_sinposmart_admin_view(
             [

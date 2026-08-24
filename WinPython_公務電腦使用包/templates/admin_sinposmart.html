@@ -392,6 +392,11 @@
             {% elif event.result_text %}
               <div class="event-detail">結果：{{ event.result_text }}</div>
             {% endif %}
+            {% if event.rescue_video_summary %}
+              <div class="event-detail">
+                日期：{{ event.rescue_video_summary.target_date }}｜車輛：{{ event.rescue_video_summary.vehicle }}｜案件數：{{ event.rescue_video_summary.case_count }}｜總數量：{{ event.rescue_video_summary.total_count }}｜使用時間：{{ event.rescue_video_summary.usage_time }}
+              </div>
+            {% endif %}
             {% if event.failure_stage_label %}
               <div class="event-detail">失敗階段：{{ event.failure_stage_label }}</div>
             {% endif %}

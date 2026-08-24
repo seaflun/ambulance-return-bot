@@ -394,11 +394,13 @@ def sinposmart_tool_group_key(event: dict[str, Any]) -> tuple[str, ...]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     tool_name = sanitize_scalar(snapshot.get("tool_name"), 120) if snapshot else ""
     tool_label = sanitize_scalar(snapshot.get("tool_label"), 120) if snapshot else ""
+    run_id = sanitize_scalar(snapshot.get("run_id"), 120) if snapshot else ""
     title = str(event.get("item_title") or "")
     return (
         str(event.get("actor_no") or ""),
         sinposmart_person_label(event),
         tool_name or tool_label or title,
+        run_id,
     )
 
 
@@ -429,6 +431,29 @@ def sinposmart_elapsed_label(seconds: int) -> str:
     if remainder:
         return f"{minutes} 分 {remainder} 秒"
     return f"{minutes} 分鐘"
+
+
+def sinposmart_rescue_video_summary(event: dict[str, Any]) -> dict[str, Any]:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    if sanitize_scalar(snapshot.get("tool_name"), 120) != "rescue_video":
+        return {}
+    target_date = sanitize_scalar(snapshot.get("target_date"), 40)
+    vehicle = sanitize_scalar(snapshot.get("vehicle"), 40)
+    try:
+        case_count = max(0, int(snapshot.get("case_count")))
+        total_count = max(0, int(snapshot.get("total_count")))
+        usage_seconds = max(0, int(snapshot.get("usage_seconds")))
+    except (TypeError, ValueError):
+        return {}
+    if not target_date or not vehicle:
+        return {}
+    return {
+        "target_date": target_date,
+        "vehicle": vehicle,
+        "case_count": case_count,
+        "total_count": total_count,
+        "usage_time": sinposmart_elapsed_label(usage_seconds),
+    }
 
 
 def sinposmart_waiting_state(
@@ -904,6 +929,7 @@ def sinposmart_admin_tool_event(
     card["steps"] = steps
     card["last_occurred_at"] = finished_at or started_at or card["last_occurred_at"]
     card["result_text"] = str(base_event.get("error") or base_event.get("content") or "")
+    card["rescue_video_summary"] = sinposmart_rescue_video_summary(base_event)
     card["waiting_age_seconds"] = 0
     card["waiting_overdue"] = False
     card["waiting_reason"] = ""
@@ -1236,6 +1262,7 @@ def sinposmart_event_merge_key(event: dict[str, Any]) -> tuple[str, ...]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     tool_label = sanitize_scalar(snapshot.get("tool_label"), 120) if snapshot else ""
     queue_id = sanitize_scalar(snapshot.get("queue_id"), 120) if snapshot else ""
+    run_id = sanitize_scalar(snapshot.get("run_id"), 120) if snapshot else ""
     return (
         str(event.get("record_type") or ""),
         str(event.get("actor_no") or ""),
@@ -1251,6 +1278,7 @@ def sinposmart_event_merge_key(event: dict[str, Any]) -> tuple[str, ...]:
         str(event.get("target_time") or ""),
         tool_label,
         queue_id,
+        run_id,
     )
 
 
