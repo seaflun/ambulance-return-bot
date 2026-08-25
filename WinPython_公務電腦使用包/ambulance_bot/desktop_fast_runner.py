@@ -32,6 +32,11 @@ from .task_cancellation import (
 )
 from .task_store import JsonTaskStore, now_text
 from .update_safety import ManualUpdateRequiredError, require_safe_automated_update
+from .vehicle_reconciliation import (
+    VehicleCandidateLookupError,
+    request_with_selected_lookup_vehicle,
+    selected_vehicle_target_key,
+)
 from .window_layout import maximize_worker_site_windows
 
 
@@ -342,10 +347,22 @@ class DesktopFastRunner:
             owner=owner,
         )
 
-    def _update_site_result_owned(self, task_id: str, result: SiteAutomationResult) -> object:
+    def _update_site_result_owned(
+        self,
+        task_id: str,
+        result: SiteAutomationResult,
+        *,
+        vehicle_key: str = "",
+        vehicle_label: str = "",
+    ) -> object:
         return self._run_owned_mutation(
             task_id,
-            lambda: self.store.update_site_result(task_id, result),
+            lambda: self.store.update_site_result(
+                task_id,
+                result,
+                vehicle_key=vehicle_key,
+                vehicle_label=vehicle_label,
+            ),
         )
 
     def _update_vehicle_site_result_owned(
@@ -647,12 +664,37 @@ class DesktopFastRunner:
             result = action()
             self._raise_if_cancelled(task_id)
             result = _result_with_login_audit(result, login_audit)
-            result = make_site_result(site_key, site_name, str(result.status), str(result.detail))
+            result = make_site_result(
+                site_key,
+                site_name,
+                str(result.status),
+                str(result.detail),
+                vehicle_candidates=tuple(getattr(result, "vehicle_candidates", ()) or ()),
+                reconciliation_vehicle_key=str(
+                    getattr(result, "reconciliation_vehicle_key", "") or ""
+                ),
+            )
             self._update_site_result_owned(task_id, result)
             self._notify(task_id, f"{site_name} 結果")
             return _result_blocks_next(result)
         except TaskCancellationError:
             raise
+        except VehicleCandidateLookupError as exc:
+            self._raise_if_cancelled(task_id)
+            self._update_site_result_owned(
+                task_id,
+                make_site_result(
+                    site_key,
+                    site_name,
+                    f"{site_key}_vehicle_candidate_available",
+                    str(exc),
+                    exc,
+                    vehicle_candidates=exc.candidates,
+                    reconciliation_vehicle_key=exc.expected_vehicle,
+                ),
+            )
+            self._notify(task_id, f"{site_name} 待選車輛")
+            return True
         except ManualUpdateRequiredError as exc:
             self._raise_if_cancelled(task_id)
             self._update_site_result_owned(
@@ -688,6 +730,11 @@ class DesktopFastRunner:
         site = dict(self.store.get(task_id).get("site_statuses", {}).get(site_key) or {})
         context = site.get("update_context")
         return context if isinstance(context, dict) else None
+
+    def _site_vehicle_reconciliation(self, task_id: str, site_key: str) -> dict[str, object]:
+        site = dict(self.store.get(task_id).get("site_statuses", {}).get(site_key) or {})
+        reconciliation = site.get("vehicle_reconciliation")
+        return dict(reconciliation) if isinstance(reconciliation, dict) else {}
 
     def _vehicle_site_update_context(
         self,
@@ -752,6 +799,7 @@ class DesktopFastRunner:
 
     def _run_consumables(self, request, profile_suffix: str) -> SiteAutomationResult:
         self._raise_if_cancelled(request.task_id)
+        reconciliation = self._site_vehicle_reconciliation(request.task_id, "consumables")
         driver = login_acs_and_get_driver(
             profile_name=f"consumables_profile_{profile_suffix}",
             tile_name="consumables",
@@ -760,25 +808,35 @@ class DesktopFastRunner:
         )
         self._raise_if_cancelled(request.task_id)
         if len(request.vehicle_requests()) <= 1:
+            lookup_request = request_with_selected_lookup_vehicle(request, reconciliation)
             detail = open_consumable_record_for_task(
                 driver,
-                request,
+                lookup_request,
                 update_context=self._site_update_context(request.task_id, "consumables"),
                 cancel_check=self._cancel_check(request.task_id),
                 artifacts_dir=self.artifacts_dir,
             )
             status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
-            return SiteAutomationResult("consumables", SITE_NAMES["consumables"], status, detail)
-        return self._run_per_vehicle_site(
-            request,
-            "consumables",
-            lambda vehicle_request, index: SiteAutomationResult(
+            return SiteAutomationResult(
+                "consumables",
+                SITE_NAMES["consumables"],
+                status,
+                detail,
+                reconciliation_vehicle_key=selected_vehicle_target_key(
+                    reconciliation,
+                    request.vehicle,
+                ),
+            )
+
+        def run_vehicle(vehicle_request, index):
+            lookup_request = request_with_selected_lookup_vehicle(vehicle_request, reconciliation)
+            return SiteAutomationResult(
                 "consumables",
                 SITE_NAMES["consumables"],
                 "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled",
                 open_consumable_record_for_task(
                     driver,
-                    vehicle_request,
+                    lookup_request,
                     update_context=self._vehicle_site_update_context(
                         request.task_id,
                         "consumables",
@@ -788,7 +846,16 @@ class DesktopFastRunner:
                     cancel_check=self._cancel_check(request.task_id),
                     artifacts_dir=self.artifacts_dir,
                 ),
-            ),
+                reconciliation_vehicle_key=selected_vehicle_target_key(
+                    reconciliation,
+                    vehicle_request.vehicle,
+                ),
+            )
+
+        return self._run_per_vehicle_site(
+            request,
+            "consumables",
+            run_vehicle,
         )
 
     def _run_fuel_record(self, request, profile_suffix: str) -> SiteAutomationResult:
@@ -843,18 +910,20 @@ class DesktopFastRunner:
     def _run_disinfection(self, request, profile_suffix: str):
         self._raise_if_cancelled(request.task_id)
         update_context = self._site_update_context(request.task_id, "disinfection")
+        reconciliation = self._site_vehicle_reconciliation(request.task_id, "disinfection")
         require_safe_automated_update("disinfection", request, update_context)
         def run_one(vehicle_request, index: int, vehicle_update_context):
+            lookup_request = request_with_selected_lookup_vehicle(vehicle_request, reconciliation)
             profile_name = f"disinfection_profile_{profile_suffix}_{index}"
             driver = login_disinfection_and_get_driver(
-                request=vehicle_request,
+                request=lookup_request,
                 profile_name=profile_name,
                 tile_name="disinfection",
                 artifacts_dir=self.artifacts_dir,
             )
             self._raise_if_cancelled(request.task_id)
-            return run_disinfection_task(
-                vehicle_request,
+            result = run_disinfection_task(
+                lookup_request,
                 self.artifacts_dir,
                 existing_driver=driver,
                 profile_name=profile_name,
@@ -863,6 +932,16 @@ class DesktopFastRunner:
                 force_new_driver=True,
                 update_context=vehicle_update_context,
                 cancel_check=self._cancel_check(request.task_id),
+            )
+            return SiteAutomationResult(
+                "disinfection",
+                SITE_NAMES["disinfection"],
+                str(result.status),
+                str(result.detail),
+                reconciliation_vehicle_key=selected_vehicle_target_key(
+                    reconciliation,
+                    vehicle_request.vehicle,
+                ),
             )
 
         if len(request.vehicle_requests()) <= 1:
@@ -918,6 +997,17 @@ class DesktopFastRunner:
                 self._raise_if_cancelled(request.task_id)
             except TaskCancellationError:
                 raise
+            except VehicleCandidateLookupError as exc:
+                self._raise_if_cancelled(request.task_id)
+                result = make_site_result(
+                    site_key,
+                    site_name,
+                    f"{site_key}_vehicle_candidate_available",
+                    str(exc),
+                    exc,
+                    vehicle_candidates=exc.candidates,
+                    reconciliation_vehicle_key=exc.expected_vehicle or vehicle_key,
+                )
             except ManualUpdateRequiredError as exc:
                 self._raise_if_cancelled(request.task_id)
                 result = make_site_result(
@@ -948,12 +1038,22 @@ class DesktopFastRunner:
         return {str(key): dict(value) for key, value in results.items() if isinstance(value, dict)}
 
     def _record_vehicle_site_result(self, task_id: str, site_key: str, vehicle_key: str, result) -> None:
-        self._update_vehicle_site_result_owned(
+        if not isinstance(result, SiteAutomationResult):
+            result = make_site_result(
+                site_key,
+                SITE_NAMES[site_key],
+                str(getattr(result, "status", "") or f"{site_key}_failed"),
+                str(getattr(result, "detail", "") or ""),
+                vehicle_candidates=tuple(getattr(result, "vehicle_candidates", ()) or ()),
+                reconciliation_vehicle_key=str(
+                    getattr(result, "reconciliation_vehicle_key", "") or ""
+                ),
+            )
+        self._update_site_result_owned(
             task_id,
-            site_key,
-            vehicle_key,
-            str(getattr(result, "status", "") or ""),
-            str(getattr(result, "detail", "") or ""),
+            result,
+            vehicle_key=vehicle_key,
+            vehicle_label=vehicle_key,
         )
 
     def _ensure_record_folders(self, request) -> str:
@@ -971,7 +1071,7 @@ def _result_blocks_next(result) -> bool:
     if getattr(result, "ok", True) is False:
         return True
     status = str(getattr(result, "status", "") or "")
-    if "failed" in status or "error" in status:
+    if "failed" in status or "error" in status or "vehicle_candidate" in status:
         return True
     if status.startswith("needs_") or "login" in status or "waiting_confirmation" in status:
         return True

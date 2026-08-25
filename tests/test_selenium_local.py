@@ -341,6 +341,29 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertIsNone(selenium_local_module._select_disinfection_detail_row(rows, "0805", "新坡92"))
 
+    def test_disinfection_candidate_uses_same_query_time_and_other_vehicle(self):
+        request = AmbulanceReturnRequest(
+            task_id="disinfection-candidate",
+            created_at=datetime(2026, 8, 24, 20, 0),
+            raw_text="",
+            case_id="2026082410100319592101",
+            case_date="2026-08-24",
+            case_time="1959",
+            vehicle="新坡92",
+        )
+
+        candidates = selenium_local_module._disinfection_vehicle_candidates(
+            [
+                {"index": 0, "text": "2026/08/24 19:59:21 新坡93 明細"},
+                {"index": 1, "text": "2026/08/24 20:01:00 新坡91 明細"},
+            ],
+            request,
+        )
+
+        self.assertEqual(candidates[0]["vehicle"], "新坡93")
+        self.assertEqual(candidates[0]["source"], "緊急救護消毒")
+        self.assertEqual(candidates[0]["case_time"], "1959")
+
     def test_disinfection_waits_raise_when_required_page_state_never_appears(self):
         class FakeDriver:
             def execute_script(self, _script):

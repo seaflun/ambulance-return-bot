@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -70,6 +70,11 @@ from ambulance_bot.task_cancellation import (
 )
 from ambulance_bot.task_store import task_completion_snapshot
 from ambulance_bot.update_safety import ManualUpdateRequiredError, require_safe_automated_update
+from ambulance_bot.vehicle_reconciliation import (
+    VehicleCandidateLookupError,
+    request_with_selected_lookup_vehicle,
+    selected_vehicle_target_key,
+)
 from ambulance_bot.window_layout import maximize_worker_site_windows
 
 
@@ -2121,6 +2126,7 @@ def _run_all_sites_task_impl(
                     update_overall=False,
                     update_context=site_update_context_from_payload(payload, "consumables"),
                     vehicle_results=site_vehicle_results_from_payload(payload, "consumables"),
+                    vehicle_reconciliation=site_vehicle_reconciliation_from_payload(payload, "consumables"),
                     cancel_check=lambda: _raise_if_task_cancelled(request.task_id, cancellation_event),
                 ),
             )
@@ -2140,6 +2146,7 @@ def _run_all_sites_task_impl(
                     update_overall=False,
                     update_context=site_update_context_from_payload(payload, "disinfection"),
                     vehicle_results=site_vehicle_results_from_payload(payload, "disinfection"),
+                    vehicle_reconciliation=site_vehicle_reconciliation_from_payload(payload, "disinfection"),
                     cancel_check=lambda: _raise_if_task_cancelled(request.task_id, cancellation_event),
                 ),
             )
@@ -2415,6 +2422,28 @@ def site_vehicle_results_from_embedded_task(
     return site_vehicle_results_from_payload(payload, site_key) if isinstance(payload, dict) else {}
 
 
+def site_vehicle_reconciliation_from_payload(
+    payload: dict[str, object],
+    site_key: str,
+) -> dict[str, object]:
+    site_statuses = payload.get("site_statuses")
+    if not isinstance(site_statuses, dict):
+        return {}
+    site = site_statuses.get(site_key)
+    if not isinstance(site, dict):
+        return {}
+    reconciliation = site.get("vehicle_reconciliation")
+    return dict(reconciliation) if isinstance(reconciliation, dict) else {}
+
+
+def site_vehicle_reconciliation_from_embedded_task(
+    task: dict[str, object],
+    site_key: str,
+) -> dict[str, object]:
+    payload = task.get("_worker_payload")
+    return site_vehicle_reconciliation_from_payload(payload, site_key) if isinstance(payload, dict) else {}
+
+
 def _vehicle_specific_update_context(
     update_context: dict[str, object] | None,
     vehicle_request: AmbulanceReturnRequest,
@@ -2448,6 +2477,8 @@ def _aggregate_worker_vehicle_status(
     ]
     if not statuses or any(not status for status in statuses):
         return f"{site_key}_failed"
+    if any("vehicle_candidate" in status for status in statuses):
+        return f"{site_key}_vehicle_candidate_available"
     if any("waiting_confirmation" in status for status in statuses):
         return f"{site_key}_waiting_confirmation"
     if any("failed" in status or "error" in status for status in statuses):
@@ -2480,6 +2511,16 @@ def _run_worker_per_vehicle_site(
             vehicle_result = action(vehicle_request, index)
         except TaskCancellationError:
             raise
+        except VehicleCandidateLookupError as exc:
+            vehicle_result = make_site_result(
+                site_key,
+                site_name,
+                f"{site_key}_vehicle_candidate_available",
+                str(exc),
+                exc,
+                vehicle_candidates=exc.candidates,
+                reconciliation_vehicle_key=exc.expected_vehicle or vehicle_key,
+            )
         except ManualUpdateRequiredError as exc:
             vehicle_result = make_site_result(
                 site_key,
@@ -2504,6 +2545,7 @@ def _run_worker_per_vehicle_site(
             vehicle_key=vehicle_key,
             vehicle_label=str(vehicle_request.vehicle or "").strip(),
             **_result_diagnostic_kwargs(vehicle_result),
+            **_result_vehicle_reconciliation_kwargs(vehicle_result),
         )
         details.append(f"{vehicle_key}: {vehicle_detail}")
     status = _aggregate_worker_vehicle_status(site_key, vehicle_requests, stored)
@@ -2765,6 +2807,44 @@ def run_volunteer_assist_worker_task(
     return result
 
 
+def _run_worker_disinfection_vehicle(
+    vehicle_request: AmbulanceReturnRequest,
+    artifacts_dir: Path,
+    driver,
+    *,
+    profile_name: str,
+    debugger_port: int | None,
+    use_session_lock: bool,
+    tile_name: str,
+    update_context: dict[str, object] | None,
+    cancel_check: Callable[[], None] | None,
+    reconciliation: dict[str, object],
+) -> SiteAutomationResult:
+    lookup_request = request_with_selected_lookup_vehicle(vehicle_request, reconciliation)
+    selenium_result = run_disinfection_task(
+        lookup_request,
+        artifacts_dir,
+        existing_driver=driver,
+        profile_name=profile_name,
+        debugger_port=debugger_port,
+        use_session_lock=use_session_lock,
+        tile_name=tile_name,
+        force_new_driver=False,
+        update_context=update_context,
+        cancel_check=cancel_check,
+    )
+    return SiteAutomationResult(
+        "disinfection",
+        "緊急救護消毒",
+        str(selenium_result.status),
+        str(selenium_result.detail),
+        reconciliation_vehicle_key=selected_vehicle_target_key(
+            reconciliation,
+            vehicle_request.vehicle,
+        ),
+    )
+
+
 def run_disinfection_worker_task(
     server_url: str,
     worker_id: str,
@@ -2779,12 +2859,15 @@ def run_disinfection_worker_task(
     update_overall: bool = True,
     update_context: dict[str, object] | None = None,
     vehicle_results: dict[str, dict[str, str]] | None = None,
+    vehicle_reconciliation: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
 ):
     if update_context is None:
         update_context = site_update_context_from_embedded_task(task, "disinfection")
     if vehicle_results is None:
         vehicle_results = site_vehicle_results_from_embedded_task(task, "disinfection")
+    if vehicle_reconciliation is None:
+        vehicle_reconciliation = site_vehicle_reconciliation_from_embedded_task(task, "disinfection")
     request = AmbulanceReturnRequest.from_dict(task)
     login_audit = login_audit_for_site("disinfection", request)
     print(f"[worker] disinfection task {request.task_id}", flush=True)
@@ -2809,31 +2892,32 @@ def run_disinfection_worker_task(
                 request,
                 "disinfection",
                 "緊急救護消毒",
-                lambda vehicle_request, _index: run_disinfection_task(
+                lambda vehicle_request, _index: _run_worker_disinfection_vehicle(
                     vehicle_request,
                     artifacts_dir,
-                    existing_driver=shared_driver,
+                    shared_driver,
                     profile_name=profile_name,
                     debugger_port=debugger_port,
                     use_session_lock=use_session_lock,
                     tile_name=tile_name,
-                    force_new_driver=False,
                     update_context=_vehicle_specific_update_context(update_context, vehicle_request, _index),
                     cancel_check=cancel_check,
+                    reconciliation=vehicle_reconciliation,
                 ),
                 vehicle_results=vehicle_results,
                 login_audit=login_audit,
             )
         else:
+            lookup_request = request_with_selected_lookup_vehicle(request, vehicle_reconciliation)
             shared_driver = driver or login_disinfection_and_get_driver(
-                request=request,
+                request=lookup_request,
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 tile_name=tile_name,
                 artifacts_dir=artifacts_dir,
             )
-            result = run_disinfection_task(
-                request,
+            selenium_result = run_disinfection_task(
+                lookup_request,
                 artifacts_dir,
                 existing_driver=shared_driver,
                 profile_name=profile_name,
@@ -2844,9 +2928,30 @@ def run_disinfection_worker_task(
                 update_context=update_context,
                 cancel_check=cancel_check,
             )
+            result = SiteAutomationResult(
+                "disinfection",
+                "緊急救護消毒",
+                str(selenium_result.status),
+                str(selenium_result.detail),
+                reconciliation_vehicle_key=selected_vehicle_target_key(
+                    vehicle_reconciliation,
+                    request.vehicle,
+                ),
+            )
             result = _result_with_login_audit(result, login_audit)
     except TaskCancellationError:
         raise
+    except VehicleCandidateLookupError as exc:
+        result = make_site_result(
+            "disinfection",
+            "緊急救護消毒",
+            "disinfection_vehicle_candidate_available",
+            str(exc),
+            exc,
+            vehicle_candidates=exc.candidates,
+            reconciliation_vehicle_key=exc.expected_vehicle,
+        )
+        result = _result_with_login_audit(result, login_audit)
     except ManualUpdateRequiredError as exc:
         result = make_site_result(
             "disinfection",
@@ -2867,6 +2972,7 @@ def run_disinfection_worker_task(
         site_key="disinfection",
         site_name="緊急救護消毒",
         **_result_diagnostic_kwargs(result),
+        **_result_vehicle_reconciliation_kwargs(result),
     )
     if update_overall:
         post_site_terminal_status(
@@ -2890,12 +2996,15 @@ def run_consumables_worker_task(
     update_overall: bool = True,
     update_context: dict[str, object] | None = None,
     vehicle_results: dict[str, dict[str, str]] | None = None,
+    vehicle_reconciliation: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
 ) -> SiteAutomationResult:
     if update_context is None:
         update_context = site_update_context_from_embedded_task(task, "consumables")
     if vehicle_results is None:
         vehicle_results = site_vehicle_results_from_embedded_task(task, "consumables")
+    if vehicle_reconciliation is None:
+        vehicle_reconciliation = site_vehicle_reconciliation_from_embedded_task(task, "consumables")
     request = AmbulanceReturnRequest.from_dict(task)
     login_audit = login_audit_for_site("consumables", request)
     print(f"[worker] consumables task {request.task_id}", flush=True)
@@ -2917,24 +3026,24 @@ def run_consumables_worker_task(
             artifacts_dir=artifacts_dir,
         )
         if len(request.vehicle_requests()) > 1:
-            result = _run_worker_per_vehicle_site(
-                server_url,
-                request,
-                "consumables",
-                "一站通耗材",
-                lambda vehicle_request, _index: SiteAutomationResult(
+            def run_vehicle(vehicle_request, vehicle_index):
+                lookup_request = request_with_selected_lookup_vehicle(
+                    vehicle_request,
+                    vehicle_reconciliation,
+                )
+                return SiteAutomationResult(
                     "consumables",
                     "一站通耗材",
                     "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled",
                     open_consumable_record_for_task(
                         driver,
-                        vehicle_request,
+                        lookup_request,
                         **(
                             {
                                 "update_context": _vehicle_specific_update_context(
                                     update_context,
                                     vehicle_request,
-                                    _index,
+                                    vehicle_index,
                                 )
                             }
                             if update_context is not None
@@ -2943,22 +3052,54 @@ def run_consumables_worker_task(
                         **({"cancel_check": cancel_check} if cancel_check is not None else {}),
                         artifacts_dir=artifacts_dir,
                     ),
-                ),
+                    reconciliation_vehicle_key=selected_vehicle_target_key(
+                        vehicle_reconciliation,
+                        vehicle_request.vehicle,
+                    ),
+                )
+
+            result = _run_worker_per_vehicle_site(
+                server_url,
+                request,
+                "consumables",
+                "一站通耗材",
+                run_vehicle,
                 vehicle_results=vehicle_results,
                 login_audit=login_audit,
             )
         else:
+            lookup_request = request_with_selected_lookup_vehicle(request, vehicle_reconciliation)
             detail = open_consumable_record_for_task(
                 driver,
-                request,
+                lookup_request,
                 **({"update_context": update_context} if update_context is not None else {}),
                 **({"cancel_check": cancel_check} if cancel_check is not None else {}),
                 artifacts_dir=artifacts_dir,
             )
             status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
-            result = SiteAutomationResult("consumables", "一站通耗材", status, detail)
+            result = SiteAutomationResult(
+                "consumables",
+                "一站通耗材",
+                status,
+                detail,
+                reconciliation_vehicle_key=selected_vehicle_target_key(
+                    vehicle_reconciliation,
+                    request.vehicle,
+                ),
+            )
     except TaskCancellationError:
         raise
+    except VehicleCandidateLookupError as exc:
+        result = make_site_result(
+            "consumables",
+            "一站通耗材",
+            "consumables_vehicle_candidate_available",
+            str(exc),
+            exc,
+            vehicle_candidates=exc.candidates,
+            reconciliation_vehicle_key=exc.expected_vehicle,
+        )
+        result = _result_with_login_audit(result, login_audit)
     except ManualUpdateRequiredError as exc:
         result = make_site_result(
             "consumables",
@@ -2981,6 +3122,7 @@ def run_consumables_worker_task(
         site_key="consumables",
         site_name="一站通耗材",
         **_result_diagnostic_kwargs(result),
+        **_result_vehicle_reconciliation_kwargs(result),
     )
     if update_overall:
         post_site_terminal_status(
@@ -3039,6 +3181,8 @@ def post_status(
     exception_type: str = "",
     vehicle_key: str = "",
     vehicle_label: str = "",
+    vehicle_candidates: tuple[dict[str, str], ...] | list[dict[str, str]] = (),
+    reconciliation_vehicle_key: str = "",
     claim_id: str = "",
     worker_id: str = "",
 ) -> None:
@@ -3053,6 +3197,10 @@ def post_status(
     if vehicle_key:
         payload["vehicle_key"] = vehicle_key
         payload["vehicle_label"] = vehicle_label or vehicle_key
+    if vehicle_candidates:
+        payload["vehicle_candidates"] = [dict(candidate) for candidate in vehicle_candidates]
+    if reconciliation_vehicle_key:
+        payload["reconciliation_vehicle_key"] = reconciliation_vehicle_key
     claim_context = _task_claim_context(task_id)
     effective_claim_id = str(claim_id or claim_context.get("claim_id") or "").strip()
     effective_worker_id = str(worker_id or claim_context.get("worker_id") or "").strip()
@@ -3431,7 +3579,7 @@ def hash_cases(cases: list[dict[str, object]]) -> str:
 
 def _status_blocks_progress(status: str) -> bool:
     text = str(status or "")
-    if "failed" in text or "error" in text:
+    if "failed" in text or "error" in text or "vehicle_candidate" in text:
         return True
     if text.startswith("needs_") or "login" in text or "waiting_confirmation" in text:
         return True
@@ -3450,6 +3598,21 @@ def _result_diagnostic_kwargs(result: object) -> dict[str, str]:
     return {
         field: str(getattr(result, field, "") or "")
         for field in DIAGNOSTIC_FIELDS
+    }
+
+
+def _result_vehicle_reconciliation_kwargs(result: object) -> dict[str, object]:
+    candidates = getattr(result, "vehicle_candidates", ()) or ()
+    normalized_candidates = [
+        {str(key): str(value or "") for key, value in dict(candidate).items()}
+        for candidate in candidates
+        if isinstance(candidate, Mapping)
+    ]
+    return {
+        "vehicle_candidates": normalized_candidates,
+        "reconciliation_vehicle_key": str(
+            getattr(result, "reconciliation_vehicle_key", "") or ""
+        ),
     }
 
 

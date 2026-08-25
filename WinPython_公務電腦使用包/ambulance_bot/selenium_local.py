@@ -51,6 +51,7 @@ from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_ca
 from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
 from .task_cancellation import TaskCancellationError
 from .update_safety import manual_update_reason
+from .vehicle_reconciliation import VehicleCandidateLookupError
 from .window_layout import apply_tile
 
 
@@ -813,6 +814,9 @@ def run_disinfection_task(
         )
         return SeleniumRunResult(True, status, detail, summary_path)
     except TaskCancellationError:
+        close_driver_on_exit = True
+        raise
+    except VehicleCandidateLookupError:
         close_driver_on_exit = True
         raise
     except Exception as exc:
@@ -2799,6 +2803,10 @@ def _prepare_disinfection_record(
     _assert_disinfection_not_login(driver, "query")
 
     if not _open_disinfection_detail_for_case(driver, request.case_time, request.vehicle):
+        rows = _disinfection_detail_rows(driver)
+        candidates = _disinfection_vehicle_candidates(rows, request)
+        if candidates:
+            raise VehicleCandidateLookupError("disinfection", request.vehicle, candidates)
         raise WebDriverException(f"missing disinfection detail for case time {request.case_time or 'empty'}")
     _wait_for_disinfection_detail_ready(driver)
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
@@ -2937,7 +2945,16 @@ def _save_disinfection_progress_artifacts(driver: webdriver.Chrome, output_dir: 
 def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
     return request.service_case_date().strftime("%Y-%m-%d")
 
+
 def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str, vehicle: str = "") -> bool:
+    rows = _disinfection_detail_rows(driver)
+    row_index = _select_disinfection_detail_row(rows, case_time, vehicle)
+    if row_index is None:
+        return False
+    return _open_disinfection_detail_row(driver, row_index)
+
+
+def _disinfection_detail_rows(driver: webdriver.Chrome) -> list[dict[str, object]]:
     rows = driver.execute_script(
         """
         return Array.from(document.querySelectorAll('tr')).map((tr, index) => ({
@@ -2946,9 +2963,10 @@ def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str,
         }));
         """
     )
-    row_index = _select_disinfection_detail_row(rows, case_time, vehicle)
-    if row_index is None:
-        return False
+    return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _open_disinfection_detail_row(driver: webdriver.Chrome, row_index: int) -> bool:
     return bool(
         driver.execute_script(
                 """
@@ -2997,6 +3015,37 @@ def _disinfection_text_matches_vehicle(text: str, vehicle: str) -> bool:
         return False
     haystack = re.sub(r"\s+", "", str(text or ""))
     return needle in haystack
+
+
+def _disinfection_vehicle_candidates(
+    rows: object,
+    request: AmbulanceReturnRequest,
+) -> list[dict[str, str]]:
+    if not request.vehicle or not isinstance(rows, list):
+        return []
+    digits = normalize_hhmm_local(request.case_time)
+    variants = [digits, f"{digits[:2]}:{digits[2:]}"] if len(digits) == 4 else []
+    candidates: list[dict[str, str]] = []
+    for fallback_index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "")
+        if variants and not any(variant in text for variant in variants):
+            continue
+        for vehicle in vehicle_ppe_names():
+            if vehicle == request.vehicle or not _disinfection_text_matches_vehicle(text, vehicle):
+                continue
+            row_index = str(row.get("index") if row.get("index") is not None else fallback_index)
+            candidates.append(
+                {
+                    "vehicle": vehicle,
+                    "source": "緊急救護消毒",
+                    "record_id": f"{request.service_case_date():%Y%m%d}{digits}:{row_index}",
+                    "case_id": str(request.case_id or ""),
+                    "case_time": digits,
+                }
+            )
+    return candidates
 
 
 def _effective_disinfection_items(items: list[str]) -> list[str]:

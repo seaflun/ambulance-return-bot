@@ -11,6 +11,12 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .models import AmbulanceReturnRequest
 from .site_diagnostics import DIAGNOSTIC_FIELDS, result_with_diagnostics
+from .vehicle_reconciliation import (
+    normalize_vehicle_candidates,
+    pending_reconciliation_targets,
+    task_has_pending_vehicle_reconciliation,
+    vehicle_reconciliation_run_block_detail,
+)
 
 
 def _legacy_silent_save_pattern(site_label: str, exact_detail_pattern: str) -> re.Pattern[str]:
@@ -78,7 +84,14 @@ SUCCESS_SITE_STATUSES = {
     "consumables_saved",
     "volunteer_assist_saved",
 }
-SITE_RUN_ORDER = tuple(site.key for site in SITE_DEFINITIONS)
+SITE_RUN_ORDER = (
+    "duty_work_log",
+    "volunteer_assist",
+    "vehicle_mileage",
+    "fuel_record",
+    "consumables",
+    "disinfection",
+)
 TASK_HISTORY_HOURS = 24 * 14
 WORKER_CLAIM_LEASE_SECONDS = 15 * 60
 RECENT_STATUS_EVENT_ID_LIMIT = 256
@@ -93,6 +106,10 @@ def task_has_waiting_confirmation(payload: dict[str, Any]) -> bool:
     )
 
 
+def task_has_vehicle_reconciliation(payload: dict[str, Any]) -> bool:
+    return task_has_pending_vehicle_reconciliation(payload)
+
+
 def site_status_is_complete(status: object) -> bool:
     value = str(status or "").strip()
     return value in SUCCESS_SITE_STATUSES or value.endswith("_saved")
@@ -102,6 +119,7 @@ def site_status_is_waiting(status: object) -> bool:
     value = str(status or "").strip()
     return (
         value.endswith("_needs_update")
+        or "vehicle_candidate" in value
         or "waiting_confirmation" in value
         or "captcha" in value
         or "ready" in value
@@ -179,6 +197,68 @@ def task_completion_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
 
 def now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def reconciliation_targets_for_storage(raw_targets: object) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw_targets, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_target in raw_targets.items():
+        if not isinstance(raw_target, dict):
+            continue
+        vehicle_key = str(raw_key or "").strip()
+        if not vehicle_key:
+            continue
+        target = dict(raw_target)
+        target["original_vehicle"] = str(target.get("original_vehicle") or vehicle_key).strip()
+        target["state"] = str(target.get("state") or "available").strip()
+        target["selected_vehicle"] = str(target.get("selected_vehicle") or "").strip()
+        target["candidates"] = list(normalize_vehicle_candidates(target.get("candidates")))
+        normalized[vehicle_key] = target
+    return normalized
+
+
+def store_vehicle_reconciliation_candidates(
+    site: dict[str, Any],
+    vehicle_key: str,
+    candidates: object,
+) -> None:
+    normalized_vehicle_key = str(vehicle_key or "").strip()
+    normalized_candidates = normalize_vehicle_candidates(candidates)
+    if not normalized_vehicle_key or not normalized_candidates:
+        return
+    reconciliation = dict(site.get("vehicle_reconciliation") or {})
+    targets = reconciliation_targets_for_storage(reconciliation.get("targets"))
+    target = dict(targets.get(normalized_vehicle_key) or {})
+    target.update(
+        {
+            "original_vehicle": normalized_vehicle_key,
+            "state": "available",
+            "selected_vehicle": "",
+            "selected_at": "",
+            "detected_at": now_text(),
+            "candidates": list(normalized_candidates),
+        }
+    )
+    targets[normalized_vehicle_key] = target
+    reconciliation["targets"] = targets
+    site["vehicle_reconciliation"] = reconciliation
+
+
+def clear_vehicle_reconciliation_target(site: dict[str, Any], vehicle_key: str) -> None:
+    normalized_vehicle_key = str(vehicle_key or "").strip()
+    if not normalized_vehicle_key:
+        return
+    reconciliation = dict(site.get("vehicle_reconciliation") or {})
+    targets = reconciliation_targets_for_storage(reconciliation.get("targets"))
+    if normalized_vehicle_key not in targets:
+        return
+    targets.pop(normalized_vehicle_key, None)
+    if targets:
+        reconciliation["targets"] = targets
+        site["vehicle_reconciliation"] = reconciliation
+    else:
+        site.pop("vehicle_reconciliation", None)
 
 
 def _merge_unique_values(existing: object, current: object) -> list[str]:
@@ -502,6 +582,73 @@ class JsonTaskStore:
     def request_for(self, task_id: str) -> AmbulanceReturnRequest:
         return AmbulanceReturnRequest.from_dict(self.get(task_id)["task"])
 
+    def select_site_vehicle_candidate(
+        self,
+        task_id: str,
+        site_key: str,
+        vehicle_key: str,
+        candidate_vehicle: str,
+    ) -> dict[str, Any]:
+        """Persist a user-approved lookup vehicle without altering the EMS task vehicle."""
+
+        with self._lock:
+            payload = self.get(task_id)
+            if task_payload_is_active_for_edit(payload):
+                raise TaskActiveError(task_id)
+            site = payload.get("site_statuses", {}).get(site_key)
+            if not isinstance(site, dict):
+                raise KeyError(site_key)
+            normalized_vehicle_key = str(vehicle_key or "").strip()
+            normalized_candidate_vehicle = str(candidate_vehicle or "").strip()
+            targets = pending_reconciliation_targets(site)
+            target = targets.get(normalized_vehicle_key)
+            if target is None:
+                raise SiteCompletionConflictError("找不到可確認的同案件車輛候選資料。")
+            candidates = normalize_vehicle_candidates(target.get("candidates"))
+            if normalized_candidate_vehicle not in {
+                str(candidate.get("vehicle") or "") for candidate in candidates
+            }:
+                raise SiteCompletionConflictError("候選車輛已變更，請重新查找後再確認。")
+            target["state"] = "selected"
+            target["selected_vehicle"] = normalized_candidate_vehicle
+            target["selected_at"] = now_text()
+            reconciliation = dict(site.get("vehicle_reconciliation") or {})
+            reconciliation["targets"] = {
+                **reconciliation_targets_for_storage(reconciliation.get("targets")),
+                normalized_vehicle_key: target,
+            }
+            site["vehicle_reconciliation"] = reconciliation
+            site["status"] = f"{site_key}_vehicle_candidate_selected"
+            site["detail"] = (
+                f"同案件不同車輛：系統車輛={normalized_vehicle_key}；"
+                f"已選擇查找車輛={normalized_candidate_vehicle}。"
+            )
+            site["updated_at"] = now_text()
+            attempts = site_attempts(payload)
+            attempts.setdefault(site_key, []).append(
+                {
+                    "attempt_id": str(uuid4()),
+                    "time": now_text(),
+                    "status": site["status"],
+                    "detail": site["detail"],
+                    "site_name": str(site.get("name") or site_key),
+                    "vehicle_key": normalized_vehicle_key,
+                    **{field: "" for field in DIAGNOSTIC_FIELDS},
+                }
+            )
+            payload["site_attempts"] = attempts
+            self.add_event_to_payload(
+                payload,
+                site["status"],
+                f"{site.get('name') or site_key}：{site['detail']}",
+                {
+                    "vehicle_key": normalized_vehicle_key,
+                    "selected_vehicle": normalized_candidate_vehicle,
+                },
+            )
+            self.save_payload(task_id, payload)
+            return payload
+
     def list_recent(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
             self.cleanup()
@@ -523,6 +670,12 @@ class JsonTaskStore:
                 raise WorkerClaimConflictError(
                     "manual_confirmation_required",
                     "任務尚有待人工確認的站別，請先到官方網頁核對並按「已確認」。",
+                )
+            reconciliation_detail = vehicle_reconciliation_run_block_detail(payload, run_site_key)
+            if reconciliation_detail:
+                raise WorkerClaimConflictError(
+                    "vehicle_candidate_required",
+                    reconciliation_detail,
                 )
             if worker_claim_lease_is_active(payload):
                 raise WorkerClaimConflictError(
@@ -569,6 +722,11 @@ class JsonTaskStore:
                 if task_has_waiting_confirmation(payload):
                     continue
                 queue_state = worker_queue_state(payload)
+                if vehicle_reconciliation_run_block_detail(
+                    payload,
+                    str(queue_state.get("run_site_key") or ""),
+                ):
+                    continue
                 queue_status = queue_state.get("status")
                 reclaimed = queue_status == "claimed" and self._worker_claim_expired(queue_state)
                 if queue_status != "queued" and not reclaimed:
@@ -637,12 +795,21 @@ class JsonTaskStore:
                     "manual_confirmation_required",
                     "任務尚有待人工確認的站別，請先到官方網頁核對並按「已確認」。",
                 )
+            queue_state = worker_queue_state(payload)
+            reconciliation_detail = vehicle_reconciliation_run_block_detail(
+                payload,
+                str(queue_state.get("run_site_key") or ""),
+            )
+            if reconciliation_detail:
+                raise WorkerClaimConflictError(
+                    "vehicle_candidate_required",
+                    reconciliation_detail,
+                )
             if self._is_fully_done(payload):
                 raise WorkerClaimConflictError(
                     "task_already_completed",
                     "此任務已全部完成，不可再由 worker 接手執行。",
                 )
-            queue_state = worker_queue_state(payload)
             queue_status = queue_state.get("status")
             claim_expired = queue_status == "claimed" and self._worker_claim_expired(queue_state)
             if queue_status == "claimed" and not claim_expired:
@@ -903,6 +1070,23 @@ class JsonTaskStore:
                     self.save_payload(task_id, payload)
                 return payload
             vehicle_key = str(vehicle_key or "").strip()
+            vehicle_candidates = normalize_vehicle_candidates(
+                getattr(result, "vehicle_candidates", ())
+            )
+            reconciliation_vehicle_key = str(
+                getattr(result, "reconciliation_vehicle_key", "") or vehicle_key
+            ).strip()
+            if vehicle_candidates and not reconciliation_vehicle_key:
+                expected_vehicle_keys = expected_vehicle_result_keys(payload, result.key)
+                reconciliation_vehicle_key = expected_vehicle_keys[0] if len(expected_vehicle_keys) == 1 else ""
+            if vehicle_candidates:
+                store_vehicle_reconciliation_candidates(
+                    site,
+                    reconciliation_vehicle_key,
+                    vehicle_candidates,
+                )
+            elif reconciliation_vehicle_key and site_status_is_complete(result.status):
+                clear_vehicle_reconciliation_target(site, reconciliation_vehicle_key)
             if vehicle_key:
                 results = dict(site.get("vehicle_results") or {})
                 existing_vehicle_result = results.get(vehicle_key)
@@ -923,6 +1107,8 @@ class JsonTaskStore:
                     "detail": result.detail,
                     "updated_at": now_text(),
                     "vehicle_label": str(vehicle_label or vehicle_key).strip(),
+                    "vehicle_candidates": list(vehicle_candidates),
+                    "reconciliation_vehicle_key": reconciliation_vehicle_key,
                     **{field: str(getattr(result, field, "") or "") for field in DIAGNOSTIC_FIELDS},
                 }
                 site["vehicle_results"] = results
@@ -960,6 +1146,8 @@ class JsonTaskStore:
                 "detail": result.detail,
                 "site_name": result.name,
                 "vehicle_key": vehicle_key,
+                "reconciliation_vehicle_key": reconciliation_vehicle_key,
+                "vehicle_candidates": list(vehicle_candidates),
             }
             for field in DIAGNOSTIC_FIELDS:
                 attempt[field] = str(getattr(result, field, "") or "")
@@ -972,6 +1160,7 @@ class JsonTaskStore:
                 {
                     **{field: str(getattr(result, field, "") or "") for field in DIAGNOSTIC_FIELDS},
                     **({"vehicle_key": vehicle_key} if vehicle_key else {}),
+                    **({"reconciliation_vehicle_key": reconciliation_vehicle_key} if reconciliation_vehicle_key else {}),
                 },
             )
             self._resolve_pending_edit_site(payload, result.key)
@@ -1767,6 +1956,8 @@ def aggregate_vehicle_site_status(payload: dict[str, Any], site_key: str, result
         return f"{site_key}_running"
     if all(status in SUCCESS_SITE_STATUSES or status.endswith("_saved") for status in statuses):
         return f"{site_key}_saved"
+    if any("vehicle_candidate" in status for status in statuses):
+        return f"{site_key}_vehicle_candidate_available"
     if any("waiting_confirmation" in status for status in statuses):
         return f"{site_key}_waiting_confirmation"
     if any("failed" in status or "error" in status for status in statuses):

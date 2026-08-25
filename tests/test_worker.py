@@ -3038,6 +3038,88 @@ class WorkerTests(unittest.TestCase):
         self.assertIn(("consumables_saved", "新坡92"), posts)
         self.assertIn(("consumables_saved", "新坡93"), posts)
 
+    def test_run_consumables_uses_confirmed_candidate_only_for_lookup(self):
+        task = {
+            "task_id": "task-candidate-consumables",
+            "created_at": "2026-08-24T20:00:00",
+            "vehicle": "新坡92",
+            "case_id": "2026082410100319592101",
+        }
+        lookup_vehicles: list[str] = []
+        posts: list[dict[str, object]] = []
+        reconciliation = {
+            "targets": {
+                "新坡92": {
+                    "original_vehicle": "新坡92",
+                    "state": "selected",
+                    "selected_vehicle": "新坡93",
+                    "candidates": [{"vehicle": "新坡93", "source": "一站通耗材"}],
+                }
+            }
+        }
+
+        with mock.patch.object(worker_module, "login_acs_and_get_driver", return_value=object()), mock.patch.object(
+            worker_module,
+            "open_consumable_record_for_task",
+            side_effect=lambda _driver, request, **_kwargs: lookup_vehicles.append(request.vehicle) or "saved",
+        ), mock.patch.object(worker_module, "save_consumables_record_enabled", return_value=True), mock.patch.object(
+            worker_module,
+            "post_status",
+            side_effect=lambda *_args, **kwargs: posts.append(kwargs),
+        ):
+            result = worker_module.run_consumables_worker_task(
+                "http://nas",
+                "worker-a",
+                task,
+                Path("artifacts"),
+                update_overall=False,
+                vehicle_reconciliation=reconciliation,
+            )
+
+        self.assertEqual(lookup_vehicles, ["新坡93"])
+        self.assertEqual(result.status, "consumables_saved")
+        self.assertEqual(posts[-1]["reconciliation_vehicle_key"], "新坡92")
+
+    def test_run_consumables_reports_detected_candidate_to_nas(self):
+        task = {
+            "task_id": "task-detected-candidate",
+            "created_at": "2026-08-24T20:00:00",
+            "vehicle": "新坡92",
+            "case_id": "2026082410100319592101",
+        }
+        posts: list[dict[str, object]] = []
+        candidate = {
+            "vehicle": "新坡93",
+            "source": "一站通耗材",
+            "record_id": "20260824195921012",
+        }
+
+        with mock.patch.object(worker_module, "login_acs_and_get_driver", return_value=object()), mock.patch.object(
+            worker_module,
+            "open_consumable_record_for_task",
+            side_effect=worker_module.VehicleCandidateLookupError(
+                "consumables",
+                "新坡92",
+                [candidate],
+            ),
+        ), mock.patch.object(
+            worker_module,
+            "post_status",
+            side_effect=lambda *_args, **kwargs: posts.append(kwargs),
+        ):
+            result = worker_module.run_consumables_worker_task(
+                "http://nas",
+                "worker-a",
+                task,
+                Path("artifacts"),
+                update_overall=False,
+            )
+
+        self.assertEqual(result.status, "consumables_vehicle_candidate_available")
+        self.assertEqual(posts[-1]["reconciliation_vehicle_key"], "新坡92")
+        self.assertEqual(posts[-1]["vehicle_candidates"][0]["vehicle"], "新坡93")
+        self.assertEqual(posts[-1]["vehicle_candidates"][0]["record_id"], "20260824195921012")
+
     def test_run_disinfection_single_vehicle_logs_in_before_opening_record(self):
         task = {
             "task_id": "task-single-disinfection",

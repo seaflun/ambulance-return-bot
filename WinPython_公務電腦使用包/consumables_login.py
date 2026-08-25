@@ -27,6 +27,7 @@ from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, nor
 from ambulance_bot.profile_paths import runtime_profile_dir
 from ambulance_bot.task_cancellation import TaskCancellationError
 from ambulance_bot.update_safety import ManualUpdateRequiredError, manual_update_reason
+from ambulance_bot.vehicle_reconciliation import VehicleCandidateLookupError
 from ambulance_bot.window_layout import apply_tile
 
 
@@ -128,7 +129,7 @@ def open_consumable_record_for_task(
             cancel_check=cancel_check,
             update_context=update_context,
         )
-    except (TaskCancellationError, ManualUpdateRequiredError):
+    except (TaskCancellationError, ManualUpdateRequiredError, VehicleCandidateLookupError):
         raise
     except Exception as exc:
         request = task if isinstance(task, AmbulanceReturnRequest) else AmbulanceReturnRequest.from_dict(task)
@@ -577,15 +578,23 @@ def _find_consumable_detail_hrefs(driver: webdriver.Chrome, request: AmbulanceRe
 
     if request.vehicle and scored:
         scored.sort(key=lambda item: item[0], reverse=True)
+        candidate_records: list[dict[str, str]] = []
         matched_hrefs = _find_consumable_hrefs_by_vehicle_code(
             driver,
             [href for _, href, _ in scored],
             request.vehicle,
             request.case_id,
+            candidate_records=candidate_records,
         )
         matched = [item for item in scored if item[1] in matched_hrefs]
         if matched:
             return _select_consumable_patient_group(matched)
+        if candidate_records:
+            raise VehicleCandidateLookupError(
+                "consumables",
+                request.vehicle,
+                candidate_records,
+            )
         raise RuntimeError(f"耗材內容頁找不到符合車輛的紀錄：車輛={request.vehicle} 候選={len(scored)}")
 
     sid_scored.sort(key=lambda item: item[0], reverse=True)
@@ -776,14 +785,24 @@ def _select_consumable_patient_group(scored: list[tuple[int, str, str]]) -> list
 
 
 def _consumable_sid_score(case_id: str, sid: str) -> int:
+    event_key = _case_id_temsis_event_key(case_id)
+    sid_digits = "".join(ch for ch in str(sid or "") if ch.isdigit())
+    if event_key and sid_digits.startswith(event_key):
+        return 120
     fragments = _case_id_sid_fragments(case_id)
     if not fragments:
         return 0
-    sid_digits = "".join(ch for ch in str(sid or "") if ch.isdigit())
     for fragment in fragments:
         if fragment and fragment in sid_digits:
             return 20 if len(fragment) > 6 else 10
     return 0
+
+
+def _case_id_temsis_event_key(case_id: str) -> str:
+    digits = "".join(ch for ch in str(case_id or "") if ch.isdigit())
+    if len(digits) < 20 or digits[:2] not in {"19", "20"}:
+        return ""
+    return f"{digits[:8]}{digits[14:20]}"
 
 
 def _case_id_sid_fragments(case_id: str) -> list[str]:
@@ -944,6 +963,7 @@ def _find_consumable_hrefs_by_vehicle_code(
     hrefs: list[str],
     vehicle: str,
     case_id: str = "",
+    candidate_records: list[dict[str, str]] | None = None,
 ) -> list[str]:
     expected_vehicle = str(vehicle or "").strip()
     if not expected_vehicle:
@@ -959,8 +979,18 @@ def _find_consumable_hrefs_by_vehicle_code(
         actual_case_id = _normalized_consumable_case_id(_consumable_detail_case_id(driver))
         if expected_case_id and actual_case_id != expected_case_id:
             continue
-        if _consumable_detail_vehicle_label(driver) == expected_vehicle:
+        actual_vehicle = _consumable_detail_vehicle_label(driver)
+        if actual_vehicle == expected_vehicle:
             matched.append(href)
+        elif candidate_records is not None and actual_vehicle:
+            candidate_records.append(
+                {
+                    "vehicle": actual_vehicle,
+                    "source": "一站通耗材",
+                    "record_id": _emm_temsis_id_from_href(href),
+                    "case_id": actual_case_id,
+                }
+            )
     return matched
 
 

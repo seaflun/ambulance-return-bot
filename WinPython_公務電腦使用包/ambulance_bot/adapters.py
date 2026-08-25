@@ -15,6 +15,8 @@ class SiteAutomationResult:
     failure_reason: str = ""
     next_action: str = ""
     exception_type: str = ""
+    vehicle_candidates: tuple[dict[str, str], ...] = ()
+    reconciliation_vehicle_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -14,9 +14,133 @@ from ambulance_bot.task_store import (
     task_completion_snapshot,
     worker_claim_lease_is_active,
 )
+from ambulance_bot.vehicle_reconciliation import (
+    normalize_vehicle_candidates,
+    site_vehicle_reconciliation_ready_to_retry,
+    vehicle_reconciliation_run_block_detail,
+)
 
 
 class JsonTaskStoreTests(unittest.TestCase):
+    def test_candidate_choices_deduplicate_patients_and_require_every_vehicle_to_be_selected(self):
+        candidates = normalize_vehicle_candidates(
+            [
+                {"vehicle": "新坡93", "source": "一站通耗材", "record_id": "...012"},
+                {"vehicle": "新坡93", "source": "一站通耗材", "record_id": "...013"},
+                {"vehicle": "新坡91", "source": "一站通耗材", "record_id": "...014"},
+            ]
+        )
+        self.assertEqual([candidate["vehicle"] for candidate in candidates], ["新坡93", "新坡91"])
+
+        site = {
+            "vehicle_reconciliation": {
+                "targets": {
+                    "新坡92": {"state": "selected", "selected_vehicle": "新坡93"},
+                    "新坡90": {"state": "available", "candidates": [{"vehicle": "新坡91"}]},
+                }
+            }
+        }
+        self.assertFalse(site_vehicle_reconciliation_ready_to_retry(site))
+        site["vehicle_reconciliation"]["targets"]["新坡90"]["state"] = "selected"
+        site["vehicle_reconciliation"]["targets"]["新坡90"]["selected_vehicle"] = "新坡91"
+        self.assertTrue(site_vehicle_reconciliation_ready_to_retry(site))
+
+    def test_each_selected_candidate_site_can_run_individually_while_full_run_stays_blocked(self):
+        payload = {
+            "site_statuses": {
+                "consumables": {
+                    "vehicle_reconciliation": {
+                        "targets": {
+                            "新坡92": {
+                                "state": "selected",
+                                "selected_vehicle": "新坡93",
+                                "candidates": [{"vehicle": "新坡93"}],
+                            }
+                        }
+                    }
+                },
+                "disinfection": {
+                    "vehicle_reconciliation": {
+                        "targets": {
+                            "新坡92": {
+                                "state": "selected",
+                                "selected_vehicle": "新坡93",
+                                "candidates": [{"vehicle": "新坡93"}],
+                            }
+                        }
+                    }
+                },
+            }
+        }
+
+        self.assertTrue(vehicle_reconciliation_run_block_detail(payload))
+        self.assertEqual("", vehicle_reconciliation_run_block_detail(payload, "consumables"))
+        self.assertEqual("", vehicle_reconciliation_run_block_detail(payload, "disinfection"))
+
+    def test_failed_selected_candidate_is_retained_until_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = AmbulanceReturnRequest(
+                task_id="candidate-retry",
+                created_at=datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            store.create(request)
+            store.update_site_result(
+                request.task_id,
+                SiteAutomationResult(
+                    "consumables",
+                    "一站通耗材",
+                    "consumables_vehicle_candidate_available",
+                    "同案件不同車輛",
+                    vehicle_candidates=(
+                        {
+                            "vehicle": "新坡93",
+                            "source": "一站通耗材",
+                            "record_id": "20260824195921012",
+                        },
+                    ),
+                    reconciliation_vehicle_key="新坡92",
+                ),
+            )
+            store.select_site_vehicle_candidate(
+                request.task_id,
+                "consumables",
+                "新坡92",
+                "新坡93",
+            )
+
+            failed = store.update_site_result(
+                request.task_id,
+                SiteAutomationResult(
+                    "consumables",
+                    "一站通耗材",
+                    "consumables_failed",
+                    "登入逾時",
+                    reconciliation_vehicle_key="新坡92",
+                ),
+            )
+
+            target = failed["site_statuses"]["consumables"]["vehicle_reconciliation"]["targets"]["新坡92"]
+            self.assertEqual(target["state"], "selected")
+            self.assertEqual(target["selected_vehicle"], "新坡93")
+
+            saved = store.update_site_result(
+                request.task_id,
+                SiteAutomationResult(
+                    "consumables",
+                    "一站通耗材",
+                    "consumables_saved",
+                    "已保存",
+                    reconciliation_vehicle_key="新坡92",
+                ),
+            )
+            self.assertNotIn(
+                "vehicle_reconciliation",
+                saved["site_statuses"]["consumables"],
+            )
+
     def test_disaster_completion_uses_only_work_log_mileage_and_enabled_fuel(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
@@ -221,7 +345,7 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["remaining_site_keys"], ["disinfection"])
             self.assertFalse(snapshot["all_complete"])
 
-    def test_completion_snapshot_requires_volunteer_assist_after_first_five_sites(self):
+    def test_completion_snapshot_orders_volunteer_assist_after_duty_work_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp))
             request = AmbulanceReturnRequest(
@@ -247,10 +371,10 @@ class JsonTaskStoreTests(unittest.TestCase):
             self.assertEqual(
                 [
                     "duty_work_log",
+                    "volunteer_assist",
                     "vehicle_mileage",
                     "consumables",
                     "disinfection",
-                    "volunteer_assist",
                 ],
                 snapshot["active_site_keys"],
             )

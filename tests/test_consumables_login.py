@@ -1802,11 +1802,27 @@ class ConsumablesLoginTests(unittest.TestCase):
             case_address="桃園市觀音區廣大路542巷3弄7號",
         )
         with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"), self.assertRaisesRegex(
-            RuntimeError, "找不到符合車輛"
-        ):
+            RuntimeError, "同案件不同車輛"
+        ) as captured:
             _find_consumable_detail_href(driver, request)
 
+        self.assertEqual(captured.exception.expected_vehicle, "新坡92")
+        self.assertEqual(captured.exception.candidates[0]["vehicle"], "新坡93")
+        self.assertEqual(captured.exception.candidates[0]["source"], "一站通耗材")
         self.assertEqual(driver.visited, ["https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=2026070910100321364403"])
+
+    def test_consumable_sid_score_matches_temsis_event_key_across_official_case_suffixes(self):
+        for case_id, temsis_id in (
+            ("2026082410100319592101", "20260824195921012"),
+            ("2026082410100317195401", "20260824171954017"),
+            ("2026082010100315595901", "20260820155959012"),
+            ("2026082010100315595902", "20260820155959012"),
+        ):
+            self.assertGreaterEqual(_consumable_sid_score(case_id, temsis_id), 100)
+        self.assertEqual(
+            _consumable_sid_score("2026082010100315595801", "20260820155959012"),
+            0,
+        )
 
     def test_open_consumable_record_rejects_single_vehicle_detail_mismatch_before_writing(self):
         class FakeElement:

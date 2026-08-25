@@ -151,9 +151,15 @@ from ambulance_bot.task_store import (
     initial_worker_queue_state,
     pending_legacy_silent_save_report_event_id,
     task_completion_snapshot,
+    task_has_vehicle_reconciliation,
     task_payload_is_active_for_edit,
+    vehicle_reconciliation_run_block_detail,
     worker_claim_lease_is_active,
     worker_queue_state,
+)
+from ambulance_bot.vehicle_reconciliation import (
+    reconciliation_targets,
+    site_vehicle_reconciliation_ready_to_retry,
 )
 
 
@@ -727,6 +733,9 @@ def run_task(task_id: str):
         return redirect(url_for("task_detail", task_id=task_id))
     if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
         return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
+    reconciliation_detail = vehicle_reconciliation_run_block_detail(payload)
+    if reconciliation_detail:
+        return reconciliation_detail, 409
     payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
@@ -778,6 +787,9 @@ def run_task_site(task_id: str, site_key: str):
         return task_site_run_redirect(task_id)
     if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
         return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
+    reconciliation_detail = vehicle_reconciliation_run_block_detail(payload, site_key)
+    if reconciliation_detail:
+        return reconciliation_detail, 409
     if return_service in {"ems", "disaster", "public_pc"}:
         payload = mark_public_pc_report_retry_task(task_id, payload)
     payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
@@ -802,6 +814,43 @@ def run_task_site(task_id: str, site_key: str):
         detail=f"後台重新送出{site_display_name(site_key)}，已排入公務電腦處理。",
     )
     return task_site_run_redirect(task_id)
+
+
+@app.post("/tasks/<task_id>/sites/<site_key>/vehicle-candidate")
+def select_site_vehicle_candidate(task_id: str, site_key: str):
+    if site_key not in VALID_SITE_KEYS:
+        abort(404)
+    vehicle_key = str(request.form.get("vehicle_key") or "").strip()
+    candidate_vehicle = str(request.form.get("candidate_vehicle") or "").strip()
+    expected_token = site_vehicle_candidate_token(
+        task_id,
+        site_key,
+        vehicle_key,
+        candidate_vehicle,
+    )
+    if not expected_token:
+        return "候選車輛確認功能缺少安全設定，請先設定 WORKER_TOKEN。", 503
+    supplied_token = str(request.form.get("candidate_token") or "").strip()
+    if not hmac.compare_digest(supplied_token, expected_token):
+        abort(403)
+    try:
+        payload = store.select_site_vehicle_candidate(
+            task_id,
+            site_key,
+            vehicle_key,
+            candidate_vehicle,
+        )
+    except TaskActiveError:
+        return "任務正在執行中，無法變更候選車輛。", 409
+    except SiteCompletionConflictError as exc:
+        return str(exc), 409
+    except (FileNotFoundError, KeyError):
+        abort(404)
+    report_public_pc_task_event(
+        payload,
+        f"確認{site_display_name(site_key)}查找車輛：{candidate_vehicle}",
+    )
+    return redirect(url_for("task_detail", task_id=task_id))
 
 
 @app.post("/tasks/<task_id>/sites/<site_key>/complete")
@@ -1621,7 +1670,26 @@ def worker_task_status(task_id: str):
         site_result = None
         if site_key:
             diagnostic_fields = {field: str(data.get(field) or "").strip() for field in DIAGNOSTIC_FIELDS}
-            site_result = SiteAutomationResult(site_key, site_name, status_text, detail, **diagnostic_fields)
+            raw_candidates = data.get("vehicle_candidates")
+            vehicle_candidates = tuple(
+                {
+                    str(key): str(value or "")
+                    for key, value in candidate.items()
+                }
+                for candidate in raw_candidates
+                if isinstance(candidate, Mapping)
+            ) if isinstance(raw_candidates, list) else ()
+            site_result = SiteAutomationResult(
+                site_key,
+                site_name,
+                status_text,
+                detail,
+                **diagnostic_fields,
+                vehicle_candidates=vehicle_candidates,
+                reconciliation_vehicle_key=str(
+                    data.get("reconciliation_vehicle_key") or ""
+                ).strip(),
+            )
         target_overall_status = overall_status if site_key else overall_status or status_text
         target_overall_detail = overall_detail if overall_status else detail
         payload, duplicate = store.apply_worker_status(
@@ -2481,6 +2549,22 @@ def site_manual_complete_token(task_id: str, site_key: str, vehicle_key: str = "
     if len(secret) < 32:
         return ""
     message = f"ambulance-manual-complete\x00{task_id}\x00{site_key}\x00{vehicle_key}".encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def site_vehicle_candidate_token(
+    task_id: str,
+    site_key: str,
+    vehicle_key: str,
+    candidate_vehicle: str,
+) -> str:
+    secret = os.getenv("WORKER_TOKEN", "").strip().encode("utf-8")
+    if len(secret) < 32:
+        return ""
+    message = (
+        f"ambulance-vehicle-candidate\x00{task_id}\x00{site_key}\x00"
+        f"{vehicle_key}\x00{candidate_vehicle}"
+    ).encode("utf-8")
     return hmac.new(secret, message, hashlib.sha256).hexdigest()
 
 
@@ -5190,6 +5274,10 @@ def site_update_contexts_for_task_edit(previous_task: dict, current_task: dict, 
 def status_label(status: str, detail: str = "") -> str:
     value = str(status or "")
     detail_value = str(detail or "")
+    if "vehicle_candidate_available" in value:
+        return "待選車輛"
+    if "vehicle_candidate_selected" in value:
+        return "已選車待登打"
     if "case not found" in detail_value.lower() or "找不到符合案件" in detail_value or "missing disinfection detail" in detail_value.lower():
         return "找不到案件"
     if site_waits_for_confirmation(value):
@@ -5221,6 +5309,8 @@ def status_label(status: str, detail: str = "") -> str:
 
 def status_class(status: str) -> str:
     value = str(status or "")
+    if "vehicle_candidate" in value:
+        return "waiting"
     if site_waits_for_confirmation(value):
         return "waiting"
     if value == "desktop_fast_completed":
@@ -5268,12 +5358,16 @@ def task_has_failed_site(site_statuses: dict) -> bool:
 
 
 def task_edit_is_locked(payload: dict) -> bool:
-    return task_payload_is_active_for_edit(payload) or task_has_waiting_confirmation(
-        dict(payload.get("site_statuses") or {})
+    return (
+        task_payload_is_active_for_edit(payload)
+        or task_has_waiting_confirmation(dict(payload.get("site_statuses") or {}))
+        or task_has_vehicle_reconciliation(payload)
     )
 
 
 def task_edit_lock_message(payload: dict) -> str:
+    if task_has_vehicle_reconciliation(payload):
+        return "任務已有同案件不同車輛候選資料；請先確認候選車輛並完成該站單獨登打。"
     if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
         return "任務尚有待人工確認的資料，請先到官方網頁核對或完成人工更新，再按「已確認」。"
     return "任務正在執行中，請等待完成或先中止登打後再編輯。"
@@ -5294,6 +5388,12 @@ def site_can_run_individually(site_statuses: dict, site_key: str) -> bool:
             blocked = True
         if ordered_key != site_key:
             continue
+        if site_vehicle_reconciliation_ready_to_retry(site):
+            return True
+        if "vehicle_candidate_available" in current_status:
+            return False
+        if "vehicle_candidate_selected" in current_status:
+            return True
         if current_status.endswith("_needs_update"):
             return True
         return current_class == "failed" or (blocked and current_class != "complete")
@@ -6001,7 +6101,7 @@ def active_site_keys_for_task(task: dict, site_statuses: dict | None = None) -> 
     fuel_status = str(dict((site_statuses or {}).get("fuel_record") or {}).get("status") or "")
     if "waiting_confirmation" in fuel_status and "fuel_record" not in keys:
         keys.append("fuel_record")
-    return keys
+    return [site_key for site_key in SITE_RUN_ORDER if site_key in keys]
 
 
 def task_site_count_label(task: dict, site_statuses: dict | None = None) -> str:
@@ -6011,11 +6111,57 @@ def task_site_count_label(task: dict, site_statuses: dict | None = None) -> str:
     )
 
 
+def task_run_button_label(payload: dict) -> str:
+    snapshot = task_completion_snapshot(payload)
+    total_count = int(snapshot["total_count"])
+    remaining_count = len(snapshot["remaining_site_keys"])
+    if 0 < remaining_count < total_count:
+        remaining_label = {1: "一站", 2: "兩站", 3: "三站", 4: "四站", 5: "五站", 6: "六站"}.get(
+            remaining_count,
+            f"{remaining_count}站",
+        )
+        return f"剩餘{remaining_label}登打啟動"
+    return f"{snapshot['site_count_label']}登打啟動"
+
+
 def task_site_display_pairs(task: dict, site_statuses: dict | None = None) -> list[tuple[str, str]]:
     return [
         (site_key, SITE_DISPLAY_NAMES.get(site_key, site_key))
         for site_key in active_site_keys_for_task(task, site_statuses)
     ]
+
+
+def task_card_station_label(
+    task: dict,
+    site_statuses: dict | None,
+    site_key: str,
+) -> str:
+    active_site_keys = active_site_keys_for_task(task, site_statuses)
+    if site_key == "vehicle_mileage":
+        mileage_keys = [key for key in ("vehicle_mileage", "fuel_record") if key in active_site_keys]
+        positions = [active_site_keys.index(key) + 1 for key in mileage_keys]
+        if not positions:
+            return ""
+        return "第" + "、".join(str(position) for position in positions) + "站"
+    if site_key not in active_site_keys:
+        return ""
+    return f"第{active_site_keys.index(site_key) + 1}站"
+
+
+def site_vehicle_candidate_rows(site: dict | object) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for vehicle_key, target in reconciliation_targets(site).items():
+        candidates = [dict(candidate) for candidate in list(target.get("candidates") or []) if isinstance(candidate, dict)]
+        rows.append(
+            {
+                "vehicle_key": vehicle_key,
+                "original_vehicle": str(target.get("original_vehicle") or vehicle_key),
+                "state": str(target.get("state") or "available"),
+                "selected_vehicle": str(target.get("selected_vehicle") or ""),
+                "candidates": candidates,
+            }
+        )
+    return rows
 
 
 def _last_vehicle_mileage_sort_key(payload: object) -> tuple[datetime, datetime]:
@@ -6416,6 +6562,9 @@ def template_helpers() -> dict:
         "site_diagnostic": site_diagnostic,
         "site_waits_for_confirmation": site_waits_for_confirmation,
         "site_manual_complete_token": site_manual_complete_token,
+        "site_vehicle_candidate_rows": site_vehicle_candidate_rows,
+        "site_vehicle_candidate_token": site_vehicle_candidate_token,
+        "site_vehicle_reconciliation_ready_to_retry": site_vehicle_reconciliation_ready_to_retry,
         "site_short_name": site_short_name,
         "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
@@ -6433,6 +6582,7 @@ def template_helpers() -> dict:
         "status_label": status_label,
         "task_datetime_display": task_datetime_display,
         "task_has_waiting_confirmation": task_has_waiting_confirmation,
+        "task_has_vehicle_reconciliation": task_has_vehicle_reconciliation,
         "task_has_failed_site": task_has_failed_site,
         "task_payload_is_active": task_payload_is_active,
         "task_payload_is_active_for_edit": task_payload_is_active_for_edit,
@@ -6443,6 +6593,8 @@ def template_helpers() -> dict:
         "task_has_active_fuel_site": task_has_active_fuel_site,
         "task_has_fuel_record": task_has_fuel_record,
         "task_site_count_label": task_site_count_label,
+        "task_run_button_label": task_run_button_label,
+        "task_card_station_label": task_card_station_label,
         "task_detail_title": task_detail_title,
         "task_time_range": task_time_range,
         "task_site_display_pairs": task_site_display_pairs,

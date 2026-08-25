@@ -123,8 +123,21 @@ def make_site_result(
     status: str,
     detail: str,
     exception: BaseException | None = None,
+    *,
+    vehicle_candidates: tuple[dict[str, str], ...] = (),
+    reconciliation_vehicle_key: str = "",
 ) -> SiteAutomationResult:
-    return result_with_diagnostics(SiteAutomationResult(site_key, site_name, status, detail), exception)
+    return result_with_diagnostics(
+        SiteAutomationResult(
+            site_key,
+            site_name,
+            status,
+            detail,
+            vehicle_candidates=vehicle_candidates,
+            reconciliation_vehicle_key=reconciliation_vehicle_key,
+        ),
+        exception,
+    )
 
 
 def _diagnostic_category(status: str, detail: str, exception: BaseException | None) -> str:
@@ -134,6 +147,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return ""
     if status.endswith("_saved"):
         return ""
+    if "vehicle_candidate" in status:
+        return "vehicle_candidate"
     if "waiting_confirmation" in status:
         return "waiting_confirmation"
     if "prefilled" in status or "ready" in status or "captcha" in status or "未按儲存" in raw_detail:
@@ -219,6 +234,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return "讀取任務"
     if category == "multi_patient_consumables":
         return "同案多患者耗材確認"
+    if category == "vehicle_candidate":
+        return "開啟耗材紀錄" if site_key == "consumables" else "開啟消毒紀錄"
     if category == "ppe_driver":
         return "填寫加油紀錄" if site_key == "fuel_record" else "填寫返隊時間與里程"
     if category == "login":
@@ -311,6 +328,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "fuel_period": "加油頁月份與任務加油月份不一致，油卡清單尚未切到任務月份。",
         "ppe_driver": "PPE 駕駛清單找不到指定人員或有效代碼。",
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
+        "vehicle_candidate": "已確認同一案件存在不同出勤車輛的官方紀錄，需由使用者選擇本次查找車輛。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
         "save": "填寫後的儲存動作未完成或未確認成功。",
         "query": "查詢案件時沒有取得可用結果。",
@@ -339,6 +357,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "確認 NAS 網址與 WORKER_TOKEN，重啟 worker 後重試登打流程。"
     if category == "multi_patient_consumables":
         return "依患者序號查看成功與失敗頁面；修正一站通資料後可單獨重跑耗材。"
+    if category == "vehicle_candidate":
+        return "確認卡片上的候選車輛後，只以「單獨登打」重試此站；原案件車號不會被修改。"
     if category == "login":
         return f"到公務電腦完成{site_name}登入或驗證碼，再回任務頁按「單獨登打」重試。"
     if category == "case_not_found":

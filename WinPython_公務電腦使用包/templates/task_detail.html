@@ -101,8 +101,14 @@
       white-space: nowrap;
       box-shadow: 0 8px 18px rgba(184, 107, 91, .18);
       cursor: pointer;
+      transition: transform .16s ease, filter .16s ease, box-shadow .16s ease, background-color .16s ease;
     }
     .button:hover, button:hover { filter: brightness(.98); }
+    .button:active, button:active { transform: scale(.985); }
+    .button:focus-visible, button:focus-visible, a:focus-visible {
+      outline: 3px solid rgba(85, 122, 149, .45);
+      outline-offset: 3px;
+    }
     .secondary {
       background: transparent;
       color: var(--ink);
@@ -199,6 +205,15 @@
       gap: 10px;
       margin-bottom: 14px;
     }
+    .card-title { min-width: 0; }
+    .card-stage-label {
+      display: block;
+      margin-bottom: 2px;
+      color: var(--muted);
+      font-size: var(--text-xs);
+      font-weight: 720;
+      line-height: 1.2;
+    }
     .card-state {
       display: inline-flex;
       align-items: center;
@@ -235,6 +250,37 @@
       color: var(--ink);
       font-weight: 680;
       overflow-wrap: anywhere;
+    }
+    .vehicle-reconciliation {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+      padding: 13px 14px;
+      border: 1px solid color-mix(in srgb, var(--waiting) 34%, var(--line));
+      border-radius: 12px;
+      background: var(--waiting-bg);
+    }
+    .vehicle-reconciliation__title {
+      color: var(--ink);
+      font-size: var(--text-sm);
+      font-weight: 800;
+    }
+    .vehicle-reconciliation__copy {
+      color: var(--muted);
+      font-size: var(--text-sm);
+      line-height: 1.5;
+    }
+    .vehicle-reconciliation__choices {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .vehicle-reconciliation .card-actions button { min-height: 44px; }
+    .vehicle-reconciliation__selected {
+      color: var(--waiting);
+      font-size: var(--text-sm);
+      font-weight: 780;
     }
     .timeline {
       background: var(--surface);
@@ -340,6 +386,9 @@
       .events li { grid-template-columns: 38px minmax(0, 1fr); }
       .event-time { grid-column: 2; }
     }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
   </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
@@ -366,6 +415,52 @@
       </form>
     {% endif %}
   {% endif %}
+{%- endmacro %}
+{% macro vehicle_candidate_controls(task_id, site_key, site, task_active) -%}
+  {% set candidate_rows = site_vehicle_candidate_rows(site) %}
+  {% if candidate_rows %}
+    <section class="vehicle-reconciliation" aria-live="polite" role="alert">
+      <div class="vehicle-reconciliation__title">同案件不同車</div>
+      {% for row in candidate_rows %}
+        <div class="vehicle-reconciliation__copy">系統車輛：{{ row.original_vehicle }}</div>
+        {% if row.state == 'selected' %}
+          <div class="vehicle-reconciliation__selected">已選擇查找車輛：{{ row.selected_vehicle }}</div>
+        {% else %}
+          <div class="vehicle-reconciliation__choices">
+            {% for candidate in row.candidates %}
+              <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/vehicle-candidate">
+                <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
+                <input type="hidden" name="candidate_vehicle" value="{{ candidate.vehicle }}">
+                <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task_id, site_key, row.vehicle_key, candidate.vehicle) }}">
+                <button class="secondary" type="submit">確認使用{{ candidate.vehicle }}</button>
+              </form>
+              {% if candidate.source %}<span class="label">來源：{{ candidate.source }}</span>{% endif %}
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endfor %}
+      <div class="vehicle-reconciliation__copy">此選擇只用於本卡片查找，不會修改救護登打案件的車輛。</div>
+    </section>
+  {% endif %}
+{%- endmacro %}
+{% macro task_card_head(task_id, site_key, site, title, stage_label, task_active, completion) -%}
+  {% set candidate_ready = site_vehicle_reconciliation_ready_to_retry(site) %}
+  {% set can_run = (show_task_entry_controls() or status_class(site.status) == 'failed' or candidate_ready) and (not task_has_vehicle_reconciliation(payload) or candidate_ready) %}
+  <div class="card-head">
+    <div class="card-title">
+      {% if stage_label %}<span class="card-stage-label">{{ stage_label }}</span>{% endif %}
+      <h3>{{ title }}</h3>
+    </div>
+    <div class="card-state">
+      {% if can_run and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, site_key) %}
+        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/run">
+          <button class="secondary" type="submit">{{ site_action_button_label(site.status, site_key) }}</button>
+        </form>
+      {% endif %}
+      {{ manual_confirmation_forms(task_id, site_key, site, task_active) }}
+      <span class="status {{ status_class(site.status) }}">{{ status_label(site.status, site.detail) }}</span>
+    </div>
+  </div>
 {%- endmacro %}
 <body class="workspace-page workspace-page--task workspace-page--{{ payload.task.service_type }}-task">
   <main>
@@ -400,9 +495,9 @@
             <strong>是否已結案?</strong>
             <button type="submit">是</button>
           </form>
-        {% elif can_retry_failed_sites and not task_active and not completion.all_complete and not task_has_waiting_confirmation(payload.site_statuses) %}
+        {% elif can_retry_failed_sites and not task_active and not completion.all_complete and not task_has_waiting_confirmation(payload.site_statuses) and not task_has_vehicle_reconciliation(payload) %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
-            <button type="submit">{{ task_site_count_label(payload.task, payload.site_statuses) }}登打啟動</button>
+            <button type="submit">{{ task_run_button_label(payload) }}</button>
           </form>
         {% endif %}
         {% if not task_edit_locked and payload.task.service_type != 'disaster' %}
@@ -416,18 +511,7 @@
       <div class="task-grid">
         {% set duty_site = payload.site_statuses.get('duty_work_log', {}) %}
         <article class="task-card {{ status_class(duty_site.status) }}">
-          <div class="card-head">
-            <h3>工作</h3>
-            <div class="card-state">
-              {% if (show_task_entry_controls() or status_class(duty_site.status) == 'failed') and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, 'duty_work_log') %}
-                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/duty_work_log/run">
-                  <button class="secondary" type="submit">{{ site_action_button_label(duty_site.status, 'duty_work_log') }}</button>
-                </form>
-              {% endif %}
-              {{ manual_confirmation_forms(payload.task.task_id, 'duty_work_log', duty_site, task_active) }}
-              <span class="status {{ status_class(duty_site.status) }}">{{ status_label(duty_site.status) }}</span>
-            </div>
-          </div>
+          {{ task_card_head(payload.task.task_id, 'duty_work_log', duty_site, '工作', task_card_station_label(payload.task, payload.site_statuses, 'duty_work_log'), task_active, completion) }}
           <ul class="line-list">
             <li><span class="label">地址</span><span class="value">{{ payload.task.case_address or '未填' }}</span></li>
             <li><span class="label">事由</span><span class="value">{{ payload.task.case_reason or '未填' }}</span></li>
@@ -449,23 +533,27 @@
               {% endif %}
             {% endif %}
           </ul>
+          {{ vehicle_candidate_controls(payload.task.task_id, 'duty_work_log', duty_site, task_active) }}
         </article>
+
+        {% if payload.task.service_type != 'disaster' and payload.task.volunteer_assist %}
+        {% set volunteer_site = payload.site_statuses.get('volunteer_assist', {}) %}
+        <article class="task-card {{ status_class(volunteer_site.status) }}">
+          {{ task_card_head(payload.task.task_id, 'volunteer_assist', volunteer_site, '民力系統', task_card_station_label(payload.task, payload.site_statuses, 'volunteer_assist'), task_active, completion) }}
+          <ul class="line-list">
+            <li><span class="label">協勤人員</span><span class="value">{{ payload.task.volunteer_assist_member_name or '未選取' }}{% if payload.task.volunteer_assist_member_title %} / {{ payload.task.volunteer_assist_member_title }}{% endif %}</span></li>
+            <li><span class="label">所屬／服勤</span><span class="value">{{ payload.task.volunteer_assist_member_unit or '大園救護分隊' }} / 新坡分隊</span></li>
+            <li><span class="label">出／入</span><span class="value">{{ task_datetime_display(payload.task, 'case_date', 'case_time') }} / {{ task_datetime_display(payload.task, 'return_date', 'return_time') }}</span></li>
+            {% if volunteer_site.detail %}<li><span class="label">回報</span><span class="value">{{ volunteer_site.detail }}</span></li>{% endif %}
+          </ul>
+          {{ vehicle_candidate_controls(payload.task.task_id, 'volunteer_assist', volunteer_site, task_active) }}
+        </article>
+        {% endif %}
 
         {% set mileage_site = combined_mileage_site_status(payload.site_statuses, payload.task) %}
         {% set mileage_run_site_key = mileage_site.run_site_key or 'vehicle_mileage' %}
         <article class="task-card {{ status_class(mileage_site.status) }}">
-          <div class="card-head">
-            <h3>{{ '里程+加油' if task_has_active_fuel_site(payload.task, payload.site_statuses) else '里程' }}</h3>
-            <div class="card-state">
-              {% if (show_task_entry_controls() or status_class(mileage_site.status) == 'failed') and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, mileage_run_site_key) %}
-                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/{{ mileage_run_site_key }}/run">
-                  <button class="secondary" type="submit">{{ site_action_button_label(mileage_site.status, mileage_run_site_key) }}</button>
-                </form>
-              {% endif %}
-              {{ manual_confirmation_forms(payload.task.task_id, mileage_run_site_key, mileage_site, task_active) }}
-              <span class="status {{ status_class(mileage_site.status) }}">{{ status_label(mileage_site.status) }}</span>
-            </div>
-          </div>
+          {{ task_card_head(payload.task.task_id, mileage_run_site_key, mileage_site, '里程+加油' if task_has_active_fuel_site(payload.task, payload.site_statuses) else '里程', task_card_station_label(payload.task, payload.site_statuses, 'vehicle_mileage'), task_active, completion) }}
           <ul class="line-list">
             {% if vehicle_entries|length > 1 %}
               {% for entry in vehicle_entries %}
@@ -487,23 +575,13 @@
               <li><span class="label">{{ prefix }}單價</span><span class="value">{{ entry.fuel_unit_price or '未填' }}</span></li>
             {% endfor %}
           </ul>
+          {{ vehicle_candidate_controls(payload.task.task_id, mileage_run_site_key, mileage_site, task_active) }}
         </article>
 
         {% if payload.task.service_type != 'disaster' %}
         {% set consumables_site = payload.site_statuses.get('consumables', {}) %}
         <article class="task-card {{ status_class(consumables_site.status) }}">
-          <div class="card-head">
-            <h3>耗材</h3>
-            <div class="card-state">
-              {% if (show_task_entry_controls() or status_class(consumables_site.status) == 'failed') and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, 'consumables') %}
-                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/consumables/run">
-                  <button class="secondary" type="submit">{{ site_action_button_label(consumables_site.status, 'consumables') }}</button>
-                </form>
-              {% endif %}
-              {{ manual_confirmation_forms(payload.task.task_id, 'consumables', consumables_site, task_active) }}
-              <span class="status {{ status_class(consumables_site.status) }}">{{ status_label(consumables_site.status, consumables_site.detail) }}</span>
-            </div>
-          </div>
+          {{ task_card_head(payload.task.task_id, 'consumables', consumables_site, '耗材', task_card_station_label(payload.task, payload.site_statuses, 'consumables'), task_active, completion) }}
           <ul class="line-list">
             {% if vehicle_entries|length > 1 %}
               {% for entry in vehicle_entries %}
@@ -520,22 +598,12 @@
               {% endif %}
             {% endif %}
           </ul>
+          {{ vehicle_candidate_controls(payload.task.task_id, 'consumables', consumables_site, task_active) }}
         </article>
 
         {% set disinfection_site = payload.site_statuses.get('disinfection', {}) %}
         <article class="task-card {{ status_class(disinfection_site.status) }}">
-          <div class="card-head">
-            <h3>消毒</h3>
-            <div class="card-state">
-              {% if (show_task_entry_controls() or status_class(disinfection_site.status) == 'failed') and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, 'disinfection') %}
-                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/disinfection/run">
-                  <button class="secondary" type="submit">{{ site_action_button_label(disinfection_site.status, 'disinfection') }}</button>
-                </form>
-              {% endif %}
-              {{ manual_confirmation_forms(payload.task.task_id, 'disinfection', disinfection_site, task_active) }}
-              <span class="status {{ status_class(disinfection_site.status) }}">{{ status_label(disinfection_site.status, disinfection_site.detail) }}</span>
-            </div>
-          </div>
+          {{ task_card_head(payload.task.task_id, 'disinfection', disinfection_site, '消毒', task_card_station_label(payload.task, payload.site_statuses, 'disinfection'), task_active, completion) }}
           <ul class="line-list">
             {% if vehicle_entries|length > 1 %}
               {% for entry in vehicle_entries %}
@@ -551,31 +619,9 @@
               {% endif %}
             {% endif %}
           </ul>
+          {{ vehicle_candidate_controls(payload.task.task_id, 'disinfection', disinfection_site, task_active) }}
         </article>
 
-        {% if payload.task.volunteer_assist %}
-        {% set volunteer_site = payload.site_statuses.get('volunteer_assist', {}) %}
-        <article class="task-card {{ status_class(volunteer_site.status) }}">
-          <div class="card-head">
-            <h3>民力系統</h3>
-            <div class="card-state">
-              {% if (show_task_entry_controls() or status_class(volunteer_site.status) == 'failed') and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, 'volunteer_assist') %}
-                <form class="card-actions" method="post" action="/tasks/{{ payload.task.task_id }}/sites/volunteer_assist/run">
-                  <button class="secondary" type="submit">{{ site_action_button_label(volunteer_site.status, 'volunteer_assist') }}</button>
-                </form>
-              {% endif %}
-              {{ manual_confirmation_forms(payload.task.task_id, 'volunteer_assist', volunteer_site, task_active) }}
-              <span class="status {{ status_class(volunteer_site.status) }}">{{ status_label(volunteer_site.status, volunteer_site.detail) }}</span>
-            </div>
-          </div>
-          <ul class="line-list">
-            <li><span class="label">協勤人員</span><span class="value">{{ payload.task.volunteer_assist_member_name or '未選取' }}{% if payload.task.volunteer_assist_member_title %} / {{ payload.task.volunteer_assist_member_title }}{% endif %}</span></li>
-            <li><span class="label">所屬／服勤</span><span class="value">{{ payload.task.volunteer_assist_member_unit or '大園救護分隊' }} / 新坡分隊</span></li>
-            <li><span class="label">出／入</span><span class="value">{{ task_datetime_display(payload.task, 'case_date', 'case_time') }} / {{ task_datetime_display(payload.task, 'return_date', 'return_time') }}</span></li>
-            {% if volunteer_site.detail %}<li><span class="label">回報</span><span class="value">{{ volunteer_site.detail }}</span></li>{% endif %}
-          </ul>
-        </article>
-        {% endif %}
         {% endif %}
       </div>
     </section>

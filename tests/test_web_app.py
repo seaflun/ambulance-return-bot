@@ -27,7 +27,7 @@ from ambulance_bot.manual_task_lock import (
     manual_task_lock_path,
     set_manual_task_lock,
 )
-from ambulance_bot.models import AmbulanceReturnRequest
+from ambulance_bot.models import AmbulanceReturnRequest, FuelRecord
 from ambulance_bot.selenium_local import DutyCaseLookupResult
 from ambulance_bot.task_cancellation import task_cancellation_marker_path, task_cancellation_requested
 from ambulance_bot.task_runner import TaskRunner
@@ -7755,6 +7755,44 @@ class WebAppTests(unittest.TestCase):
         payload = self.store.get(task_id)
         self.assertNotEqual(payload["site_statuses"]["vehicle_mileage"]["status"], "completed_by_user")
 
+    def test_task_detail_run_button_shows_only_remaining_sites_after_partial_completion(self):
+        create_response = self.client.post("/tasks", data=self.valid_task_data())
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        for result in (
+            app_module.SiteAutomationResult(
+                "duty_work_log",
+                "工作紀錄簿",
+                "duty_work_log_saved",
+                "已完成。",
+            ),
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_saved",
+                "已完成。",
+            ),
+            app_module.SiteAutomationResult(
+                "consumables",
+                "一站通耗材",
+                "consumables_failed",
+                "登入逾時，請重試。",
+            ),
+            app_module.SiteAutomationResult(
+                "disinfection",
+                "消毒系統",
+                "disinfection_failed",
+                "官方頁未儲存，請重試。",
+            ),
+        ):
+            self.store.update_site_result(task_id, result)
+
+        self.client.post(f"/tasks/{task_id}/confirm-case-closed")
+        body = html.unescape(self.client.get(f"/tasks/{task_id}").get_data(as_text=True))
+
+        self.assertIn("剩餘兩站登打啟動", body)
+        self.assertNotIn(">四站登打啟動<", body)
+        self.assertIn('aria-label="四站階段檢查"', body)
+
     def test_waiting_confirmation_shows_manual_confirmation_without_blind_retry(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
         create_response = self.client.post("/tasks", data=self.valid_task_data())
@@ -7832,6 +7870,136 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(site_response.status_code, 409)
         self.assertEqual(app_module.desktop_runner.started, [])
         self.assertEqual(app_module.desktop_runner.started_sites, [])
+
+    def test_candidate_vehicle_confirmation_preserves_task_vehicle_and_only_allows_its_single_site_run(self):
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["WORKER_TOKEN"] = worker_token
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                case_id="2026082410100319592101",
+                case_time="1959",
+                return_time="2010",
+                vehicle="新坡92",
+            ),
+            follow_redirects=False,
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "consumables",
+                "一站通耗材",
+                "consumables_vehicle_candidate_available",
+                "同案件不同車輛：原車輛=新坡92；候選車輛=新坡91。",
+                vehicle_candidates=(
+                    {
+                        "vehicle": "新坡91",
+                        "source": "一站通耗材",
+                        "record_id": "20260824195921012",
+                        "case_id": "2026082410100319592101",
+                    },
+                ),
+                reconciliation_vehicle_key="新坡92",
+            ),
+        )
+
+        first_page = self.client.get(
+            f"/tasks/{task_id}",
+            base_url="http://100.114.126.58:8080",
+        )
+        first_body = html.unescape(first_page.get_data(as_text=True))
+        consumables_card = first_body[first_body.index("<h3>耗材</h3>") : first_body.index("<h3>消毒</h3>")]
+
+        self.assertIn("同案件不同車", consumables_card)
+        self.assertIn("系統車輛：新坡92", consumables_card)
+        self.assertIn("確認使用新坡91", consumables_card)
+        self.assertNotIn("確認使用新坡93", consumables_card)
+        self.assertNotIn(f"/tasks/{task_id}/sites/consumables/run", consumables_card)
+        self.assertNotIn("四站登打啟動", first_body)
+
+        candidate_token = app_module.site_vehicle_candidate_token(
+            task_id,
+            "consumables",
+            "新坡92",
+            "新坡91",
+        )
+        forbidden = self.client.post(
+            f"/tasks/{task_id}/sites/consumables/vehicle-candidate",
+            data={
+                "vehicle_key": "新坡92",
+                "candidate_vehicle": "新坡91",
+                "candidate_token": "wrong",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        selected = self.client.post(
+            f"/tasks/{task_id}/sites/consumables/vehicle-candidate",
+            data={
+                "vehicle_key": "新坡92",
+                "candidate_vehicle": "新坡91",
+                "candidate_token": candidate_token,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(selected.status_code, 302)
+
+        selected_payload = self.store.get(task_id)
+        self.assertEqual(selected_payload["task"]["vehicle"], "新坡92")
+        selected_reconciliation = selected_payload["site_statuses"]["consumables"]["vehicle_reconciliation"]
+        self.assertEqual(selected_reconciliation["targets"]["新坡92"]["state"], "selected")
+        self.assertEqual(selected_reconciliation["targets"]["新坡92"]["selected_vehicle"], "新坡91")
+
+        selected_page = self.client.get(
+            f"/tasks/{task_id}",
+            base_url="http://100.114.126.58:8080",
+        )
+        selected_body = html.unescape(selected_page.get_data(as_text=True))
+        selected_card = selected_body[selected_body.index("<h3>耗材</h3>") : selected_body.index("<h3>消毒</h3>")]
+        self.assertIn("已選擇查找車輛：新坡91", selected_card)
+        self.assertIn(f"/tasks/{task_id}/sites/consumables/run", selected_card)
+        self.assertIn("單獨登打", selected_card)
+        self.assertNotIn("四站登打啟動", selected_body)
+
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "consumables",
+                "一站通耗材",
+                "consumables_failed",
+                "登入逾時，請重試。",
+                reconciliation_vehicle_key="新坡92",
+            ),
+        )
+        retry_page = self.client.get(
+            f"/tasks/{task_id}",
+            base_url="http://100.114.126.58:8080",
+        )
+        retry_body = html.unescape(retry_page.get_data(as_text=True))
+        retry_card = retry_body[retry_body.index("<h3>耗材</h3>") : retry_body.index("<h3>消毒</h3>")]
+        self.assertIn("已選擇查找車輛：新坡91", retry_card)
+        self.assertIn(f"/tasks/{task_id}/sites/consumables/run", retry_card)
+        self.assertIn("單獨登打", retry_card)
+
+        full_retry = self.client.post(f"/tasks/{task_id}/run", follow_redirects=False)
+        other_site_retry = self.client.post(
+            f"/tasks/{task_id}/sites/disinfection/run",
+            follow_redirects=False,
+        )
+        selected_site_retry = self.client.post(
+            f"/tasks/{task_id}/sites/consumables/run",
+            base_url="http://100.114.126.58:8080",
+            follow_redirects=False,
+        )
+
+        self.assertEqual(full_retry.status_code, 409)
+        self.assertEqual(other_site_retry.status_code, 409)
+        self.assertEqual(selected_site_retry.status_code, 302)
+        queued = self.store.get(task_id)
+        self.assertEqual(queued["worker_queue"]["run_site_key"], "consumables")
 
     def test_manual_complete_rejects_site_that_is_not_waiting_for_confirmation(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
@@ -9245,7 +9413,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("已修改：第 2 車里程", body)
         self.assertIn("需重新登打：里程（只重登第 2 車）", body)
         self.assertIn("更新里程", body)
-        self.assertIn("四站登打啟動", body)
+        self.assertIn("剩餘一站登打啟動", body)
         self.assertEqual(
             list(
                 self.store.get(task_id)["site_statuses"]["vehicle_mileage"][
@@ -10245,6 +10413,64 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("里程：未執行", body)
         self.assertNotIn("消毒：未執行", body)
         self.assertNotIn("耗材：未執行", body)
+
+    def test_task_detail_orders_five_and_six_station_cards_with_explicit_station_labels(self):
+        five_station = AmbulanceReturnRequest(
+            task_id="five-station-task",
+            created_at=datetime(2026, 8, 24, 20, 0),
+            raw_text="",
+            vehicle="新坡92",
+            case_id="2026082410100319592101",
+            case_date="2026-08-24",
+            case_time="1959",
+            return_date="2026-08-24",
+            return_time="2010",
+            volunteer_assist=True,
+            volunteer_assist_member_name="測試義消",
+            volunteer_assist_member_title="隊員",
+            volunteer_assist_member_unit="新坡分隊",
+        )
+        six_station = AmbulanceReturnRequest(
+            task_id="six-station-task",
+            created_at=datetime(2026, 8, 24, 20, 0),
+            raw_text="",
+            vehicle="新坡92",
+            case_id="2026082410100319592101",
+            case_date="2026-08-24",
+            case_time="1959",
+            return_date="2026-08-24",
+            return_time="2010",
+            volunteer_assist=True,
+            volunteer_assist_member_name="測試義消",
+            volunteer_assist_member_title="隊員",
+            volunteer_assist_member_unit="新坡分隊",
+            fuel_record=FuelRecord(
+                enabled=True,
+                date="2026-08-24",
+                time="2012",
+                driver="曾彥綸",
+                product="超級柴油",
+                quantity="20",
+                unit_price="30",
+            ),
+        )
+        self.store.create(five_station)
+        self.store.create(six_station)
+
+        five_body = html.unescape(self.client.get("/tasks/five-station-task").get_data(as_text=True))
+        six_body = html.unescape(self.client.get("/tasks/six-station-task").get_data(as_text=True))
+
+        self.assertIn("五站階段檢查", five_body)
+        self.assertLess(five_body.index("<h3>工作</h3>"), five_body.index("<h3>民力系統</h3>"))
+        self.assertLess(five_body.index("<h3>民力系統</h3>"), five_body.index("<h3>里程</h3>"))
+        self.assertIn("第2站", five_body)
+        self.assertIn("第5站", five_body)
+
+        self.assertIn("六站階段檢查", six_body)
+        self.assertLess(six_body.index("<h3>工作</h3>"), six_body.index("<h3>民力系統</h3>"))
+        self.assertLess(six_body.index("<h3>民力系統</h3>"), six_body.index("<h3>里程+加油</h3>"))
+        self.assertIn("第3、4站", six_body)
+        self.assertIn("第6站", six_body)
 
     def test_run_queues_task_for_worker_and_worker_updates_status(self):
         os.environ["WORKER_TOKEN"] = "test-token"
