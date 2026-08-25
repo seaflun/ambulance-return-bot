@@ -54,6 +54,39 @@ class FailureEvidenceTests(unittest.TestCase):
         self.assertIn("網頁", diagnosis["reason"])
         self.assertNotIn("ChromeDriver 已結束", diagnosis["reason"])
 
+    def test_augment_failure_detail_replaces_renderer_stacktrace_with_diagnostic(self):
+        raw_detail = "民力系統登打失敗：Message: timeout: Timed out receiving message from renderer\nStacktrace:\n" + (
+            "chromedriver!GetHandleVerifier\n" * 80
+        )
+
+        detail = augment_failure_detail(
+            raw_detail,
+            {
+                "category": "web_renderer_timeout",
+                "reason": "網頁轉譯程序逾時；Chrome 與 ChromeDriver 仍可連線，較可能是該網頁卡住。",
+            },
+        )
+
+        self.assertEqual(
+            "網頁轉譯程序逾時；Chrome 與 ChromeDriver 仍可連線，較可能是該網頁卡住。 [browser_failure:web_renderer_timeout]",
+            detail,
+        )
+
+    def test_failure_capture_temporarily_uses_a_shorter_driver_command_timeout(self):
+        driver = SimpleNamespace(
+            command_executor=SimpleNamespace(_client_config=SimpleNamespace(timeout=61.0)),
+        )
+
+        with patch.dict(
+            failure_evidence_module.os.environ,
+            {"SELENIUM_FAILURE_EVIDENCE_COMMAND_TIMEOUT_SECONDS": "4"},
+            clear=False,
+        ):
+            with failure_evidence_module._bounded_failure_evidence_driver_commands(driver):
+                self.assertEqual(4.0, driver.command_executor._client_config.timeout)
+
+        self.assertEqual(61.0, driver.command_executor._client_config.timeout)
+
     def test_renderer_timeout_without_devtools_is_chrome_unresponsive(self):
         diagnosis = classify_browser_failure(
             RuntimeError("timeout: Timed out receiving message from renderer: -0.012"),

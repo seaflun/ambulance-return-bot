@@ -10,6 +10,7 @@ from ambulance_bot.login_audit import (
     duty_work_log_login_audit,
     fuel_record_login_audit,
     mask_login_account,
+    PPE_LOGIN_PRIORITY_LABEL,
     site_login_account_summaries,
     vehicle_mileage_login_audit,
 )
@@ -45,7 +46,7 @@ class LoginAuditTests(unittest.TestCase):
                 os.environ[key] = value
         self.tmp.cleanup()
 
-    def test_duty_work_log_audit_uses_driver_candidate(self):
+    def test_duty_work_log_audit_uses_task_driver_when_no_on_duty_account_is_recorded(self):
         save_duty_automation_credentials(
             [
                 {"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "password": "pw"},
@@ -64,7 +65,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = duty_work_log_login_audit(request)
 
-        self.assertIn("工作=任務司機 > 出勤人員 > 同步帳號，任務司機", audit)
+        self.assertIn(f"工作={PPE_LOGIN_PRIORITY_LABEL}，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
         self.assertNotIn("21番 張家和 - tyfd01317", audit)
 
@@ -78,13 +79,13 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = consumables_login_audit()
 
-        self.assertIn("耗材=任務司機 > 出勤人員 > 同步帳號，同步帳號", audit)
+        self.assertIn(f"耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號", audit)
         self.assertIn("21番 張家和 - S124***209", audit)
         self.assertNotIn("S124774209", audit)
         self.assertNotIn("ACS 環境設定", audit)
         self.assertNotIn("A123456789", audit)
 
-    def test_vehicle_mileage_audit_labels_driver_before_personnel_and_synced(self):
+    def test_vehicle_mileage_audit_labels_driver_when_no_on_duty_account_is_recorded(self):
         save_duty_automation_credentials(
             [
                 {"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "password": "pw"},
@@ -103,7 +104,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = vehicle_mileage_login_audit(request)
 
-        self.assertIn("里程=任務司機 > 出勤人員 > 同步帳號，任務司機", audit)
+        self.assertIn(f"里程={PPE_LOGIN_PRIORITY_LABEL}，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
 
     def test_vehicle_mileage_audit_labels_non_driver_personnel_when_driver_missing(self):
@@ -126,11 +127,11 @@ class LoginAuditTests(unittest.TestCase):
         audit = vehicle_mileage_login_audit(request)
         summaries = site_login_account_summaries(request)
 
-        self.assertIn("里程=任務司機 > 出勤人員 > 同步帳號，出勤人員", audit)
+        self.assertIn(f"里程={PPE_LOGIN_PRIORITY_LABEL}，出勤人員", audit)
         self.assertIn("21番 張家和 - tyfd01317", audit)
         self.assertEqual(summaries["vehicle_mileage"], "21番 張家和 - tyfd01317（出勤人員）")
 
-    def test_fuel_record_audit_labels_driver_before_personnel_and_synced(self):
+    def test_fuel_record_audit_labels_driver_when_no_on_duty_account_is_recorded(self):
         save_duty_automation_credentials(
             [{"actor_no": "12", "name": "王昱勛", "user_id": "tyfd01987", "password": "pw"}],
             last_selected="tyfd01987",
@@ -146,7 +147,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = fuel_record_login_audit(request)
 
-        self.assertIn("加油=任務司機 > 出勤人員 > 同步帳號，任務司機", audit)
+        self.assertIn(f"加油={PPE_LOGIN_PRIORITY_LABEL}，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
 
     def test_all_site_audits_use_the_same_login_priority_wording(self):
@@ -181,7 +182,7 @@ class LoginAuditTests(unittest.TestCase):
 
         for site, audit in audits.items():
             with self.subTest(site=site):
-                self.assertIn(f"{site}=任務司機 > 出勤人員 > 同步帳號", audit)
+                self.assertIn(f"{site}={PPE_LOGIN_PRIORITY_LABEL}", audit)
                 self.assertNotIn("任務司機優先", audit)
                 self.assertNotIn("公務電腦同步帳號", audit)
 
@@ -212,7 +213,44 @@ class LoginAuditTests(unittest.TestCase):
         self.assertEqual(summaries["vehicle_mileage"], "12番 王昱勛 - tyfd01987（任務司機）")
         self.assertEqual(summaries["fuel_record"], "12番 王昱勛 - tyfd01987（任務司機）")
         self.assertEqual(summaries["disinfection"], "12番 王昱勛 - tyfd01987（任務司機）")
-        self.assertEqual(summaries["consumables"], "21番 張家和 - S124***209（同步帳號）")
+        self.assertEqual(summaries["consumables"], "21番 張家和 - S124***209（出勤人員）")
+
+    def test_all_site_audits_prioritize_explicit_on_duty_account(self):
+        save_duty_automation_credentials(
+            [
+                {"actor_no": "8", "name": "同步帳號", "user_id": "tyfd00008", "password": "sync"},
+                {"actor_no": "7", "name": "值班人員", "user_id": "tyfd00007", "id_number": "B123017532", "password": "duty"},
+                {"actor_no": "12", "name": "任務司機", "user_id": "tyfd00012", "password": "driver"},
+                {"actor_no": "21", "name": "出勤人員", "user_id": "tyfd00021", "password": "personnel"},
+            ],
+            last_selected="tyfd00008",
+            last_synced="tyfd00007",
+        )
+        request = AmbulanceReturnRequest(
+            task_id="task-on-duty-priority",
+            created_at=__import__("datetime").datetime.now(),
+            raw_text="",
+            driver="任務司機",
+            personnel=["任務司機", "出勤人員"],
+            personnel_accounts=["tyfd00012", "tyfd00021"],
+        )
+
+        audits = {
+            "工作": duty_work_log_login_audit(request),
+            "里程": vehicle_mileage_login_audit(request),
+            "加油": fuel_record_login_audit(request),
+            "消毒": disinfection_login_audit(request),
+            "耗材": consumables_login_audit(request),
+        }
+        summaries = site_login_account_summaries(request)
+
+        self.assertEqual(PPE_LOGIN_PRIORITY_LABEL, "值班人員 > 任務司機 > 出勤人員 > 同步帳號")
+        for site, audit in audits.items():
+            with self.subTest(site=site):
+                self.assertIn(f"{site}={PPE_LOGIN_PRIORITY_LABEL}，值班人員", audit)
+                self.assertIn("7番 值班人員", audit)
+        self.assertEqual(summaries["duty_work_log"], "7番 值班人員 - tyfd00007（值班人員）")
+        self.assertEqual(summaries["consumables"], "7番 值班人員 - B123***532（值班人員）")
 
     def test_site_login_account_summaries_can_match_driver_name_without_case_account(self):
         save_duty_automation_credentials(

@@ -65,6 +65,7 @@ def create_chrome_driver_with_retry(
             if attempts > 1:
                 print(f"[chrome] starting {label} attempt {attempt}/{attempts}", flush=True)
             driver = create_webdriver_chrome_with_timeout(options)
+            set_driver_command_timeout(driver)
             schedule_driver_auto_close(driver, label)
             return driver
         except (ChromeStartTimeoutError, WebDriverException, OSError) as exc:
@@ -144,6 +145,29 @@ def _chrome_start_timeout_seconds() -> float:
         return max(float(os.getenv("SELENIUM_CHROME_START_TIMEOUT_SECONDS", "20")), 0.0)
     except ValueError:
         return 20.0
+
+
+def set_driver_command_timeout(driver: object, timeout_seconds: float | None = None) -> None:
+    """Bound ChromeDriver HTTP commands so a frozen renderer can return a terminal failure."""
+
+    timeout = _driver_command_timeout_seconds() if timeout_seconds is None else max(float(timeout_seconds), 0.0)
+    if timeout <= 0:
+        return
+    command_executor = getattr(driver, "command_executor", None)
+    client_config = getattr(command_executor, "_client_config", None)
+    if client_config is None:
+        return
+    try:
+        client_config.timeout = timeout
+    except (AttributeError, TypeError, ValueError):
+        return
+
+
+def _driver_command_timeout_seconds() -> float:
+    try:
+        return max(float(os.getenv("SELENIUM_COMMAND_TIMEOUT_SECONDS", "60")), 0.0)
+    except ValueError:
+        return 60.0
 
 
 def _quit_late_driver(driver) -> None:

@@ -7261,6 +7261,57 @@ class WebAppTests(unittest.TestCase):
         detail_body = html.unescape(self.client.get(f"/tasks/{task_id}").data.decode("utf-8"))
         self.assertIn("<h3>民力系統</h3>", detail_body)
 
+    def test_task_detail_compacts_civilpower_renderer_timeout(self):
+        request = AmbulanceReturnRequest(
+            task_id="civilpower-renderer-timeout",
+            created_at=datetime.now(),
+            raw_text="",
+            volunteer_assist=True,
+            volunteer_assist_member_name="測試義消",
+            volunteer_assist_member_title="隊員",
+            volunteer_assist_member_unit="大園救護分隊",
+        )
+        self.store.create(request)
+        raw_detail = "Message: timeout: Timed out receiving message from renderer\nStacktrace:\n" + (
+            "chromedriver!GetHandleVerifier\n" * 80
+        ) + "[browser_failure:web_renderer_timeout]"
+        self.store.update_site_result(
+            request.task_id,
+            app_module.SiteAutomationResult(
+                "volunteer_assist",
+                "民力系統",
+                "volunteer_assist_failed",
+                raw_detail,
+            ),
+        )
+
+        body = html.unescape(self.client.get(f"/tasks/{request.task_id}").data.decode("utf-8"))
+
+        self.assertIn("網頁轉譯程序逾時", body)
+        self.assertIn("重新整理", body)
+        self.assertNotIn("Stacktrace", body)
+        self.assertNotIn("chromedriver!GetHandleVerifier", body)
+
+    def test_public_pc_event_detail_compacts_renderer_stacktrace(self):
+        raw_detail = "Message: timeout: Timed out receiving message from renderer\nStacktrace:\n" + (
+            "chromedriver!GetHandleVerifier\n" * 80
+        ) + "[browser_failure:web_renderer_timeout]"
+
+        detail = app_module.public_pc_event_display_detail(
+            "volunteer_assist_failed",
+            raw_detail,
+            {
+                "volunteer_assist": {
+                    "status": "volunteer_assist_failed",
+                    "detail": raw_detail,
+                }
+            },
+        )
+
+        self.assertIn("網頁轉譯程序逾時", detail)
+        self.assertNotIn("Stacktrace", detail)
+        self.assertNotIn("chromedriver!GetHandleVerifier", detail)
+
     def test_worker_civilpower_roster_get_requires_token_and_returns_snapshot(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         headers = {"X-Worker-Token": "test-token"}

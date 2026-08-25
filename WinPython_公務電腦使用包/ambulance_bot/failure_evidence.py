@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +18,7 @@ from PIL import Image
 BROWSER_FAILURE_MARKER = "[browser_failure:{category}]"
 FAILURE_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024
 FAILURE_SCREENSHOT_SETTLE_SECONDS = 0.8
+FAILURE_DETAIL_MAX_CHARS = 240
 KNOWN_SITE_KEYS = {
     "duty_work_log",
     "vehicle_mileage",
@@ -171,6 +174,49 @@ def classify_browser_failure(exception: BaseException | None, probe: dict[str, A
     return {"category": category, "reason": reason, "next_action": next_action}
 
 
+def compact_failure_text(value: object, maximum: int = FAILURE_DETAIL_MAX_CHARS) -> str:
+    text = " ".join(str(value or "").split())
+    stacktrace_at = text.lower().find("stacktrace:")
+    if stacktrace_at >= 0:
+        text = text[:stacktrace_at].rstrip(" :;-")
+    if len(text) <= maximum:
+        return text
+    return f"{text[:max(maximum - 1, 0)].rstrip()}…"
+
+
+def _failure_evidence_command_timeout_seconds() -> float:
+    try:
+        return max(float(os.getenv("SELENIUM_FAILURE_EVIDENCE_COMMAND_TIMEOUT_SECONDS", "4")), 0.0)
+    except ValueError:
+        return 4.0
+
+
+@contextmanager
+def _bounded_failure_evidence_driver_commands(driver: Any):
+    timeout = _failure_evidence_command_timeout_seconds()
+    command_executor = getattr(driver, "command_executor", None)
+    client_config = getattr(command_executor, "_client_config", None)
+    if timeout <= 0 or client_config is None:
+        yield
+        return
+
+    try:
+        previous = client_config.timeout
+        current = float(previous) if previous is not None else 0.0
+        client_config.timeout = min(current, timeout) if current > 0 else timeout
+    except (AttributeError, TypeError, ValueError):
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        try:
+            client_config.timeout = previous
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+
 def capture_failure_artifacts(
     driver: Any,
     output_dir: Path,
@@ -212,36 +258,37 @@ def capture_failure_artifacts(
         "metadata_path": "",
     }
 
-    screenshot_path = output_dir / f"{stem}.png"
-    try:
-        captured_full_page = False
-        if probe.get("chromedriver_alive") is not False and probe.get("devtools_reachable") is not False:
-            maximize_window = getattr(driver, "maximize_window", None)
-            if callable(maximize_window):
+    with _bounded_failure_evidence_driver_commands(driver):
+        screenshot_path = output_dir / f"{stem}.png"
+        try:
+            captured_full_page = False
+            if probe.get("chromedriver_alive") is not False and probe.get("devtools_reachable") is not False:
+                maximize_window = getattr(driver, "maximize_window", None)
+                if callable(maximize_window):
+                    try:
+                        maximize_window()
+                        time.sleep(FAILURE_SCREENSHOT_SETTLE_SECONDS)
+                    except Exception:
+                        pass
                 try:
-                    maximize_window()
-                    time.sleep(FAILURE_SCREENSHOT_SETTLE_SECONDS)
+                    captured_full_page = _capture_full_page_screenshot(driver, screenshot_path)
                 except Exception:
-                    pass
-            try:
-                captured_full_page = _capture_full_page_screenshot(driver, screenshot_path)
-            except Exception:
-                captured_full_page = False
-        if not captured_full_page:
-            saved = driver.save_screenshot(str(screenshot_path))
-            if saved is False or not screenshot_path.is_file():
-                raise RuntimeError("driver did not create a screenshot")
-        _fit_failure_screenshot_file(screenshot_path)
-        evidence["screenshot_path"] = str(screenshot_path)
-    except Exception as exc:
-        evidence["screenshot_error"] = f"{exc.__class__.__name__}: {exc}"
+                    captured_full_page = False
+            if not captured_full_page:
+                saved = driver.save_screenshot(str(screenshot_path))
+                if saved is False or not screenshot_path.is_file():
+                    raise RuntimeError("driver did not create a screenshot")
+            _fit_failure_screenshot_file(screenshot_path)
+            evidence["screenshot_path"] = str(screenshot_path)
+        except Exception as exc:
+            evidence["screenshot_error"] = f"{exc.__class__.__name__}: {exc}"
 
-    html_path = output_dir / f"{stem}.html"
-    try:
-        html_path.write_text(str(driver.page_source or ""), encoding="utf-8")
-        evidence["html_path"] = str(html_path)
-    except Exception as exc:
-        evidence["html_error"] = f"{exc.__class__.__name__}: {exc}"
+        html_path = output_dir / f"{stem}.html"
+        try:
+            html_path.write_text(str(driver.page_source or ""), encoding="utf-8")
+            evidence["html_path"] = str(html_path)
+        except Exception as exc:
+            evidence["html_error"] = f"{exc.__class__.__name__}: {exc}"
 
     metadata_path = output_dir / f"{stem}.json"
     evidence["metadata_path"] = str(metadata_path)
@@ -253,9 +300,11 @@ def capture_failure_artifacts(
 
 
 def augment_failure_detail(detail: object, evidence: dict[str, Any]) -> str:
-    text = str(detail or "").strip()
+    text = compact_failure_text(detail)
     category = str(evidence.get("category") or "").strip()
     reason = str(evidence.get("reason") or "").strip()
+    if category and reason:
+        return f"{reason} {BROWSER_FAILURE_MARKER.format(category=category)}"
     parts = [text]
     if category:
         parts.append(BROWSER_FAILURE_MARKER.format(category=category))

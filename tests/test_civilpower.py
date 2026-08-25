@@ -179,6 +179,31 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertEqual("volunteer_assist_failed", result.status)
         self.assertIn("未選擇 NAS 名冊", result.detail)
 
+    def test_civilpower_login_prioritizes_on_duty_credential(self):
+        from ambulance_bot.duty_credentials import DutyCredential
+        from civilpower import login_civilpower_and_get_driver
+
+        driver = mock.Mock()
+        on_duty = DutyCredential("on-duty", "on-duty-password")
+        task_driver = DutyCredential("task-driver", "task-driver-password")
+        with mock.patch(
+            "civilpower.task_login_credential_attempts",
+            return_value=[(on_duty, "值班人員"), (task_driver, "任務司機")],
+        ), mock.patch(
+            "civilpower.create_chrome_driver_with_retry",
+            return_value=driver,
+        ), mock.patch(
+            "civilpower.apply_tile",
+        ), mock.patch(
+            "civilpower._login_once",
+        ) as login_once, mock.patch(
+            "civilpower.open_civilpower_from_oa_dashboard",
+        ):
+            result = login_civilpower_and_get_driver(request=self._enabled_request())
+
+        self.assertIs(result, driver)
+        login_once.assert_called_once_with(driver, "on-duty", "on-duty-password", 1)
+
     def test_runner_verifies_out_in_then_work_log_before_reporting_saved(self):
         from civilpower import IN_STATUS, OUT_STATUS, run_civilpower_task
 

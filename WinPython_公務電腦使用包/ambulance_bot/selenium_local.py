@@ -44,9 +44,10 @@ from .duty_credentials import (
     load_duty_credential,
     load_recent_synced_duty_credential,
     load_synced_worker_credential,
+    task_login_credential_attempts,
     update_saved_credential_id_number,
 )
-from .failure_evidence import augment_failure_detail, capture_failure_artifacts
+from .failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
 from .task_cancellation import TaskCancellationError
@@ -1405,7 +1406,7 @@ def _open_duty_work_log_case_picker(
     output_dir: Path,
     summary_path: Path,
 ) -> SeleniumRunResult:
-    if not _ensure_duty_login(driver, request.duty_login_account_candidates):
+    if not _ensure_duty_login(driver, request):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
         return SeleniumRunResult(
             ok=True,
@@ -1437,7 +1438,7 @@ def _prepare_duty_work_log_form(
     summary_path: Path,
     cancel_check: Callable[[], None] | None = None,
 ) -> SeleniumRunResult:
-    if not _ensure_duty_login(driver, request.duty_login_account_candidates):
+    if not _ensure_duty_login(driver, request):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
         return SeleniumRunResult(
             ok=True,
@@ -1594,25 +1595,23 @@ def _ensure_ppe_session(
 
 
 def _ppe_credentials() -> tuple[str, str]:
-    saved = load_synced_worker_credential()
-    if saved is None:
-        username = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
-        password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
-        if username and password:
-            return username, password
-        return "", ""
-    return saved.user_id, saved.password
+    attempts = task_login_credential_attempts(None, duty_password=True)
+    if attempts:
+        credential, _source = attempts[0]
+        return credential.user_id, credential.password
+    username = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
+    password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
+    if username and password:
+        return username, password
+    return "", ""
 
 
 def _ppe_credential_attempts(request: AmbulanceReturnRequest | None = None) -> list[tuple[str, str]]:
-    attempts: list[tuple[str, str]] = []
-    if request is not None:
-        _append_ppe_duty_attempts(attempts, request.driver_duty_login_account_candidates)
-        _append_ppe_duty_attempts(attempts, request.personnel_duty_login_account_candidates)
-    synced = load_synced_worker_credential()
-    if synced is not None:
-        attempts.append((synced.user_id, synced.password))
-    else:
+    attempts = [
+        (credential.user_id, credential.password)
+        for credential, _source in task_login_credential_attempts(request, duty_password=True)
+    ]
+    if not attempts:
         username = os.getenv("PPE_ACCOUNT", "").strip() or os.getenv("DUTY_ACCOUNT", "").strip()
         password = os.getenv("PPE_PASSWORD", "").strip() or os.getenv("DUTY_PASSWORD", "").strip()
         if username and password:
@@ -3881,10 +3880,18 @@ def _open_case_query(driver: webdriver.Chrome, lookup_range: str = "24h") -> Non
     time.sleep(1)
 
 
-def _duty_login_credential_attempts(preferred_user_ids: list[str] | None = None) -> list:
+def _duty_login_credential_attempts(
+    request_or_preferred: AmbulanceReturnRequest | list[str] | None = None,
+) -> list[DutyCredential]:
+    if isinstance(request_or_preferred, AmbulanceReturnRequest):
+        return [
+            credential
+            for credential, _source in task_login_credential_attempts(request_or_preferred, duty_password=True)
+        ]
+
     attempts = []
     seen: set[str] = set()
-    for user_id in preferred_user_ids or []:
+    for user_id in request_or_preferred or []:
         credential = load_duty_credential([user_id], fallback_user_id="", allow_default=False)
         if credential is None:
             continue
@@ -3919,12 +3926,15 @@ def _case_lookup_duty_login_candidates() -> list[str]:
     return result
 
 
-def _ensure_duty_login(driver: webdriver.Chrome, preferred_user_ids: list[str] | None = None) -> bool:
+def _ensure_duty_login(
+    driver: webdriver.Chrome,
+    request_or_preferred: AmbulanceReturnRequest | list[str] | None = None,
+) -> bool:
     driver.get(f"{BASE_URL}/login119")
     time.sleep(1)
     if _looks_logged_in(driver):
         return True
-    credentials = _duty_login_credential_attempts(preferred_user_ids)
+    credentials = _duty_login_credential_attempts(request_or_preferred)
     if not credentials:
         return False
     for credential in credentials:
@@ -4466,7 +4476,12 @@ def _detail_with_failure_evidence(
         )
         return augment_failure_detail(detail, evidence)
     except Exception as capture_exc:
-        return f"{detail} [failure_capture_error:{capture_exc.__class__.__name__}: {capture_exc}]"
+        print(
+            "[selenium] failure evidence capture skipped: "
+            f"{capture_exc.__class__.__name__}",
+            flush=True,
+        )
+        return f"{compact_failure_text(detail)} [failure_capture_error:{capture_exc.__class__.__name__}]"
 
 
 def _save_artifacts(driver: webdriver.Chrome, output_dir: Path, task_id: str, site_key: str) -> None:

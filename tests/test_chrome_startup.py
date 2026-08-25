@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.chrome.options import Options
@@ -107,6 +108,22 @@ class ChromeStartupTests(unittest.TestCase):
         self.assertIs(result, driver)
         self.assertEqual(calls[0], ("cleanup", options, "vehicle mileage fresh session"))
         self.assertEqual(calls[1], ("start", options))
+
+    def test_new_driver_uses_bounded_command_timeout(self):
+        options = Options()
+        driver = SimpleNamespace(
+            command_executor=SimpleNamespace(_client_config=SimpleNamespace(timeout=None)),
+        )
+
+        with mock.patch.dict(os.environ, {"SELENIUM_COMMAND_TIMEOUT_SECONDS": "61"}, clear=False), mock.patch.object(
+            chrome_startup,
+            "create_webdriver_chrome_with_timeout",
+            return_value=driver,
+        ), mock.patch.object(chrome_startup, "schedule_driver_auto_close"):
+            result = chrome_startup.create_chrome_driver_with_retry(options)
+
+        self.assertIs(result, driver)
+        self.assertEqual(61.0, driver.command_executor._client_config.timeout)
 
     def test_cleanup_only_targets_chromedriver_that_owns_matching_worker_chrome(self):
         class FakeOptions:

@@ -3201,7 +3201,7 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertIn("if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):", source)
 
-    def test_duty_work_log_login_uses_personnel_accounts(self):
+    def test_duty_work_log_login_passes_the_full_request_to_priority_selection(self):
         class FakeDriver:
             pass
 
@@ -3210,7 +3210,7 @@ class SeleniumLocalTests(unittest.TestCase):
         original_save_artifacts = selenium_local_module._save_artifacts
         try:
             selenium_local_module._ensure_duty_login = (
-                lambda driver, preferred_user_ids=None: captured.__setitem__("preferred", preferred_user_ids) or False
+                lambda driver, request_or_preferred=None: captured.__setitem__("request", request_or_preferred) or False
             )
             selenium_local_module._save_artifacts = lambda *args, **kwargs: None
             request = AmbulanceReturnRequest(
@@ -3228,9 +3228,9 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module._save_artifacts = original_save_artifacts
 
         self.assertEqual(result.status, "needs_duty_login")
-        self.assertEqual(captured["preferred"], ["tyfd00008", "B123017532", "tyfd00009"])
+        self.assertIs(captured["request"], request)
 
-    def test_duty_login_credential_attempts_use_driver_personnel_then_synced_account(self):
+    def test_duty_login_credential_attempts_prioritize_on_duty_then_task_people_then_sync_account(self):
         previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
         previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
         try:
@@ -3239,12 +3239,14 @@ class SeleniumLocalTests(unittest.TestCase):
                 os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
                 save_duty_automation_credentials(
                     [
+                        {"actor_no": "7", "name": "OnDuty", "user_id": "tyfd00007", "password": "pass7"},
                         {"actor_no": "1", "name": "Alice", "user_id": "tyfd00001", "password": "pass1"},
                         {"actor_no": "2", "name": "Bob", "user_id": "tyfd00002", "password": "pass2"},
                         {"actor_no": "3", "name": "Carol", "user_id": "tyfd00003", "password": "pass3"},
                         {"actor_no": "8", "name": "Sync", "user_id": "tyfd01510", "password": "pass8"},
                     ],
                     last_selected="tyfd01510",
+                    last_synced="tyfd00007",
                 )
                 request = AmbulanceReturnRequest(
                     task_id="task-1",
@@ -3255,7 +3257,7 @@ class SeleniumLocalTests(unittest.TestCase):
                     personnel_accounts=["tyfd00001", "tyfd00002", "tyfd00003"],
                 )
 
-                attempts = _duty_login_credential_attempts(request.duty_login_account_candidates)
+                attempts = _duty_login_credential_attempts(request)
         finally:
             if previous_path is None:
                 os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
@@ -3266,7 +3268,10 @@ class SeleniumLocalTests(unittest.TestCase):
             else:
                 os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
 
-        self.assertEqual([credential.user_id for credential in attempts], ["tyfd00002", "tyfd00001", "tyfd00003", "tyfd01510"])
+        self.assertEqual(
+            [credential.user_id for credential in attempts],
+            ["tyfd00007", "tyfd00002", "tyfd00001", "tyfd00003", "tyfd01510"],
+        )
 
     def test_case_lookup_login_uses_latest_synced_duty_account_before_fixed_sync_account(self):
         class FakeDriver:

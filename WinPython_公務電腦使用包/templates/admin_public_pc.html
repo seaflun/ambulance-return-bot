@@ -492,7 +492,7 @@
                     <div class="event-main">
                       <div class="event-action">{{ event.action }}</div>
                       {% if event.detail %}
-                        <div class="event-detail">{{ event.detail }}</div>
+                        <div class="event-detail">{{ public_pc_event_display_detail(event.status, event.detail, item.site_statuses) }}</div>
                       {% endif %}
                     </div>
                   </li>

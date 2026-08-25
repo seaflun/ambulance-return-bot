@@ -29,13 +29,15 @@ class DisinfectionCredentialTests(unittest.TestCase):
                 os.environ[key] = value
         self.tmp.cleanup()
 
-    def test_credential_attempts_put_driver_before_other_personnel(self):
+    def test_credential_attempts_prioritize_explicit_on_duty_before_task_people(self):
         save_duty_automation_credentials(
             [
+                {"actor_no": "7", "name": "值班人員", "user_id": "tyfd00007", "password": "pw"},
                 {"actor_no": "21", "name": "張家和", "user_id": "tyfd01317", "password": "pw"},
                 {"actor_no": "12", "name": "王昱勛", "user_id": "tyfd01987", "password": "pw"},
             ],
             last_selected="tyfd01317",
+            last_synced="tyfd00007",
         )
         request = AmbulanceReturnRequest(
             task_id="task-disinfection-login",
@@ -50,7 +52,11 @@ class DisinfectionCredentialTests(unittest.TestCase):
 
         self.assertEqual(
             [(credential.user_id, source) for credential, source in attempts],
-            [("tyfd01987", "任務司機"), ("tyfd01317", "出勤人員")],
+            [
+                ("tyfd00007", "值班人員"),
+                ("tyfd01987", "任務司機"),
+                ("tyfd01317", "出勤人員"),
+            ],
         )
 
     def test_credential_attempts_append_selected_sync_account_after_personnel(self):

@@ -1961,7 +1961,7 @@ class ConsumablesLoginTests(unittest.TestCase):
                     consumables_login_module._consumable_detail_payload_ready(FakeDriver(state))
                 )
 
-    def test_load_acs_credentials_uses_selected_synced_id_number(self):
+    def test_load_acs_credentials_prioritizes_task_personnel_before_fixed_sync_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
             previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
@@ -2000,7 +2000,7 @@ class ConsumablesLoginTests(unittest.TestCase):
                     personnel_accounts=["tyfd01510"],
                 )
 
-                self.assertEqual(_load_acs_credentials(request), ("C123456789", "selected-secret"))
+                self.assertEqual(_load_acs_credentials(request), ("B123017532", "secret"))
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
@@ -2018,6 +2018,43 @@ class ConsumablesLoginTests(unittest.TestCase):
                     os.environ.pop("ACS_PASSWORD", None)
                 else:
                     os.environ["ACS_PASSWORD"] = previous_password
+
+    def test_load_acs_credentials_prioritizes_explicit_on_duty_before_task_people(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            os.environ["DUTY_SAVED_LOGIN_PATH"] = str(Path(tmp) / "saved_login.json")
+            os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+            try:
+                save_duty_automation_credentials(
+                    [
+                        {"actor_no": "8", "user_id": "tyfd00008", "id_number": "A123456789", "password": "sync"},
+                        {"actor_no": "7", "user_id": "tyfd00007", "id_number": "B123017532", "password": "on-duty"},
+                        {"actor_no": "12", "user_id": "tyfd00012", "id_number": "C123456789", "password": "driver"},
+                        {"actor_no": "21", "user_id": "tyfd00021", "id_number": "D123456789", "password": "personnel"},
+                    ],
+                    last_selected="tyfd00008",
+                    last_synced="tyfd00007",
+                )
+                request = AmbulanceReturnRequest(
+                    task_id="acs-on-duty-priority",
+                    created_at=datetime.now(),
+                    raw_text="",
+                    driver="任務司機",
+                    personnel=["任務司機", "出勤人員"],
+                    personnel_accounts=["tyfd00012", "tyfd00021"],
+                )
+
+                self.assertEqual(_load_acs_credentials(request), ("B123017532", "on-duty"))
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
 
     def test_load_acs_credentials_auto_looks_up_and_remembers_synced_id_number(self):
         with tempfile.TemporaryDirectory() as tmp:

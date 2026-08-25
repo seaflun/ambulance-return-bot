@@ -28,8 +28,8 @@ from ambulance_bot.chrome_startup import (
     mark_driver_operation_active,
 )
 from ambulance_bot.civilpower_roster import HOME_RESCUE_UNIT, normalize_roster_members
-from ambulance_bot.duty_credentials import load_synced_worker_credential
-from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
+from ambulance_bot.duty_credentials import task_login_credential_attempts
+from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
 from ambulance_bot.profile_paths import runtime_profile_dir
 from ambulance_bot.task_cancellation import TaskCancellationError
@@ -246,13 +246,14 @@ def open_civilpower_from_oa_dashboard(driver, wait: WebDriverWait) -> None:
 
 def login_civilpower_and_get_driver(
     *,
+    request: AmbulanceReturnRequest | None = None,
     profile_name: str = "civilpower_profile",
     debugger_port: int | None = None,
     tile_name: str = "",
 ) -> webdriver.Chrome:
-    credential = load_synced_worker_credential()
-    if credential is None or not credential.user_id.strip() or not credential.password:
-        raise RuntimeError("尚未同步 Worker 帳密，無法登入消防局內部入口網。")
+    credentials = task_login_credential_attempts(request, duty_password=False)
+    if not credentials:
+        raise RuntimeError("尚未取得可用 Worker 帳密，無法登入消防局內部入口網。")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     options = Options()
     options.add_argument("--window-size=1280,900")
@@ -268,14 +269,15 @@ def login_civilpower_and_get_driver(
     apply_tile(driver, tile_name)
     errors: list[str] = []
     try:
-        for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
-            try:
-                _login_once(driver, credential.user_id, credential.password, attempt)
-                open_civilpower_from_oa_dashboard(driver, WebDriverWait(driver, DEFAULT_WAIT_SECONDS))
-                return driver
-            except Exception as exc:
-                errors.append(f"第 {attempt} 次：{exc}")
-        raise RuntimeError("內部入口網登入失敗，已重試 3 次：" + "；".join(errors))
+        for credential, source in credentials:
+            for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
+                try:
+                    _login_once(driver, credential.user_id, credential.password, attempt)
+                    open_civilpower_from_oa_dashboard(driver, WebDriverWait(driver, DEFAULT_WAIT_SECONDS))
+                    return driver
+                except Exception as exc:
+                    errors.append(f"{source}第 {attempt} 次：{compact_failure_text(exc, maximum=120)}")
+        raise RuntimeError("內部入口網登入失敗，已依帳號優先順序重試：" + "；".join(errors))
     except Exception:
         if os.getenv("CIVILPOWER_CLOSE_BROWSER_ON_LOGIN_FAILURE", "false").strip().lower() in {"1", "true", "yes", "on"}:
             driver.quit()
@@ -302,6 +304,7 @@ def run_civilpower_task(
         if active_driver is None:
             _report_progress(progress, "登入內部入口網")
             active_driver = login_civilpower_and_get_driver(
+                request=request,
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 tile_name=tile_name,
@@ -340,7 +343,12 @@ def run_civilpower_task(
                 )
                 detail = augment_failure_detail(detail, evidence)
             except Exception as capture_exc:
-                detail = f"{detail} [failure_capture_error:{capture_exc.__class__.__name__}: {capture_exc}]"
+                print(
+                    "[civilpower] failure evidence capture skipped: "
+                    f"{capture_exc.__class__.__name__}",
+                    flush=True,
+                )
+                detail = f"{compact_failure_text(detail)} [failure_capture_error:{capture_exc.__class__.__name__}]"
         return SiteAutomationResult("volunteer_assist", "民力系統", "volunteer_assist_failed", detail)
     finally:
         mark_driver_operation_active(active_driver, False)

@@ -3,11 +3,11 @@ from __future__ import annotations
 import os
 import re
 
-from .duty_credentials import DutyCredential, load_duty_credential, load_synced_worker_credential
+from .duty_credentials import DutyCredential, task_login_credential_attempts
 from .models import AmbulanceReturnRequest
 
 
-PPE_LOGIN_PRIORITY_LABEL = "任務司機 > 出勤人員 > 同步帳號"
+PPE_LOGIN_PRIORITY_LABEL = "值班人員 > 任務司機 > 出勤人員 > 同步帳號"
 
 
 def login_audit_for_site(site_key: str, request: AmbulanceReturnRequest) -> str:
@@ -20,9 +20,9 @@ def login_audit_for_site(site_key: str, request: AmbulanceReturnRequest) -> str:
     if site_key == "disinfection":
         return disinfection_login_audit(request)
     if site_key == "consumables":
-        return consumables_login_audit()
+        return consumables_login_audit(request)
     if site_key == "volunteer_assist":
-        return civilpower_login_audit()
+        return civilpower_login_audit(request)
     return ""
 
 
@@ -32,8 +32,8 @@ def site_login_account_summaries(request: AmbulanceReturnRequest) -> dict[str, s
         "vehicle_mileage": vehicle_mileage_login_summary(request),
         "fuel_record": fuel_record_login_summary(request),
         "disinfection": disinfection_login_summary(request),
-        "consumables": consumables_login_summary(),
-        "volunteer_assist": civilpower_login_summary(),
+        "consumables": consumables_login_summary(request),
+        "volunteer_assist": civilpower_login_summary(request),
     }
 
 
@@ -46,10 +46,10 @@ def compact_login_account_summary(summary: str) -> str:
 
 
 def duty_work_log_login_summary(request: AmbulanceReturnRequest) -> str:
-    credential = load_duty_credential(request.duty_login_account_candidates)
+    credential, source = _ppe_login_credential_choice(request)
     if credential is None:
-        return "未取得（任務司機）"
-    return f"{credential_public_label(credential)}（任務司機）"
+        return f"未取得（{PPE_LOGIN_PRIORITY_LABEL}）"
+    return f"{credential_public_label(credential)}（{source}）"
 
 
 def vehicle_mileage_login_summary(request: AmbulanceReturnRequest) -> str:
@@ -74,32 +74,26 @@ def disinfection_login_summary(request: AmbulanceReturnRequest) -> str:
     return f"{credential_public_label(credential)}（{source}）"
 
 
-def consumables_login_summary() -> str:
-    credential = load_synced_worker_credential()
+def consumables_login_summary(request: AmbulanceReturnRequest | None = None) -> str:
+    credential, source, acs_account = _acs_login_credential_choice(request)
     if credential is None:
-        return "未取得（同步帳號）"
-    acs_account = credential.id_number.strip() or (
-        credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else ""
-    )
+        return f"未取得（{PPE_LOGIN_PRIORITY_LABEL}）"
     if acs_account and credential.password:
-        return f"{credential_public_label(credential, login_account=acs_account)}（同步帳號）"
-    return f"{credential_public_label(credential)}（同步帳號，缺 ACS 帳號）"
+        return f"{credential_public_label(credential, login_account=acs_account)}（{source}）"
+    return f"{credential_public_label(credential)}（{source}，缺 ACS 帳號）"
 
 
-def civilpower_login_summary() -> str:
-    credential = load_synced_worker_credential()
+def civilpower_login_summary(request: AmbulanceReturnRequest | None = None) -> str:
+    credential, source = _portal_login_credential_choice(request)
     if credential is None:
-        return "未取得（同步帳號）"
-    return f"{credential_public_label(credential)}（同步帳號）"
+        return f"未取得（{PPE_LOGIN_PRIORITY_LABEL}）"
+    return f"{credential_public_label(credential)}（{source}）"
 
 
 def duty_work_log_login_audit(request: AmbulanceReturnRequest) -> str:
-    credential = load_duty_credential(request.duty_login_account_candidates)
+    credential, source = _ppe_login_credential_choice(request)
     if credential is None:
         return f"登入帳號：工作={PPE_LOGIN_PRIORITY_LABEL}，未取得可用帳號"
-    selected_credential, source = _ppe_login_credential_choice(request)
-    if selected_credential is None or selected_credential.user_id != credential.user_id:
-        source = "同步帳號"
     return f"登入帳號：工作={PPE_LOGIN_PRIORITY_LABEL}，{source}，{credential_public_label(credential)}"
 
 
@@ -125,23 +119,20 @@ def disinfection_login_audit(request: AmbulanceReturnRequest) -> str:
     return f"登入帳號：消毒={PPE_LOGIN_PRIORITY_LABEL}，{source}，{credential_public_label(credential)}"
 
 
-def consumables_login_audit() -> str:
-    credential = load_synced_worker_credential()
+def consumables_login_audit(request: AmbulanceReturnRequest | None = None) -> str:
+    credential, source, acs_account = _acs_login_credential_choice(request)
     if credential is None:
-        return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，未取得可用帳號"
-    acs_account = credential.id_number.strip() or (
-        credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else ""
-    )
+        return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，未取得可用帳號"
     if acs_account and credential.password:
-        return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，{credential_public_label(credential, login_account=acs_account)}"
-    return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，{credential_public_label(credential)}（缺 ACS 可用帳號）"
+        return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，{source}，{credential_public_label(credential, login_account=acs_account)}"
+    return f"登入帳號：耗材={PPE_LOGIN_PRIORITY_LABEL}，{source}，{credential_public_label(credential)}（缺 ACS 可用帳號）"
 
 
-def civilpower_login_audit() -> str:
-    credential = load_synced_worker_credential()
+def civilpower_login_audit(request: AmbulanceReturnRequest | None = None) -> str:
+    credential, source = _portal_login_credential_choice(request)
     if credential is None:
-        return f"登入帳號：民力系統={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，未取得可用帳號"
-    return f"登入帳號：民力系統={PPE_LOGIN_PRIORITY_LABEL}，同步帳號，{credential_public_label(credential)}"
+        return f"登入帳號：民力系統={PPE_LOGIN_PRIORITY_LABEL}，未取得可用帳號"
+    return f"登入帳號：民力系統={PPE_LOGIN_PRIORITY_LABEL}，{source}，{credential_public_label(credential)}"
 
 
 def with_login_audit(detail: str, audit: str) -> str:
@@ -153,24 +144,35 @@ def with_login_audit(detail: str, audit: str) -> str:
 
 
 def _ppe_login_credential_choice(request: AmbulanceReturnRequest) -> tuple[DutyCredential | None, str]:
-    credential = load_duty_credential(
-        request.driver_duty_login_account_candidates,
-        fallback_user_id="",
-        allow_default=False,
-    )
-    if credential is not None:
-        return credential, "任務司機"
-    credential = load_duty_credential(
-        request.personnel_duty_login_account_candidates,
-        fallback_user_id="",
-        allow_default=False,
-    )
-    if credential is not None:
-        return credential, "出勤人員"
-    credential = load_synced_worker_credential()
-    if credential is not None:
-        return credential, "同步帳號"
+    attempts = task_login_credential_attempts(request, duty_password=True)
+    if attempts:
+        return attempts[0]
     return None, ""
+
+
+def _portal_login_credential_choice(
+    request: AmbulanceReturnRequest | None,
+) -> tuple[DutyCredential | None, str]:
+    attempts = task_login_credential_attempts(request, duty_password=False)
+    if attempts:
+        return attempts[0]
+    return None, ""
+
+
+def _acs_login_credential_choice(
+    request: AmbulanceReturnRequest | None,
+) -> tuple[DutyCredential | None, str, str]:
+    attempts = task_login_credential_attempts(request, duty_password=False)
+    fallback: tuple[DutyCredential | None, str, str] = (None, "", "")
+    for credential, source in attempts:
+        if fallback[0] is None:
+            fallback = (credential, source, "")
+        acs_account = credential.id_number.strip() or (
+            credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else ""
+        )
+        if acs_account and credential.password:
+            return credential, source, acs_account
+    return fallback
 
 
 def credential_public_label(credential: DutyCredential, login_account: str = "") -> str:

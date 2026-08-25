@@ -88,12 +88,14 @@ def load_duty_credential(
     preferred_user_ids: Iterable[str] | None = None,
     fallback_user_id: str = "",
     allow_default: bool = True,
+    *,
+    duty_password: bool = True,
 ) -> DutyCredential | None:
     preferred = _normalized_user_ids(preferred_user_ids)
     fallback = str(fallback_user_id or "").strip()
 
     if preferred:
-        selected = _find_saved_credential(preferred, duty_password=True)
+        selected = _find_saved_credential(preferred, duty_password=duty_password)
         if selected is not None:
             return selected
         env_credential = _env_credential()
@@ -101,7 +103,7 @@ def load_duty_credential(
             return env_credential
 
     if fallback:
-        selected = _find_saved_credential([fallback], duty_password=True)
+        selected = _find_saved_credential([fallback], duty_password=duty_password)
         if selected is not None:
             return selected
         env_credential = _env_credential()
@@ -111,7 +113,7 @@ def load_duty_credential(
     if not allow_default:
         return None
 
-    saved = load_saved_duty_work_credential()
+    saved = load_saved_duty_work_credential() if duty_password else load_saved_duty_automation_credential()
     if saved is not None:
         return saved
 
@@ -130,7 +132,12 @@ def load_saved_duty_work_credential(path: Path | None = None) -> DutyCredential 
     return load_saved_duty_automation_credential(path, duty_password=True)
 
 
-def load_recent_synced_duty_credential(path: Path | None = None) -> DutyCredential | None:
+def load_recent_synced_duty_credential(
+    path: Path | None = None,
+    *,
+    duty_password: bool = True,
+    allow_fallback: bool = True,
+) -> DutyCredential | None:
     source = path or saved_login_path()
     payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
     accounts = payload.get("accounts") if isinstance(payload, dict) else None
@@ -139,11 +146,78 @@ def load_recent_synced_duty_credential(path: Path | None = None) -> DutyCredenti
 
     recent = str(payload.get("last_synced_user_id") or payload.get("last_synced_actor_no") or "").strip()
     selected = _select_account(accounts, recent) if recent else None
-    if selected is None:
+    if selected is None and allow_fallback:
         selected = next((account for account in accounts if isinstance(account, dict) and not _is_locked_sync_account(account)), None)
     if selected is None:
         return None
-    return _credential_from_account(selected, duty_password=True)
+    return _credential_from_account(selected, duty_password=duty_password)
+
+
+def task_login_credential_attempts(
+    request: object | None,
+    *,
+    duty_password: bool = True,
+) -> list[tuple[DutyCredential, str]]:
+    """Return task login candidates in the approved operational responsibility order."""
+
+    attempts: list[tuple[DutyCredential, str]] = []
+    on_duty = load_recent_synced_duty_credential(
+        duty_password=duty_password,
+        allow_fallback=False,
+    )
+    if on_duty is not None and not _is_locked_sync_credential(on_duty):
+        attempts.append((on_duty, "值班人員"))
+
+    if request is not None:
+        _append_task_login_credentials(
+            attempts,
+            getattr(request, "driver_duty_login_account_candidates", []) or [],
+            "任務司機",
+            duty_password=duty_password,
+        )
+        _append_task_login_credentials(
+            attempts,
+            getattr(request, "personnel_duty_login_account_candidates", []) or [],
+            "出勤人員",
+            duty_password=duty_password,
+        )
+
+    synced = load_saved_duty_work_credential() if duty_password else load_synced_worker_credential()
+    if synced is not None:
+        attempts.append((synced, "同步帳號"))
+    return _dedupe_task_login_credentials(attempts)
+
+
+def _append_task_login_credentials(
+    attempts: list[tuple[DutyCredential, str]],
+    candidates: Iterable[str],
+    source: str,
+    *,
+    duty_password: bool,
+) -> None:
+    for candidate in candidates:
+        credential = load_duty_credential(
+            [candidate],
+            fallback_user_id="",
+            allow_default=False,
+            duty_password=duty_password,
+        )
+        if credential is not None:
+            attempts.append((credential, source))
+
+
+def _dedupe_task_login_credentials(
+    attempts: Iterable[tuple[DutyCredential, str]],
+) -> list[tuple[DutyCredential, str]]:
+    deduped: list[tuple[DutyCredential, str]] = []
+    seen: set[str] = set()
+    for credential, source in attempts:
+        key = credential.user_id.lower()
+        if not credential.user_id or key in seen:
+            continue
+        seen.add(key)
+        deduped.append((credential, source))
+    return deduped
 
 
 def _env_credential() -> DutyCredential | None:
@@ -550,6 +624,12 @@ def _is_locked_sync_account(account: dict[str, object]) -> bool:
     actor_no = str(account.get("actor_no") or "").strip()
     user_id = str(account.get("user_id") or "").strip()
     return actor_no == "8" or user_id.lower() == "tyfd01510"
+
+
+def _is_locked_sync_credential(credential: DutyCredential) -> bool:
+    return _is_locked_sync_account(
+        {"actor_no": credential.actor_no, "user_id": credential.user_id}
+    )
 
 
 def _normalized_account_for_save(account: dict[str, object]) -> dict[str, str] | None:

@@ -21,7 +21,7 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry, mark_driver_operation_active
 from ambulance_bot.consumables import consumable_inventory_options
-from ambulance_bot.duty_credentials import load_synced_worker_credential
+from ambulance_bot.duty_credentials import load_synced_worker_credential, task_login_credential_attempts
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm, vehicle_ppe_names
 from ambulance_bot.profile_paths import runtime_profile_dir
@@ -255,20 +255,32 @@ def _allocation_needs_supplement(consumables: dict[str, int], page_count: int, i
 
 
 def _load_acs_credentials(task: dict[str, object] | AmbulanceReturnRequest | None = None) -> tuple[str, str]:
-    credential = load_synced_worker_credential()
-    if credential is not None:
-        acs_account = credential.id_number.strip() or (credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else "")
+    for credential, _source in _acs_credential_attempts(task):
+        acs_account = _acs_login_account(credential)
         if acs_account and credential.password:
             return acs_account, credential.password
-        if credential.password:
-            _lookup_synced_credential_id_number_for_acs()
-            credential = load_synced_worker_credential()
-            if credential is not None:
-                acs_account = credential.id_number.strip() or (credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else "")
-                if acs_account and credential.password:
-                    return acs_account, credential.password
+
+    synced = load_synced_worker_credential()
+    if synced is not None and synced.password:
+        _lookup_synced_credential_id_number_for_acs()
+        for credential, _source in _acs_credential_attempts(task):
+            acs_account = _acs_login_account(credential)
+            if acs_account and credential.password:
+                return acs_account, credential.password
 
     raise RuntimeError("找不到一站通耗材帳密；請先在 worker GUI 同步含身分證字號的帳號。")
+
+
+def _acs_credential_attempts(
+    task: dict[str, object] | AmbulanceReturnRequest | None,
+):
+    return task_login_credential_attempts(_request_or_none(task), duty_password=False)
+
+
+def _acs_login_account(credential) -> str:
+    return credential.id_number.strip() or (
+        credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else ""
+    )
 
 
 def _lookup_synced_credential_id_number_for_acs() -> None:

@@ -21,6 +21,7 @@ from ambulance_bot.duty_credentials import (
     save_duty_automation_credential,
     select_credential_sync_account,
     set_last_selected_duty_automation_credential,
+    task_login_credential_attempts,
 )
 
 
@@ -658,6 +659,101 @@ class DutyCredentialTests(unittest.TestCase):
         assert credential is not None
         self.assertEqual(credential.user_id, "tyfd01987")
         self.assertEqual(credential.name, "王昱勛")
+
+    def test_task_login_credentials_prioritize_on_duty_before_case_people_and_sync(self):
+        from ambulance_bot.models import AmbulanceReturnRequest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(path)
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_duty_automation_credentials(
+                    [
+                        {"actor_no": "8", "name": "同步帳號", "user_id": "tyfd00008", "password": "sync-pass"},
+                        {"actor_no": "7", "name": "值班人員", "user_id": "tyfd00007", "password": "on-duty-pass"},
+                        {"actor_no": "12", "name": "任務司機", "user_id": "tyfd00012", "password": "driver-pass"},
+                        {"actor_no": "21", "name": "出勤人員", "user_id": "tyfd00021", "password": "personnel-pass"},
+                    ],
+                    last_selected="tyfd00008",
+                    last_synced="tyfd00007",
+                    path=path,
+                )
+                request = AmbulanceReturnRequest(
+                    task_id="priority-test",
+                    created_at=__import__("datetime").datetime.now(),
+                    raw_text="",
+                    driver="任務司機",
+                    personnel=["任務司機", "出勤人員"],
+                    personnel_accounts=["tyfd00012", "tyfd00021"],
+                )
+
+                attempts = task_login_credential_attempts(request, duty_password=False)
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertEqual(
+            [(credential.user_id, source) for credential, source in attempts],
+            [
+                ("tyfd00007", "值班人員"),
+                ("tyfd00012", "任務司機"),
+                ("tyfd00021", "出勤人員"),
+                ("tyfd00008", "同步帳號"),
+            ],
+        )
+
+    def test_task_login_credentials_never_labels_locked_sync_account_as_on_duty(self):
+        from ambulance_bot.models import AmbulanceReturnRequest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saved_login.json"
+            previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
+            previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
+            try:
+                os.environ["DUTY_SAVED_LOGIN_PATH"] = str(path)
+                os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = "1"
+                save_duty_automation_credentials(
+                    [
+                        {"actor_no": "8", "name": "同步帳號", "user_id": "tyfd01510", "password": "sync-pass"},
+                        {"actor_no": "12", "name": "任務司機", "user_id": "tyfd00012", "password": "driver-pass"},
+                    ],
+                    last_selected="tyfd01510",
+                    last_synced="tyfd01510",
+                    path=path,
+                )
+                request = AmbulanceReturnRequest(
+                    task_id="locked-sync-priority-test",
+                    created_at=__import__("datetime").datetime.now(),
+                    raw_text="",
+                    driver="任務司機",
+                    personnel=["任務司機"],
+                    personnel_accounts=["tyfd00012"],
+                )
+
+                attempts = task_login_credential_attempts(request, duty_password=False)
+            finally:
+                if previous_path is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH"] = previous_path
+                if previous_override is None:
+                    os.environ.pop("DUTY_SAVED_LOGIN_PATH_OVERRIDE", None)
+                else:
+                    os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
+
+        self.assertEqual(
+            [(credential.user_id, source) for credential, source in attempts],
+            [("tyfd00012", "任務司機"), ("tyfd01510", "同步帳號")],
+        )
 
     def test_load_duty_credential_can_match_driver_name(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2884,6 +2884,14 @@ def upsert_public_pc_report(data: dict) -> dict:
         ack_id = str(data.get("ack_id") or event_id).strip() or event_id
         operator_label = str(data.get("operator") or data.get("user") or "未知使用者")
         synced_account = str(data.get("synced_account") or operator_label)
+        incoming_site_statuses_provided = isinstance(data.get("site_statuses"), dict)
+        incoming_site_statuses = data.get("site_statuses") if incoming_site_statuses_provided else {}
+        event_status = str(data.get("status") or "")
+        event_detail = public_pc_event_display_detail(
+            event_status,
+            str(data.get("detail") or ""),
+            incoming_site_statuses,
+        )
         event = {
             "event_id": event_id,
             "ack_id": ack_id,
@@ -2894,8 +2902,8 @@ def upsert_public_pc_report(data: dict) -> dict:
             "worker_id": str(data.get("worker_id") or ""),
             "package_version": str(data.get("package_version") or ""),
             "action": public_pc_action_for_task(task, str(data.get("action") or "更新")),
-            "status": str(data.get("status") or ""),
-            "detail": str(data.get("detail") or ""),
+            "status": event_status,
+            "detail": event_detail,
         }
         reports = [item for item in current_reports if str(item.get("task_id") or "") != task_id]
         existing = next((item for item in current_reports if str(item.get("task_id") or "") == task_id), {})
@@ -2912,8 +2920,8 @@ def upsert_public_pc_report(data: dict) -> dict:
             existing.get("task") if isinstance(existing.get("task"), dict) else {}
         )
         site_statuses = (
-            data.get("site_statuses")
-            if isinstance(data.get("site_statuses"), dict)
+            incoming_site_statuses
+            if incoming_site_statuses_provided
             else existing.get("site_statuses", {})
         )
         site_statuses = _store_public_pc_failure_evidence(
@@ -3344,6 +3352,12 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
     operator_label = current_public_pc_user_label()
     site_login_accounts = public_pc_site_login_accounts(task)
     site_statuses = payload.get("site_statuses") or {}
+    latest_status = str(latest_event.get("status") or payload.get("overall_status") or "")
+    latest_detail = public_pc_event_display_detail(
+        latest_status,
+        str(latest_event.get("detail") or ""),
+        site_statuses if isinstance(site_statuses, Mapping) else {},
+    )
     body = {
         "event_id": str(event_id or "").strip() or str(uuid4()),
         "task_id": task_id,
@@ -3356,8 +3370,8 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
         "worker_id": os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"),
         "package_version": package_version(),
         "action": public_pc_action_for_task(task, action),
-        "status": str(latest_event.get("status") or payload.get("overall_status") or ""),
-        "detail": str(latest_event.get("detail") or ""),
+        "status": latest_status,
+        "detail": latest_detail,
         "overall_status": str(payload.get("overall_status") or ""),
         "site_statuses": site_statuses,
         "completion": task_completion_snapshot(payload),
@@ -5607,6 +5621,20 @@ def site_diagnostic(site: dict) -> dict[str, str]:
     return merge_diagnostic_fields(dict(site or {}))
 
 
+def site_display_detail(site: dict, maximum: int = 160) -> str:
+    diagnostic = site_diagnostic(site)
+    reason = str(diagnostic.get("failure_reason") or "").strip()
+    if reason:
+        return reason
+    detail = " ".join(str(dict(site or {}).get("detail") or "").split())
+    stacktrace_at = detail.lower().find("stacktrace:")
+    if stacktrace_at >= 0:
+        detail = detail[:stacktrace_at].rstrip(" :;-")
+    if len(detail) > maximum:
+        detail = f"{detail[:max(maximum - 1, 0)].rstrip()}…"
+    return detail or "程式回報此站未完成。"
+
+
 def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
     site = dict(site_statuses.get(site_key) or {})
     current_class = status_class(str(site.get("status") or ""))
@@ -6459,10 +6487,37 @@ def event_detail_text(event: dict) -> str:
     if status in {"completed_by_user"} or status.endswith("_saved"):
         return "已完成"
     if "failed" in status or "error" in status:
-        return detail[:80] or "執行失敗"
+        return site_display_detail(
+            {
+                "key": event_site_key(event),
+                "status": status,
+                "detail": detail,
+            },
+            maximum=80,
+        )
     if "captcha" in status or "ready" in status or "prefilled" in status:
         return "待確認"
     return detail[:80] or status_label(status)
+
+
+def public_pc_event_display_detail(
+    status: str,
+    detail: str,
+    site_statuses: Mapping[str, object] | None = None,
+    maximum: int = 160,
+) -> str:
+    raw_status = str(status or "")
+    raw_detail = str(detail or "").strip()
+    if "failed" in raw_status or "error" in raw_status:
+        site_key = event_site_key({"status": raw_status, "detail": raw_detail})
+        source_site = (site_statuses or {}).get(site_key) if isinstance(site_statuses, Mapping) else {}
+        site = dict(source_site) if isinstance(source_site, Mapping) else {}
+        site.update({"key": site_key, "status": raw_status, "detail": raw_detail})
+        return site_display_detail(site, maximum=maximum)
+    text = " ".join(raw_detail.split())
+    if len(text) > maximum:
+        return f"{text[:max(maximum - 1, 0)].rstrip()}…"
+    return text
 
 
 def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
@@ -6483,7 +6538,7 @@ def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
                     "state": "失敗",
                     "stage": diagnostic.get("failure_stage") or "未判定",
                     "reason": diagnostic.get("failure_reason") or "程式回報此站未完成。",
-                    "detail": detail[:160] or "程式回報此站未完成。",
+                    "detail": site_display_detail(site),
                     "action": diagnostic.get("next_action") or site_next_action(site_key, status, detail),
                 }
             )
@@ -6497,7 +6552,7 @@ def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
                     "state": "待確認",
                     "stage": diagnostic.get("failure_stage") or "儲存",
                     "reason": diagnostic.get("failure_reason") or "此站需要人工確認後才能視為完成。",
-                    "detail": detail[:160] or "此站需要人工確認後才能視為完成。",
+                    "detail": site_display_detail(site),
                     "action": diagnostic.get("next_action") or site_next_action(site_key, status, detail),
                 }
             )
@@ -6557,9 +6612,11 @@ def template_helpers() -> dict:
         "selected_return_time_input": selected_return_time_input,
         "patient_counts_from_summary": patient_counts_from_summary,
         "compact_login_account_summary": compact_login_account_summary,
+        "public_pc_event_display_detail": public_pc_event_display_detail,
         "recent_tasks_need_refresh": recent_tasks_need_refresh,
         "site_action_button_label": site_action_button_label,
         "site_diagnostic": site_diagnostic,
+        "site_display_detail": site_display_detail,
         "site_waits_for_confirmation": site_waits_for_confirmation,
         "site_manual_complete_token": site_manual_complete_token,
         "site_vehicle_candidate_rows": site_vehicle_candidate_rows,

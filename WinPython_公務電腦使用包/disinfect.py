@@ -14,8 +14,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry
-from ambulance_bot.duty_credentials import DutyCredential, load_duty_credential, load_synced_worker_credential
-from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
+from ambulance_bot.duty_credentials import DutyCredential, load_duty_credential, load_synced_worker_credential, task_login_credential_attempts
+from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.profile_paths import runtime_profile_dir
 from ambulance_bot.window_layout import apply_tile
@@ -101,7 +101,12 @@ def login_and_get_driver(
             )
             detail = augment_failure_detail(str(exc), evidence)
         except Exception as capture_exc:
-            detail = f"{exc} [failure_capture_error:{capture_exc.__class__.__name__}: {capture_exc}]"
+            print(
+                "[disinfection] failure evidence capture skipped: "
+                f"{capture_exc.__class__.__name__}",
+                flush=True,
+            )
+            detail = f"{compact_failure_text(exc)} [failure_capture_error:{capture_exc.__class__.__name__}]"
         if os.getenv("DISINFECTION_CLOSE_BROWSER_ON_LOGIN_FAILURE", "true").strip().lower() in {"1", "true", "yes", "on"}:
             try:
                 driver.quit()
@@ -117,14 +122,7 @@ def _chrome_profile_dir(profile_name: str) -> Path:
 def _disinfection_credential_attempts(
     request: AmbulanceReturnRequest | None,
 ) -> list[tuple[DutyCredential, str]]:
-    attempts: list[tuple[DutyCredential, str]] = []
-    if request is not None:
-        _append_disinfection_credentials(attempts, request.driver_duty_login_account_candidates, "任務司機")
-        _append_disinfection_credentials(attempts, request.personnel_duty_login_account_candidates, "出勤人員")
-    synced = load_synced_worker_credential()
-    if synced is not None:
-        attempts.append((synced, "同步帳號"))
-    return _dedupe_disinfection_credentials(attempts)
+    return task_login_credential_attempts(request, duty_password=True)
 
 
 def _append_disinfection_credentials(
