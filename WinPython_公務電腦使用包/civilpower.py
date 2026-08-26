@@ -636,7 +636,13 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
     _set_input(wait, "#txt_SearchDate_S_H", plan.case_search_start_hour)
     _set_input(wait, "#txt_SearchDate_E", plan.in_date)
     _set_input(wait, "#txt_SearchDate_E_H", plan.case_search_end_hour)
-    dialog = _open_selection_dialog(driver, wait, "#btn_CaseSlt", "案件代入")
+    dialog = _open_selection_dialog(
+        driver,
+        wait,
+        "#btn_CaseSlt",
+        "案件代入",
+        dialog_title="案件選取",
+    )
     candidates: list[list[str]] = []
     if plan.case_id:
         candidates.append([plan.case_id])
@@ -703,15 +709,27 @@ def _find_work_log_record(driver, plan: CivilpowerTaskPlan) -> bool:
     return bool(rows)
 
 
-def _open_selection_dialog(driver, wait: WebDriverWait, selector: str, label: str):
+def _open_selection_dialog(
+    driver,
+    wait: WebDriverWait,
+    selector: str,
+    label: str,
+    *,
+    dialog_title: str = "",
+):
+    def visible_dialog(active_wait: WebDriverWait):
+        if dialog_title:
+            return _visible_dialog(driver, active_wait, title_text=dialog_title)
+        return _visible_dialog(driver, active_wait)
+
     _click_selection_trigger(driver, wait, selector, label)
     try:
-        return _visible_dialog(driver, wait)
+        return visible_dialog(wait)
     except TimeoutException:
         _click_selection_trigger(driver, wait, selector, label)
         retry_wait = WebDriverWait(driver, min(5, DEFAULT_WAIT_SECONDS))
         try:
-            return _visible_dialog(driver, retry_wait)
+            return visible_dialog(retry_wait)
         except TimeoutException as exc:
             raise TimeoutException(f"{label}選取視窗未出現，已安全重試一次。") from exc
 
@@ -775,13 +793,32 @@ def _click_selection_trigger(driver, wait: WebDriverWait, selector: str, label: 
         raise TimeoutException(f"{label}選取按鈕未就緒（{selector}；頁面={location}）。") from exc
 
 
-def _visible_dialog(driver, wait: WebDriverWait):
+def _visible_dialog(driver, wait: WebDriverWait, *, title_text: str = ""):
+    expected_title = _clean_text(title_text)
+
     def find_dialog(current):
         candidates = current.find_elements(By.CSS_SELECTOR, ".jqx-window, [role='dialog']")
         visible = [candidate for candidate in candidates if candidate.is_displayed()]
+        if expected_title:
+            titled = [candidate for candidate in visible if _dialog_has_title(candidate, expected_title)]
+            return titled[-1] if titled else False
         return visible[-1] if visible else False
 
     return wait.until(find_dialog)
+
+
+def _dialog_has_title(dialog, expected_title: str) -> bool:
+    try:
+        headers = dialog.find_elements(By.CSS_SELECTOR, ".jqx-window-header, .modal-title, [role='heading']")
+    except Exception:
+        return False
+    for header in headers:
+        try:
+            if expected_title in _clean_text(header.text):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _wait_for_io_person_dialog_row(driver, wait: WebDriverWait, tokens: list[str]):

@@ -278,6 +278,28 @@ class CivilpowerPlanTests(unittest.TestCase):
             visible_dialog.call_args_list,
         )
 
+    def test_visible_dialog_prefers_the_requested_window_title_over_the_outer_form(self):
+        from civilpower import _visible_dialog
+
+        driver = mock.Mock()
+        wait = mock.Mock()
+        case_dialog = mock.Mock()
+        outer_form = mock.Mock()
+        case_dialog.is_displayed.return_value = True
+        outer_form.is_displayed.return_value = True
+        case_header = mock.Mock()
+        case_header.text = "案件選取"
+        outer_header = mock.Mock()
+        outer_header.text = "工作紀錄簿新增"
+        case_dialog.find_elements.return_value = [case_header]
+        outer_form.find_elements.return_value = [outer_header]
+        driver.find_elements.return_value = [case_dialog, outer_form]
+        wait.until.side_effect = lambda condition: condition(driver)
+
+        actual = _visible_dialog(driver, wait, title_text="案件選取")
+
+        self.assertIs(case_dialog, actual)
+
     def test_work_log_page_reloads_once_when_required_controls_are_missing(self):
         from selenium.common.exceptions import TimeoutException
 
