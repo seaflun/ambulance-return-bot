@@ -542,7 +542,7 @@ def _ensure_io_record(
         driver,
         plan,
         status,
-        wait_for_match=True,
+        wait_for_match=False,
         **lookup_kwargs,
     ):
         checkpoint[f"{marker}_verified"] = True
@@ -632,7 +632,9 @@ def _find_io_record_row(
     _set_if_present(driver, wait, "#txt_Date_S", date_text)
     _set_if_present(driver, wait, "#txt_Date_E", date_text)
     _select_option_containing_if_present(driver, wait, "#ddl_IO", status)
+    query_marker = _arm_io_query_refresh_marker(driver)
     _click_if_present(driver, wait, "#btn_Query")
+    _wait_for_io_query_refresh(driver, wait, query_marker)
     tokens = [
         plan.member_name,
         plan.home_unit,
@@ -653,6 +655,34 @@ def _find_io_record_row(
     return rows[0] if rows else None
 
 
+def _arm_io_query_refresh_marker(driver) -> str:
+    execute_script = getattr(driver, "execute_script", None)
+    if not callable(execute_script):
+        return ""
+    marker_id = f"civilpower-query-{uuid4().hex}"
+    armed = execute_script(
+        """
+        const container = document.querySelector('#tableresult');
+        if (!container) return false;
+        const marker = document.createElement('span');
+        marker.id = arguments[0];
+        marker.hidden = true;
+        container.appendChild(marker);
+        return true;
+        """,
+        marker_id,
+    )
+    if not armed:
+        raise RuntimeError("出入登記簿查詢結果區未完整載入（缺少 #tableresult）。")
+    return marker_id
+
+
+def _wait_for_io_query_refresh(driver, wait: WebDriverWait, marker_id: str) -> None:
+    if not marker_id:
+        return
+    wait.until(lambda current: not current.find_elements(By.ID, marker_id))
+
+
 def _ensure_correct_in_io_record(
     driver,
     plan: CivilpowerTaskPlan,
@@ -668,7 +698,7 @@ def _ensure_correct_in_io_record(
                 driver,
                 plan,
                 IN_STATUS,
-                wait_for_match=True,
+                wait_for_match=False,
                 raise_on_timeout=True,
             ) is not None:
                 checkpoint["in_verified"] = True
@@ -687,7 +717,7 @@ def _ensure_correct_in_io_record(
         driver,
         plan,
         IN_STATUS,
-        wait_for_match=True,
+        wait_for_match=False,
         raise_on_timeout=True,
     ) is not None:
         checkpoint["in_verified"] = True
@@ -696,7 +726,7 @@ def _ensure_correct_in_io_record(
         driver,
         original_plan,
         IN_STATUS,
-        wait_for_match=True,
+        wait_for_match=False,
         reload_page=False,
         raise_on_timeout=True,
     )
@@ -1316,11 +1346,25 @@ def _visible_save_success_dialog(driver):
 
 
 def _matching_table_rows(driver, required_tokens: list[str]) -> list[object]:
-    return [
-        row
-        for row in _table_rows(driver)
-        if all(_token_matches(_clean_text(row.text), token) for token in required_tokens if token)
-    ]
+    matches: list[object] = []
+    for _ in range(2):
+        matches = []
+        refreshed = False
+        try:
+            table_rows = _table_rows(driver)
+        except StaleElementReferenceException:
+            continue
+        for row in table_rows:
+            try:
+                row_text = _clean_text(row.text)
+            except StaleElementReferenceException:
+                refreshed = True
+                continue
+            if all(_token_matches(row_text, token) for token in required_tokens if token):
+                matches.append(row)
+        if not refreshed:
+            return matches
+    return matches
 
 
 def _table_rows(driver) -> list[object]:
@@ -1336,6 +1380,8 @@ def _table_rows(driver) -> list[object]:
                 seen_ids.add(row_id)
             if row.is_displayed() and _row_cells(row):
                 rows.append(row)
+        except StaleElementReferenceException:
+            raise
         except Exception:
             continue
     return rows

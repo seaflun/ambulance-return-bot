@@ -1337,7 +1337,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertTrue(checkpoint["out_verified"])
         find_io_record.assert_has_calls(
             [
-                mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=True),
+                mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=False),
                 mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=True, reload_page=False),
             ]
         )
@@ -1388,12 +1388,12 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertTrue(checkpoint["in_verified"])
         self.assertEqual(
             [
-                mock.call(mock.ANY, official_plan, "入", wait_for_match=True, raise_on_timeout=True),
+                mock.call(mock.ANY, official_plan, "入", wait_for_match=False, raise_on_timeout=True),
                 mock.call(
                     mock.ANY,
                     manual_plan,
                     "入",
-                    wait_for_match=True,
+                    wait_for_match=False,
                     reload_page=False,
                     raise_on_timeout=True,
                 ),
@@ -1528,6 +1528,107 @@ class CivilpowerPlanTests(unittest.TestCase):
         ):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS, wait_for_match=True))
 
+    def test_io_record_lookup_waits_for_query_refresh_before_scanning_rows(self):
+        from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-query-refresh",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/25",
+            out_time="2041",
+            in_date="2026/08/25",
+            in_time="2210",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
+        driver = object()
+        wait = mock.Mock()
+        row = object()
+
+        with mock.patch("civilpower._open_io_work_log"), mock.patch(
+            "civilpower.WebDriverWait", return_value=wait
+        ), mock.patch("civilpower._set_if_present"), mock.patch(
+            "civilpower._select_option_containing_if_present"
+        ), mock.patch("civilpower._arm_io_query_refresh_marker", return_value="query-marker"), mock.patch(
+            "civilpower._click_if_present"
+        ), mock.patch("civilpower._wait_for_io_query_refresh") as wait_for_refresh, mock.patch(
+            "civilpower._matching_table_rows", return_value=[row]
+        ):
+            self.assertTrue(_find_io_record(driver, plan, OUT_STATUS))
+
+        wait_for_refresh.assert_called_once_with(driver, wait, "query-marker")
+
+    def test_io_query_refresh_waits_until_the_result_marker_is_replaced(self):
+        from civilpower import _arm_io_query_refresh_marker, _wait_for_io_query_refresh
+
+        class PollingWait:
+            def until(self, condition):
+                for _ in range(2):
+                    result = condition(driver)
+                    if result:
+                        return result
+                raise AssertionError("查詢結果未替換標記")
+
+        driver = mock.Mock()
+        driver.execute_script.return_value = True
+        driver.find_elements.side_effect = [[object()], []]
+
+        marker_id = _arm_io_query_refresh_marker(driver)
+        _wait_for_io_query_refresh(driver, PollingWait(), marker_id)
+
+        self.assertTrue(marker_id.startswith("civilpower-query-"))
+        self.assertEqual(2, driver.find_elements.call_count)
+
+    def test_matching_table_rows_reacquires_rows_after_table_refresh(self):
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        from civilpower import _matching_table_rows
+
+        class Row:
+            def __init__(
+                self,
+                text: str,
+                *,
+                stale_on_text: bool = False,
+                stale_on_display: bool = False,
+            ) -> None:
+                self.id = ""
+                self._text = text
+                self._stale_on_text = stale_on_text
+                self._stale_on_display = stale_on_display
+
+            def is_displayed(self) -> bool:
+                if self._stale_on_display:
+                    raise StaleElementReferenceException("table was refreshed")
+                return True
+
+            def find_elements(self, *_args) -> list[object]:
+                return [object()]
+
+            @property
+            def text(self) -> str:
+                if self._stale_on_text:
+                    raise StaleElementReferenceException("table was refreshed")
+                return self._text
+
+        matching_row = Row("張贊鏡 救護出勤 1036")
+        for stale_row in (
+            Row("張贊鏡 救護出勤 1036", stale_on_text=True),
+            Row("張贊鏡 救護出勤 1036", stale_on_display=True),
+        ):
+            with self.subTest(stale_row=stale_row):
+                driver = mock.Mock()
+                driver.find_elements.side_effect = [[stale_row], [matching_row]]
+
+                self.assertEqual([matching_row], _matching_table_rows(driver, ["張贊鏡", "救護出勤", "1036"]))
+
     def test_io_record_lookup_timeout_is_not_a_matching_record(self):
         from selenium.common.exceptions import TimeoutException
 
@@ -1597,6 +1698,8 @@ class CivilpowerPlanTests(unittest.TestCase):
             "civilpower._set_if_present"
         ), mock.patch("civilpower._select_option_containing_if_present"), mock.patch(
             "civilpower._click_if_present"
+        ), mock.patch(
+            "civilpower._arm_io_query_refresh_marker", return_value=""
         ), mock.patch("civilpower._matching_table_rows", return_value=[row]):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS, reload_page=False))
 

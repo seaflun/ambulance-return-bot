@@ -122,6 +122,25 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(merged["exception_type"], "civilpower_io_verify")
         self.assertEqual(merged["failure_stage"], "儲存並回查")
 
+    def test_merge_replaces_stored_chrome_diagnosis_for_civilpower_stale_element(self):
+        merged = merge_diagnostic_fields(
+            {
+                "key": "volunteer_assist",
+                "status": "volunteer_assist_failed",
+                "detail": (
+                    "民力系統登打失敗：Message: stale element reference: stale element not found "
+                    "in the current frame (Session info: chrome=151.0.7922.174)"
+                ),
+                "failure_stage": "啟動 Chrome",
+                "failure_reason": "Chrome 或 ChromeDriver 工作階段無法建立或已中斷。",
+                "next_action": "關閉殘留 Chrome/ChromeDriver，重啟 worker，再重新登打。",
+                "exception_type": "chrome_session",
+            }
+        )
+
+        self.assertEqual(merged["exception_type"], "stale_element")
+        self.assertEqual(merged["failure_stage"], "新增出入登記")
+
     def test_work_log_case_query_range_failure_is_classified_as_case_not_found(self):
         payload = diagnostic_payload(
             "duty_work_log",
@@ -174,6 +193,21 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["failure_stage"], "開啟車輛里程")
         self.assertIn("舊紀錄", payload["failure_reason"])
         self.assertIn("無法確定", payload["failure_reason"])
+
+    def test_stale_element_with_chrome_session_info_is_not_a_chrome_start_failure(self):
+        payload = diagnostic_payload(
+            "volunteer_assist",
+            "volunteer_assist_failed",
+            (
+                "民力系統登打失敗：Message: stale element reference: stale element not found "
+                "in the current frame (Session info: chrome=151.0.7922.174)"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "stale_element")
+        self.assertEqual(payload["failure_stage"], "新增出入登記")
+        self.assertIn("重新整理", payload["failure_reason"])
+        self.assertNotIn("ChromeDriver 工作階段", payload["failure_reason"])
 
     def test_chrome_unresponsive_marker_is_reported_as_browser_problem(self):
         payload = diagnostic_payload(

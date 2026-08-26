@@ -89,6 +89,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         "chrome_unresponsive",
         "chromedriver_ended",
         "civilpower_io_verify",
+        "stale_element",
     }
     def value_for(field: str) -> str:
         if prefer_computed:
@@ -164,6 +165,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
             return browser_category
     if "timed out receiving message from renderer" in text:
         return "renderer_timeout_unverified"
+    if "stale element reference" in text or "staleelementreferenceexception" in text:
+        return "stale_element"
     if _is_invalid_argument_oserror(exception, text):
         return "chrome_session"
     if "chrome" in text or "devtoolsactiveport" in text or "session not created" in text or "not reachable" in text:
@@ -281,6 +284,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return "儲存"
     if category == "element_missing":
         return _field_stage(site_key, detail)
+    if category == "stale_element":
+        return _field_stage(site_key, detail)
     if category == "waiting_confirmation":
         return SITE_STATUS_STAGE.get(status) or "儲存"
     return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "執行流程")
@@ -333,6 +338,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "fuel_period": "加油頁月份與任務加油月份不一致，油卡清單尚未切到任務月份。",
         "ppe_driver": "PPE 駕駛清單找不到指定人員或有效代碼。",
         "civilpower_io_verify": "民力出入登記簿已送出，但查詢清單尚未出現可驗證的紀錄。",
+        "stale_element": "網頁正在重新整理，程式持有的舊頁面元件已失效。",
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
         "vehicle_candidate": "已確認同一案件存在不同出勤車輛的官方紀錄，需由使用者選擇本次查找車輛。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
@@ -367,6 +373,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "確認卡片上的候選車輛後，只以「單獨登打」重試此站；原案件車號不會被修改。"
     if category == "civilpower_io_verify":
         return "等待民力出入登記簿清單刷新後確認剛儲存的紀錄；若仍找不到，再確認人員、日期、狀態與時間。"
+    if category == "stale_element":
+        return f"重新整理{site_name}頁面後單獨重跑；若持續發生，保留截圖與失敗時間回報。"
     if category == "login":
         return f"到公務電腦完成{site_name}登入或驗證碼，再回任務頁按「單獨登打」重試。"
     if category == "case_not_found":
