@@ -216,6 +216,51 @@ class CivilpowerPlanTests(unittest.TestCase):
             matching_rows.call_args_list,
         )
 
+    def test_work_log_recheck_waits_for_delayed_query_result_after_save(self):
+        from civilpower import CivilpowerTaskPlan, _find_work_log_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-recheck-delayed-query",
+            case_id="20260826103603012",
+            case_address="桃園市觀音區東大路147巷21號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+            case_reason="創傷",
+        )
+        driver = mock.Mock()
+        wait = mock.Mock()
+        row = mock.Mock()
+        query_rows = [[], [], [], [], [], [], [], [], [], [row]]
+
+        def wait_until(predicate):
+            for _attempt in range(2):
+                result = predicate(driver)
+                if result:
+                    return result
+            raise AssertionError("等待中的查詢沒有重新檢查工作紀錄")
+
+        wait.until.side_effect = wait_until
+        with mock.patch("civilpower._open_work_log_form", return_value=wait), mock.patch(
+            "civilpower._set_if_present"
+        ), mock.patch("civilpower._click_if_present"), mock.patch(
+            "civilpower._matching_table_rows",
+            side_effect=query_rows,
+        ) as matching_rows:
+            self.assertTrue(_find_work_log_record(driver, plan, wait_for_match=True))
+
+        self.assertEqual(10, matching_rows.call_count)
+        self.assertEqual(1, wait.until.call_count)
+
     def test_task_plan_refuses_unselected_volunteer_or_invalid_times(self):
         from ambulance_bot.models import AmbulanceReturnRequest
         from civilpower import build_civilpower_task_plan

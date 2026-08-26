@@ -603,7 +603,7 @@ def _ensure_work_log(
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
     _report_progress(progress, "工作紀錄回查")
-    if not _find_work_log_record(driver, plan):
+    if not _find_work_log_record(driver, plan, wait_for_match=True):
         raise RuntimeError("工作紀錄簿儲存後回查不到本次救護義消協勤紀錄。")
     checkpoint["work_log_verified"] = True
 
@@ -693,7 +693,12 @@ def _assert_imported_work_log_values(driver, plan: CivilpowerTaskPlan) -> None:
         raise RuntimeError(f"案件代入後未帶入第一站工作紀錄的 {plan.duty_status_line}。")
 
 
-def _find_work_log_record(driver, plan: CivilpowerTaskPlan) -> bool:
+def _find_work_log_record(
+    driver,
+    plan: CivilpowerTaskPlan,
+    *,
+    wait_for_match: bool = False,
+) -> bool:
     wait = _open_work_log_form(driver)
     _set_if_present(driver, wait, "#txt_Date_S", plan.out_date)
     _set_if_present(driver, wait, "#txt_Date_E", plan.in_date)
@@ -707,13 +712,22 @@ def _find_work_log_record(driver, plan: CivilpowerTaskPlan) -> bool:
         candidates.append([plan.member_name, plan.case_reason, plan.out_time])
     candidates.append([plan.member_name, plan.out_reason, plan.out_time])
     candidates.append([plan.member_name, plan.out_time])
-    for tokens in candidates:
-        rows = _matching_table_rows(driver, tokens)
-        if rows:
-            if len(rows) == 1:
-                return True
-            raise RuntimeError("工作紀錄簿找到多筆相同義消協勤紀錄，無法安全判定。")
-    return False
+    def find_record(current) -> bool:
+        for tokens in candidates:
+            rows = _matching_table_rows(current, tokens)
+            if rows:
+                if len(rows) == 1:
+                    return True
+                raise RuntimeError("工作紀錄簿找到多筆相同義消協勤紀錄，無法安全判定。")
+        return False
+
+    matched = find_record(driver)
+    if matched or not wait_for_match:
+        return matched
+    try:
+        return bool(wait.until(find_record))
+    except TimeoutException:
+        return False
 
 
 def _open_selection_dialog(
