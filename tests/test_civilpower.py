@@ -99,6 +99,45 @@ class CivilpowerPlanTests(unittest.TestCase):
         with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
             _assert_imported_work_log_values(object(), plan)
 
+    def test_work_log_import_accepts_a_one_minute_case_return_time_difference(self):
+        from civilpower import CivilpowerTaskPlan, _assert_imported_work_log_values
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-return-minute-gap",
+            case_id="20260826103603012",
+            case_address="桃園市觀音區東大路147巷21號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+            case_reason="創傷",
+        )
+        values = {
+            "#txt_AddDisDate": "2026/8/26",
+            "#txt_AddDisHour": "10",
+            "#txt_AddDisMin": "36",
+            "#txt_AddBackDate": "2026/8/26",
+            "#txt_AddBackHour": "11",
+            "#txt_AddBackMin": "46",
+            "#txt_AddStat": "3.救護義消協勤:張贊鏡",
+        }
+
+        with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
+            _assert_imported_work_log_values(object(), plan)
+
+        values["#txt_AddBackMin"] = "45"
+        with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
+            with self.assertRaisesRegex(RuntimeError, "#txt_AddBackMin"):
+                _assert_imported_work_log_values(object(), plan)
+
     def test_work_log_import_keeps_volunteer_status_line_required(self):
         from civilpower import CivilpowerTaskPlan, _assert_imported_work_log_values
 

@@ -673,12 +673,16 @@ def _assert_imported_work_log_values(driver, plan: CivilpowerTaskPlan) -> None:
         "#txt_AddDisDate": plan.out_date,
         "#txt_AddBackDate": plan.in_date,
         "#txt_AddBackHour": plan.in_time[:2],
-        "#txt_AddBackMin": plan.in_time[2:],
     }
     for selector, expected_value in expected.items():
         actual = _control_value(driver, selector)
         if not _same_value(actual, expected_value):
             raise RuntimeError(f"案件代入後欄位不符：{selector} 預期={expected_value} 實際={actual or '空白'}")
+    imported_back_minute = _control_value(driver, "#txt_AddBackMin")
+    if not _same_or_adjacent_minute(imported_back_minute, plan.in_time[2:]):
+        raise RuntimeError(
+            f"案件代入後欄位不符：#txt_AddBackMin 預期={plan.in_time[2:]} 實際={imported_back_minute or '空白'}"
+        )
     dispatch_time = normalize_hhmm(
         _control_value(driver, "#txt_AddDisHour") + _control_value(driver, "#txt_AddDisMin")
     )
@@ -1362,6 +1366,15 @@ def _same_value(actual: str, expected: str) -> bool:
     clean_actual = re.sub(r"\D", "", str(actual or ""))
     clean_expected = re.sub(r"\D", "", str(expected or ""))
     return clean_actual == clean_expected if clean_expected else _clean_text(actual) == _clean_text(expected)
+
+
+def _same_or_adjacent_minute(actual: str, expected: str) -> bool:
+    try:
+        actual_minute = int(_clean_text(actual))
+        expected_minute = int(_clean_text(expected))
+    except ValueError:
+        return False
+    return 0 <= actual_minute < 60 and 0 <= expected_minute < 60 and abs(actual_minute - expected_minute) <= 1
 
 
 def _date_parts(value: object) -> tuple[int, int, int] | None:
