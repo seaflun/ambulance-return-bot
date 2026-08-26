@@ -64,6 +64,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertEqual("救護返隊", plan.in_reason)
         self.assertEqual("3.救護義消協勤:測試義消", plan.duty_status_line)
         self.assertEqual("EMS-20260819-01", plan.case_id)
+        self.assertEqual("急病", plan.case_reason)
 
     def test_work_log_import_accepts_case_dispatch_time_that_precedes_volunteer_out_time(self):
         from civilpower import CivilpowerTaskPlan, _assert_imported_work_log_values
@@ -801,6 +802,54 @@ class CivilpowerPlanTests(unittest.TestCase):
         click_action.assert_called_once_with(driver, row, "選取")
         wait_for_close.assert_called_once_with(wait, dialog)
         confirm.assert_not_called()
+
+    def test_case_import_uses_reason_and_dispatch_time_when_identifiers_are_not_visible(self):
+        from civilpower import CivilpowerTaskPlan, _import_work_log_case
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-case-reason-time",
+            case_id="20260826103603012",
+            case_address="桃園市觀音區東大路147巷21號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+            case_reason="創傷",
+        )
+        driver = mock.Mock()
+        wait = mock.Mock()
+        checkbox = mock.Mock()
+        checkbox.is_selected.return_value = True
+        wait.until.return_value = checkbox
+        dialog = mock.Mock()
+        row = mock.Mock()
+
+        with mock.patch("civilpower._set_input"), mock.patch(
+            "civilpower._open_selection_dialog", return_value=dialog
+        ), mock.patch(
+            "civilpower._wait_for_dialog_row",
+            side_effect=[RuntimeError("id missing"), RuntimeError("address missing"), row],
+        ) as wait_for_row, mock.patch(
+            "civilpower._click_dialog_row_action", return_value=True
+        ), mock.patch("civilpower._wait_for_dialog_close"), mock.patch("civilpower._confirm_dialog"):
+            _import_work_log_case(driver, wait, plan)
+
+        self.assertEqual(
+            [
+                mock.call(wait, dialog, ["20260826103603012"]),
+                mock.call(wait, dialog, ["桃園市觀音區東大路147巷21號"]),
+                mock.call(wait, dialog, ["創傷", "1036"]),
+            ],
+            wait_for_row.call_args_list,
+        )
 
     def test_dialog_row_action_clicks_the_visible_exact_select_button(self):
         from civilpower import _click_dialog_row_action

@@ -85,6 +85,7 @@ class CivilpowerTaskPlan:
     out_reason: str
     in_reason: str
     duty_status_line: str
+    case_reason: str = ""
 
     @property
     def case_search_start_hour(self) -> str:
@@ -129,6 +130,7 @@ def build_civilpower_task_plan(request: AmbulanceReturnRequest) -> CivilpowerTas
         out_reason=OUT_REASON,
         in_reason=IN_REASON,
         duty_status_line=f"3.救護義消協勤:{member_name}",
+        case_reason=_clean_text(request.case_reason),
     )
 
 
@@ -635,14 +637,24 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
     _set_input(wait, "#txt_SearchDate_E", plan.in_date)
     _set_input(wait, "#txt_SearchDate_E_H", plan.case_search_end_hour)
     dialog = _open_selection_dialog(driver, wait, "#btn_CaseSlt", "案件代入")
-    tokens = [plan.case_address] if plan.case_address else [plan.case_id]
+    candidates: list[list[str]] = []
     if plan.case_id:
+        candidates.append([plan.case_id])
+    if plan.case_address:
+        candidates.append([plan.case_address])
+    if plan.case_reason:
+        candidates.append([plan.case_reason, plan.out_time])
+    last_error: RuntimeError | None = None
+    for tokens in candidates:
         try:
-            row = _wait_for_dialog_row(wait, dialog, [plan.case_id])
-        except RuntimeError:
             row = _wait_for_dialog_row(wait, dialog, tokens)
+            break
+        except RuntimeError as exc:
+            last_error = exc
     else:
-        row = _wait_for_dialog_row(wait, dialog, tokens)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("案件代入缺少可比對的案件資料。")
     if _click_dialog_row_action(driver, row, "選取"):
         _wait_for_dialog_close(wait, dialog)
         return
