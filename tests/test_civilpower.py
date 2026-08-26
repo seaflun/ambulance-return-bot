@@ -675,6 +675,40 @@ class CivilpowerPlanTests(unittest.TestCase):
         driver.execute_script.assert_called_once()
         self.assertIs(row, driver.execute_script.call_args.args[1])
 
+    def test_confirm_dialog_accepts_an_already_closed_selection_window(self):
+        from civilpower import _confirm_dialog
+
+        driver = mock.Mock()
+        dialog = mock.Mock()
+        dialog.is_displayed.return_value = False
+
+        _confirm_dialog(driver, mock.Mock(), dialog)
+
+        driver.find_elements.assert_not_called()
+
+    def test_confirm_dialog_accepts_visible_role_button_with_confirm_selection_title(self):
+        from civilpower import _confirm_dialog
+
+        class ImmediateWait:
+            def until(self, predicate):
+                return predicate(driver)
+
+        driver = mock.Mock()
+        dialog = mock.Mock()
+        dialog.is_displayed.return_value = True
+        candidate = mock.Mock()
+        candidate.get_attribute.side_effect = lambda name: {"value": "", "title": "確認選取"}.get(name, "")
+        candidate.text = ""
+        candidate.is_displayed.return_value = True
+        candidate.is_enabled.return_value = True
+        driver.find_elements.return_value = [candidate]
+
+        _confirm_dialog(driver, ImmediateWait(), dialog)
+
+        candidate.click.assert_called_once()
+        selector = driver.find_elements.call_args.args[1]
+        self.assertIn("[role='button']", selector)
+
     def test_io_person_selection_waits_for_person_value_after_confirming_dialog(self):
         from civilpower import CivilpowerTaskPlan, _select_io_person
 

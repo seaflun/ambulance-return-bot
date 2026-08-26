@@ -840,14 +840,35 @@ def _click_dialog_row(driver, row) -> None:
 
 
 def _confirm_dialog(driver, wait: WebDriverWait, dialog) -> None:
+    if _is_stale(dialog) or not dialog.is_displayed():
+        return
     candidates = driver.find_elements(
-        By.XPATH,
-        "//input[@type='button' or @type='submit'] | //button",
+        By.CSS_SELECTOR,
+        "input[type='button'], input[type='submit'], button, a, [role='button'], .jqx-button",
     )
     for candidate in candidates:
-        text = _clean_text(candidate.get_attribute("value") or candidate.text)
-        if candidate.is_displayed() and candidate.is_enabled() and "確認選取" in text:
-            candidate.click()
+        try:
+            text = _clean_text(
+                " ".join(
+                    str(candidate.get_attribute(attribute) or "")
+                    for attribute in ("value", "title", "aria-label")
+                )
+                + " "
+                + str(candidate.text or "")
+            )
+            selectable = candidate.is_displayed() and candidate.is_enabled()
+        except Exception:
+            continue
+        if selectable and "確認選取" in text.replace(" ", ""):
+            try:
+                candidate.click()
+            except Exception:
+                try:
+                    clicked = driver.execute_script("arguments[0].click(); return true;", candidate)
+                except Exception as exc:
+                    raise RuntimeError("選取視窗的確認按鈕無法點選。") from exc
+                if not clicked:
+                    raise RuntimeError("選取視窗的確認按鈕無法點選。")
             wait.until(lambda current: _is_stale(dialog) or not dialog.is_displayed())
             return
     raise RuntimeError("選取視窗找不到「確認選取」按鈕。")
