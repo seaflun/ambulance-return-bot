@@ -698,19 +698,22 @@ def _find_work_log_record(driver, plan: CivilpowerTaskPlan) -> bool:
     _set_if_present(driver, wait, "#txt_Date_S", plan.out_date)
     _set_if_present(driver, wait, "#txt_Date_E", plan.in_date)
     _click_if_present(driver, wait, "#btn_Query")
-    tokens = [plan.member_name, plan.out_reason, plan.out_time]
+    candidates: list[list[str]] = []
     if plan.case_id:
-        rows = _matching_table_rows(driver, [plan.member_name, plan.case_id])
-        if rows:
-            return len(rows) == 1
+        candidates.append([plan.member_name, plan.case_id])
     if plan.case_address:
-        rows = _matching_table_rows(driver, [plan.member_name, plan.case_address])
+        candidates.append([plan.member_name, plan.case_address])
+    if plan.case_reason:
+        candidates.append([plan.member_name, plan.case_reason, plan.out_time])
+    candidates.append([plan.member_name, plan.out_reason, plan.out_time])
+    candidates.append([plan.member_name, plan.out_time])
+    for tokens in candidates:
+        rows = _matching_table_rows(driver, tokens)
         if rows:
-            return len(rows) == 1
-    rows = _matching_table_rows(driver, tokens)
-    if len(rows) > 1:
-        raise RuntimeError("工作紀錄簿找到多筆相同義消協勤紀錄，無法安全判定。")
-    return bool(rows)
+            if len(rows) == 1:
+                return True
+            raise RuntimeError("工作紀錄簿找到多筆相同義消協勤紀錄，無法安全判定。")
+    return False
 
 
 def _open_selection_dialog(

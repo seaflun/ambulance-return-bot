@@ -172,6 +172,50 @@ class CivilpowerPlanTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "救護義消協勤:江尚諭"):
                 _assert_imported_work_log_values(object(), plan)
 
+    def test_work_log_recheck_uses_unique_member_and_dispatch_time_as_the_last_safe_fallback(self):
+        from civilpower import CivilpowerTaskPlan, _find_work_log_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-recheck-fallback",
+            case_id="20260826103603012",
+            case_address="桃園市觀音區東大路147巷21號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+            case_reason="創傷",
+        )
+        driver = mock.Mock()
+        wait = mock.Mock()
+        row = mock.Mock()
+
+        with mock.patch("civilpower._open_work_log_form", return_value=wait), mock.patch(
+            "civilpower._set_if_present"
+        ), mock.patch("civilpower._click_if_present"), mock.patch(
+            "civilpower._matching_table_rows",
+            side_effect=[[], [], [], [], [row]],
+        ) as matching_rows:
+            self.assertTrue(_find_work_log_record(driver, plan))
+
+        self.assertEqual(
+            [
+                mock.call(driver, ["張贊鏡", "20260826103603012"]),
+                mock.call(driver, ["張贊鏡", "桃園市觀音區東大路147巷21號"]),
+                mock.call(driver, ["張贊鏡", "創傷", "1036"]),
+                mock.call(driver, ["張贊鏡", "救護出勤", "1036"]),
+                mock.call(driver, ["張贊鏡", "1036"]),
+            ],
+            matching_rows.call_args_list,
+        )
+
     def test_task_plan_refuses_unselected_volunteer_or_invalid_times(self):
         from ambulance_bot.models import AmbulanceReturnRequest
         from civilpower import build_civilpower_task_plan
