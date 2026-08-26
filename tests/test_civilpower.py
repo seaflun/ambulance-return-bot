@@ -767,6 +767,43 @@ class CivilpowerPlanTests(unittest.TestCase):
         selector = driver.find_elements.call_args.args[1]
         self.assertIn("[role='button']", selector)
 
+    def test_wait_after_save_confirms_a_visible_success_dialog(self):
+        from civilpower import _wait_after_save
+
+        class ImmediateWait:
+            def until(self, predicate):
+                return predicate(driver)
+
+        driver = mock.Mock()
+
+        with mock.patch("civilpower._element_displayed", return_value=False), mock.patch(
+            "civilpower._dismiss_save_success_dialog"
+        ) as dismiss:
+            _wait_after_save(driver, ImmediateWait(), "#jqxAddWindow")
+
+        dismiss.assert_called_once_with(driver, mock.ANY)
+
+    def test_success_dialog_clicks_visible_exact_confirm_button(self):
+        from civilpower import _dismiss_save_success_dialog
+
+        driver = mock.Mock()
+        wait = mock.Mock()
+        dialog = mock.Mock()
+        confirm_button = mock.Mock()
+        confirm_button.get_attribute.side_effect = lambda name: {"value": "確定"}.get(name, "")
+        confirm_button.text = ""
+        confirm_button.is_displayed.return_value = True
+        confirm_button.is_enabled.return_value = True
+        dialog.find_elements.return_value = [confirm_button]
+
+        with mock.patch("civilpower._visible_save_success_dialog", return_value=dialog), mock.patch(
+            "civilpower._wait_for_dialog_close"
+        ) as wait_for_close:
+            _dismiss_save_success_dialog(driver, wait)
+
+        confirm_button.click.assert_called_once()
+        wait_for_close.assert_called_once_with(wait, dialog)
+
     def test_io_person_selection_waits_for_person_value_after_confirming_dialog(self):
         from civilpower import CivilpowerTaskPlan, _select_io_person
 
@@ -833,8 +870,8 @@ class CivilpowerPlanTests(unittest.TestCase):
         steps: list[str] = []
 
         with mock.patch("civilpower._find_io_record", side_effect=[False, True]) as find_io_record, mock.patch(
-            "civilpower._open_io_work_log", side_effect=lambda _driver: steps.append("open")
-        ), mock.patch(
+            "civilpower._open_io_work_log"
+        ) as open_io_work_log, mock.patch(
             "civilpower._click", side_effect=lambda _wait, selector: steps.append(f"click:{selector}")
         ), mock.patch(
             "civilpower._wait_visible", side_effect=lambda _wait, selector: steps.append(f"visible:{selector}")
@@ -860,7 +897,6 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         self.assertEqual(
             [
-                "open",
                 "click:#btn_Add",
                 "visible:#jqxAddWindow",
                 "combo:#txt_AddUnit=大園救護分隊",
@@ -879,6 +915,7 @@ class CivilpowerPlanTests(unittest.TestCase):
             ],
             steps,
         )
+        open_io_work_log.assert_not_called()
         self.assertTrue(checkpoint["out_verified"])
         find_io_record.assert_has_calls(
             [

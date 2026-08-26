@@ -482,7 +482,6 @@ def _ensure_io_record(
     if _find_io_record(driver, plan, status, wait_for_match=True):
         checkpoint[f"{marker}_verified"] = True
         return
-    _open_io_work_log(driver)
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _click(wait, "#btn_Add")
     _wait_visible(wait, "#jqxAddWindow")
@@ -930,6 +929,38 @@ def _wait_after_save(driver, wait: WebDriverWait, modal_selector: str) -> None:
         body_text = _clean_text(driver.find_element(By.TAG_NAME, "body").text)
         if any(token in body_text for token in ("失敗", "錯誤", "請輸入", "必填")):
             raise RuntimeError("民力運用系統未接受儲存：" + body_text[-300:])
+    _dismiss_save_success_dialog(driver, wait)
+
+
+def _dismiss_save_success_dialog(driver, wait: WebDriverWait) -> None:
+    dialog = _visible_save_success_dialog(driver)
+    if dialog is None:
+        try:
+            short_wait = WebDriverWait(driver, min(3, DEFAULT_WAIT_SECONDS))
+            dialog = short_wait.until(lambda current: _visible_save_success_dialog(current) or False)
+        except TimeoutException:
+            return
+    try:
+        clicked = _click_dialog_row_action(driver, dialog, "確定")
+    except RuntimeError as exc:
+        raise RuntimeError("民力系統新增成功提示的「確定」按鈕無法點選。") from exc
+    if not clicked:
+        raise RuntimeError("民力系統顯示新增成功，但找不到「確定」按鈕。")
+    _wait_for_dialog_close(wait, dialog)
+
+
+def _visible_save_success_dialog(driver):
+    candidates = driver.find_elements(By.CSS_SELECTOR, ".swal2-popup, .sweet-alert, [role='dialog']")
+    for candidate in candidates:
+        try:
+            text = _clean_text(candidate.text)
+            if candidate.is_displayed() and any(
+                marker in text for marker in ("新增成功", "儲存成功", "存檔成功", "操作成功")
+            ):
+                return candidate
+        except Exception:
+            continue
+    return None
 
 
 def _matching_table_rows(driver, required_tokens: list[str]) -> list[object]:
