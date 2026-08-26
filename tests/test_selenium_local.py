@@ -3230,7 +3230,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(result.status, "needs_duty_login")
         self.assertIs(captured["request"], request)
 
-    def test_duty_login_credential_attempts_prioritize_on_duty_then_task_people_then_sync_account(self):
+    def test_duty_login_credential_attempts_prioritize_task_people_then_sync_account(self):
         previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
         previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
         try:
@@ -3270,7 +3270,7 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertEqual(
             [credential.user_id for credential in attempts],
-            ["tyfd00007", "tyfd00002", "tyfd00001", "tyfd00003", "tyfd01510"],
+            ["tyfd00002", "tyfd00001", "tyfd00003", "tyfd01510"],
         )
 
     def test_case_lookup_login_uses_latest_synced_duty_account_before_fixed_sync_account(self):

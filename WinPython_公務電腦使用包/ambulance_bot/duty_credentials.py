@@ -13,6 +13,16 @@ from typing import Iterable, Iterator
 
 
 ID_NUMBER_RE = re.compile(r"^[A-Z][1289]\d{8}$", re.IGNORECASE)
+LOGIN_POLICY_STANDARD = "standard"
+LOGIN_POLICY_CIVILPOWER = "civilpower"
+LOGIN_POLICY_CONSUMABLES = "consumables"
+_LOGIN_POLICIES = frozenset(
+    {
+        LOGIN_POLICY_STANDARD,
+        LOGIN_POLICY_CIVILPOWER,
+        LOGIN_POLICY_CONSUMABLES,
+    }
+)
 _CREDENTIAL_LOCKS_GUARD = threading.Lock()
 _CREDENTIAL_LOCKS: dict[str, threading.RLock] = {}
 
@@ -157,16 +167,23 @@ def task_login_credential_attempts(
     request: object | None,
     *,
     duty_password: bool = True,
+    login_policy: str = LOGIN_POLICY_STANDARD,
 ) -> list[tuple[DutyCredential, str]]:
-    """Return task login candidates in the approved operational responsibility order."""
+    """Return task login candidates in the approved policy order for each target site."""
 
+    if login_policy not in _LOGIN_POLICIES:
+        raise ValueError(f"unsupported task login policy: {login_policy}")
     attempts: list[tuple[DutyCredential, str]] = []
-    on_duty = load_recent_synced_duty_credential(
-        duty_password=duty_password,
-        allow_fallback=False,
-    )
-    if on_duty is not None and not _is_locked_sync_credential(on_duty):
-        attempts.append((on_duty, "值班人員"))
+    if login_policy == LOGIN_POLICY_CIVILPOWER:
+        on_duty = load_recent_synced_duty_credential(
+            duty_password=duty_password,
+            allow_fallback=False,
+        )
+        if on_duty is not None and not _is_locked_sync_credential(on_duty):
+            attempts.append((on_duty, "值班人員"))
+
+    if login_policy == LOGIN_POLICY_CONSUMABLES:
+        _append_synced_task_login_credential(attempts, duty_password=duty_password)
 
     if request is not None:
         _append_task_login_credentials(
@@ -182,10 +199,19 @@ def task_login_credential_attempts(
             duty_password=duty_password,
         )
 
+    if login_policy != LOGIN_POLICY_CONSUMABLES:
+        _append_synced_task_login_credential(attempts, duty_password=duty_password)
+    return _dedupe_task_login_credentials(attempts)
+
+
+def _append_synced_task_login_credential(
+    attempts: list[tuple[DutyCredential, str]],
+    *,
+    duty_password: bool,
+) -> None:
     synced = load_saved_duty_work_credential() if duty_password else load_synced_worker_credential()
     if synced is not None:
         attempts.append((synced, "同步帳號"))
-    return _dedupe_task_login_credentials(attempts)
 
 
 def _append_task_login_credentials(

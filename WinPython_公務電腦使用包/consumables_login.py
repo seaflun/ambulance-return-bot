@@ -21,7 +21,11 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry, mark_driver_operation_active
 from ambulance_bot.consumables import consumable_inventory_options
-from ambulance_bot.duty_credentials import load_synced_worker_credential, task_login_credential_attempts
+from ambulance_bot.duty_credentials import (
+    LOGIN_POLICY_CONSUMABLES,
+    load_synced_worker_credential,
+    task_login_credential_attempts,
+)
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm, vehicle_ppe_names
 from ambulance_bot.profile_paths import runtime_profile_dir
@@ -274,7 +278,11 @@ def _load_acs_credentials(task: dict[str, object] | AmbulanceReturnRequest | Non
 def _acs_credential_attempts(
     task: dict[str, object] | AmbulanceReturnRequest | None,
 ):
-    return task_login_credential_attempts(_request_or_none(task), duty_password=False)
+    return task_login_credential_attempts(
+        _request_or_none(task),
+        duty_password=False,
+        login_policy=LOGIN_POLICY_CONSUMABLES,
+    )
 
 
 def _acs_login_account(credential) -> str:

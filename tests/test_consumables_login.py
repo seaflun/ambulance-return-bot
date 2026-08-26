@@ -2019,7 +2019,7 @@ class ConsumablesLoginTests(unittest.TestCase):
                 else:
                     os.environ["ACS_PASSWORD"] = previous_password
 
-    def test_load_acs_credentials_prioritizes_explicit_on_duty_before_task_people(self):
+    def test_load_acs_credentials_prioritizes_synced_account_before_task_people(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
             previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
@@ -2045,7 +2045,7 @@ class ConsumablesLoginTests(unittest.TestCase):
                     personnel_accounts=["tyfd00012", "tyfd00021"],
                 )
 
-                self.assertEqual(_load_acs_credentials(request), ("B123017532", "on-duty"))
+                self.assertEqual(_load_acs_credentials(request), ("A123456789", "sync"))
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)

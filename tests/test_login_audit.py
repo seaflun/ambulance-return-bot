@@ -5,12 +5,15 @@ from pathlib import Path
 
 from ambulance_bot.duty_credentials import save_duty_automation_credentials
 from ambulance_bot.login_audit import (
+    CIVILPOWER_LOGIN_PRIORITY_LABEL,
+    CONSUMABLES_LOGIN_PRIORITY_LABEL,
+    TASK_LOGIN_PRIORITY_LABEL,
+    civilpower_login_audit,
     consumables_login_audit,
     disinfection_login_audit,
     duty_work_log_login_audit,
     fuel_record_login_audit,
     mask_login_account,
-    PPE_LOGIN_PRIORITY_LABEL,
     site_login_account_summaries,
     vehicle_mileage_login_audit,
 )
@@ -65,7 +68,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = duty_work_log_login_audit(request)
 
-        self.assertIn(f"工作={PPE_LOGIN_PRIORITY_LABEL}，任務司機", audit)
+        self.assertIn(f"工作={TASK_LOGIN_PRIORITY_LABEL}，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
         self.assertNotIn("21番 張家和 - tyfd01317", audit)
 
@@ -79,7 +82,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = consumables_login_audit()
 
-        self.assertIn(f"耗材={PPE_LOGIN_PRIORITY_LABEL}，同步帳號", audit)
+        self.assertIn(f"耗材={CONSUMABLES_LOGIN_PRIORITY_LABEL}，同步帳號", audit)
         self.assertIn("21番 張家和 - S124***209", audit)
         self.assertNotIn("S124774209", audit)
         self.assertNotIn("ACS 環境設定", audit)
@@ -104,7 +107,7 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = vehicle_mileage_login_audit(request)
 
-        self.assertIn(f"里程={PPE_LOGIN_PRIORITY_LABEL}，任務司機", audit)
+        self.assertIn(f"里程={TASK_LOGIN_PRIORITY_LABEL}，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
 
     def test_vehicle_mileage_audit_labels_non_driver_personnel_when_driver_missing(self):
@@ -127,7 +130,7 @@ class LoginAuditTests(unittest.TestCase):
         audit = vehicle_mileage_login_audit(request)
         summaries = site_login_account_summaries(request)
 
-        self.assertIn(f"里程={PPE_LOGIN_PRIORITY_LABEL}，出勤人員", audit)
+        self.assertIn(f"里程={TASK_LOGIN_PRIORITY_LABEL}，出勤人員", audit)
         self.assertIn("21番 張家和 - tyfd01317", audit)
         self.assertEqual(summaries["vehicle_mileage"], "21番 張家和 - tyfd01317（出勤人員）")
 
@@ -147,10 +150,10 @@ class LoginAuditTests(unittest.TestCase):
 
         audit = fuel_record_login_audit(request)
 
-        self.assertIn(f"加油={PPE_LOGIN_PRIORITY_LABEL}，任務司機", audit)
+        self.assertIn(f"加油={TASK_LOGIN_PRIORITY_LABEL}，任務司機", audit)
         self.assertIn("12番 王昱勛 - tyfd01987", audit)
 
-    def test_all_site_audits_use_the_same_login_priority_wording(self):
+    def test_site_audits_use_the_correct_priority_wording_for_each_site(self):
         save_duty_automation_credentials(
             [
                 {
@@ -173,16 +176,17 @@ class LoginAuditTests(unittest.TestCase):
         )
 
         audits = {
-            "工作": duty_work_log_login_audit(request),
-            "里程": vehicle_mileage_login_audit(request),
-            "加油": fuel_record_login_audit(request),
-            "消毒": disinfection_login_audit(request),
-            "耗材": consumables_login_audit(),
+            "工作": (duty_work_log_login_audit(request), TASK_LOGIN_PRIORITY_LABEL),
+            "里程": (vehicle_mileage_login_audit(request), TASK_LOGIN_PRIORITY_LABEL),
+            "加油": (fuel_record_login_audit(request), TASK_LOGIN_PRIORITY_LABEL),
+            "消毒": (disinfection_login_audit(request), TASK_LOGIN_PRIORITY_LABEL),
+            "耗材": (consumables_login_audit(request), CONSUMABLES_LOGIN_PRIORITY_LABEL),
+            "民力系統": (civilpower_login_audit(request), CIVILPOWER_LOGIN_PRIORITY_LABEL),
         }
 
-        for site, audit in audits.items():
+        for site, (audit, priority_label) in audits.items():
             with self.subTest(site=site):
-                self.assertIn(f"{site}={PPE_LOGIN_PRIORITY_LABEL}", audit)
+                self.assertIn(f"{site}={priority_label}", audit)
                 self.assertNotIn("任務司機優先", audit)
                 self.assertNotIn("公務電腦同步帳號", audit)
 
@@ -213,9 +217,9 @@ class LoginAuditTests(unittest.TestCase):
         self.assertEqual(summaries["vehicle_mileage"], "12番 王昱勛 - tyfd01987（任務司機）")
         self.assertEqual(summaries["fuel_record"], "12番 王昱勛 - tyfd01987（任務司機）")
         self.assertEqual(summaries["disinfection"], "12番 王昱勛 - tyfd01987（任務司機）")
-        self.assertEqual(summaries["consumables"], "21番 張家和 - S124***209（出勤人員）")
+        self.assertEqual(summaries["consumables"], "21番 張家和 - S124***209（同步帳號）")
 
-    def test_all_site_audits_prioritize_explicit_on_duty_account(self):
+    def test_site_audits_select_the_account_required_by_each_policy(self):
         save_duty_automation_credentials(
             [
                 {"actor_no": "8", "name": "同步帳號", "user_id": "tyfd00008", "password": "sync"},
@@ -236,21 +240,22 @@ class LoginAuditTests(unittest.TestCase):
         )
 
         audits = {
-            "工作": duty_work_log_login_audit(request),
-            "里程": vehicle_mileage_login_audit(request),
-            "加油": fuel_record_login_audit(request),
-            "消毒": disinfection_login_audit(request),
-            "耗材": consumables_login_audit(request),
+            "工作": (duty_work_log_login_audit(request), TASK_LOGIN_PRIORITY_LABEL, "任務司機", "12番 任務司機"),
+            "里程": (vehicle_mileage_login_audit(request), TASK_LOGIN_PRIORITY_LABEL, "任務司機", "12番 任務司機"),
+            "加油": (fuel_record_login_audit(request), TASK_LOGIN_PRIORITY_LABEL, "任務司機", "12番 任務司機"),
+            "消毒": (disinfection_login_audit(request), TASK_LOGIN_PRIORITY_LABEL, "任務司機", "12番 任務司機"),
+            "耗材": (consumables_login_audit(request), CONSUMABLES_LOGIN_PRIORITY_LABEL, "同步帳號", "8番 同步帳號"),
+            "民力系統": (civilpower_login_audit(request), CIVILPOWER_LOGIN_PRIORITY_LABEL, "值班人員", "7番 值班人員"),
         }
         summaries = site_login_account_summaries(request)
 
-        self.assertEqual(PPE_LOGIN_PRIORITY_LABEL, "值班人員 > 任務司機 > 出勤人員 > 同步帳號")
-        for site, audit in audits.items():
+        for site, (audit, priority_label, source, account_label) in audits.items():
             with self.subTest(site=site):
-                self.assertIn(f"{site}={PPE_LOGIN_PRIORITY_LABEL}，值班人員", audit)
-                self.assertIn("7番 值班人員", audit)
-        self.assertEqual(summaries["duty_work_log"], "7番 值班人員 - tyfd00007（值班人員）")
-        self.assertEqual(summaries["consumables"], "7番 值班人員 - B123***532（值班人員）")
+                self.assertIn(f"{site}={priority_label}，{source}", audit)
+                self.assertIn(account_label, audit)
+        self.assertEqual(summaries["duty_work_log"], "12番 任務司機 - tyfd00012（任務司機）")
+        self.assertEqual(summaries["consumables"], "8番 同步帳號 - tyfd00008（同步帳號）")
+        self.assertEqual(summaries["volunteer_assist"], "7番 值班人員 - tyfd00007（值班人員）")
 
     def test_site_login_account_summaries_can_match_driver_name_without_case_account(self):
         save_duty_automation_credentials(

@@ -309,16 +309,17 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertIn("未選擇 NAS 名冊", result.detail)
 
     def test_civilpower_login_prioritizes_on_duty_credential(self):
-        from ambulance_bot.duty_credentials import DutyCredential
+        from ambulance_bot.duty_credentials import LOGIN_POLICY_CIVILPOWER, DutyCredential
         from civilpower import login_civilpower_and_get_driver
 
         driver = mock.Mock()
         on_duty = DutyCredential("on-duty", "on-duty-password")
         task_driver = DutyCredential("task-driver", "task-driver-password")
+        request = self._enabled_request()
         with mock.patch(
             "civilpower.task_login_credential_attempts",
             return_value=[(on_duty, "值班人員"), (task_driver, "任務司機")],
-        ), mock.patch(
+        ) as credential_attempts, mock.patch(
             "civilpower.create_chrome_driver_with_retry",
             return_value=driver,
         ), mock.patch(
@@ -328,9 +329,14 @@ class CivilpowerPlanTests(unittest.TestCase):
         ) as login_once, mock.patch(
             "civilpower.open_civilpower_from_oa_dashboard",
         ):
-            result = login_civilpower_and_get_driver(request=self._enabled_request())
+            result = login_civilpower_and_get_driver(request=request)
 
         self.assertIs(result, driver)
+        credential_attempts.assert_called_once_with(
+            request,
+            duty_password=False,
+            login_policy=LOGIN_POLICY_CIVILPOWER,
+        )
         login_once.assert_called_once_with(driver, "on-duty", "on-duty-password", 1)
 
     def test_runner_verifies_out_in_then_work_log_before_reporting_saved(self):

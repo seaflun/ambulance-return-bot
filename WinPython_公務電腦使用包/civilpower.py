@@ -28,7 +28,7 @@ from ambulance_bot.chrome_startup import (
     mark_driver_operation_active,
 )
 from ambulance_bot.civilpower_roster import HOME_RESCUE_UNIT, normalize_roster_members
-from ambulance_bot.duty_credentials import task_login_credential_attempts
+from ambulance_bot.duty_credentials import LOGIN_POLICY_CIVILPOWER, task_login_credential_attempts
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
 from ambulance_bot.profile_paths import runtime_profile_dir
@@ -265,7 +265,11 @@ def login_civilpower_and_get_driver(
     debugger_port: int | None = None,
     tile_name: str = "",
 ) -> webdriver.Chrome:
-    credentials = task_login_credential_attempts(request, duty_password=False)
+    credentials = task_login_credential_attempts(
+        request,
+        duty_password=False,
+        login_policy=LOGIN_POLICY_CIVILPOWER,
+    )
     if not credentials:
         raise RuntimeError("尚未取得可用 Worker 帳密，無法登入消防局內部入口網。")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

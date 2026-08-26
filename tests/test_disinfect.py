@@ -29,7 +29,7 @@ class DisinfectionCredentialTests(unittest.TestCase):
                 os.environ[key] = value
         self.tmp.cleanup()
 
-    def test_credential_attempts_prioritize_explicit_on_duty_before_task_people(self):
+    def test_credential_attempts_prioritize_task_people_before_on_duty_account(self):
         save_duty_automation_credentials(
             [
                 {"actor_no": "7", "name": "值班人員", "user_id": "tyfd00007", "password": "pw"},
@@ -53,7 +53,6 @@ class DisinfectionCredentialTests(unittest.TestCase):
         self.assertEqual(
             [(credential.user_id, source) for credential, source in attempts],
             [
-                ("tyfd00007", "值班人員"),
                 ("tyfd01987", "任務司機"),
                 ("tyfd01317", "出勤人員"),
             ],

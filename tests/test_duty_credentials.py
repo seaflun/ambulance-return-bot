@@ -660,7 +660,7 @@ class DutyCredentialTests(unittest.TestCase):
         self.assertEqual(credential.user_id, "tyfd01987")
         self.assertEqual(credential.name, "王昱勛")
 
-    def test_task_login_credentials_prioritize_on_duty_before_case_people_and_sync(self):
+    def test_task_login_credentials_follow_site_specific_priorities(self):
         from ambulance_bot.models import AmbulanceReturnRequest
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -690,7 +690,35 @@ class DutyCredentialTests(unittest.TestCase):
                     personnel_accounts=["tyfd00012", "tyfd00021"],
                 )
 
-                attempts = task_login_credential_attempts(request, duty_password=False)
+                expected_attempts = {
+                    "standard": [
+                        ("tyfd00012", "任務司機"),
+                        ("tyfd00021", "出勤人員"),
+                        ("tyfd00008", "同步帳號"),
+                    ],
+                    "civilpower": [
+                        ("tyfd00007", "值班人員"),
+                        ("tyfd00012", "任務司機"),
+                        ("tyfd00021", "出勤人員"),
+                        ("tyfd00008", "同步帳號"),
+                    ],
+                    "consumables": [
+                        ("tyfd00008", "同步帳號"),
+                        ("tyfd00012", "任務司機"),
+                        ("tyfd00021", "出勤人員"),
+                    ],
+                }
+                actual_attempts = {
+                    login_policy: [
+                        (credential.user_id, source)
+                        for credential, source in task_login_credential_attempts(
+                            request,
+                            duty_password=False,
+                            login_policy=login_policy,
+                        )
+                    ]
+                    for login_policy in expected_attempts
+                }
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
@@ -701,15 +729,7 @@ class DutyCredentialTests(unittest.TestCase):
                 else:
                     os.environ["DUTY_SAVED_LOGIN_PATH_OVERRIDE"] = previous_override
 
-        self.assertEqual(
-            [(credential.user_id, source) for credential, source in attempts],
-            [
-                ("tyfd00007", "值班人員"),
-                ("tyfd00012", "任務司機"),
-                ("tyfd00021", "出勤人員"),
-                ("tyfd00008", "同步帳號"),
-            ],
-        )
+        self.assertEqual(actual_attempts, expected_attempts)
 
     def test_task_login_credentials_never_labels_locked_sync_account_as_on_duty(self):
         from ambulance_bot.models import AmbulanceReturnRequest
@@ -739,7 +759,11 @@ class DutyCredentialTests(unittest.TestCase):
                     personnel_accounts=["tyfd00012"],
                 )
 
-                attempts = task_login_credential_attempts(request, duty_password=False)
+                attempts = task_login_credential_attempts(
+                    request,
+                    duty_password=False,
+                    login_policy="civilpower",
+                )
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)
