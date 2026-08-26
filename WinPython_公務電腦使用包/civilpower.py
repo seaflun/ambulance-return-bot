@@ -485,8 +485,18 @@ def _ensure_io_record(
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _click(wait, "#btn_Add")
     _wait_visible(wait, "#jqxAddWindow")
+    previous_serve_unit_signature = _wait_for_jqx_combobox_option_signature(
+        driver,
+        wait,
+        "#txt_AddServeUnit",
+    )
     _select_jqx_combobox(driver, wait, "#txt_AddUnit", plan.home_unit)
-    _wait_for_io_form_dependencies(driver, wait, plan)
+    _wait_for_io_form_dependencies(
+        driver,
+        wait,
+        plan,
+        previous_serve_unit_signature=previous_serve_unit_signature,
+    )
     _select_jqx_combobox(driver, wait, "#txt_AddServeUnit", plan.serve_unit)
     _select_io_person(driver, wait, plan)
     date_text = plan.out_date if status == OUT_STATUS else plan.in_date
@@ -997,9 +1007,83 @@ def _wait_for_rows(driver, wait: WebDriverWait) -> None:
     wait.until(lambda current: bool(_table_rows(current)))
 
 
-def _wait_for_io_form_dependencies(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
-    _wait_for_jqx_combobox_option(driver, wait, "#txt_AddServeUnit", plan.serve_unit)
+def _wait_for_io_form_dependencies(
+    driver,
+    wait: WebDriverWait,
+    plan: CivilpowerTaskPlan,
+    *,
+    previous_serve_unit_signature: tuple[tuple[str, str], ...] | None,
+) -> None:
+    wait.until(
+        lambda current: _jqx_combobox_reloaded_with_option(
+            current,
+            "#txt_AddServeUnit",
+            plan.serve_unit,
+            previous_serve_unit_signature,
+        )
+    )
     wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#btn_AddSltMan")))
+
+
+def _wait_for_jqx_combobox_option_signature(
+    driver,
+    wait: WebDriverWait,
+    selector: str,
+) -> tuple[tuple[str, str], ...]:
+    signature: tuple[tuple[str, str], ...] | None = None
+
+    def ready(current) -> bool:
+        nonlocal signature
+        signature = _jqx_combobox_option_signature(current, selector)
+        return signature is not None
+
+    wait.until(ready)
+    if signature is None:
+        raise RuntimeError(f"民力系統單位下拉元件尚未就緒：{selector}")
+    return signature
+
+
+def _jqx_combobox_reloaded_with_option(
+    driver,
+    selector: str,
+    text: str,
+    previous_signature: tuple[tuple[str, str], ...] | None,
+) -> bool:
+    signature = _jqx_combobox_option_signature(driver, selector)
+    if signature is None:
+        return _jqx_combobox_option_ready(driver, selector, text)
+    if previous_signature is not None and signature == previous_signature:
+        return False
+    expected = _clean_text(text)
+    return any(label == expected or value == expected for label, value in signature)
+
+
+def _jqx_combobox_option_signature(driver, selector: str) -> tuple[tuple[str, str], ...] | None:
+    try:
+        element = driver.find_element(By.CSS_SELECTOR, selector)
+    except NoSuchElementException:
+        return None
+    raw_items = driver.execute_script(
+        """
+        const outer = arguments[0];
+        const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+        if (!window.jQuery || !window.jQuery.fn || !window.jQuery.fn.jqxComboBox) return null;
+        try {
+          const items = window.jQuery(outer).jqxComboBox('getItems') || [];
+          return items.map((item) => [clean(item.label), clean(item.value)]);
+        } catch (_) {
+          return null;
+        }
+        """,
+        element,
+    )
+    if raw_items is None:
+        return None
+    return tuple(
+        (_clean_text(item[0]), _clean_text(item[1]))
+        for item in raw_items
+        if isinstance(item, (list, tuple)) and len(item) >= 2
+    )
 
 
 def _wait_for_jqx_combobox_option(driver, wait: WebDriverWait, selector: str, text: str) -> None:

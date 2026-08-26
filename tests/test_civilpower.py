@@ -593,6 +593,52 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         self.assertEqual(2, wait.calls)
 
+    def test_io_dependencies_wait_for_rebuilt_serve_unit_options(self):
+        from civilpower import _wait_for_io_form_dependencies
+
+        class Plan:
+            serve_unit = "新坡分隊"
+
+        class PollingWait:
+            def __init__(self, driver):
+                self.driver = driver
+                self.calls = 0
+
+            def until(self, predicate):
+                for _ in range(3):
+                    self.calls += 1
+                    result = predicate(self.driver)
+                    if result:
+                        return result
+                raise AssertionError("serve unit options never rebuilt")
+
+        previous_signature = (
+            ("大園分隊", "大園分隊"),
+            ("新坡分隊", "新坡分隊"),
+            ("草漯分隊", "草漯分隊"),
+        )
+        rebuilt_signature = (
+            ("大園分隊", "大園分隊"),
+            ("新坡分隊", "新坡分隊"),
+        )
+        driver = mock.Mock()
+        control = mock.Mock()
+        control.is_displayed.return_value = True
+        control.is_enabled.return_value = True
+        driver.find_element.return_value = control
+        driver.execute_script.side_effect = [list(previous_signature), list(rebuilt_signature)]
+        wait = PollingWait(driver)
+
+        _wait_for_io_form_dependencies(
+            driver,
+            wait,
+            Plan(),
+            previous_serve_unit_signature=previous_signature,
+        )
+
+        self.assertEqual(3, wait.calls)
+        self.assertEqual(2, driver.execute_script.call_count)
+
     def test_io_person_dialog_waits_for_correct_dialog_and_unique_row(self):
         from civilpower import _wait_for_io_person_dialog_row
 
@@ -876,10 +922,14 @@ class CivilpowerPlanTests(unittest.TestCase):
         ), mock.patch(
             "civilpower._wait_visible", side_effect=lambda _wait, selector: steps.append(f"visible:{selector}")
         ), mock.patch(
+            "civilpower._wait_for_jqx_combobox_option_signature",
+            side_effect=lambda _driver, _wait, _selector: steps.append("serve-unit-initialized") or (),
+        ), mock.patch(
             "civilpower._select_jqx_combobox",
             side_effect=lambda _driver, _wait, selector, value: steps.append(f"combo:{selector}={value}"),
         ), mock.patch(
-            "civilpower._wait_for_io_form_dependencies", side_effect=lambda _driver, _wait, _plan: steps.append("dependencies")
+            "civilpower._wait_for_io_form_dependencies",
+            side_effect=lambda _driver, _wait, _plan, **_kwargs: steps.append("dependencies"),
         ), mock.patch(
             "civilpower._select_io_person", side_effect=lambda _driver, _wait, _plan: steps.append("person")
         ), mock.patch(
@@ -899,6 +949,7 @@ class CivilpowerPlanTests(unittest.TestCase):
             [
                 "click:#btn_Add",
                 "visible:#jqxAddWindow",
+                "serve-unit-initialized",
                 "combo:#txt_AddUnit=大園救護分隊",
                 "dependencies",
                 "combo:#txt_AddServeUnit=新坡分隊",
