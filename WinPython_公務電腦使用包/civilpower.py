@@ -503,7 +503,7 @@ def _ensure_io_record(
     _click(wait, "#btn_IOWorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
-    if not _find_io_record(driver, plan, status, wait_for_match=True):
+    if not _find_io_record(driver, plan, status, wait_for_match=True, reload_page=False):
         raise RuntimeError(f"出入登記簿儲存後回查不到{status}／{plan.out_reason if status == OUT_STATUS else plan.in_reason}紀錄。")
     checkpoint[f"{marker}_verified"] = True
 
@@ -519,8 +519,10 @@ def _find_io_record(
     status: str,
     *,
     wait_for_match: bool = False,
+    reload_page: bool = True,
 ) -> bool:
-    _open_io_work_log(driver)
+    if reload_page:
+        _open_io_work_log(driver)
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     date_text = plan.out_date if status == OUT_STATUS else plan.in_date
     time_text = plan.out_time if status == OUT_STATUS else plan.in_time

@@ -883,7 +883,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         find_io_record.assert_has_calls(
             [
                 mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=True),
-                mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=True),
+                mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=True, reload_page=False),
             ]
         )
 
@@ -926,6 +926,38 @@ class CivilpowerPlanTests(unittest.TestCase):
             "civilpower._matching_table_rows", side_effect=[[], [row]]
         ):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS, wait_for_match=True))
+
+    def test_io_record_lookup_reuses_open_list_page_after_save(self):
+        from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-reuse-io-list",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/19",
+            out_time="1500",
+            in_date="2026/08/19",
+            in_time="",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
+        driver = mock.Mock()
+        row = mock.Mock()
+
+        with mock.patch("civilpower._open_io_work_log") as open_io_work_log, mock.patch(
+            "civilpower._set_if_present"
+        ), mock.patch("civilpower._select_option_containing_if_present"), mock.patch(
+            "civilpower._click_if_present"
+        ), mock.patch("civilpower._matching_table_rows", return_value=[row]):
+            self.assertTrue(_find_io_record(driver, plan, OUT_STATUS, reload_page=False))
+
+        open_io_work_log.assert_not_called()
 
 
 if __name__ == "__main__":
