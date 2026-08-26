@@ -49,6 +49,7 @@ OUT_REASON = "救護出勤"
 IN_REASON = "救護返隊"
 MAX_LOGIN_ATTEMPTS = 3
 DEFAULT_WAIT_SECONDS = 15
+IO_QUERY_SETTLE_SECONDS = 5
 WORK_LOG_FORM_INITIAL_WAIT_SECONDS = 10
 WORK_LOG_FORM_RETRY_WAIT_SECONDS = 5
 WORK_LOG_LIST_SELECTORS = (
@@ -622,9 +623,8 @@ def _find_io_record_row(
     _set_if_present(driver, wait, "#txt_Date_S", date_text)
     _set_if_present(driver, wait, "#txt_Date_E", date_text)
     _select_option_containing_if_present(driver, wait, "#ddl_IO", status)
-    query_marker = _arm_io_query_refresh_marker(driver)
+    previous_result_signature = _io_result_grid_signature(driver)
     _click_if_present(driver, wait, "#btn_Query")
-    _wait_for_io_query_refresh(driver, wait, query_marker)
     tokens = [
         plan.member_name,
         plan.home_unit,
@@ -632,6 +632,7 @@ def _find_io_record_row(
         plan.out_reason if status == OUT_STATUS else plan.in_reason,
         time_text,
     ]
+    _wait_for_io_query_result_grid(driver, tokens, previous_result_signature)
     rows = _matching_table_rows(driver, tokens)
     if not rows and wait_for_match:
         try:
@@ -645,32 +646,30 @@ def _find_io_record_row(
     return rows[0] if rows else None
 
 
-def _arm_io_query_refresh_marker(driver) -> str:
-    execute_script = getattr(driver, "execute_script", None)
-    if not callable(execute_script):
-        return ""
-    marker_id = f"civilpower-query-{uuid4().hex}"
-    armed = execute_script(
-        """
-        const container = document.querySelector('#tableresult');
-        if (!container) return false;
-        const marker = document.createElement('span');
-        marker.id = arguments[0];
-        marker.hidden = true;
-        container.appendChild(marker);
-        return true;
-        """,
-        marker_id,
-    )
-    if not armed:
-        raise RuntimeError("出入登記簿查詢結果區未完整載入（缺少 #tableresult）。")
-    return marker_id
+def _io_result_grid_signature(driver) -> str | None:
+    find_element = getattr(driver, "find_element", None)
+    if not callable(find_element):
+        return None
+    try:
+        result_grid = find_element(By.CSS_SELECTOR, "#tableresult")
+        return str(result_grid.get_attribute("innerHTML") or "")
+    except (NoSuchElementException, StaleElementReferenceException):
+        return None
 
 
-def _wait_for_io_query_refresh(driver, wait: WebDriverWait, marker_id: str) -> None:
-    if not marker_id:
+def _wait_for_io_query_result_grid(driver, tokens: list[str], previous_signature: str | None) -> None:
+    if previous_signature is None:
         return
-    wait.until(lambda current: not current.find_elements(By.ID, marker_id))
+
+    def query_result_ready(current) -> bool:
+        if _matching_table_rows(current, tokens):
+            return True
+        return _io_result_grid_signature(current) != previous_signature
+
+    try:
+        WebDriverWait(driver, IO_QUERY_SETTLE_SECONDS, poll_frequency=0.2).until(query_result_ready)
+    except TimeoutException:
+        return
 
 
 def _ensure_correct_in_io_record(

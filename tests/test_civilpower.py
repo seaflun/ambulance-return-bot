@@ -1503,7 +1503,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         ):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS, wait_for_match=True))
 
-    def test_io_record_lookup_waits_for_query_refresh_before_scanning_rows(self):
+    def test_io_record_lookup_scans_current_grid_without_requiring_container_replacement(self):
         from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
 
         plan = CivilpowerTaskPlan(
@@ -1523,7 +1523,8 @@ class CivilpowerPlanTests(unittest.TestCase):
             in_reason="救護返隊",
             duty_status_line="",
         )
-        driver = object()
+        driver = mock.Mock()
+        driver.execute_script.side_effect = AssertionError("查詢不應依賴 #tableresult 容器替換")
         wait = mock.Mock()
         row = object()
 
@@ -1531,35 +1532,56 @@ class CivilpowerPlanTests(unittest.TestCase):
             "civilpower.WebDriverWait", return_value=wait
         ), mock.patch("civilpower._set_if_present"), mock.patch(
             "civilpower._select_option_containing_if_present"
-        ), mock.patch("civilpower._arm_io_query_refresh_marker", return_value="query-marker"), mock.patch(
-            "civilpower._click_if_present"
-        ), mock.patch("civilpower._wait_for_io_query_refresh") as wait_for_refresh, mock.patch(
+        ), mock.patch("civilpower._click_if_present"), mock.patch(
             "civilpower._matching_table_rows", return_value=[row]
         ):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS))
 
-        wait_for_refresh.assert_called_once_with(driver, wait, "query-marker")
+        driver.execute_script.assert_not_called()
 
-    def test_io_query_refresh_waits_until_the_result_marker_is_replaced(self):
-        from civilpower import _arm_io_query_refresh_marker, _wait_for_io_query_refresh
+    def test_io_record_lookup_waits_for_result_grid_content_to_change(self):
+        from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-query-grid-refresh",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
 
         class PollingWait:
             def until(self, condition):
-                for _ in range(2):
+                for _ in range(3):
                     result = condition(driver)
                     if result:
                         return result
-                raise AssertionError("查詢結果未替換標記")
+                raise AssertionError("查詢結果表格未更新")
 
         driver = mock.Mock()
-        driver.execute_script.return_value = True
-        driver.find_elements.side_effect = [[object()], []]
+        result_grid = mock.Mock()
+        result_grid.get_attribute.side_effect = ["before", "before", "after"]
+        driver.find_element.return_value = result_grid
+        row = object()
 
-        marker_id = _arm_io_query_refresh_marker(driver)
-        _wait_for_io_query_refresh(driver, PollingWait(), marker_id)
-
-        self.assertTrue(marker_id.startswith("civilpower-query-"))
-        self.assertEqual(2, driver.find_elements.call_count)
+        with mock.patch("civilpower._open_io_work_log"), mock.patch(
+            "civilpower.WebDriverWait", side_effect=[mock.Mock(), PollingWait()]
+        ), mock.patch("civilpower._set_if_present"), mock.patch(
+            "civilpower._select_option_containing_if_present"
+        ), mock.patch("civilpower._click_if_present"), mock.patch(
+            "civilpower._matching_table_rows", side_effect=[[], [], [row]]
+        ):
+            self.assertTrue(_find_io_record(driver, plan, OUT_STATUS))
 
     def test_matching_table_rows_reacquires_rows_after_table_refresh(self):
         from selenium.common.exceptions import StaleElementReferenceException
@@ -1673,8 +1695,6 @@ class CivilpowerPlanTests(unittest.TestCase):
             "civilpower._set_if_present"
         ), mock.patch("civilpower._select_option_containing_if_present"), mock.patch(
             "civilpower._click_if_present"
-        ), mock.patch(
-            "civilpower._arm_io_query_refresh_marker", return_value=""
         ), mock.patch("civilpower._matching_table_rows", return_value=[row]):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS, reload_page=False))
 
