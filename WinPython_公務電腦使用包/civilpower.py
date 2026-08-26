@@ -717,10 +717,15 @@ def _open_selection_dialog(
     *,
     dialog_title: str = "",
 ):
+    previous_dialog_ids = _visible_dialog_ids(driver)
+
     def visible_dialog(active_wait: WebDriverWait):
+        options: dict[str, object] = {}
+        if previous_dialog_ids:
+            options["previous_dialog_ids"] = previous_dialog_ids
         if dialog_title:
-            return _visible_dialog(driver, active_wait, title_text=dialog_title)
-        return _visible_dialog(driver, active_wait)
+            options["title_text"] = dialog_title
+        return _visible_dialog(driver, active_wait, **options)
 
     _click_selection_trigger(driver, wait, selector, label)
     try:
@@ -793,18 +798,54 @@ def _click_selection_trigger(driver, wait: WebDriverWait, selector: str, label: 
         raise TimeoutException(f"{label}選取按鈕未就緒（{selector}；頁面={location}）。") from exc
 
 
-def _visible_dialog(driver, wait: WebDriverWait, *, title_text: str = ""):
+def _visible_dialog(
+    driver,
+    wait: WebDriverWait,
+    *,
+    title_text: str = "",
+    previous_dialog_ids: set[str] | None = None,
+):
     expected_title = _clean_text(title_text)
+    prior_ids = previous_dialog_ids or set()
 
     def find_dialog(current):
         candidates = current.find_elements(By.CSS_SELECTOR, ".jqx-window, [role='dialog']")
         visible = [candidate for candidate in candidates if candidate.is_displayed()]
+        if prior_ids:
+            newly_opened = [candidate for candidate in visible if _dialog_identity(candidate) not in prior_ids]
+            if not newly_opened:
+                return False
+            visible = newly_opened
         if expected_title:
             titled = [candidate for candidate in visible if _dialog_has_title(candidate, expected_title)]
             return titled[-1] if titled else False
         return visible[-1] if visible else False
 
     return wait.until(find_dialog)
+
+
+def _visible_dialog_ids(driver) -> set[str]:
+    try:
+        candidates = list(driver.find_elements(By.CSS_SELECTOR, ".jqx-window, [role='dialog']"))
+    except Exception:
+        return set()
+    dialog_ids: set[str] = set()
+    for candidate in candidates:
+        try:
+            if candidate.is_displayed():
+                dialog_id = _dialog_identity(candidate)
+                if dialog_id:
+                    dialog_ids.add(dialog_id)
+        except Exception:
+            continue
+    return dialog_ids
+
+
+def _dialog_identity(dialog) -> str:
+    try:
+        return _clean_text(str(getattr(dialog, "id", "") or ""))
+    except Exception:
+        return ""
 
 
 def _dialog_has_title(dialog, expected_title: str) -> bool:

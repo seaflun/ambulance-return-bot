@@ -300,6 +300,44 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         self.assertIs(case_dialog, actual)
 
+    def test_selection_dialog_prefers_the_window_opened_after_the_trigger(self):
+        from civilpower import _open_selection_dialog
+
+        driver = mock.Mock()
+        wait = mock.Mock()
+        outer_form = mock.Mock()
+        selection_dialog = mock.Mock()
+        outer_form.id = "outer-form"
+        selection_dialog.id = "selection-dialog"
+        outer_form.is_displayed.return_value = True
+        selection_dialog.is_displayed.return_value = True
+        dialogs = [outer_form]
+        driver.find_elements.side_effect = lambda *_args: dialogs
+        wait.until.side_effect = lambda condition: condition(driver)
+
+        def open_selection(*_args) -> None:
+            dialogs[:] = [selection_dialog, outer_form]
+
+        with mock.patch("civilpower._click_selection_trigger", side_effect=open_selection):
+            actual = _open_selection_dialog(driver, wait, "#btn_Test", "測試選取")
+
+        self.assertIs(selection_dialog, actual)
+
+    def test_visible_dialog_waits_for_a_new_window_instead_of_returning_the_outer_form(self):
+        from civilpower import _visible_dialog
+
+        driver = mock.Mock()
+        wait = mock.Mock()
+        outer_form = mock.Mock()
+        outer_form.id = "outer-form"
+        outer_form.is_displayed.return_value = True
+        driver.find_elements.return_value = [outer_form]
+        wait.until.side_effect = lambda condition: condition(driver)
+
+        actual = _visible_dialog(driver, wait, previous_dialog_ids={"outer-form"})
+
+        self.assertFalse(actual)
+
     def test_work_log_page_reloads_once_when_required_controls_are_missing(self):
         from selenium.common.exceptions import TimeoutException
 
