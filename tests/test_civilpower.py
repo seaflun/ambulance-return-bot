@@ -658,8 +658,22 @@ class CivilpowerPlanTests(unittest.TestCase):
                 ["張贊鏡", "大園救護分隊", "救護出勤", "1000"],
             )
 
-        click_row.assert_called_once_with(row)
+        click_row.assert_called_once_with(driver, row)
         self.assertEqual(2, wait.calls)
+
+    def test_dialog_row_dispatches_mouse_events_when_native_click_is_blocked(self):
+        from civilpower import _click_dialog_row
+
+        driver = mock.Mock()
+        row = mock.Mock()
+        row.find_elements.return_value = []
+        row.click.side_effect = RuntimeError("click intercepted")
+        driver.execute_script.return_value = True
+
+        _click_dialog_row(driver, row)
+
+        driver.execute_script.assert_called_once()
+        self.assertIs(row, driver.execute_script.call_args.args[1])
 
     def test_io_person_selection_waits_for_person_value_after_confirming_dialog(self):
         from civilpower import CivilpowerTaskPlan, _select_io_person
@@ -700,7 +714,7 @@ class CivilpowerPlanTests(unittest.TestCase):
             wait,
             ["大園救護分隊", "張贊鏡", "小隊長"],
         )
-        click_row.assert_called_once_with(row)
+        click_row.assert_called_once_with(driver, row)
         confirm.assert_called_once_with(driver, wait, dialog)
         wait_for_value.assert_called_once_with(driver, wait, "張贊鏡")
 

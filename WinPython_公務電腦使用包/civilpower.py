@@ -553,7 +553,7 @@ def _select_io_person(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> 
     if plan.member_title:
         tokens.append(plan.member_title)
     dialog, row = _wait_for_io_person_dialog_row(driver, wait, tokens)
-    _click_dialog_row(row)
+    _click_dialog_row(driver, row)
     _confirm_dialog(driver, wait, dialog)
     _wait_for_io_person_value(driver, wait, plan.member_name)
 
@@ -794,19 +794,49 @@ def _select_dialog_row(driver, wait: WebDriverWait, dialog, required_tokens: lis
         raise RuntimeError(
             f"選取視窗在 {DEFAULT_WAIT_SECONDS} 秒內找不到符合條件的紀錄：" + "、".join(required_tokens)
         ) from exc
-    _click_dialog_row(row)
+    _click_dialog_row(driver, row)
 
 
-def _click_dialog_row(row) -> None:
+def _click_dialog_row(driver, row) -> None:
     controls = row.find_elements(By.CSS_SELECTOR, "input[type='checkbox'], input[type='radio'], button, input[type='button']")
     for control in controls:
-        if control.is_displayed() and control.is_enabled():
-            control.click()
-            return
+        try:
+            if control.is_displayed() and control.is_enabled():
+                control.click()
+                return
+        except Exception:
+            continue
     try:
         row.click()
+        return
+    except Exception:
+        pass
+    try:
+        dispatched = driver.execute_script(
+            """
+            const row = arguments[0];
+            const cells = Array.from(row.querySelectorAll("[role='gridcell'], .jqx-grid-cell"));
+            const target = cells.find((cell) => cell.getClientRects().length) || row;
+            if (!target || !target.isConnected) return false;
+            target.scrollIntoView({block: 'center', inline: 'nearest'});
+            for (const type of ['mousedown', 'mouseup', 'click']) {
+              target.dispatchEvent(new MouseEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                button: 0,
+                buttons: type === 'mousedown' ? 1 : 0,
+              }));
+            }
+            return true;
+            """,
+            row,
+        )
+        if dispatched:
+            return
     except Exception as exc:
         raise RuntimeError("選取視窗的符合紀錄無法選取。") from exc
+    raise RuntimeError("選取視窗的符合紀錄無法選取。")
 
 
 def _confirm_dialog(driver, wait: WebDriverWait, dialog) -> None:
