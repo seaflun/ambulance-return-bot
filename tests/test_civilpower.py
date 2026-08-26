@@ -1312,7 +1312,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertTrue(checkpoint["out_verified"])
         find_io_record.assert_has_calls(
             [
-                mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=False),
+                mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=False, require_query_confirmation=True),
                 mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=True, reload_page=False),
             ]
         )
@@ -1363,7 +1363,14 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertTrue(checkpoint["in_verified"])
         self.assertEqual(
             [
-                mock.call(mock.ANY, official_plan, "入", wait_for_match=False, raise_on_timeout=True),
+                mock.call(
+                    mock.ANY,
+                    official_plan,
+                    "入",
+                    wait_for_match=False,
+                    raise_on_timeout=True,
+                    require_query_confirmation=True,
+                ),
                 mock.call(
                     mock.ANY,
                     manual_plan,
@@ -1371,6 +1378,7 @@ class CivilpowerPlanTests(unittest.TestCase):
                     wait_for_match=False,
                     reload_page=False,
                     raise_on_timeout=True,
+                    require_query_confirmation=True,
                 ),
                 mock.call(
                     mock.ANY,
@@ -1582,6 +1590,48 @@ class CivilpowerPlanTests(unittest.TestCase):
             "civilpower._matching_table_rows", side_effect=[[], [], [row]]
         ):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS))
+
+    def test_io_record_lookup_refuses_an_unconfirmed_empty_grid_before_adding(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-query-unconfirmed-empty-grid",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
+
+        class TimeoutWait:
+            def until(self, _condition):
+                raise TimeoutException("query grid did not refresh")
+
+        driver = mock.Mock()
+        result_grid = mock.Mock()
+        result_grid.get_attribute.return_value = "unchanged"
+        driver.find_element.return_value = result_grid
+
+        with mock.patch("civilpower._open_io_work_log"), mock.patch(
+            "civilpower.WebDriverWait", side_effect=[mock.Mock(), TimeoutWait()]
+        ), mock.patch("civilpower._set_if_present"), mock.patch(
+            "civilpower._select_option_containing_if_present"
+        ), mock.patch("civilpower._click_if_present"), mock.patch(
+            "civilpower._matching_table_rows", return_value=[]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "查詢結果未完成更新"):
+                _find_io_record(driver, plan, OUT_STATUS, require_query_confirmation=True)
 
     def test_matching_table_rows_reacquires_rows_after_table_refresh(self):
         from selenium.common.exceptions import StaleElementReferenceException

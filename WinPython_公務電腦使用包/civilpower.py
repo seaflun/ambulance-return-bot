@@ -544,6 +544,7 @@ def _ensure_io_record(
         plan,
         status,
         wait_for_match=False,
+        require_query_confirmation=True,
         **lookup_kwargs,
     ):
         checkpoint[f"{marker}_verified"] = True
@@ -594,6 +595,7 @@ def _find_io_record(
     wait_for_match: bool = False,
     reload_page: bool = True,
     raise_on_timeout: bool = False,
+    require_query_confirmation: bool = False,
 ) -> bool:
     return _find_io_record_row(
         driver,
@@ -602,6 +604,7 @@ def _find_io_record(
         wait_for_match=wait_for_match,
         reload_page=reload_page,
         raise_on_timeout=raise_on_timeout,
+        require_query_confirmation=require_query_confirmation,
     ) is not None
 
 
@@ -613,6 +616,7 @@ def _find_io_record_row(
     wait_for_match: bool = False,
     reload_page: bool = True,
     raise_on_timeout: bool = False,
+    require_query_confirmation: bool = False,
 ):
     if reload_page:
         _open_io_work_log(driver)
@@ -632,8 +636,10 @@ def _find_io_record_row(
         plan.out_reason if status == OUT_STATUS else plan.in_reason,
         time_text,
     ]
-    _wait_for_io_query_result_grid(driver, tokens, previous_result_signature)
+    query_result_confirmed = _wait_for_io_query_result_grid(driver, tokens, previous_result_signature)
     rows = _matching_table_rows(driver, tokens)
+    if not rows and require_query_confirmation and not query_result_confirmed:
+        raise RuntimeError("出入登記簿查詢結果未完成更新，為避免重複新增，請保持原登入帳號後重試。")
     if not rows and wait_for_match:
         try:
             rows = wait.until(lambda current: _matching_table_rows(current, tokens) or False)
@@ -657,9 +663,9 @@ def _io_result_grid_signature(driver) -> str | None:
         return None
 
 
-def _wait_for_io_query_result_grid(driver, tokens: list[str], previous_signature: str | None) -> None:
+def _wait_for_io_query_result_grid(driver, tokens: list[str], previous_signature: str | None) -> bool:
     if previous_signature is None:
-        return
+        return False
 
     def query_result_ready(current) -> bool:
         if _matching_table_rows(current, tokens):
@@ -668,8 +674,9 @@ def _wait_for_io_query_result_grid(driver, tokens: list[str], previous_signature
 
     try:
         WebDriverWait(driver, IO_QUERY_SETTLE_SECONDS, poll_frequency=0.2).until(query_result_ready)
+        return True
     except TimeoutException:
-        return
+        return False
 
 
 def _ensure_correct_in_io_record(
@@ -689,6 +696,7 @@ def _ensure_correct_in_io_record(
                 IN_STATUS,
                 wait_for_match=False,
                 raise_on_timeout=True,
+                require_query_confirmation=True,
             ) is not None:
                 checkpoint["in_verified"] = True
                 return
@@ -708,6 +716,7 @@ def _ensure_correct_in_io_record(
         IN_STATUS,
         wait_for_match=False,
         raise_on_timeout=True,
+        require_query_confirmation=True,
     ) is not None:
         checkpoint["in_verified"] = True
         return
@@ -718,6 +727,7 @@ def _ensure_correct_in_io_record(
         wait_for_match=False,
         reload_page=False,
         raise_on_timeout=True,
+        require_query_confirmation=True,
     )
     if original_row is None:
         if not can_create_in_record:
