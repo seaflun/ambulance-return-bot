@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -99,7 +100,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
             _assert_imported_work_log_values(object(), plan)
 
-    def test_work_log_import_accepts_a_one_minute_case_return_time_difference(self):
+    def test_work_log_import_requires_the_exact_case_return_minute(self):
         from civilpower import CivilpowerTaskPlan, _assert_imported_work_log_values
 
         plan = CivilpowerTaskPlan(
@@ -131,12 +132,12 @@ class CivilpowerPlanTests(unittest.TestCase):
         }
 
         with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
-            _assert_imported_work_log_values(object(), plan)
-
-        values["#txt_AddBackMin"] = "45"
-        with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
             with self.assertRaisesRegex(RuntimeError, "#txt_AddBackMin"):
                 _assert_imported_work_log_values(object(), plan)
+
+        values["#txt_AddBackMin"] = "47"
+        with mock.patch("civilpower._control_value", side_effect=lambda _driver, selector: values[selector]):
+            _assert_imported_work_log_values(object(), plan)
 
     def test_work_log_import_keeps_volunteer_status_line_required(self):
         from civilpower import CivilpowerTaskPlan, _assert_imported_work_log_values
@@ -339,6 +340,37 @@ class CivilpowerPlanTests(unittest.TestCase):
         )
         login_once.assert_called_once_with(driver, "on-duty", "on-duty-password", 1)
 
+    def test_civilpower_repair_login_uses_only_the_original_account(self):
+        from ambulance_bot.duty_credentials import DutyCredential
+        from civilpower import login_civilpower_and_get_driver
+
+        driver = mock.Mock()
+        original = DutyCredential("original-entry", "original-password")
+        logged_in_accounts: list[str] = []
+
+        with mock.patch("civilpower.load_duty_credential", return_value=original) as load_credential, mock.patch(
+            "civilpower.task_login_credential_attempts"
+        ) as credential_attempts, mock.patch(
+            "civilpower.create_chrome_driver_with_retry",
+            return_value=driver,
+        ), mock.patch("civilpower.apply_tile"), mock.patch("civilpower._login_once") as login_once, mock.patch(
+            "civilpower.open_civilpower_from_oa_dashboard"
+        ):
+            result = login_civilpower_and_get_driver(
+                required_user_id="original-entry",
+                on_login_success=logged_in_accounts.append,
+            )
+
+        self.assertIs(result, driver)
+        load_credential.assert_called_once_with(
+            ["original-entry"],
+            allow_default=False,
+            duty_password=False,
+        )
+        credential_attempts.assert_not_called()
+        login_once.assert_called_once_with(driver, "original-entry", "original-password", 1)
+        self.assertEqual(["original-entry"], logged_in_accounts)
+
     def test_runner_verifies_out_in_then_work_log_before_reporting_saved(self):
         from civilpower import IN_STATUS, OUT_STATUS, run_civilpower_task
 
@@ -346,11 +378,17 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         def ensure_io(_driver, _plan, status, _checkpoint, **_kwargs):
             checkpoints.append(status)
+            return status == OUT_STATUS
+
+        def ensure_correct_in(_driver, _plan, _original_plan, _checkpoint, **_kwargs):
+            checkpoints.append(IN_STATUS)
 
         def ensure_work_log(_driver, _request, _plan, _checkpoint, **_kwargs):
             checkpoints.append("work_log")
 
         with TemporaryDirectory() as temporary_directory, mock.patch("civilpower._ensure_io_record", side_effect=ensure_io), mock.patch(
+            "civilpower._ensure_correct_in_io_record", side_effect=ensure_correct_in
+        ), mock.patch(
             "civilpower._ensure_work_log", side_effect=ensure_work_log
         ):
             result = run_civilpower_task(self._enabled_request(), Path(temporary_directory), driver=object())
@@ -558,7 +596,7 @@ class CivilpowerPlanTests(unittest.TestCase):
             side_effect=lambda _driver, _wait, _plan: steps.append("import-case"),
         ), mock.patch(
             "civilpower._assert_imported_work_log_values",
-            side_effect=lambda _driver, _plan: steps.append("verify-case"),
+            side_effect=lambda _driver, current_plan, **_kwargs: steps.append("verify-case") or current_plan,
         ), mock.patch(
             "civilpower._wait_after_save",
             side_effect=lambda _driver, _wait, selector: steps.append(f"saved:{selector}"),
@@ -592,6 +630,39 @@ class CivilpowerPlanTests(unittest.TestCase):
             ],
             steps,
         )
+
+    def test_work_log_corrects_the_existing_in_record_before_saving(self):
+        from civilpower import _ensure_work_log, build_civilpower_task_plan
+
+        request = self._enabled_request()
+        manual_plan = build_civilpower_task_plan(request)
+        official_plan = replace(manual_plan, in_time="1433")
+        wait = object()
+        reconciled: list[object] = []
+
+        with mock.patch("civilpower._find_work_log_record", side_effect=[False, False, True]), mock.patch(
+            "civilpower.WebDriverWait", return_value=wait
+        ), mock.patch("civilpower._click") as click, mock.patch("civilpower._wait_visible"), mock.patch(
+            "civilpower._wait_for_work_log_add_controls"
+        ), mock.patch("civilpower._select_out_io_record_for_work_log"), mock.patch(
+            "civilpower._import_work_log_case"
+        ) as import_case, mock.patch(
+            "civilpower._read_imported_work_log_plan",
+            side_effect=[official_plan, official_plan],
+        ), mock.patch("civilpower._wait_after_save"):
+            result = _ensure_work_log(
+                object(),
+                request,
+                manual_plan,
+                {},
+                cancel_check=None,
+                reconcile_inbound=reconciled.append,
+            )
+
+        self.assertIs(official_plan, result)
+        self.assertEqual([official_plan], reconciled)
+        self.assertEqual(2, import_case.call_count)
+        self.assertEqual([mock.call(wait, "#btn_WorkLogAdd")], [call for call in click.call_args_list if call.args[1] == "#btn_WorkLogAdd"])
 
     def test_roster_query_reads_the_first_three_columns_before_the_action_column(self):
         from civilpower import FIREMAN_URL, query_civilpower_roster
@@ -1271,6 +1342,152 @@ class CivilpowerPlanTests(unittest.TestCase):
             ]
         )
 
+    def test_in_record_edits_the_existing_manual_return_time_before_adding_another(self):
+        from civilpower import CivilpowerTaskPlan, _ensure_correct_in_io_record
+
+        manual_plan = CivilpowerTaskPlan(
+            task_id="civilpower-correct-return",
+            case_id="20260826103603012",
+            case_address="桃園市觀音區東大路147巷21號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+        )
+        official_plan = replace(manual_plan, in_time="1146")
+        driver = object()
+        original_row = object()
+        corrected_row = object()
+
+        with mock.patch(
+            "civilpower._find_io_record_row",
+            side_effect=[None, original_row, corrected_row],
+        ) as find_row, mock.patch("civilpower._edit_io_record_time") as edit_time, mock.patch(
+            "civilpower._ensure_io_record"
+        ) as ensure_io:
+            checkpoint: dict[str, object] = {}
+            _ensure_correct_in_io_record(
+                driver,
+                official_plan,
+                manual_plan,
+                checkpoint,
+                cancel_check=None,
+                can_create_in_record=True,
+            )
+
+        edit_time.assert_called_once_with(driver, original_row, official_plan, cancel_check=None)
+        ensure_io.assert_not_called()
+        self.assertTrue(checkpoint["in_verified"])
+        self.assertEqual(
+            [
+                mock.call(mock.ANY, official_plan, "入", wait_for_match=True, raise_on_timeout=True),
+                mock.call(
+                    mock.ANY,
+                    manual_plan,
+                    "入",
+                    wait_for_match=True,
+                    reload_page=False,
+                    raise_on_timeout=True,
+                ),
+                mock.call(
+                    mock.ANY,
+                    official_plan,
+                    "入",
+                    wait_for_match=True,
+                    reload_page=False,
+                    raise_on_timeout=True,
+                ),
+            ],
+            find_row.call_args_list,
+        )
+
+    def test_in_record_without_the_original_account_is_not_added_after_a_prior_out_record(self):
+        from civilpower import CivilpowerTaskPlan, _ensure_correct_in_io_record
+
+        manual_plan = CivilpowerTaskPlan(
+            task_id="civilpower-missing-original-account",
+            case_id="20260826103603012",
+            case_address="桃園市觀音區東大路147巷21號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+        )
+        official_plan = replace(manual_plan, in_time="1146")
+
+        with mock.patch("civilpower._find_io_record_row", side_effect=[None, None]), mock.patch(
+            "civilpower._ensure_io_record"
+        ) as ensure_io:
+            with self.assertRaisesRegex(RuntimeError, "原登打帳號"):
+                _ensure_correct_in_io_record(
+                    object(),
+                    official_plan,
+                    manual_plan,
+                    {},
+                    cancel_check=None,
+                    can_create_in_record=False,
+                )
+
+        ensure_io.assert_not_called()
+
+    def test_in_record_edit_changes_only_the_return_date_and_time_fields(self):
+        from civilpower import CivilpowerTaskPlan, _edit_io_record_time
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-edit-return-time",
+            case_id="20260826103603012",
+            case_address="桃園市觀音區東大路147巷21號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1146",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+        )
+        wait = object()
+
+        with mock.patch("civilpower._click_dialog_row_action", return_value=True), mock.patch(
+            "civilpower.WebDriverWait", return_value=wait
+        ), mock.patch("civilpower._wait_visible"), mock.patch("civilpower._set_input") as set_input, mock.patch(
+            "civilpower._select_jqx_combobox"
+        ) as select_combobox, mock.patch("civilpower._wait_for_io_edit_form_values"), mock.patch(
+            "civilpower._click"
+        ) as click, mock.patch("civilpower._wait_after_save"):
+            _edit_io_record_time(object(), object(), plan, cancel_check=None)
+
+        self.assertEqual(
+            [
+                mock.call(wait, "#txt_EditLogDate", "2026/08/26"),
+                mock.call(wait, "#txt_EditLogHour", "11"),
+                mock.call(wait, "#txt_EditLogMin", "46"),
+            ],
+            set_input.call_args_list,
+        )
+        select_combobox.assert_called_once_with(mock.ANY, wait, "#txt_EditServeUnit", "新坡分隊")
+        click.assert_called_once_with(wait, "#btn_IOWorkLogEdit")
+
     def test_io_record_lookup_waits_for_matching_row_when_requested(self):
         from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
 
@@ -1310,6 +1527,48 @@ class CivilpowerPlanTests(unittest.TestCase):
             "civilpower._matching_table_rows", side_effect=[[], [row]]
         ):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS, wait_for_match=True))
+
+    def test_io_record_lookup_timeout_is_not_a_matching_record(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-query-timeout",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/25",
+            out_time="2041",
+            in_date="2026/08/25",
+            in_time="2210",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
+        wait = mock.Mock()
+        wait.until.side_effect = TimeoutException()
+
+        with mock.patch("civilpower._open_io_work_log"), mock.patch(
+            "civilpower.WebDriverWait", return_value=wait
+        ), mock.patch("civilpower._set_if_present"), mock.patch(
+            "civilpower._select_option_containing_if_present"
+        ), mock.patch("civilpower._click_if_present"), mock.patch(
+            "civilpower._matching_table_rows", return_value=[]
+        ):
+            self.assertFalse(_find_io_record(object(), plan, OUT_STATUS, wait_for_match=True))
+            with self.assertRaisesRegex(RuntimeError, "查詢逾時"):
+                _find_io_record(
+                    object(),
+                    plan,
+                    OUT_STATUS,
+                    wait_for_match=True,
+                    raise_on_timeout=True,
+                )
 
     def test_io_record_lookup_reuses_open_list_page_after_save(self):
         from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record

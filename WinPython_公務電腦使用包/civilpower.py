@@ -5,7 +5,7 @@ import json
 import os
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -28,7 +28,7 @@ from ambulance_bot.chrome_startup import (
     mark_driver_operation_active,
 )
 from ambulance_bot.civilpower_roster import HOME_RESCUE_UNIT, normalize_roster_members
-from ambulance_bot.duty_credentials import LOGIN_POLICY_CIVILPOWER, task_login_credential_attempts
+from ambulance_bot.duty_credentials import LOGIN_POLICY_CIVILPOWER, load_duty_credential, task_login_credential_attempts
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
 from ambulance_bot.profile_paths import runtime_profile_dir
@@ -264,12 +264,25 @@ def login_civilpower_and_get_driver(
     profile_name: str = "civilpower_profile",
     debugger_port: int | None = None,
     tile_name: str = "",
+    required_user_id: str = "",
+    on_login_success: Callable[[str], None] | None = None,
 ) -> webdriver.Chrome:
-    credentials = task_login_credential_attempts(
-        request,
-        duty_password=False,
-        login_policy=LOGIN_POLICY_CIVILPOWER,
-    )
+    expected_user_id = _clean_text(required_user_id)
+    if expected_user_id:
+        required_credential = load_duty_credential(
+            [expected_user_id],
+            allow_default=False,
+            duty_password=False,
+        )
+        if required_credential is None:
+            raise RuntimeError("民力系統補打需要原登打帳號，但該帳號目前不可用。")
+        credentials = [(required_credential, "原登打帳號")]
+    else:
+        credentials = task_login_credential_attempts(
+            request,
+            duty_password=False,
+            login_policy=LOGIN_POLICY_CIVILPOWER,
+        )
     if not credentials:
         raise RuntimeError("尚未取得可用 Worker 帳密，無法登入消防局內部入口網。")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -292,6 +305,8 @@ def login_civilpower_and_get_driver(
                 try:
                     _login_once(driver, credential.user_id, credential.password, attempt)
                     open_civilpower_from_oa_dashboard(driver, WebDriverWait(driver, DEFAULT_WAIT_SECONDS))
+                    if on_login_success is not None:
+                        on_login_success(credential.user_id)
                     return driver
                 except Exception as exc:
                     errors.append(f"{source}第 {attempt} 次：{compact_failure_text(exc, maximum=120)}")
@@ -324,7 +339,15 @@ def run_civilpower_task(
 
     mark_driver_operation_active(active_driver)
     try:
-        plan = build_civilpower_task_plan(request)
+        original_plan = build_civilpower_task_plan(request)
+        checkpoint = _load_task_checkpoint(artifacts_dir, original_plan)
+        plan = _plan_with_checkpointed_in_time(original_plan, checkpoint)
+        login_account = ""
+
+        def record_login_account(user_id: str) -> None:
+            nonlocal login_account
+            login_account = _clean_text(user_id)
+
         _raise_if_cancelled(cancel_check)
         if active_driver is None:
             report_stage("登入內部入口網")
@@ -333,30 +356,58 @@ def run_civilpower_task(
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 tile_name=tile_name,
+                required_user_id=_checkpointed_civilpower_login_account(checkpoint),
+                on_login_success=record_login_account,
             )
         mark_driver_operation_active(active_driver)
-        checkpoint = _load_task_checkpoint(artifacts_dir, plan)
         report_stage("確認救護出勤出入登記")
-        _ensure_io_record(active_driver, plan, OUT_STATUS, checkpoint, cancel_check=cancel_check)
-        _save_task_checkpoint(artifacts_dir, plan, checkpoint)
+        out_created = _ensure_io_record(active_driver, plan, OUT_STATUS, checkpoint, cancel_check=cancel_check)
+        if login_account and out_created:
+            checkpoint["civilpower_login_account"] = login_account
+        _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+        can_create_in_record = out_created or bool(_checkpointed_civilpower_login_account(checkpoint))
         report_stage("確認救護返隊出入登記")
-        _ensure_io_record(active_driver, plan, IN_STATUS, checkpoint, cancel_check=cancel_check)
-        _save_task_checkpoint(artifacts_dir, plan, checkpoint)
+        _ensure_correct_in_io_record(
+            active_driver,
+            plan,
+            original_plan,
+            checkpoint,
+            cancel_check=cancel_check,
+            can_create_in_record=can_create_in_record,
+        )
+        _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+
+        def reconcile_inbound(imported_plan: CivilpowerTaskPlan) -> None:
+            _record_checkpointed_in_time(checkpoint, imported_plan)
+            _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+            _ensure_correct_in_io_record(
+                active_driver,
+                imported_plan,
+                original_plan,
+                checkpoint,
+                cancel_check=cancel_check,
+                can_create_in_record=can_create_in_record,
+            )
+            _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+
         report_stage("案件代入")
-        _ensure_work_log(
+        saved_plan = _ensure_work_log(
             active_driver,
             request,
             plan,
             checkpoint,
             cancel_check=cancel_check,
             progress=report_stage,
+            reconcile_inbound=reconcile_inbound,
         )
-        _save_task_checkpoint(artifacts_dir, plan, checkpoint)
+        if saved_plan is not None:
+            plan = saved_plan
+        _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
         return SiteAutomationResult(
             "volunteer_assist",
             "民力系統",
             "volunteer_assist_saved",
-            "已新增救護出勤／救護返隊出入登記，案件代入工作紀錄並回查確認。",
+            "已確認救護出勤／救護返隊出入登記，案件代入工作紀錄並回查確認。",
         )
     except TaskCancellationError:
         raise
@@ -482,12 +533,20 @@ def _ensure_io_record(
     checkpoint: dict[str, object],
     *,
     cancel_check: Callable[[], None] | None,
-) -> None:
+    require_lookup_confirmation: bool = False,
+) -> bool:
     marker = "out" if status == OUT_STATUS else "in"
+    lookup_kwargs = {"raise_on_timeout": True} if require_lookup_confirmation else {}
     _raise_if_cancelled(cancel_check)
-    if _find_io_record(driver, plan, status, wait_for_match=True):
+    if _find_io_record(
+        driver,
+        plan,
+        status,
+        wait_for_match=True,
+        **lookup_kwargs,
+    ):
         checkpoint[f"{marker}_verified"] = True
-        return
+        return False
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _click(wait, "#btn_Add")
     _wait_visible(wait, "#jqxAddWindow")
@@ -518,9 +577,17 @@ def _ensure_io_record(
     _click(wait, "#btn_IOWorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
-    if not _find_io_record(driver, plan, status, wait_for_match=True, reload_page=False):
+    if not _find_io_record(
+        driver,
+        plan,
+        status,
+        wait_for_match=True,
+        reload_page=False,
+        **lookup_kwargs,
+    ):
         raise RuntimeError(f"出入登記簿儲存後回查不到{status}／{plan.out_reason if status == OUT_STATUS else plan.in_reason}紀錄。")
     checkpoint[f"{marker}_verified"] = True
+    return True
 
 
 def _open_io_work_log(driver) -> None:
@@ -535,7 +602,27 @@ def _find_io_record(
     *,
     wait_for_match: bool = False,
     reload_page: bool = True,
+    raise_on_timeout: bool = False,
 ) -> bool:
+    return _find_io_record_row(
+        driver,
+        plan,
+        status,
+        wait_for_match=wait_for_match,
+        reload_page=reload_page,
+        raise_on_timeout=raise_on_timeout,
+    ) is not None
+
+
+def _find_io_record_row(
+    driver,
+    plan: CivilpowerTaskPlan,
+    status: str,
+    *,
+    wait_for_match: bool = False,
+    reload_page: bool = True,
+    raise_on_timeout: bool = False,
+):
     if reload_page:
         _open_io_work_log(driver)
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
@@ -558,10 +645,106 @@ def _find_io_record(
         try:
             rows = wait.until(lambda current: _matching_table_rows(current, tokens) or False)
         except TimeoutException:
-            return False
+            if raise_on_timeout:
+                raise RuntimeError(f"出入登記簿查詢逾時，無法確認{status}紀錄；請保持原登入帳號後重試。")
+            return None
     if len(rows) > 1:
         raise RuntimeError(f"出入登記簿找到多筆相同{status}紀錄，無法安全判定。")
-    return bool(rows)
+    return rows[0] if rows else None
+
+
+def _ensure_correct_in_io_record(
+    driver,
+    plan: CivilpowerTaskPlan,
+    original_plan: CivilpowerTaskPlan,
+    checkpoint: dict[str, object],
+    *,
+    cancel_check: Callable[[], None] | None,
+    can_create_in_record: bool,
+) -> None:
+    if plan.in_date == original_plan.in_date and plan.in_time == original_plan.in_time:
+        if not can_create_in_record:
+            if _find_io_record_row(
+                driver,
+                plan,
+                IN_STATUS,
+                wait_for_match=True,
+                raise_on_timeout=True,
+            ) is not None:
+                checkpoint["in_verified"] = True
+                return
+            raise RuntimeError("救護返隊出入登記尚未建立，請以原登打帳號補打。")
+        _ensure_io_record(
+            driver,
+            plan,
+            IN_STATUS,
+            checkpoint,
+            cancel_check=cancel_check,
+            require_lookup_confirmation=True,
+        )
+        return
+    if _find_io_record_row(
+        driver,
+        plan,
+        IN_STATUS,
+        wait_for_match=True,
+        raise_on_timeout=True,
+    ) is not None:
+        checkpoint["in_verified"] = True
+        return
+    original_row = _find_io_record_row(
+        driver,
+        original_plan,
+        IN_STATUS,
+        wait_for_match=True,
+        reload_page=False,
+        raise_on_timeout=True,
+    )
+    if original_row is None:
+        if not can_create_in_record:
+            raise RuntimeError("救護返隊出入登記尚未建立，請以原登打帳號補打。")
+        _ensure_io_record(
+            driver,
+            plan,
+            IN_STATUS,
+            checkpoint,
+            cancel_check=cancel_check,
+            require_lookup_confirmation=True,
+        )
+        return
+    _edit_io_record_time(driver, original_row, plan, cancel_check=cancel_check)
+    if _find_io_record_row(
+        driver,
+        plan,
+        IN_STATUS,
+        wait_for_match=True,
+        reload_page=False,
+        raise_on_timeout=True,
+    ) is None:
+        raise RuntimeError("救護返隊出入登記修正後回查不到正式返隊時間。")
+    checkpoint["in_verified"] = True
+
+
+def _edit_io_record_time(
+    driver,
+    row,
+    plan: CivilpowerTaskPlan,
+    *,
+    cancel_check: Callable[[], None] | None,
+) -> None:
+    if not _click_dialog_row_action(driver, row, "修改"):
+        raise RuntimeError("救護返隊出入登記未提供修改按鈕，請以原登打帳號登入後再補打。")
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _wait_visible(wait, "#jqxEditWindow")
+    _set_input(wait, "#txt_EditLogDate", plan.in_date)
+    _set_input(wait, "#txt_EditLogHour", plan.in_time[:2])
+    _set_input(wait, "#txt_EditLogMin", plan.in_time[2:])
+    _select_jqx_combobox(driver, wait, "#txt_EditServeUnit", plan.serve_unit)
+    _wait_for_io_edit_form_values(driver, wait, plan)
+    _raise_if_cancelled(cancel_check)
+    _click(wait, "#btn_IOWorkLogEdit")
+    _wait_after_save(driver, wait, "#jqxEditWindow")
+    _raise_if_cancelled(cancel_check)
 
 
 def _select_io_person(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
@@ -583,12 +766,13 @@ def _ensure_work_log(
     *,
     cancel_check: Callable[[], None] | None,
     progress: Callable[[str], None] | None = None,
-) -> None:
+    reconcile_inbound: Callable[[CivilpowerTaskPlan], None] | None = None,
+) -> CivilpowerTaskPlan:
     _raise_if_cancelled(cancel_check)
     _report_progress(progress, "查詢既有工作紀錄")
     if _find_work_log_record(driver, plan):
         checkpoint["work_log_verified"] = True
-        return
+        return plan
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _report_progress(progress, "開啟工作紀錄簿新增表單")
     _click(wait, "#btn_Add")
@@ -600,7 +784,21 @@ def _ensure_work_log(
     _report_progress(progress, "案件代入")
     _import_work_log_case(driver, wait, plan)
     _report_progress(progress, "驗證案件代入")
-    _assert_imported_work_log_values(driver, plan)
+    imported_plan = _assert_imported_work_log_values(driver, plan, allow_return_mismatch=True)
+    if imported_plan.in_date != plan.in_date or imported_plan.in_time != plan.in_time:
+        if reconcile_inbound is None:
+            _assert_imported_work_log_return_matches(plan, imported_plan)
+        _report_progress(progress, "修正救護返隊出入登記")
+        reconcile_inbound(imported_plan)
+        return _ensure_work_log(
+            driver,
+            request,
+            imported_plan,
+            checkpoint,
+            cancel_check=cancel_check,
+            progress=progress,
+            reconcile_inbound=None,
+        )
     _raise_if_cancelled(cancel_check)
     _report_progress(progress, "儲存工作紀錄")
     _click(wait, "#btn_WorkLogAdd")
@@ -610,6 +808,7 @@ def _ensure_work_log(
     if not _find_work_log_record(driver, plan, wait_for_match=True):
         raise RuntimeError("工作紀錄簿儲存後回查不到本次救護義消協勤紀錄。")
     checkpoint["work_log_verified"] = True
+    return plan
 
 
 def _select_out_io_record_for_work_log(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
@@ -672,20 +871,23 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
     _confirm_dialog(driver, wait, dialog)
 
 
-def _assert_imported_work_log_values(driver, plan: CivilpowerTaskPlan) -> None:
-    expected = {
-        "#txt_AddDisDate": plan.out_date,
-        "#txt_AddBackDate": plan.in_date,
-        "#txt_AddBackHour": plan.in_time[:2],
-    }
-    for selector, expected_value in expected.items():
-        actual = _control_value(driver, selector)
-        if not _same_value(actual, expected_value):
-            raise RuntimeError(f"案件代入後欄位不符：{selector} 預期={expected_value} 實際={actual or '空白'}")
-    imported_back_minute = _control_value(driver, "#txt_AddBackMin")
-    if not _same_or_adjacent_minute(imported_back_minute, plan.in_time[2:]):
+def _assert_imported_work_log_values(
+    driver,
+    plan: CivilpowerTaskPlan,
+    *,
+    allow_return_mismatch: bool = False,
+) -> CivilpowerTaskPlan:
+    imported_plan = _read_imported_work_log_plan(driver, plan)
+    if not allow_return_mismatch:
+        _assert_imported_work_log_return_matches(plan, imported_plan)
+    return imported_plan
+
+
+def _read_imported_work_log_plan(driver, plan: CivilpowerTaskPlan) -> CivilpowerTaskPlan:
+    actual_dispatch_date = _control_value(driver, "#txt_AddDisDate")
+    if not _same_value(actual_dispatch_date, plan.out_date):
         raise RuntimeError(
-            f"案件代入後欄位不符：#txt_AddBackMin 預期={plan.in_time[2:]} 實際={imported_back_minute or '空白'}"
+            f"案件代入後欄位不符：#txt_AddDisDate 預期={plan.out_date} 實際={actual_dispatch_date or '空白'}"
         )
     dispatch_time = normalize_hhmm(
         _control_value(driver, "#txt_AddDisHour") + _control_value(driver, "#txt_AddDisMin")
@@ -695,6 +897,31 @@ def _assert_imported_work_log_values(driver, plan: CivilpowerTaskPlan) -> None:
     status_text = _control_value(driver, "#txt_AddStat")
     if plan.duty_status_line not in status_text:
         raise RuntimeError(f"案件代入後未帶入第一站工作紀錄的 {plan.duty_status_line}。")
+    imported_in_date = _normalized_civilpower_date(_control_value(driver, "#txt_AddBackDate"), "#txt_AddBackDate")
+    imported_in_time = normalize_hhmm(
+        _control_value(driver, "#txt_AddBackHour") + _control_value(driver, "#txt_AddBackMin")
+    )
+    if not _valid_hhmm(imported_in_time):
+        raise RuntimeError("案件代入後未帶入有效案件返隊時間。")
+    return replace(plan, in_date=imported_in_date, in_time=imported_in_time)
+
+
+def _assert_imported_work_log_return_matches(
+    plan: CivilpowerTaskPlan,
+    imported_plan: CivilpowerTaskPlan,
+) -> None:
+    if imported_plan.in_date != plan.in_date:
+        raise RuntimeError(
+            f"案件代入後欄位不符：#txt_AddBackDate 預期={plan.in_date} 實際={imported_plan.in_date or '空白'}"
+        )
+    if imported_plan.in_time[:2] != plan.in_time[:2]:
+        raise RuntimeError(
+            f"案件代入後欄位不符：#txt_AddBackHour 預期={plan.in_time[:2]} 實際={imported_plan.in_time[:2] or '空白'}"
+        )
+    if not _same_minute(imported_plan.in_time[2:], plan.in_time[2:]):
+        raise RuntimeError(
+            f"案件代入後欄位不符：#txt_AddBackMin 預期={plan.in_time[2:]} 實際={imported_plan.in_time[2:] or '空白'}"
+        )
 
 
 def _find_work_log_record(
@@ -1080,7 +1307,7 @@ def _visible_save_success_dialog(driver):
         try:
             text = _clean_text(candidate.text)
             if candidate.is_displayed() and any(
-                marker in text for marker in ("新增成功", "儲存成功", "存檔成功", "操作成功")
+                marker in text for marker in ("新增成功", "編輯成功", "儲存成功", "存檔成功", "操作成功")
             ):
                 return candidate
         except Exception:
@@ -1311,6 +1538,28 @@ def _wait_for_io_record_form_values(
     wait.until(lambda current: _selected_option_text(current, "#ddl_AddIO") == status)
 
 
+def _wait_for_io_edit_form_values(
+    driver,
+    wait: WebDriverWait,
+    plan: CivilpowerTaskPlan,
+) -> None:
+    expected_values = {
+        "#txt_EditLogDate": plan.in_date,
+        "#txt_EditLogHour": plan.in_time[:2],
+        "#txt_EditLogMin": plan.in_time[2:],
+        "#txt_EditReason": plan.in_reason,
+    }
+    for selector, expected_value in expected_values.items():
+        wait.until(
+            lambda current, selector=selector, expected_value=expected_value: _same_value(
+                _control_value(current, selector),
+                expected_value,
+            )
+        )
+    wait.until(lambda current: plan.member_name in _control_value(current, "#txt_EditVolFMan"))
+    wait.until(lambda current: _selected_option_text(current, "#ddl_EditIO") == IN_STATUS)
+
+
 def _selected_option_text(driver, selector: str) -> str:
     try:
         return _clean_text(Select(driver.find_element(By.CSS_SELECTOR, selector)).first_selected_option.text)
@@ -1389,13 +1638,13 @@ def _same_value(actual: str, expected: str) -> bool:
     return clean_actual == clean_expected if clean_expected else _clean_text(actual) == _clean_text(expected)
 
 
-def _same_or_adjacent_minute(actual: str, expected: str) -> bool:
+def _same_minute(actual: str, expected: str) -> bool:
     try:
         actual_minute = int(_clean_text(actual))
         expected_minute = int(_clean_text(expected))
     except ValueError:
         return False
-    return 0 <= actual_minute < 60 and 0 <= expected_minute < 60 and abs(actual_minute - expected_minute) <= 1
+    return 0 <= actual_minute < 60 and actual_minute == expected_minute
 
 
 def _date_parts(value: object) -> tuple[int, int, int] | None:
@@ -1407,6 +1656,14 @@ def _date_parts(value: object) -> tuple[int, int, int] | None:
     except ValueError:
         return None
     return parsed.year, parsed.month, parsed.day
+
+
+def _normalized_civilpower_date(value: object, selector: str) -> str:
+    parts = _date_parts(value)
+    if parts is None:
+        raise RuntimeError(f"案件代入後未帶入有效日期：{selector}={_clean_text(value) or '空白'}")
+    year, month, day = parts
+    return f"{year:04d}/{month:02d}/{day:02d}"
 
 
 def _token_matches(text: str, token: str) -> bool:
@@ -1458,6 +1715,29 @@ def _load_task_checkpoint(artifacts_dir: Path, plan: CivilpowerTaskPlan) -> dict
     if not isinstance(payload, dict) or payload.get("fingerprint") != fingerprint:
         return {"fingerprint": fingerprint, "created_at": datetime.now().isoformat(timespec="seconds")}
     return payload
+
+
+def _plan_with_checkpointed_in_time(
+    plan: CivilpowerTaskPlan,
+    checkpoint: dict[str, object],
+) -> CivilpowerTaskPlan:
+    in_date = _clean_text(checkpoint.get("civilpower_in_date"))
+    in_time = normalize_hhmm(checkpoint.get("civilpower_in_time"))
+    if _date_parts(in_date) is None or not _valid_hhmm(in_time):
+        return plan
+    return replace(plan, in_date=_normalized_civilpower_date(in_date, "checkpoint"), in_time=in_time)
+
+
+def _record_checkpointed_in_time(
+    checkpoint: dict[str, object],
+    plan: CivilpowerTaskPlan,
+) -> None:
+    checkpoint["civilpower_in_date"] = plan.in_date
+    checkpoint["civilpower_in_time"] = plan.in_time
+
+
+def _checkpointed_civilpower_login_account(checkpoint: dict[str, object]) -> str:
+    return _clean_text(checkpoint.get("civilpower_login_account"))
 
 
 def _save_task_checkpoint(artifacts_dir: Path, plan: CivilpowerTaskPlan, checkpoint: dict[str, object]) -> None:
