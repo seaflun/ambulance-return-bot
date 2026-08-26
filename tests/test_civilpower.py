@@ -627,6 +627,40 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertIs(row, actual_row)
         self.assertEqual(2, wait.calls)
 
+    def test_selection_dialog_waits_for_async_matching_row_before_clicking(self):
+        from civilpower import _select_dialog_row
+
+        class PollingWait:
+            def __init__(self, driver):
+                self.driver = driver
+                self.calls = 0
+
+            def until(self, predicate):
+                for _ in range(3):
+                    self.calls += 1
+                    result = predicate(self.driver)
+                    if result:
+                        return result
+                raise AssertionError("selection row never became ready")
+
+        driver = object()
+        dialog = object()
+        row = mock.Mock()
+        wait = PollingWait(driver)
+
+        with mock.patch("civilpower._matching_table_rows", side_effect=[[], [row]]), mock.patch(
+            "civilpower._click_dialog_row"
+        ) as click_row:
+            _select_dialog_row(
+                driver,
+                wait,
+                dialog,
+                ["張贊鏡", "大園救護分隊", "救護出勤", "1000"],
+            )
+
+        click_row.assert_called_once_with(row)
+        self.assertEqual(2, wait.calls)
+
     def test_io_person_selection_waits_for_person_value_after_confirming_dialog(self):
         from civilpower import CivilpowerTaskPlan, _select_io_person
 

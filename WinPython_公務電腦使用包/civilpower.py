@@ -604,7 +604,12 @@ def _select_out_io_record_for_work_log(driver, wait: WebDriverWait, plan: Civilp
         "#btn_AddSltIOWorkLog",
         "救護出勤登記",
     )
-    _select_dialog_row(dialog, [plan.member_name, plan.home_unit, plan.out_reason, plan.out_time])
+    _select_dialog_row(
+        driver,
+        wait,
+        dialog,
+        [plan.member_name, plan.home_unit, plan.out_reason, plan.out_time],
+    )
     _confirm_dialog(driver, wait, dialog)
     if not _control_value(driver, "#hf_AddIOLogIDs"):
         raise RuntimeError("工作紀錄簿未選取救護出勤的出入登記。")
@@ -622,11 +627,11 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
     tokens = [plan.case_address] if plan.case_address else [plan.case_id]
     if plan.case_id:
         try:
-            _select_dialog_row(dialog, [plan.case_id])
+            _select_dialog_row(driver, wait, dialog, [plan.case_id])
         except RuntimeError:
-            _select_dialog_row(dialog, tokens)
+            _select_dialog_row(driver, wait, dialog, tokens)
     else:
-        _select_dialog_row(dialog, tokens)
+        _select_dialog_row(driver, wait, dialog, tokens)
     _confirm_dialog(driver, wait, dialog)
 
 
@@ -776,17 +781,20 @@ def _wait_for_io_person_value(driver, wait: WebDriverWait, member_name: str) -> 
     wait.until(lambda current: member_name in _control_value(current, "#txt_AddVolFMan"))
 
 
-def _select_dialog_row(dialog, required_tokens: list[str]) -> None:
-    rows = []
-    for row in _table_rows(dialog):
-        text = _clean_text(row.text)
-        if text and all(_token_matches(text, token) for token in required_tokens if token):
-            rows.append(row)
-    if not rows:
-        raise RuntimeError("選取視窗找不到符合條件的紀錄：" + "、".join(required_tokens))
-    if len(rows) > 1:
-        raise RuntimeError("選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
-    _click_dialog_row(rows[0])
+def _select_dialog_row(driver, wait: WebDriverWait, dialog, required_tokens: list[str]) -> None:
+    def find_row(_current):
+        rows = _matching_table_rows(dialog, required_tokens)
+        if len(rows) > 1:
+            raise RuntimeError("選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
+        return rows[0] if rows else False
+
+    try:
+        row = wait.until(find_row)
+    except TimeoutException as exc:
+        raise RuntimeError(
+            f"選取視窗在 {DEFAULT_WAIT_SECONDS} 秒內找不到符合條件的紀錄：" + "、".join(required_tokens)
+        ) from exc
+    _click_dialog_row(row)
 
 
 def _click_dialog_row(row) -> None:
