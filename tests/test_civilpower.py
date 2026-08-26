@@ -661,6 +661,64 @@ class CivilpowerPlanTests(unittest.TestCase):
         click_row.assert_called_once_with(driver, row)
         self.assertEqual(2, wait.calls)
 
+    def test_case_import_uses_matching_row_select_action_without_confirm_dialog(self):
+        from civilpower import CivilpowerTaskPlan, _import_work_log_case
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-case-row-action",
+            case_id="EMS-20260826-01",
+            case_address="桃園市大園區測試路1號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1000",
+            in_date="2026/08/26",
+            in_time="1021",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+        )
+        driver = mock.Mock()
+        wait = mock.Mock()
+        checkbox = mock.Mock()
+        checkbox.is_selected.return_value = True
+        wait.until.return_value = checkbox
+        dialog = mock.Mock()
+        row = mock.Mock()
+
+        with mock.patch("civilpower._set_input"), mock.patch(
+            "civilpower._open_selection_dialog", return_value=dialog
+        ), mock.patch("civilpower._wait_for_dialog_row", return_value=row) as wait_for_row, mock.patch(
+            "civilpower._click_dialog_row_action", return_value=True
+        ) as click_action, mock.patch("civilpower._wait_for_dialog_close") as wait_for_close, mock.patch(
+            "civilpower._confirm_dialog"
+        ) as confirm:
+            _import_work_log_case(driver, wait, plan)
+
+        wait_for_row.assert_called_once_with(wait, dialog, ["EMS-20260826-01"])
+        click_action.assert_called_once_with(driver, row, "選取")
+        wait_for_close.assert_called_once_with(wait, dialog)
+        confirm.assert_not_called()
+
+    def test_dialog_row_action_clicks_the_visible_exact_select_button(self):
+        from civilpower import _click_dialog_row_action
+
+        driver = mock.Mock()
+        row = mock.Mock()
+        select_button = mock.Mock()
+        select_button.get_attribute.side_effect = lambda name: {"value": "選取"}.get(name, "")
+        select_button.text = ""
+        select_button.is_displayed.return_value = True
+        select_button.is_enabled.return_value = True
+        row.find_elements.return_value = [select_button]
+
+        self.assertTrue(_click_dialog_row_action(driver, row, "選取"))
+
+        select_button.click.assert_called_once()
+
     def test_dialog_row_dispatches_mouse_events_when_native_click_is_blocked(self):
         from civilpower import _click_dialog_row
 

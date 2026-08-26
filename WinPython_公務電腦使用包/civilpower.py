@@ -627,11 +627,15 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
     tokens = [plan.case_address] if plan.case_address else [plan.case_id]
     if plan.case_id:
         try:
-            _select_dialog_row(driver, wait, dialog, [plan.case_id])
+            row = _wait_for_dialog_row(wait, dialog, [plan.case_id])
         except RuntimeError:
-            _select_dialog_row(driver, wait, dialog, tokens)
+            row = _wait_for_dialog_row(wait, dialog, tokens)
     else:
-        _select_dialog_row(driver, wait, dialog, tokens)
+        row = _wait_for_dialog_row(wait, dialog, tokens)
+    if _click_dialog_row_action(driver, row, "選取"):
+        _wait_for_dialog_close(wait, dialog)
+        return
+    _click_dialog_row(driver, row)
     _confirm_dialog(driver, wait, dialog)
 
 
@@ -782,6 +786,11 @@ def _wait_for_io_person_value(driver, wait: WebDriverWait, member_name: str) -> 
 
 
 def _select_dialog_row(driver, wait: WebDriverWait, dialog, required_tokens: list[str]) -> None:
+    row = _wait_for_dialog_row(wait, dialog, required_tokens)
+    _click_dialog_row(driver, row)
+
+
+def _wait_for_dialog_row(wait: WebDriverWait, dialog, required_tokens: list[str]):
     def find_row(_current):
         rows = _matching_table_rows(dialog, required_tokens)
         if len(rows) > 1:
@@ -794,7 +803,41 @@ def _select_dialog_row(driver, wait: WebDriverWait, dialog, required_tokens: lis
         raise RuntimeError(
             f"選取視窗在 {DEFAULT_WAIT_SECONDS} 秒內找不到符合條件的紀錄：" + "、".join(required_tokens)
         ) from exc
-    _click_dialog_row(driver, row)
+    return row
+
+
+def _click_dialog_row_action(driver, row, action_text: str) -> bool:
+    expected_text = _clean_text(action_text).replace(" ", "")
+    candidates = row.find_elements(
+        By.CSS_SELECTOR,
+        "input[type='button'], input[type='submit'], button, a, [role='button'], .jqx-button",
+    )
+    for candidate in candidates:
+        try:
+            candidate_text = _clean_text(
+                " ".join(
+                    str(candidate.get_attribute(attribute) or "")
+                    for attribute in ("value", "title", "aria-label")
+                )
+                + " "
+                + str(candidate.text or "")
+            ).replace(" ", "")
+            selectable = candidate.is_displayed() and candidate.is_enabled()
+        except Exception:
+            continue
+        if not selectable or candidate_text != expected_text:
+            continue
+        try:
+            candidate.click()
+        except Exception:
+            try:
+                clicked = driver.execute_script("arguments[0].click(); return true;", candidate)
+            except Exception as exc:
+                raise RuntimeError(f"選取視窗的「{action_text}」按鈕無法點選。") from exc
+            if not clicked:
+                raise RuntimeError(f"選取視窗的「{action_text}」按鈕無法點選。")
+        return True
+    return False
 
 
 def _click_dialog_row(driver, row) -> None:
@@ -869,9 +912,13 @@ def _confirm_dialog(driver, wait: WebDriverWait, dialog) -> None:
                     raise RuntimeError("選取視窗的確認按鈕無法點選。") from exc
                 if not clicked:
                     raise RuntimeError("選取視窗的確認按鈕無法點選。")
-            wait.until(lambda current: _is_stale(dialog) or not dialog.is_displayed())
+            _wait_for_dialog_close(wait, dialog)
             return
     raise RuntimeError("選取視窗找不到「確認選取」按鈕。")
+
+
+def _wait_for_dialog_close(wait: WebDriverWait, dialog) -> None:
+    wait.until(lambda _current: _is_stale(dialog) or not dialog.is_displayed())
 
 
 def _wait_after_save(driver, wait: WebDriverWait, modal_selector: str) -> None:
