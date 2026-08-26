@@ -49,6 +49,13 @@ OUT_REASON = "救護出勤"
 IN_REASON = "救護返隊"
 MAX_LOGIN_ATTEMPTS = 3
 DEFAULT_WAIT_SECONDS = 15
+WORK_LOG_FORM_INITIAL_WAIT_SECONDS = 10
+WORK_LOG_FORM_RETRY_WAIT_SECONDS = 5
+WORK_LOG_FORM_SELECTORS = (
+    "#txt_IODate_S",
+    "#txt_IODate_E",
+    "#btn_AddSltIOWorkLog",
+)
 OUTPUT_DIR = Path(
     os.getenv("CAPTCHA_OUTPUT_DIR")
     or Path(os.getenv("LOCALAPPDATA") or Path.home()) / "ambulance_return_bot" / "captcha"
@@ -379,6 +386,9 @@ def run_civilpower_task(
 
 def _civilpower_failure_detail(stage: str, exc: BaseException) -> str:
     if isinstance(exc, TimeoutException):
+        context = _controlled_timeout_context(exc)
+        if context:
+            return f"民力系統{stage}逾時：{context}"
         return f"民力系統{stage}逾時，網頁未在 {DEFAULT_WAIT_SECONDS} 秒內完成預期操作。"
     message = compact_failure_text(exc, maximum=180)
     return f"民力系統{stage}失敗：{message or exc.__class__.__name__}"
@@ -392,7 +402,7 @@ def _civilpower_failure_diagnostics(
     browser_reason = _clean_text(evidence.get("reason"))
     browser_next_action = _clean_text(evidence.get("next_action"))
     if isinstance(exc, TimeoutException):
-        reason = browser_reason or f"民力網站在{stage}等待逾時，未出現預期的選取視窗或資料結果。"
+        reason = browser_reason or _controlled_timeout_context(exc) or f"民力網站在{stage}等待逾時，未出現預期的選取視窗或資料結果。"
         next_action = browser_next_action or "保留目前畫面與截圖，再單獨重跑民力系統；程式不會略過資料驗證。"
     else:
         reason = compact_failure_text(exc, maximum=180) or f"民力系統在{stage}發生未預期錯誤。"
@@ -403,6 +413,20 @@ def _civilpower_failure_diagnostics(
         "next_action": next_action,
         "exception_type": exc.__class__.__name__,
     }
+
+
+def _controlled_timeout_context(exc: TimeoutException) -> str:
+    message = compact_failure_text(exc, maximum=180)
+    if message.startswith("Message:"):
+        message = message.removeprefix("Message:").strip()
+    controlled_markers = (
+        "工作紀錄簿頁面未完整載入",
+        "選取按鈕未就緒",
+        "選取視窗未出現",
+    )
+    if any(marker in message for marker in controlled_markers):
+        return message
+    return ""
 
 
 def _login_once(driver, account: str, password: str, attempt: int) -> None:
@@ -543,9 +567,7 @@ def _ensure_work_log(
     if _find_work_log_record(driver, plan):
         checkpoint["work_log_verified"] = True
         return
-    driver.get(WORK_LOG_URL)
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
-    _wait_for_civilpower_page(driver, wait)
     _report_progress(progress, "選取救護出勤登記")
     _select_out_io_record_for_work_log(driver, wait, plan)
     _raise_if_cancelled(cancel_check)
@@ -621,9 +643,7 @@ def _assert_imported_work_log_values(driver, plan: CivilpowerTaskPlan) -> None:
 
 
 def _find_work_log_record(driver, plan: CivilpowerTaskPlan) -> bool:
-    driver.get(WORK_LOG_URL)
-    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
-    _wait_for_civilpower_page(driver, wait)
+    wait = _open_work_log_form(driver)
     _set_if_present(driver, wait, "#txt_Date_S", plan.out_date)
     _set_if_present(driver, wait, "#txt_Date_E", plan.in_date)
     _click_if_present(driver, wait, "#btn_Query")
@@ -643,16 +663,66 @@ def _find_work_log_record(driver, plan: CivilpowerTaskPlan) -> bool:
 
 
 def _open_selection_dialog(driver, wait: WebDriverWait, selector: str, label: str):
-    _click(wait, selector)
+    _click_selection_trigger(driver, wait, selector, label)
     try:
         return _visible_dialog(driver, wait)
     except TimeoutException:
-        _click(wait, selector)
+        _click_selection_trigger(driver, wait, selector, label)
         retry_wait = WebDriverWait(driver, min(5, DEFAULT_WAIT_SECONDS))
         try:
             return _visible_dialog(driver, retry_wait)
         except TimeoutException as exc:
             raise TimeoutException(f"{label}選取視窗未出現，已安全重試一次。") from exc
+
+
+def _open_work_log_form(driver) -> WebDriverWait:
+    driver.get(WORK_LOG_URL)
+    initial_wait = WebDriverWait(driver, min(WORK_LOG_FORM_INITIAL_WAIT_SECONDS, DEFAULT_WAIT_SECONDS))
+    _wait_for_civilpower_page(driver, initial_wait)
+    try:
+        _wait_for_work_log_controls(driver, initial_wait)
+    except TimeoutException:
+        driver.refresh()
+        retry_wait = WebDriverWait(driver, min(WORK_LOG_FORM_RETRY_WAIT_SECONDS, DEFAULT_WAIT_SECONDS))
+        _wait_for_civilpower_page(driver, retry_wait)
+        try:
+            _wait_for_work_log_controls(driver, retry_wait)
+        except TimeoutException as exc:
+            raise TimeoutException(_incomplete_work_log_page_message(driver)) from exc
+    return WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+
+
+def _wait_for_work_log_controls(driver, wait: WebDriverWait) -> None:
+    wait.until(
+        lambda current: all(
+            current.find_elements(By.CSS_SELECTOR, selector)
+            for selector in WORK_LOG_FORM_SELECTORS
+        )
+    )
+
+
+def _incomplete_work_log_page_message(driver) -> str:
+    try:
+        missing = [
+            selector
+            for selector in WORK_LOG_FORM_SELECTORS
+            if not driver.find_elements(By.CSS_SELECTOR, selector)
+        ]
+    except Exception:
+        missing = list(WORK_LOG_FORM_SELECTORS)
+    page_url = _clean_text(str(getattr(driver, "current_url", "") or ""))
+    location = page_url[:120] or "未知頁面"
+    controls = "、".join(missing) or "必要欄位"
+    return f"工作紀錄簿頁面未完整載入（缺少 {controls}；頁面={location}）。"
+
+
+def _click_selection_trigger(driver, wait: WebDriverWait, selector: str, label: str) -> None:
+    try:
+        _click(wait, selector)
+    except TimeoutException as exc:
+        page_url = _clean_text(str(getattr(driver, "current_url", "") or ""))
+        location = page_url[:120] or "未知頁面"
+        raise TimeoutException(f"{label}選取按鈕未就緒（{selector}；頁面={location}）。") from exc
 
 
 def _visible_dialog(driver, wait: WebDriverWait):

@@ -277,6 +277,65 @@ class CivilpowerPlanTests(unittest.TestCase):
             visible_dialog.call_args_list,
         )
 
+    def test_work_log_page_reloads_once_when_required_controls_are_missing(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from civilpower import WORK_LOG_URL, _open_work_log_form
+
+        driver = mock.Mock()
+        initial_wait = object()
+        retry_wait = object()
+        action_wait = object()
+
+        with mock.patch(
+            "civilpower.WebDriverWait",
+            side_effect=[initial_wait, retry_wait, action_wait],
+        ) as webdriver_wait, mock.patch("civilpower._wait_for_civilpower_page"), mock.patch(
+            "civilpower._wait_for_work_log_controls",
+            side_effect=[TimeoutException(), None],
+        ) as wait_for_controls:
+            actual = _open_work_log_form(driver)
+
+        self.assertIs(action_wait, actual)
+        driver.get.assert_called_once_with(WORK_LOG_URL)
+        driver.refresh.assert_called_once_with()
+        self.assertEqual(
+            [mock.call(driver, 10), mock.call(driver, 5), mock.call(driver, 15)],
+            webdriver_wait.call_args_list,
+        )
+        self.assertEqual(
+            [mock.call(driver, initial_wait), mock.call(driver, retry_wait)],
+            wait_for_controls.call_args_list,
+        )
+
+    def test_selection_dialog_names_a_trigger_that_never_becomes_clickable(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from civilpower import _open_selection_dialog
+
+        driver = mock.Mock()
+        driver.current_url = "https://civilpower.tyfd.gov.tw/TYCC/Home/WorkLog"
+        with mock.patch("civilpower._click", side_effect=TimeoutException()), mock.patch(
+            "civilpower._visible_dialog"
+        ) as visible_dialog:
+            with self.assertRaisesRegex(TimeoutException, "救護出勤登記選取按鈕未就緒"):
+                _open_selection_dialog(driver, object(), "#btn_AddSltIOWorkLog", "救護出勤登記")
+
+        visible_dialog.assert_not_called()
+
+    def test_timeout_detail_keeps_compact_work_log_page_context(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from civilpower import _civilpower_failure_detail
+
+        detail = _civilpower_failure_detail(
+            "選取救護出勤登記",
+            TimeoutException("工作紀錄簿頁面未完整載入（缺少 #btn_AddSltIOWorkLog）。"),
+        )
+
+        self.assertIn("選取救護出勤登記", detail)
+        self.assertIn("工作紀錄簿頁面未完整載入", detail)
+
     def test_roster_query_reads_the_first_three_columns_before_the_action_column(self):
         from civilpower import FIREMAN_URL, query_civilpower_roster
 
