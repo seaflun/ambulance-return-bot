@@ -399,7 +399,7 @@ def _ensure_io_record(
 ) -> None:
     marker = "out" if status == OUT_STATUS else "in"
     _raise_if_cancelled(cancel_check)
-    if _find_io_record(driver, plan, status):
+    if _find_io_record(driver, plan, status, wait_for_match=True):
         checkpoint[f"{marker}_verified"] = True
         return
     _open_io_work_log(driver)
@@ -423,7 +423,7 @@ def _ensure_io_record(
     _click(wait, "#btn_IOWorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
-    if not _find_io_record(driver, plan, status):
+    if not _find_io_record(driver, plan, status, wait_for_match=True):
         raise RuntimeError(f"出入登記簿儲存後回查不到{status}／{plan.out_reason if status == OUT_STATUS else plan.in_reason}紀錄。")
     checkpoint[f"{marker}_verified"] = True
 
@@ -433,7 +433,13 @@ def _open_io_work_log(driver) -> None:
     _wait_for_civilpower_page(driver, WebDriverWait(driver, DEFAULT_WAIT_SECONDS))
 
 
-def _find_io_record(driver, plan: CivilpowerTaskPlan, status: str) -> bool:
+def _find_io_record(
+    driver,
+    plan: CivilpowerTaskPlan,
+    status: str,
+    *,
+    wait_for_match: bool = False,
+) -> bool:
     _open_io_work_log(driver)
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     date_text = plan.out_date if status == OUT_STATUS else plan.in_date
@@ -443,16 +449,19 @@ def _find_io_record(driver, plan: CivilpowerTaskPlan, status: str) -> bool:
     _set_if_present(driver, wait, "#txt_Date_E", date_text)
     _select_option_containing_if_present(driver, wait, "#ddl_IO", status)
     _click_if_present(driver, wait, "#btn_Query")
-    rows = _matching_table_rows(
-        driver,
-        [
-            plan.member_name,
-            plan.home_unit,
-            plan.serve_unit,
-            plan.out_reason if status == OUT_STATUS else plan.in_reason,
-            time_text,
-        ],
-    )
+    tokens = [
+        plan.member_name,
+        plan.home_unit,
+        plan.serve_unit,
+        plan.out_reason if status == OUT_STATUS else plan.in_reason,
+        time_text,
+    ]
+    rows = _matching_table_rows(driver, tokens)
+    if not rows and wait_for_match:
+        try:
+            rows = wait.until(lambda current: _matching_table_rows(current, tokens) or False)
+        except TimeoutException:
+            return False
     if len(rows) > 1:
         raise RuntimeError(f"出入登記簿找到多筆相同{status}紀錄，無法安全判定。")
     return bool(rows)

@@ -87,6 +87,41 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("驗證碼", payload["next_action"])
         self.assertEqual(payload["exception_type"], "login")
 
+    def test_civilpower_io_verify_is_not_classified_as_login_with_account_audit(self):
+        payload = diagnostic_payload(
+            "volunteer_assist",
+            "volunteer_assist_failed",
+            (
+                "登入帳號：民力系統=值班人員 > 任務司機 > 出勤人員 > 同步帳號。"
+                "民力系統登打失敗：出入登記簿儲存後回查不到出／救護出勤紀錄。"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "civilpower_io_verify")
+        self.assertEqual(payload["failure_stage"], "儲存並回查")
+        self.assertIn("出入登記簿", payload["failure_reason"])
+        self.assertNotIn("登入", payload["failure_reason"])
+        self.assertIn("清單刷新", payload["next_action"])
+
+    def test_merge_replaces_stored_login_diagnosis_for_civilpower_io_verify(self):
+        merged = merge_diagnostic_fields(
+            {
+                "key": "volunteer_assist",
+                "status": "volunteer_assist_failed",
+                "detail": (
+                    "登入帳號：民力系統=值班人員 > 任務司機 > 出勤人員 > 同步帳號。"
+                    "民力系統登打失敗：出入登記簿儲存後回查不到出／救護出勤紀錄。"
+                ),
+                "failure_stage": "登入內部入口網",
+                "failure_reason": "登入、帳密、SSO 或驗證碼尚未完成。",
+                "next_action": "完成登入後重試。",
+                "exception_type": "login",
+            }
+        )
+
+        self.assertEqual(merged["exception_type"], "civilpower_io_verify")
+        self.assertEqual(merged["failure_stage"], "儲存並回查")
+
     def test_work_log_case_query_range_failure_is_classified_as_case_not_found(self):
         payload = diagnostic_payload(
             "duty_work_log",

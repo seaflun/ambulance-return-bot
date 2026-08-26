@@ -88,6 +88,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         "renderer_timeout_unverified",
         "chrome_unresponsive",
         "chromedriver_ended",
+        "civilpower_io_verify",
     }
     def value_for(field: str) -> str:
         if prefer_computed:
@@ -187,6 +188,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         or ("耗材儲存後讀回不一致" in raw_detail and "actual=[]" in raw_detail)
     ):
         return "case_not_closed"
+    if "出入登記簿" in raw_detail and ("儲存後回查不到" in raw_detail or "找到多筆相同" in raw_detail):
+        return "civilpower_io_verify"
     if "captcha" in text or "驗證碼" in raw_detail or "sso" in text or "login" in text or "登入" in raw_detail or "帳密" in raw_detail:
         return "login"
     if (
@@ -238,6 +241,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return "開啟耗材紀錄" if site_key == "consumables" else "開啟消毒紀錄"
     if category == "ppe_driver":
         return "填寫加油紀錄" if site_key == "fuel_record" else "填寫返隊時間與里程"
+    if category == "civilpower_io_verify":
+        return "儲存並回查" if site_key == "volunteer_assist" else "儲存"
     if category == "login":
         return _login_stage(site_key)
     if category == "case_not_found":
@@ -327,6 +332,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "vehicle_not_found": "頁面內找不到任務指定的救護車。",
         "fuel_period": "加油頁月份與任務加油月份不一致，油卡清單尚未切到任務月份。",
         "ppe_driver": "PPE 駕駛清單找不到指定人員或有效代碼。",
+        "civilpower_io_verify": "民力出入登記簿已送出，但查詢清單尚未出現可驗證的紀錄。",
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
         "vehicle_candidate": "已確認同一案件存在不同出勤車輛的官方紀錄，需由使用者選擇本次查找車輛。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
@@ -359,6 +365,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "依患者序號查看成功與失敗頁面；修正一站通資料後可單獨重跑耗材。"
     if category == "vehicle_candidate":
         return "確認卡片上的候選車輛後，只以「單獨登打」重試此站；原案件車號不會被修改。"
+    if category == "civilpower_io_verify":
+        return "等待民力出入登記簿清單刷新後確認剛儲存的紀錄；若仍找不到，再確認人員、日期、狀態與時間。"
     if category == "login":
         return f"到公務電腦完成{site_name}登入或驗證碼，再回任務頁按「單獨登打」重試。"
     if category == "case_not_found":

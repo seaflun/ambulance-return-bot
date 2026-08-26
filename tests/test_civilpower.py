@@ -528,7 +528,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         )
         steps: list[str] = []
 
-        with mock.patch("civilpower._find_io_record", side_effect=[False, True]), mock.patch(
+        with mock.patch("civilpower._find_io_record", side_effect=[False, True]) as find_io_record, mock.patch(
             "civilpower._open_io_work_log", side_effect=lambda _driver: steps.append("open")
         ), mock.patch(
             "civilpower._click", side_effect=lambda _wait, selector: steps.append(f"click:{selector}")
@@ -576,6 +576,52 @@ class CivilpowerPlanTests(unittest.TestCase):
             steps,
         )
         self.assertTrue(checkpoint["out_verified"])
+        find_io_record.assert_has_calls(
+            [
+                mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=True),
+                mock.call(mock.ANY, plan, OUT_STATUS, wait_for_match=True),
+            ]
+        )
+
+    def test_io_record_lookup_waits_for_matching_row_when_requested(self):
+        from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-delayed-query",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/25",
+            out_time="2041",
+            in_date="2026/08/25",
+            in_time="2210",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
+        driver = object()
+        row = object()
+
+        class PollingWait:
+            def until(self, condition):
+                for _ in range(2):
+                    result = condition(driver)
+                    if result:
+                        return result
+                raise AssertionError("等待中的民力查詢未找到資料")
+
+        with mock.patch("civilpower._open_io_work_log"), mock.patch(
+            "civilpower.WebDriverWait", return_value=PollingWait()
+        ), mock.patch("civilpower._set_if_present"), mock.patch(
+            "civilpower._select_option_containing_if_present"
+        ), mock.patch("civilpower._click_if_present"), mock.patch(
+            "civilpower._matching_table_rows", side_effect=[[], [row]]
+        ):
+            self.assertTrue(_find_io_record(driver, plan, OUT_STATUS, wait_for_match=True))
 
 
 if __name__ == "__main__":
