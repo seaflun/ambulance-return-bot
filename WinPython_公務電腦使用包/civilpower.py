@@ -716,7 +716,6 @@ def _ensure_correct_in_io_record(
         IN_STATUS,
         wait_for_match=False,
         raise_on_timeout=True,
-        require_query_confirmation=True,
     ) is not None:
         checkpoint["in_verified"] = True
         return

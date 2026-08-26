@@ -1391,7 +1391,6 @@ class CivilpowerPlanTests(unittest.TestCase):
                     "入",
                     wait_for_match=False,
                     raise_on_timeout=True,
-                    require_query_confirmation=True,
                 ),
                 mock.call(
                     mock.ANY,
