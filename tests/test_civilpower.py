@@ -336,6 +336,68 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertIn("選取救護出勤登記", detail)
         self.assertIn("工作紀錄簿頁面未完整載入", detail)
 
+    def test_work_log_opens_new_form_before_selecting_out_record(self):
+        from civilpower import _ensure_work_log, build_civilpower_task_plan
+
+        request = self._enabled_request()
+        plan = build_civilpower_task_plan(request)
+        steps: list[str] = []
+        wait = object()
+
+        with mock.patch("civilpower._find_work_log_record", side_effect=[False, True]), mock.patch(
+            "civilpower.WebDriverWait", return_value=wait
+        ), mock.patch(
+            "civilpower._click",
+            side_effect=lambda _wait, selector: steps.append(f"click:{selector}"),
+        ), mock.patch(
+            "civilpower._wait_visible",
+            side_effect=lambda _wait, selector: steps.append(f"visible:{selector}"),
+        ), mock.patch(
+            "civilpower._wait_for_work_log_add_controls",
+            side_effect=lambda _driver, _wait: steps.append("add-controls"),
+        ), mock.patch(
+            "civilpower._select_out_io_record_for_work_log",
+            side_effect=lambda _driver, _wait, _plan: steps.append("select-out"),
+        ), mock.patch(
+            "civilpower._import_work_log_case",
+            side_effect=lambda _driver, _wait, _plan: steps.append("import-case"),
+        ), mock.patch(
+            "civilpower._assert_imported_work_log_values",
+            side_effect=lambda _driver, _plan: steps.append("verify-case"),
+        ), mock.patch(
+            "civilpower._wait_after_save",
+            side_effect=lambda _driver, _wait, selector: steps.append(f"saved:{selector}"),
+        ):
+            _ensure_work_log(
+                object(),
+                request,
+                plan,
+                {},
+                cancel_check=None,
+                progress=steps.append,
+            )
+
+        self.assertEqual(
+            [
+                "查詢既有工作紀錄",
+                "開啟工作紀錄簿新增表單",
+                "click:#btn_Add",
+                "visible:#jqxAddWindow",
+                "add-controls",
+                "選取救護出勤登記",
+                "select-out",
+                "案件代入",
+                "import-case",
+                "驗證案件代入",
+                "verify-case",
+                "儲存工作紀錄",
+                "click:#btn_WorkLogAdd",
+                "saved:#jqxAddWindow",
+                "工作紀錄回查",
+            ],
+            steps,
+        )
+
     def test_roster_query_reads_the_first_three_columns_before_the_action_column(self):
         from civilpower import FIREMAN_URL, query_civilpower_roster
 

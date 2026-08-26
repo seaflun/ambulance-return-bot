@@ -51,6 +51,11 @@ MAX_LOGIN_ATTEMPTS = 3
 DEFAULT_WAIT_SECONDS = 15
 WORK_LOG_FORM_INITIAL_WAIT_SECONDS = 10
 WORK_LOG_FORM_RETRY_WAIT_SECONDS = 5
+WORK_LOG_LIST_SELECTORS = (
+    "#txt_Date_S",
+    "#txt_Date_E",
+    "#btn_Add",
+)
 WORK_LOG_FORM_SELECTORS = (
     "#txt_IODate_S",
     "#txt_IODate_E",
@@ -568,6 +573,10 @@ def _ensure_work_log(
         checkpoint["work_log_verified"] = True
         return
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _report_progress(progress, "開啟工作紀錄簿新增表單")
+    _click(wait, "#btn_Add")
+    _wait_visible(wait, "#jqxAddWindow")
+    _wait_for_work_log_add_controls(driver, wait)
     _report_progress(progress, "選取救護出勤登記")
     _select_out_io_record_for_work_log(driver, wait, plan)
     _raise_if_cancelled(cancel_check)
@@ -696,6 +705,15 @@ def _wait_for_work_log_controls(driver, wait: WebDriverWait) -> None:
     wait.until(
         lambda current: all(
             current.find_elements(By.CSS_SELECTOR, selector)
+            for selector in WORK_LOG_LIST_SELECTORS
+        )
+    )
+
+
+def _wait_for_work_log_add_controls(driver, wait: WebDriverWait) -> None:
+    wait.until(
+        lambda current: all(
+            current.find_elements(By.CSS_SELECTOR, selector)
             for selector in WORK_LOG_FORM_SELECTORS
         )
     )
@@ -705,11 +723,11 @@ def _incomplete_work_log_page_message(driver) -> str:
     try:
         missing = [
             selector
-            for selector in WORK_LOG_FORM_SELECTORS
+            for selector in WORK_LOG_LIST_SELECTORS
             if not driver.find_elements(By.CSS_SELECTOR, selector)
         ]
     except Exception:
-        missing = list(WORK_LOG_FORM_SELECTORS)
+        missing = list(WORK_LOG_LIST_SELECTORS)
     page_url = _clean_text(str(getattr(driver, "current_url", "") or ""))
     location = page_url[:120] or "未知頁面"
     controls = "、".join(missing) or "必要欄位"
