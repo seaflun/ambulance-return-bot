@@ -628,6 +628,7 @@ def _find_io_record_row(
     _set_if_present(driver, wait, "#txt_Date_E", date_text)
     _select_option_containing_if_present(driver, wait, "#ddl_IO", status)
     previous_result_signature = _io_result_grid_signature(driver)
+    previous_result_sentinel = _io_result_grid_sentinel(driver)
     _click_if_present(driver, wait, "#btn_Query")
     tokens = [
         plan.member_name,
@@ -636,7 +637,12 @@ def _find_io_record_row(
         plan.out_reason if status == OUT_STATUS else plan.in_reason,
         time_text,
     ]
-    query_result_confirmed = _wait_for_io_query_result_grid(driver, tokens, previous_result_signature)
+    query_result_confirmed = _wait_for_io_query_result_grid(
+        driver,
+        tokens,
+        previous_result_signature,
+        previous_result_sentinel,
+    )
     rows = _matching_table_rows(driver, tokens)
     if not rows and require_query_confirmation and not query_result_confirmed:
         raise RuntimeError("出入登記簿查詢結果未完成更新，為避免重複新增，請保持原登入帳號後重試。")
@@ -663,14 +669,43 @@ def _io_result_grid_signature(driver) -> str | None:
         return None
 
 
-def _wait_for_io_query_result_grid(driver, tokens: list[str], previous_signature: str | None) -> bool:
-    if previous_signature is None:
+def _io_result_grid_sentinel(driver):
+    find_elements = getattr(driver, "find_elements", None)
+    if not callable(find_elements):
+        return None
+    try:
+        children = find_elements(By.CSS_SELECTOR, "#tableresult > *")
+    except (NoSuchElementException, StaleElementReferenceException):
+        return None
+    if not isinstance(children, (list, tuple)) or not children:
+        return None
+    return children[0]
+
+
+def _wait_for_io_query_result_grid(
+    driver,
+    tokens: list[str],
+    previous_signature: str | None,
+    previous_sentinel=None,
+) -> bool:
+    if previous_signature is None and previous_sentinel is None:
         return False
+
+    def sentinel_replaced() -> bool:
+        if previous_sentinel is None:
+            return False
+        try:
+            return bool(EC.staleness_of(previous_sentinel)(driver))
+        except (NoSuchElementException, StaleElementReferenceException):
+            return True
 
     def query_result_ready(current) -> bool:
         if _matching_table_rows(current, tokens):
             return True
-        return _io_result_grid_signature(current) != previous_signature
+        if sentinel_replaced():
+            return True
+        current_signature = _io_result_grid_signature(current)
+        return previous_signature is not None and current_signature is not None and current_signature != previous_signature
 
     try:
         WebDriverWait(driver, IO_QUERY_SETTLE_SECONDS, poll_frequency=0.2).until(query_result_ready)

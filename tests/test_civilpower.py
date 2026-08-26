@@ -1667,6 +1667,60 @@ class CivilpowerPlanTests(unittest.TestCase):
         ):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS))
 
+    def test_io_record_lookup_confirms_replaced_children_when_result_html_is_unchanged(self):
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-query-same-html",
+            case_id="",
+            case_address="",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1147",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="",
+        )
+
+        class PollingWait:
+            def until(self, condition):
+                for _ in range(3):
+                    result = condition(driver)
+                    if result:
+                        return result
+                raise AssertionError("查詢回應未替換表格內容")
+
+        driver = mock.Mock()
+        result_grid = mock.Mock()
+        result_grid.get_attribute.return_value = "unchanged"
+        sentinel = mock.Mock()
+        sentinel.is_enabled.side_effect = [True, StaleElementReferenceException("replaced")]
+        driver.find_element.return_value = result_grid
+
+        def find_elements(_by, selector):
+            if selector == "#tableresult > *":
+                return [sentinel]
+            if selector == "#btn_Query":
+                return [mock.Mock()]
+            return []
+
+        driver.find_elements.side_effect = find_elements
+
+        with mock.patch("civilpower._open_io_work_log"), mock.patch(
+            "civilpower.WebDriverWait", side_effect=[mock.Mock(), PollingWait()]
+        ), mock.patch("civilpower._set_if_present"), mock.patch(
+            "civilpower._select_option_containing_if_present"
+        ), mock.patch("civilpower._matching_table_rows", return_value=[]):
+            self.assertFalse(_find_io_record(driver, plan, OUT_STATUS, require_query_confirmation=True))
+
     def test_io_record_lookup_refuses_an_unconfirmed_empty_grid_before_adding(self):
         from selenium.common.exceptions import TimeoutException
 
