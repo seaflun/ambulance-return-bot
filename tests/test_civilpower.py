@@ -859,17 +859,6 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         self.assertEqual(2, wait.calls)
 
-    def test_jqx_option_signature_treats_replaced_widget_as_not_ready(self):
-        from selenium.common.exceptions import StaleElementReferenceException
-
-        from civilpower import _jqx_combobox_option_signature
-
-        driver = mock.Mock()
-        driver.find_element.return_value = mock.Mock()
-        driver.execute_script.side_effect = StaleElementReferenceException("widget was replaced")
-
-        self.assertIsNone(_jqx_combobox_option_signature(driver, "#txt_AddServeUnit"))
-
     def test_jqx_option_ready_treats_replaced_widget_as_not_ready(self):
         from selenium.common.exceptions import StaleElementReferenceException
 
@@ -912,7 +901,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertEqual(3, wait.calls)
         self.assertEqual(2, driver.execute_script.call_count)
 
-    def test_io_dependencies_wait_for_rebuilt_serve_unit_options(self):
+    def test_io_dependencies_accept_reused_serve_unit_options(self):
         from civilpower import _wait_for_io_form_dependencies
 
         class Plan:
@@ -929,14 +918,9 @@ class CivilpowerPlanTests(unittest.TestCase):
                     result = predicate(self.driver)
                     if result:
                         return result
-                raise AssertionError("serve unit options never rebuilt")
+                raise AssertionError("serve unit options never became ready")
 
-        previous_signature = (
-            ("大園分隊", "大園分隊"),
-            ("新坡分隊", "新坡分隊"),
-            ("草漯分隊", "草漯分隊"),
-        )
-        rebuilt_signature = (
+        available_options = (
             ("大園分隊", "大園分隊"),
             ("新坡分隊", "新坡分隊"),
         )
@@ -945,18 +929,13 @@ class CivilpowerPlanTests(unittest.TestCase):
         control.is_displayed.return_value = True
         control.is_enabled.return_value = True
         driver.find_element.return_value = control
-        driver.execute_script.side_effect = [list(previous_signature), list(rebuilt_signature)]
+        driver.execute_script.return_value = list(available_options)
         wait = PollingWait(driver)
 
-        _wait_for_io_form_dependencies(
-            driver,
-            wait,
-            Plan(),
-            previous_serve_unit_signature=previous_signature,
-        )
+        _wait_for_io_form_dependencies(driver, wait, Plan())
 
-        self.assertEqual(3, wait.calls)
-        self.assertEqual(2, driver.execute_script.call_count)
+        self.assertEqual(2, wait.calls)
+        self.assertEqual(1, driver.execute_script.call_count)
 
     def test_io_person_dialog_waits_for_correct_dialog_and_unique_row(self):
         from civilpower import _wait_for_io_person_dialog_row
@@ -1289,14 +1268,11 @@ class CivilpowerPlanTests(unittest.TestCase):
         ), mock.patch(
             "civilpower._wait_visible", side_effect=lambda _wait, selector: steps.append(f"visible:{selector}")
         ), mock.patch(
-            "civilpower._wait_for_jqx_combobox_option_signature",
-            side_effect=lambda _driver, _wait, _selector: steps.append("serve-unit-initialized") or (),
-        ), mock.patch(
             "civilpower._select_jqx_combobox",
             side_effect=lambda _driver, _wait, selector, value: steps.append(f"combo:{selector}={value}"),
         ), mock.patch(
             "civilpower._wait_for_io_form_dependencies",
-            side_effect=lambda _driver, _wait, _plan, **_kwargs: steps.append("dependencies"),
+            side_effect=lambda _driver, _wait, _plan: steps.append("dependencies"),
         ), mock.patch(
             "civilpower._select_io_person", side_effect=lambda _driver, _wait, _plan: steps.append("person")
         ), mock.patch(
@@ -1316,7 +1292,6 @@ class CivilpowerPlanTests(unittest.TestCase):
             [
                 "click:#btn_Add",
                 "visible:#jqxAddWindow",
-                "serve-unit-initialized",
                 "combo:#txt_AddUnit=大園救護分隊",
                 "dependencies",
                 "combo:#txt_AddServeUnit=新坡分隊",

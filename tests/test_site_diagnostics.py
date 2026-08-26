@@ -122,6 +122,27 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(merged["exception_type"], "civilpower_io_verify")
         self.assertEqual(merged["failure_stage"], "儲存並回查")
 
+    def test_merge_replaces_stored_login_diagnosis_for_civilpower_io_form_timeout(self):
+        merged = merge_diagnostic_fields(
+            {
+                "key": "volunteer_assist",
+                "status": "volunteer_assist_failed",
+                "detail": (
+                    "登入帳號：民力系統=值班人員 > 任務司機 > 出勤人員 > 同步帳號。"
+                    "民力系統確認救護返隊出入登記逾時，網頁未在 15 秒內完成預期操作。"
+                ),
+                "failure_stage": "登入內部入口網",
+                "failure_reason": "登入、帳密、SSO 或驗證碼尚未完成。",
+                "next_action": "完成登入後重試。",
+                "exception_type": "login",
+            }
+        )
+
+        self.assertEqual(merged["exception_type"], "civilpower_io_form_timeout")
+        self.assertEqual(merged["failure_stage"], "新增出入登記")
+        self.assertIn("連動", merged["failure_reason"])
+        self.assertNotIn("帳密", merged["failure_reason"])
+
     def test_merge_replaces_stored_chrome_diagnosis_for_civilpower_stale_element(self):
         merged = merge_diagnostic_fields(
             {

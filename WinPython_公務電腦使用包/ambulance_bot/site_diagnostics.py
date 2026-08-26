@@ -89,6 +89,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         "chrome_unresponsive",
         "chromedriver_ended",
         "civilpower_io_verify",
+        "civilpower_io_form_timeout",
         "stale_element",
     }
     def value_for(field: str) -> str:
@@ -193,6 +194,8 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         return "case_not_closed"
     if "出入登記簿" in raw_detail and ("儲存後回查不到" in raw_detail or "找到多筆相同" in raw_detail):
         return "civilpower_io_verify"
+    if "民力系統確認救護" in raw_detail and "出入登記" in raw_detail and "逾時" in raw_detail:
+        return "civilpower_io_form_timeout"
     if "captcha" in text or "驗證碼" in raw_detail or "sso" in text or "login" in text or "登入" in raw_detail or "帳密" in raw_detail:
         return "login"
     if (
@@ -246,6 +249,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return "填寫加油紀錄" if site_key == "fuel_record" else "填寫返隊時間與里程"
     if category == "civilpower_io_verify":
         return "儲存並回查" if site_key == "volunteer_assist" else "儲存"
+    if category == "civilpower_io_form_timeout":
+        return "新增出入登記"
     if category == "login":
         return _login_stage(site_key)
     if category == "case_not_found":
@@ -338,6 +343,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "fuel_period": "加油頁月份與任務加油月份不一致，油卡清單尚未切到任務月份。",
         "ppe_driver": "PPE 駕駛清單找不到指定人員或有效代碼。",
         "civilpower_io_verify": "民力出入登記簿已送出，但查詢清單尚未出現可驗證的紀錄。",
+        "civilpower_io_form_timeout": "民力出入登記的服勤單位或人員連動未在期限內完成。",
         "stale_element": "網頁正在重新整理，程式持有的舊頁面元件已失效。",
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
         "vehicle_candidate": "已確認同一案件存在不同出勤車輛的官方紀錄，需由使用者選擇本次查找車輛。",
@@ -373,6 +379,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "確認卡片上的候選車輛後，只以「單獨登打」重試此站；原案件車號不會被修改。"
     if category == "civilpower_io_verify":
         return "等待民力出入登記簿清單刷新後確認剛儲存的紀錄；若仍找不到，再確認人員、日期、狀態與時間。"
+    if category == "civilpower_io_form_timeout":
+        return "保留截圖；重新開啟民力出入登記簿後單獨重跑，程式會先回查避免重複新增。"
     if category == "stale_element":
         return f"重新整理{site_name}頁面後單獨重跑；若持續發生，保留截圖與失敗時間回報。"
     if category == "login":
