@@ -234,6 +234,49 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertEqual("volunteer_assist_failed", result.status)
         self.assertIn("工作紀錄簿回查失敗", result.detail)
 
+    def test_runner_reports_case_import_stage_for_work_log_timeout(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from civilpower import run_civilpower_task
+
+        with TemporaryDirectory() as temporary_directory, mock.patch("civilpower._ensure_io_record"), mock.patch(
+            "civilpower._ensure_work_log", side_effect=TimeoutException()
+        ), mock.patch("civilpower.capture_failure_artifacts", return_value={}):
+            result = run_civilpower_task(self._enabled_request(), Path(temporary_directory), driver=mock.Mock())
+
+        self.assertEqual("volunteer_assist_failed", result.status)
+        self.assertEqual("案件代入", result.failure_stage)
+        self.assertEqual("TimeoutException", result.exception_type)
+        self.assertIn("案件代入", result.detail)
+        self.assertIn("案件代入", result.failure_reason)
+        self.assertIn("單獨重跑", result.next_action)
+
+    def test_selection_dialog_retries_once_with_short_wait(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from civilpower import _open_selection_dialog
+
+        driver = object()
+        initial_wait = object()
+        retry_wait = object()
+        dialog = object()
+
+        with mock.patch("civilpower._click") as click, mock.patch(
+            "civilpower._visible_dialog", side_effect=[TimeoutException(), dialog]
+        ) as visible_dialog, mock.patch("civilpower.WebDriverWait", return_value=retry_wait) as webdriver_wait:
+            actual = _open_selection_dialog(driver, initial_wait, "#btn_CaseSlt", "案件代入")
+
+        self.assertIs(dialog, actual)
+        self.assertEqual(
+            [mock.call(initial_wait, "#btn_CaseSlt"), mock.call(initial_wait, "#btn_CaseSlt")],
+            click.call_args_list,
+        )
+        webdriver_wait.assert_called_once_with(driver, 5)
+        self.assertEqual(
+            [mock.call(driver, initial_wait), mock.call(driver, retry_wait)],
+            visible_dialog.call_args_list,
+        )
+
     def test_roster_query_reads_the_first_three_columns_before_the_action_column(self):
         from civilpower import FIREMAN_URL, query_civilpower_roster
 

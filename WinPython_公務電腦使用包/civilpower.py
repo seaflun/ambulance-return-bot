@@ -297,12 +297,19 @@ def run_civilpower_task(
 ) -> SiteAutomationResult:
     started_at = time.monotonic()
     active_driver = driver
+    current_stage = "準備登入民力運用管理系統"
+
+    def report_stage(stage: str) -> None:
+        nonlocal current_stage
+        current_stage = stage
+        _report_progress(progress, stage)
+
     mark_driver_operation_active(active_driver)
     try:
         plan = build_civilpower_task_plan(request)
         _raise_if_cancelled(cancel_check)
         if active_driver is None:
-            _report_progress(progress, "登入內部入口網")
+            report_stage("登入內部入口網")
             active_driver = login_civilpower_and_get_driver(
                 request=request,
                 profile_name=profile_name,
@@ -311,14 +318,21 @@ def run_civilpower_task(
             )
         mark_driver_operation_active(active_driver)
         checkpoint = _load_task_checkpoint(artifacts_dir, plan)
-        _report_progress(progress, "確認救護出勤出入登記")
+        report_stage("確認救護出勤出入登記")
         _ensure_io_record(active_driver, plan, OUT_STATUS, checkpoint, cancel_check=cancel_check)
         _save_task_checkpoint(artifacts_dir, plan, checkpoint)
-        _report_progress(progress, "確認救護返隊出入登記")
+        report_stage("確認救護返隊出入登記")
         _ensure_io_record(active_driver, plan, IN_STATUS, checkpoint, cancel_check=cancel_check)
         _save_task_checkpoint(artifacts_dir, plan, checkpoint)
-        _report_progress(progress, "案件代入並儲存工作紀錄")
-        _ensure_work_log(active_driver, request, plan, checkpoint, cancel_check=cancel_check)
+        report_stage("案件代入")
+        _ensure_work_log(
+            active_driver,
+            request,
+            plan,
+            checkpoint,
+            cancel_check=cancel_check,
+            progress=report_stage,
+        )
         _save_task_checkpoint(artifacts_dir, plan, checkpoint)
         return SiteAutomationResult(
             "volunteer_assist",
@@ -329,7 +343,8 @@ def run_civilpower_task(
     except TaskCancellationError:
         raise
     except Exception as exc:
-        detail = f"民力系統登打失敗：{exc}"
+        detail = _civilpower_failure_detail(current_stage, exc)
+        evidence: dict[str, object] = {}
         if active_driver is not None:
             try:
                 evidence = capture_failure_artifacts(
@@ -342,6 +357,8 @@ def run_civilpower_task(
                     elapsed_seconds=time.monotonic() - started_at,
                 )
                 detail = augment_failure_detail(detail, evidence)
+                if current_stage not in detail:
+                    detail = f"{current_stage}：{detail}"
             except Exception as capture_exc:
                 print(
                     "[civilpower] failure evidence capture skipped: "
@@ -349,9 +366,43 @@ def run_civilpower_task(
                     flush=True,
                 )
                 detail = f"{compact_failure_text(detail)} [failure_capture_error:{capture_exc.__class__.__name__}]"
-        return SiteAutomationResult("volunteer_assist", "民力系統", "volunteer_assist_failed", detail)
+        return SiteAutomationResult(
+            "volunteer_assist",
+            "民力系統",
+            "volunteer_assist_failed",
+            detail,
+            **_civilpower_failure_diagnostics(current_stage, exc, evidence),
+        )
     finally:
         mark_driver_operation_active(active_driver, False)
+
+
+def _civilpower_failure_detail(stage: str, exc: BaseException) -> str:
+    if isinstance(exc, TimeoutException):
+        return f"民力系統{stage}逾時，網頁未在 {DEFAULT_WAIT_SECONDS} 秒內完成預期操作。"
+    message = compact_failure_text(exc, maximum=180)
+    return f"民力系統{stage}失敗：{message or exc.__class__.__name__}"
+
+
+def _civilpower_failure_diagnostics(
+    stage: str,
+    exc: BaseException,
+    evidence: dict[str, object],
+) -> dict[str, str]:
+    browser_reason = _clean_text(evidence.get("reason"))
+    browser_next_action = _clean_text(evidence.get("next_action"))
+    if isinstance(exc, TimeoutException):
+        reason = browser_reason or f"民力網站在{stage}等待逾時，未出現預期的選取視窗或資料結果。"
+        next_action = browser_next_action or "保留目前畫面與截圖，再單獨重跑民力系統；程式不會略過資料驗證。"
+    else:
+        reason = compact_failure_text(exc, maximum=180) or f"民力系統在{stage}發生未預期錯誤。"
+        next_action = "保留目前畫面與截圖，確認資料無誤後單獨重跑民力系統。"
+    return {
+        "failure_stage": stage,
+        "failure_reason": reason,
+        "next_action": next_action,
+        "exception_type": exc.__class__.__name__,
+    }
 
 
 def _login_once(driver, account: str, password: str, attempt: int) -> None:
@@ -485,22 +536,29 @@ def _ensure_work_log(
     checkpoint: dict[str, object],
     *,
     cancel_check: Callable[[], None] | None,
+    progress: Callable[[str], None] | None = None,
 ) -> None:
     _raise_if_cancelled(cancel_check)
+    _report_progress(progress, "查詢既有工作紀錄")
     if _find_work_log_record(driver, plan):
         checkpoint["work_log_verified"] = True
         return
     driver.get(WORK_LOG_URL)
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _wait_for_civilpower_page(driver, wait)
+    _report_progress(progress, "選取救護出勤登記")
     _select_out_io_record_for_work_log(driver, wait, plan)
     _raise_if_cancelled(cancel_check)
+    _report_progress(progress, "案件代入")
     _import_work_log_case(driver, wait, plan)
+    _report_progress(progress, "驗證案件代入")
     _assert_imported_work_log_values(driver, plan)
     _raise_if_cancelled(cancel_check)
+    _report_progress(progress, "儲存工作紀錄")
     _click(wait, "#btn_WorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
+    _report_progress(progress, "工作紀錄回查")
     if not _find_work_log_record(driver, plan):
         raise RuntimeError("工作紀錄簿儲存後回查不到本次救護義消協勤紀錄。")
     checkpoint["work_log_verified"] = True
@@ -509,8 +567,12 @@ def _ensure_work_log(
 def _select_out_io_record_for_work_log(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
     _set_input(wait, "#txt_IODate_S", plan.out_date)
     _set_input(wait, "#txt_IODate_E", plan.out_date)
-    _click(wait, "#btn_AddSltIOWorkLog")
-    dialog = _visible_dialog(driver, wait)
+    dialog = _open_selection_dialog(
+        driver,
+        wait,
+        "#btn_AddSltIOWorkLog",
+        "救護出勤登記",
+    )
     _select_dialog_row(dialog, [plan.member_name, plan.home_unit, plan.out_reason, plan.out_time])
     _confirm_dialog(driver, wait, dialog)
     if not _control_value(driver, "#hf_AddIOLogIDs"):
@@ -525,8 +587,7 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
     _set_input(wait, "#txt_SearchDate_S_H", plan.case_search_start_hour)
     _set_input(wait, "#txt_SearchDate_E", plan.in_date)
     _set_input(wait, "#txt_SearchDate_E_H", plan.case_search_end_hour)
-    _click(wait, "#btn_CaseSlt")
-    dialog = _visible_dialog(driver, wait)
+    dialog = _open_selection_dialog(driver, wait, "#btn_CaseSlt", "案件代入")
     tokens = [plan.case_address] if plan.case_address else [plan.case_id]
     if plan.case_id:
         try:
@@ -579,6 +640,19 @@ def _find_work_log_record(driver, plan: CivilpowerTaskPlan) -> bool:
     if len(rows) > 1:
         raise RuntimeError("工作紀錄簿找到多筆相同義消協勤紀錄，無法安全判定。")
     return bool(rows)
+
+
+def _open_selection_dialog(driver, wait: WebDriverWait, selector: str, label: str):
+    _click(wait, selector)
+    try:
+        return _visible_dialog(driver, wait)
+    except TimeoutException:
+        _click(wait, selector)
+        retry_wait = WebDriverWait(driver, min(5, DEFAULT_WAIT_SECONDS))
+        try:
+            return _visible_dialog(driver, retry_wait)
+        except TimeoutException as exc:
+            raise TimeoutException(f"{label}選取視窗未出現，已安全重試一次。") from exc
 
 
 def _visible_dialog(driver, wait: WebDriverWait):
