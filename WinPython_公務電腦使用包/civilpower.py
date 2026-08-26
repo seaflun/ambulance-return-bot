@@ -741,7 +741,13 @@ def _ensure_correct_in_io_record(
             require_lookup_confirmation=True,
         )
         return
-    _edit_io_record_time(driver, original_row, plan, cancel_check=cancel_check)
+    _edit_io_record_time(
+        driver,
+        original_row,
+        plan,
+        source_plan=original_plan,
+        cancel_check=cancel_check,
+    )
     if _find_io_record_row(
         driver,
         plan,
@@ -759,10 +765,21 @@ def _edit_io_record_time(
     row,
     plan: CivilpowerTaskPlan,
     *,
+    source_plan: CivilpowerTaskPlan | None = None,
     cancel_check: Callable[[], None] | None,
 ) -> None:
     if not _click_dialog_row_action(driver, row, "修改"):
-        raise RuntimeError("救護返隊出入登記未提供修改按鈕，請以原登打帳號登入後再補打。")
+        source = source_plan or plan
+        refreshed_row = _find_io_record_row(
+            driver,
+            source,
+            IN_STATUS,
+            wait_for_match=True,
+            raise_on_timeout=True,
+            require_query_confirmation=True,
+        )
+        if refreshed_row is None or not _click_dialog_row_action(driver, refreshed_row, "修改"):
+            raise RuntimeError("救護返隊出入登記的「修改」按鈕無法穩定定位，請保持原登打帳號後重試。")
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _wait_visible(wait, "#jqxEditWindow")
     _set_input(wait, "#txt_EditLogDate", plan.in_date)
@@ -1190,24 +1207,27 @@ def _wait_for_dialog_row(wait: WebDriverWait, dialog, required_tokens: list[str]
 
 def _click_dialog_row_action(driver, row, action_text: str) -> bool:
     expected_text = _clean_text(action_text).replace(" ", "")
-    candidates = row.find_elements(
-        By.CSS_SELECTOR,
-        "input[type='button'], input[type='submit'], button, a, [role='button'], .jqx-button",
-    )
+    try:
+        candidates = row.find_elements(
+            By.CSS_SELECTOR,
+            "input[type='button'], input[type='submit'], button, a, [role='button'], .jqx-button",
+        )
+    except (NoSuchElementException, StaleElementReferenceException):
+        return False
     for candidate in candidates:
         try:
-            candidate_text = _clean_text(
-                " ".join(
-                    str(candidate.get_attribute(attribute) or "")
-                    for attribute in ("value", "title", "aria-label")
-                )
-                + " "
-                + str(candidate.text or "")
-            ).replace(" ", "")
+            candidate_texts = [
+                str(candidate.get_attribute(attribute) or "")
+                for attribute in ("value", "title", "aria-label", "innerText", "textContent")
+            ]
+            candidate_texts.append(str(candidate.text or ""))
             selectable = candidate.is_displayed() and candidate.is_enabled()
         except Exception:
             continue
-        if not selectable or candidate_text != expected_text:
+        if not selectable or not any(
+            _clean_text(candidate_text).replace(" ", "") == expected_text
+            for candidate_text in candidate_texts
+        ):
             continue
         try:
             candidate.click()

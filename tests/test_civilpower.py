@@ -1111,6 +1111,22 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         select_button.click.assert_called_once()
 
+    def test_dialog_row_action_uses_dom_text_content_when_webdriver_text_is_empty(self):
+        from civilpower import _click_dialog_row_action
+
+        driver = mock.Mock()
+        row = mock.Mock()
+        edit_button = mock.Mock()
+        edit_button.get_attribute.side_effect = lambda name: {"textContent": "修改"}.get(name, "")
+        edit_button.text = ""
+        edit_button.is_displayed.return_value = True
+        edit_button.is_enabled.return_value = True
+        row.find_elements.return_value = [edit_button]
+
+        self.assertTrue(_click_dialog_row_action(driver, row, "修改"))
+
+        edit_button.click.assert_called_once()
+
     def test_dialog_row_dispatches_mouse_events_when_native_click_is_blocked(self):
         from civilpower import _click_dialog_row
 
@@ -1358,7 +1374,13 @@ class CivilpowerPlanTests(unittest.TestCase):
                 can_create_in_record=True,
             )
 
-        edit_time.assert_called_once_with(driver, original_row, official_plan, cancel_check=None)
+        edit_time.assert_called_once_with(
+            driver,
+            original_row,
+            official_plan,
+            source_plan=manual_plan,
+            cancel_check=None,
+        )
         ensure_io.assert_not_called()
         self.assertTrue(checkpoint["in_verified"])
         self.assertEqual(
@@ -1470,6 +1492,61 @@ class CivilpowerPlanTests(unittest.TestCase):
         )
         select_combobox.assert_called_once_with(mock.ANY, wait, "#txt_EditServeUnit", "新坡分隊")
         click.assert_called_once_with(wait, "#btn_IOWorkLogEdit")
+
+    def test_in_record_edit_requeries_the_return_row_when_the_first_action_is_not_ready(self):
+        from civilpower import CivilpowerTaskPlan, IN_STATUS, _edit_io_record_time
+
+        plan = CivilpowerTaskPlan(
+            task_id="civilpower-requery-return-action",
+            case_id="20260826103603012",
+            case_address="桃園市觀音區東大路147巷21號",
+            member_id="member-1",
+            member_name="張贊鏡",
+            member_title="小隊長",
+            home_unit="大園救護分隊",
+            serve_unit="新坡分隊",
+            out_date="2026/08/26",
+            out_time="1036",
+            in_date="2026/08/26",
+            in_time="1146",
+            out_reason="救護出勤",
+            in_reason="救護返隊",
+            duty_status_line="3.救護義消協勤:張贊鏡",
+        )
+        original_plan = replace(plan, in_time="1147")
+        initial_row = object()
+        refreshed_row = object()
+        wait = object()
+
+        with mock.patch("civilpower._click_dialog_row_action", side_effect=[False, True]) as click_action, mock.patch(
+            "civilpower._find_io_record_row", return_value=refreshed_row
+        ) as find_row, mock.patch("civilpower.WebDriverWait", return_value=wait), mock.patch(
+            "civilpower._wait_visible"
+        ), mock.patch("civilpower._set_input"), mock.patch("civilpower._select_jqx_combobox"), mock.patch(
+            "civilpower._wait_for_io_edit_form_values"
+        ), mock.patch("civilpower._click"), mock.patch("civilpower._wait_after_save"):
+            _edit_io_record_time(
+                object(),
+                initial_row,
+                plan,
+                source_plan=original_plan,
+                cancel_check=None,
+            )
+
+        click_action.assert_has_calls(
+            [
+                mock.call(mock.ANY, initial_row, "修改"),
+                mock.call(mock.ANY, refreshed_row, "修改"),
+            ]
+        )
+        find_row.assert_called_once_with(
+            mock.ANY,
+            original_plan,
+            IN_STATUS,
+            wait_for_match=True,
+            raise_on_timeout=True,
+            require_query_confirmation=True,
+        )
 
     def test_io_record_lookup_waits_for_matching_row_when_requested(self):
         from civilpower import CivilpowerTaskPlan, OUT_STATUS, _find_io_record
