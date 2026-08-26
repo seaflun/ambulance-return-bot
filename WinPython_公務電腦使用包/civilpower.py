@@ -32,6 +32,7 @@ from ambulance_bot.duty_credentials import LOGIN_POLICY_CIVILPOWER, load_duty_cr
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
 from ambulance_bot.profile_paths import runtime_profile_dir
+from ambulance_bot.site_diagnostics import CIVILPOWER_STAGE_LABELS
 from ambulance_bot.task_cancellation import TaskCancellationError
 from ambulance_bot.window_layout import apply_tile
 
@@ -331,7 +332,7 @@ def run_civilpower_task(
 ) -> SiteAutomationResult:
     started_at = time.monotonic()
     active_driver = driver
-    current_stage = "準備登入民力運用管理系統"
+    current_stage = CIVILPOWER_STAGE_LABELS["login"]
 
     def report_stage(stage: str) -> None:
         nonlocal current_stage
@@ -351,7 +352,7 @@ def run_civilpower_task(
 
         _raise_if_cancelled(cancel_check)
         if active_driver is None:
-            report_stage("登入內部入口網")
+            report_stage(CIVILPOWER_STAGE_LABELS["login"])
             active_driver = login_civilpower_and_get_driver(
                 request=request,
                 profile_name=profile_name,
@@ -361,13 +362,18 @@ def run_civilpower_task(
                 on_login_success=record_login_account,
             )
         mark_driver_operation_active(active_driver)
-        report_stage("確認救護出勤出入登記")
-        out_created = _ensure_io_record(active_driver, plan, OUT_STATUS, checkpoint, cancel_check=cancel_check)
+        out_created = _ensure_io_record(
+            active_driver,
+            plan,
+            OUT_STATUS,
+            checkpoint,
+            cancel_check=cancel_check,
+            progress=report_stage,
+        )
         if login_account and out_created:
             checkpoint["civilpower_login_account"] = login_account
         _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
         can_create_in_record = out_created or bool(_checkpointed_civilpower_login_account(checkpoint))
-        report_stage("確認救護返隊出入登記")
         _ensure_correct_in_io_record(
             active_driver,
             plan,
@@ -375,6 +381,7 @@ def run_civilpower_task(
             checkpoint,
             cancel_check=cancel_check,
             can_create_in_record=can_create_in_record,
+            progress=report_stage,
         )
         _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
 
@@ -388,10 +395,10 @@ def run_civilpower_task(
                 checkpoint,
                 cancel_check=cancel_check,
                 can_create_in_record=can_create_in_record,
+                progress=report_stage,
             )
             _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
 
-        report_stage("案件代入")
         saved_plan = _ensure_work_log(
             active_driver,
             request,
@@ -535,10 +542,12 @@ def _ensure_io_record(
     *,
     cancel_check: Callable[[], None] | None,
     require_lookup_confirmation: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> bool:
     marker = "out" if status == OUT_STATUS else "in"
     lookup_kwargs = {"raise_on_timeout": True} if require_lookup_confirmation else {}
     _raise_if_cancelled(cancel_check)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_query"])
     if _find_io_record(
         driver,
         plan,
@@ -550,11 +559,14 @@ def _ensure_io_record(
         checkpoint[f"{marker}_verified"] = True
         return False
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_add"])
     _click(wait, "#btn_Add")
     _wait_visible(wait, "#jqxAddWindow")
     _select_jqx_combobox(driver, wait, "#txt_AddUnit", plan.home_unit)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_unit"])
     _wait_for_io_form_dependencies(driver, wait, plan)
     _select_jqx_combobox(driver, wait, "#txt_AddServeUnit", plan.serve_unit)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_person"])
     _select_io_person(driver, wait, plan)
     date_text = plan.out_date if status == OUT_STATUS else plan.in_date
     time_text = plan.out_time if status == OUT_STATUS else plan.in_time
@@ -566,6 +578,7 @@ def _ensure_io_record(
     _set_input(wait, "#txt_AddReason", plan.out_reason if status == OUT_STATUS else plan.in_reason)
     _wait_for_io_record_form_values(driver, wait, plan, status)
     _raise_if_cancelled(cancel_check)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_save_verify"])
     _click(wait, "#btn_IOWorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
@@ -722,9 +735,11 @@ def _ensure_correct_in_io_record(
     *,
     cancel_check: Callable[[], None] | None,
     can_create_in_record: bool,
+    progress: Callable[[str], None] | None = None,
 ) -> None:
     if plan.in_date == original_plan.in_date and plan.in_time == original_plan.in_time:
         if not can_create_in_record:
+            _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_query"])
             if _find_io_record_row(
                 driver,
                 plan,
@@ -743,8 +758,10 @@ def _ensure_correct_in_io_record(
             checkpoint,
             cancel_check=cancel_check,
             require_lookup_confirmation=True,
+            progress=progress,
         )
         return
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_query"])
     if _find_io_record_row(
         driver,
         plan,
@@ -754,6 +771,7 @@ def _ensure_correct_in_io_record(
     ) is not None:
         checkpoint["in_verified"] = True
         return
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["in_time_query"])
     original_row = _find_io_record_row(
         driver,
         original_plan,
@@ -773,6 +791,7 @@ def _ensure_correct_in_io_record(
             checkpoint,
             cancel_check=cancel_check,
             require_lookup_confirmation=True,
+            progress=progress,
         )
         return
     _edit_io_record_time(
@@ -781,7 +800,9 @@ def _ensure_correct_in_io_record(
         plan,
         source_plan=original_plan,
         cancel_check=cancel_check,
+        progress=progress,
     )
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["in_edit_verify"])
     if _find_io_record_row(
         driver,
         plan,
@@ -801,9 +822,12 @@ def _edit_io_record_time(
     *,
     source_plan: CivilpowerTaskPlan | None = None,
     cancel_check: Callable[[], None] | None,
+    progress: Callable[[str], None] | None = None,
 ) -> None:
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["in_edit"])
     if not _click_dialog_row_action(driver, row, "修改"):
         source = source_plan or plan
+        _report_progress(progress, CIVILPOWER_STAGE_LABELS["in_time_query"])
         refreshed_row = _find_io_record_row(
             driver,
             source,
@@ -814,6 +838,7 @@ def _edit_io_record_time(
         )
         if refreshed_row is None or not _click_dialog_row_action(driver, refreshed_row, "修改"):
             raise RuntimeError("救護返隊出入登記的「修改」按鈕無法穩定定位，請保持原登打帳號後重試。")
+        _report_progress(progress, CIVILPOWER_STAGE_LABELS["in_edit"])
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _wait_visible(wait, "#jqxEditWindow")
     _set_input(wait, "#txt_EditLogDate", plan.in_date)
@@ -822,6 +847,7 @@ def _edit_io_record_time(
     _select_jqx_combobox(driver, wait, "#txt_EditServeUnit", plan.serve_unit)
     _wait_for_io_edit_form_values(driver, wait, plan)
     _raise_if_cancelled(cancel_check)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["in_edit_save"])
     _click(wait, "#btn_IOWorkLogEdit")
     _wait_after_save(driver, wait, "#jqxEditWindow")
     _raise_if_cancelled(cancel_check)
@@ -849,26 +875,26 @@ def _ensure_work_log(
     reconcile_inbound: Callable[[CivilpowerTaskPlan], None] | None = None,
 ) -> CivilpowerTaskPlan:
     _raise_if_cancelled(cancel_check)
-    _report_progress(progress, "查詢既有工作紀錄")
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_query"])
     if _find_work_log_record(driver, plan):
         checkpoint["work_log_verified"] = True
         return plan
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
-    _report_progress(progress, "開啟工作紀錄簿新增表單")
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_add"])
     _click(wait, "#btn_Add")
     _wait_visible(wait, "#jqxAddWindow")
     _wait_for_work_log_add_controls(driver, wait)
-    _report_progress(progress, "選取救護出勤登記")
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_out_record"])
     _select_out_io_record_for_work_log(driver, wait, plan)
     _raise_if_cancelled(cancel_check)
-    _report_progress(progress, "案件代入")
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["case_import"])
     _import_work_log_case(driver, wait, plan)
-    _report_progress(progress, "驗證案件代入")
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["case_verify"])
     imported_plan = _assert_imported_work_log_values(driver, plan, allow_return_mismatch=True)
     if imported_plan.in_date != plan.in_date or imported_plan.in_time != plan.in_time:
         if reconcile_inbound is None:
             _assert_imported_work_log_return_matches(plan, imported_plan)
-        _report_progress(progress, "修正救護返隊出入登記")
+        _report_progress(progress, CIVILPOWER_STAGE_LABELS["in_time_query"])
         reconcile_inbound(imported_plan)
         return _ensure_work_log(
             driver,
@@ -880,11 +906,11 @@ def _ensure_work_log(
             reconcile_inbound=None,
         )
     _raise_if_cancelled(cancel_check)
-    _report_progress(progress, "儲存工作紀錄")
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_save"])
     _click(wait, "#btn_WorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
-    _report_progress(progress, "工作紀錄回查")
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_verify"])
     if not _find_work_log_record(driver, plan, wait_for_match=True):
         raise RuntimeError("工作紀錄簿儲存後回查不到本次救護義消協勤紀錄。")
     checkpoint["work_log_verified"] = True

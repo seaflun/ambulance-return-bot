@@ -7540,6 +7540,100 @@ class WebAppTests(unittest.TestCase):
         site_statuses["duty_work_log"] = {"status": "duty_work_log_running"}
         self.assertFalse(app_module.site_can_run_individually(site_statuses, "volunteer_assist"))
 
+    def test_civilpower_stage_rows_follow_live_worker_progress(self):
+        rows = app_module.site_stage_rows(
+            {
+                "volunteer_assist": {
+                    "status": "volunteer_assist_running",
+                    "detail": "公務電腦 worker 民力系統：選取義消人員",
+                }
+            },
+            "volunteer_assist",
+        )
+        states = {row["name"]: row["state"] for row in rows}
+
+        self.assertEqual("已通過", states["查詢既有出／入登記"])
+        self.assertEqual("執行中", states["選取義消人員"])
+        self.assertEqual("待執行", states["儲存並回查出／入登記"])
+
+    def test_civilpower_stage_rows_mark_the_reported_failure_stage(self):
+        rows = app_module.site_stage_rows(
+            {
+                "volunteer_assist": {
+                    "status": "volunteer_assist_failed",
+                    "detail": "民力系統按修改入登記失敗：出入登記簿儲存後回查不到入／救護返隊紀錄。",
+                }
+            },
+            "volunteer_assist",
+        )
+        states = {row["name"]: row["state"] for row in rows}
+
+        self.assertEqual("已通過", states["查詢錯誤入時間"])
+        self.assertEqual("失敗點", states["按修改入登記"])
+        self.assertEqual("未完成", states["儲存修改入時間"])
+
+    def test_civilpower_stage_summary_keeps_the_current_step_in_its_group(self):
+        rows = app_module.civilpower_stage_summary_rows(
+            {
+                "volunteer_assist": {
+                    "status": "volunteer_assist_running",
+                    "detail": "公務電腦 worker 民力系統：選取義消人員",
+                }
+            }
+        )
+
+        self.assertEqual(
+            [
+                {"name": "登入與出／入登記", "detail": "選取義消人員", "state": "執行中", "class": "running"},
+                {"name": "返隊時間檢核", "detail": "", "state": "待執行", "class": "idle"},
+                {"name": "工作紀錄", "detail": "", "state": "待執行", "class": "idle"},
+            ],
+            rows,
+        )
+
+    def test_task_detail_collapses_civilpower_stages_but_keeps_failure_visible(self):
+        request = AmbulanceReturnRequest(
+            task_id="civilpower-compact-stage-card",
+            created_at=datetime.now(),
+            raw_text="",
+            volunteer_assist=True,
+            volunteer_assist_member_name="測試義消",
+            volunteer_assist_member_title="隊員",
+            volunteer_assist_member_unit="大園救護分隊",
+        )
+        self.store.create(request)
+        self.store.update_site_result(
+            request.task_id,
+            app_module.SiteAutomationResult(
+                "volunteer_assist",
+                "民力系統",
+                "volunteer_assist_failed",
+                "民力系統按修改入登記失敗：出入登記簿儲存後回查不到入／救護返隊紀錄。",
+            ),
+        )
+
+        body = html.unescape(self.client.get(f"/tasks/{request.task_id}").get_data(as_text=True))
+        card_start = body.index('<article class="stage-card civilpower-stage-card">')
+        card_end = body.index("</article>", card_start)
+        civilpower_card = body[card_start:card_end]
+
+        self.assertIn("登入與出／入登記", civilpower_card)
+        self.assertIn("返隊時間檢核", civilpower_card)
+        self.assertIn('<span class="stage-summary-detail">按修改入登記</span>', civilpower_card)
+        self.assertIn('<summary>查看完整 19 段</summary>', civilpower_card)
+        self.assertIn('1. 啟動 Chrome', civilpower_card)
+        self.assertNotIn('<details class="civilpower-stage-details" open>', civilpower_card)
+
+    def test_other_site_running_stage_rows_keep_the_first_stage_current(self):
+        rows = app_module.site_stage_rows(
+            {"vehicle_mileage": {"status": "vehicle_mileage_running", "detail": "填寫返隊時間與里程"}},
+            "vehicle_mileage",
+        )
+
+        self.assertEqual("啟動 Chrome", rows[0]["name"])
+        self.assertEqual("執行中", rows[0]["state"])
+        self.assertEqual("待執行", rows[1]["state"])
+
     def test_worker_roster_failure_preserves_last_successful_snapshot(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         headers = {"X-Worker-Token": "test-token"}

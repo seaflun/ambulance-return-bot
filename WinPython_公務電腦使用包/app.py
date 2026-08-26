@@ -128,7 +128,13 @@ from ambulance_bot.record_folders import (
     ensure_disaster_media_folders,
     firecam_folder_plan,
 )
-from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, SITE_STAGE_DEFINITIONS, merge_diagnostic_fields
+from ambulance_bot.site_diagnostics import (
+    CIVILPOWER_STAGE_GROUPS,
+    DIAGNOSTIC_FIELDS,
+    SITE_STAGE_DEFINITIONS,
+    civilpower_stage_from_detail,
+    merge_diagnostic_fields,
+)
 from ambulance_bot.sinposmart_backend import (
     SinpoSmartBackendStore,
     sinposmart_fire_day_label,
@@ -5641,6 +5647,8 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
     diagnostic = site_diagnostic(site)
     focus_stage = diagnostic.get("failure_stage") or ""
     stages = SITE_STAGE_DEFINITIONS.get(site_key, [])
+    if site_key == "volunteer_assist":
+        focus_stage = civilpower_stage_from_detail(str(site.get("detail") or "")) or focus_stage
     focus_index = stages.index(focus_stage) if focus_stage in stages else -1
     rows: list[dict[str, str]] = []
     for index, stage in enumerate(stages):
@@ -5648,8 +5656,15 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
             state = "已完成"
             state_class = "complete"
         elif current_class == "running":
-            state = "執行中" if index == 0 else "待執行"
-            state_class = "running" if index == 0 else "idle"
+            if site_key == "volunteer_assist" and focus_index >= 0 and index < focus_index:
+                state = "已通過"
+                state_class = "complete"
+            elif site_key == "volunteer_assist" and focus_index >= 0 and index == focus_index:
+                state = "執行中"
+                state_class = "running"
+            else:
+                state = "執行中" if index == 0 else "待執行"
+                state_class = "running" if index == 0 else "idle"
         elif current_class == "failed":
             if focus_index >= 0 and index < focus_index:
                 state = "已通過"
@@ -5675,6 +5690,44 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
             state_class = "idle"
         rows.append({"name": stage, "state": state, "class": state_class})
     return rows
+
+
+def civilpower_stage_summary_rows(site_statuses: dict) -> list[dict[str, str]]:
+    rows_by_name = {
+        str(stage["name"]): stage
+        for stage in site_stage_rows(site_statuses, "volunteer_assist")
+    }
+    summaries: list[dict[str, str]] = []
+    for group_name, group_stage_names in CIVILPOWER_STAGE_GROUPS:
+        group_rows = [
+            rows_by_name[stage_name]
+            for stage_name in group_stage_names
+            if stage_name in rows_by_name
+        ]
+        active_row = next(
+            (
+                stage
+                for stage in group_rows
+                if stage["class"] in {"failed", "running", "waiting"}
+            ),
+            None,
+        )
+        if active_row is not None:
+            summaries.append(
+                {
+                    "name": group_name,
+                    "detail": str(active_row["name"]),
+                    "state": str(active_row["state"]),
+                    "class": str(active_row["class"]),
+                }
+            )
+        elif group_rows and all(stage["class"] == "complete" for stage in group_rows):
+            summaries.append({"name": group_name, "detail": "", "state": "已完成", "class": "complete"})
+        elif any(stage["class"] == "complete" for stage in group_rows):
+            summaries.append({"name": group_name, "detail": "", "state": "已通過", "class": "complete"})
+        else:
+            summaries.append({"name": group_name, "detail": "", "state": "待執行", "class": "idle"})
+    return summaries
 
 
 def effective_task_status(payload: dict) -> str:
@@ -6625,6 +6678,7 @@ def template_helpers() -> dict:
         "site_short_name": site_short_name,
         "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
+        "civilpower_stage_summary_rows": civilpower_stage_summary_rows,
         "show_nas_home_button": show_nas_home_button,
         "show_public_pc_admin_button": show_public_pc_admin_button,
         "show_vehicle_settings_button": show_vehicle_settings_button,

@@ -412,8 +412,12 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         from civilpower import run_civilpower_task
 
+        def case_import_timeout(*_args, **kwargs):
+            kwargs["progress"]("案件代入")
+            raise TimeoutException()
+
         with TemporaryDirectory() as temporary_directory, mock.patch("civilpower._ensure_io_record"), mock.patch(
-            "civilpower._ensure_work_log", side_effect=TimeoutException()
+            "civilpower._ensure_work_log", side_effect=case_import_timeout
         ), mock.patch("civilpower.capture_failure_artifacts", return_value={}):
             result = run_civilpower_task(self._enabled_request(), Path(temporary_directory), driver=mock.Mock())
 
@@ -1302,15 +1306,26 @@ class CivilpowerPlanTests(unittest.TestCase):
             "civilpower._wait_after_save", side_effect=lambda _driver, _wait, selector: steps.append(f"saved:{selector}")
         ):
             checkpoint: dict[str, object] = {}
-            _ensure_io_record(object(), plan, OUT_STATUS, checkpoint, cancel_check=None)
+            _ensure_io_record(
+                object(),
+                plan,
+                OUT_STATUS,
+                checkpoint,
+                cancel_check=None,
+                progress=lambda stage: steps.append(f"progress:{stage}"),
+            )
 
         self.assertEqual(
             [
+                "progress:查詢既有出／入登記",
+                "progress:開啟出／入新增表單",
                 "click:#btn_Add",
                 "visible:#jqxAddWindow",
                 "combo:#txt_AddUnit=大園救護分隊",
+                "progress:等待所屬單位重整",
                 "dependencies",
                 "combo:#txt_AddServeUnit=新坡分隊",
+                "progress:選取義消人員",
                 "person",
                 "input:#txt_AddLogDate=2026/08/19",
                 "input:#txt_AddLogHour=15",
@@ -1319,6 +1334,7 @@ class CivilpowerPlanTests(unittest.TestCase):
                 "option:#ddl_AddIO=出",
                 "input:#txt_AddReason=救護出勤",
                 "verify",
+                "progress:儲存並回查出／入登記",
                 "click:#btn_IOWorkLogAdd",
                 "saved:#jqxAddWindow",
             ],
@@ -1357,11 +1373,17 @@ class CivilpowerPlanTests(unittest.TestCase):
         driver = object()
         original_row = object()
         corrected_row = object()
+        progress: list[str] = []
+        report_progress = progress.append
+
+        def edit_time_with_progress(*_args, **kwargs):
+            kwargs["progress"]("按修改入登記")
+            kwargs["progress"]("儲存修改入時間")
 
         with mock.patch(
             "civilpower._find_io_record_row",
             side_effect=[None, original_row, corrected_row],
-        ) as find_row, mock.patch("civilpower._edit_io_record_time") as edit_time, mock.patch(
+        ) as find_row, mock.patch("civilpower._edit_io_record_time", side_effect=edit_time_with_progress) as edit_time, mock.patch(
             "civilpower._ensure_io_record"
         ) as ensure_io:
             checkpoint: dict[str, object] = {}
@@ -1372,6 +1394,7 @@ class CivilpowerPlanTests(unittest.TestCase):
                 checkpoint,
                 cancel_check=None,
                 can_create_in_record=True,
+                progress=report_progress,
             )
 
         edit_time.assert_called_once_with(
@@ -1380,9 +1403,20 @@ class CivilpowerPlanTests(unittest.TestCase):
             official_plan,
             source_plan=manual_plan,
             cancel_check=None,
+            progress=report_progress,
         )
         ensure_io.assert_not_called()
         self.assertTrue(checkpoint["in_verified"])
+        self.assertEqual(
+            [
+                "查詢既有出／入登記",
+                "查詢錯誤入時間",
+                "按修改入登記",
+                "儲存修改入時間",
+                "修改後回查入登記",
+            ],
+            progress,
+        )
         self.assertEqual(
             [
                 mock.call(

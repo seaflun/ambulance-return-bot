@@ -98,10 +98,20 @@ class SiteDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["exception_type"], "civilpower_io_verify")
-        self.assertEqual(payload["failure_stage"], "儲存並回查")
+        self.assertEqual(payload["failure_stage"], "儲存並回查出／入登記")
         self.assertIn("出入登記簿", payload["failure_reason"])
         self.assertNotIn("登入", payload["failure_reason"])
         self.assertIn("清單刷新", payload["next_action"])
+
+    def test_civilpower_reported_stage_overrides_a_generic_io_diagnosis(self):
+        payload = diagnostic_payload(
+            "volunteer_assist",
+            "volunteer_assist_failed",
+            "民力系統按修改入登記失敗：出入登記簿儲存後回查不到入／救護返隊紀錄。",
+        )
+
+        self.assertEqual(payload["exception_type"], "civilpower_io_verify")
+        self.assertEqual(payload["failure_stage"], "按修改入登記")
 
     def test_merge_replaces_stored_login_diagnosis_for_civilpower_io_verify(self):
         merged = merge_diagnostic_fields(
@@ -120,7 +130,7 @@ class SiteDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(merged["exception_type"], "civilpower_io_verify")
-        self.assertEqual(merged["failure_stage"], "儲存並回查")
+        self.assertEqual(merged["failure_stage"], "儲存並回查出／入登記")
 
     def test_merge_replaces_stored_login_diagnosis_for_civilpower_io_form_timeout(self):
         merged = merge_diagnostic_fields(
@@ -139,7 +149,7 @@ class SiteDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(merged["exception_type"], "civilpower_io_form_timeout")
-        self.assertEqual(merged["failure_stage"], "新增出入登記")
+        self.assertEqual(merged["failure_stage"], "等待所屬單位重整")
         self.assertIn("連動", merged["failure_reason"])
         self.assertNotIn("帳密", merged["failure_reason"])
 
@@ -160,7 +170,7 @@ class SiteDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(merged["exception_type"], "stale_element")
-        self.assertEqual(merged["failure_stage"], "新增出入登記")
+        self.assertEqual(merged["failure_stage"], "開啟出／入新增表單")
 
     def test_work_log_case_query_range_failure_is_classified_as_case_not_found(self):
         payload = diagnostic_payload(
@@ -226,7 +236,7 @@ class SiteDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["exception_type"], "stale_element")
-        self.assertEqual(payload["failure_stage"], "新增出入登記")
+        self.assertEqual(payload["failure_stage"], "開啟出／入新增表單")
         self.assertIn("重新整理", payload["failure_reason"])
         self.assertNotIn("ChromeDriver 工作階段", payload["failure_reason"])
 

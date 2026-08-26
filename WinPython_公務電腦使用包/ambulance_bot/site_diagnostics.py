@@ -8,13 +8,67 @@ from .adapters import SiteAutomationResult
 
 DIAGNOSTIC_FIELDS = ("failure_stage", "failure_reason", "next_action", "exception_type")
 
+CIVILPOWER_STAGE_LABELS = {
+    "chrome": "啟動 Chrome",
+    "login": "登入內部入口網",
+    "roster": "查詢義消名冊",
+    "io_query": "查詢既有出／入登記",
+    "io_add": "開啟出／入新增表單",
+    "io_unit": "等待所屬單位重整",
+    "io_person": "選取義消人員",
+    "io_save_verify": "儲存並回查出／入登記",
+    "in_time_query": "查詢錯誤入時間",
+    "in_edit": "按修改入登記",
+    "in_edit_save": "儲存修改入時間",
+    "in_edit_verify": "修改後回查入登記",
+    "work_log_query": "查詢既有工作紀錄",
+    "work_log_add": "開啟工作紀錄簿新增表單",
+    "work_log_out_record": "選取救護出勤登記",
+    "case_import": "案件代入",
+    "case_verify": "驗證案件代入",
+    "work_log_save": "儲存工作紀錄",
+    "work_log_verify": "工作紀錄回查",
+}
+CIVILPOWER_STAGES = tuple(CIVILPOWER_STAGE_LABELS.values())
+CIVILPOWER_STAGE_GROUPS = (
+    (
+        "登入與出／入登記",
+        tuple(
+            CIVILPOWER_STAGE_LABELS[key]
+            for key in ("chrome", "login", "roster", "io_query", "io_add", "io_unit", "io_person", "io_save_verify")
+        ),
+    ),
+    (
+        "返隊時間檢核",
+        tuple(
+            CIVILPOWER_STAGE_LABELS[key]
+            for key in ("in_time_query", "in_edit", "in_edit_save", "in_edit_verify")
+        ),
+    ),
+    (
+        "工作紀錄",
+        tuple(
+            CIVILPOWER_STAGE_LABELS[key]
+            for key in (
+                "work_log_query",
+                "work_log_add",
+                "work_log_out_record",
+                "case_import",
+                "case_verify",
+                "work_log_save",
+                "work_log_verify",
+            )
+        ),
+    ),
+)
+
 SITE_STAGE_DEFINITIONS = {
     "duty_work_log": ["啟動 Chrome", "登入勤務系統", "新增工作紀錄", "由案件帶入", "填寫勤務資料", "儲存"],
     "vehicle_mileage": ["啟動 Chrome", "登入 PPE", "開啟車輛里程", "填寫返隊時間與里程", "儲存"],
     "fuel_record": ["啟動 Chrome", "登入 PPE", "開啟登打油耗", "填寫加油紀錄", "儲存"],
     "consumables": ["啟動 Chrome", "登入一站通", "開啟耗材紀錄", "填寫耗材品項", "儲存"],
     "disinfection": ["啟動 Chrome", "登入消毒系統", "查詢案件", "開啟消毒紀錄", "填寫消毒項目", "儲存"],
-    "volunteer_assist": ["啟動 Chrome", "登入內部入口網", "查詢義消名冊", "新增出入登記", "案件代入", "儲存並回查"],
+    "volunteer_assist": list(CIVILPOWER_STAGES),
 }
 
 SITE_SHORT_NAMES = {
@@ -40,12 +94,12 @@ SITE_STATUS_STAGE = {
     "manual_captcha_required": "登入一站通",
     "consumables_prefilled": "儲存",
     "disinfection_session_ready": "儲存",
-    "volunteer_assist_waiting_dependency": "新增出入登記",
-    "volunteer_assist_running": "登入內部入口網",
-    "volunteer_assist_roster_failed": "查詢義消名冊",
-    "volunteer_assist_io_failed": "新增出入登記",
-    "volunteer_assist_case_failed": "案件代入",
-    "volunteer_assist_verify_failed": "儲存並回查",
+    "volunteer_assist_waiting_dependency": CIVILPOWER_STAGE_LABELS["io_query"],
+    "volunteer_assist_running": CIVILPOWER_STAGE_LABELS["login"],
+    "volunteer_assist_roster_failed": CIVILPOWER_STAGE_LABELS["roster"],
+    "volunteer_assist_io_failed": CIVILPOWER_STAGE_LABELS["io_query"],
+    "volunteer_assist_case_failed": CIVILPOWER_STAGE_LABELS["case_import"],
+    "volunteer_assist_verify_failed": CIVILPOWER_STAGE_LABELS["work_log_verify"],
     "local_pc_ready": "啟動 Chrome",
     "chrome_start_failed": "啟動 Chrome",
 }
@@ -56,8 +110,14 @@ SITE_DEFAULT_FAILURE_STAGE = {
     "fuel_record": "開啟登打油耗",
     "consumables": "開啟耗材紀錄",
     "disinfection": "查詢案件",
-    "volunteer_assist": "登入內部入口網",
+    "volunteer_assist": CIVILPOWER_STAGE_LABELS["login"],
 }
+
+
+def civilpower_stage_from_detail(detail: str) -> str:
+    detail_text = " ".join(str(detail or "").split())
+    matches = [stage for stage in CIVILPOWER_STAGES if stage in detail_text]
+    return max(matches, key=detail_text.rfind) if matches else ""
 
 
 def diagnostic_payload(site_key: str, status: str, detail: str, exception: BaseException | None = None) -> dict[str, str]:
@@ -232,6 +292,10 @@ def _is_invalid_argument_oserror(exception: BaseException | None, text: str) -> 
 
 
 def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
+    if site_key == "volunteer_assist":
+        reported_stage = civilpower_stage_from_detail(detail)
+        if reported_stage:
+            return reported_stage
     if status in SITE_STATUS_STAGE:
         stage = SITE_STATUS_STAGE[status]
         if site_key == "disinfection" and status == "manual_captcha_required":
@@ -248,15 +312,15 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
     if category == "ppe_driver":
         return "填寫加油紀錄" if site_key == "fuel_record" else "填寫返隊時間與里程"
     if category == "civilpower_io_verify":
-        return "儲存並回查" if site_key == "volunteer_assist" else "儲存"
+        return CIVILPOWER_STAGE_LABELS["io_save_verify"] if site_key == "volunteer_assist" else "儲存"
     if category == "civilpower_io_form_timeout":
-        return "新增出入登記"
+        return CIVILPOWER_STAGE_LABELS["io_unit"] if site_key == "volunteer_assist" else "新增出入登記"
     if category == "login":
         return _login_stage(site_key)
     if category == "case_not_found":
         if site_key == "duty_work_log":
             return "由案件帶入"
-        return "案件代入" if site_key == "volunteer_assist" else "查詢案件"
+        return CIVILPOWER_STAGE_LABELS["case_import"] if site_key == "volunteer_assist" else "查詢案件"
     if category == "case_not_closed":
         if site_key == "consumables":
             return "開啟耗材紀錄"
@@ -283,10 +347,10 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         if site_key == "disinfection":
             return "填寫消毒項目"
         if site_key == "volunteer_assist":
-            return "新增出入登記"
+            return CIVILPOWER_STAGE_LABELS["io_add"]
         return "填寫勤務資料"
     if category == "save":
-        return "儲存"
+        return CIVILPOWER_STAGE_LABELS["work_log_save"] if site_key == "volunteer_assist" else "儲存"
     if category == "element_missing":
         return _field_stage(site_key, detail)
     if category == "stale_element":
@@ -321,7 +385,7 @@ def _field_stage(site_key: str, detail: str) -> str:
             return "開啟消毒紀錄"
         return "填寫消毒項目"
     if site_key == "volunteer_assist":
-        return "新增出入登記"
+        return CIVILPOWER_STAGE_LABELS["io_add"]
     return "填寫資料"
 
 
