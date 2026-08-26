@@ -593,6 +593,59 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         self.assertEqual(2, wait.calls)
 
+    def test_jqx_option_signature_treats_replaced_widget_as_not_ready(self):
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        from civilpower import _jqx_combobox_option_signature
+
+        driver = mock.Mock()
+        driver.find_element.return_value = mock.Mock()
+        driver.execute_script.side_effect = StaleElementReferenceException("widget was replaced")
+
+        self.assertIsNone(_jqx_combobox_option_signature(driver, "#txt_AddServeUnit"))
+
+    def test_jqx_option_ready_treats_replaced_widget_as_not_ready(self):
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        from civilpower import _jqx_combobox_option_ready
+
+        driver = mock.Mock()
+        driver.find_element.return_value = mock.Mock()
+        driver.execute_script.side_effect = StaleElementReferenceException("widget was replaced")
+
+        self.assertIs(False, _jqx_combobox_option_ready(driver, "#txt_AddServeUnit", "新坡分隊"))
+
+    def test_jqx_selection_reacquires_widget_after_replacement(self):
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        from civilpower import _select_jqx_combobox
+
+        class PollingWait:
+            def __init__(self, driver):
+                self.driver = driver
+                self.calls = 0
+
+            def until(self, predicate):
+                for _ in range(3):
+                    self.calls += 1
+                    result = predicate(self.driver)
+                    if result:
+                        return result
+                raise AssertionError("replacement widget never became selectable")
+
+        driver = mock.Mock()
+        driver.find_element.return_value = mock.Mock()
+        driver.execute_script.side_effect = [StaleElementReferenceException("widget was replaced"), True]
+        wait = PollingWait(driver)
+
+        with mock.patch("civilpower._wait_for_jqx_combobox_option"), mock.patch(
+            "civilpower._control_value", return_value="新坡分隊"
+        ):
+            _select_jqx_combobox(driver, wait, "#txt_AddServeUnit", "新坡分隊")
+
+        self.assertEqual(3, wait.calls)
+        self.assertEqual(2, driver.execute_script.call_count)
+
     def test_io_dependencies_wait_for_rebuilt_serve_unit_options(self):
         from civilpower import _wait_for_io_form_dependencies
 

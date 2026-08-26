@@ -15,7 +15,7 @@ from uuid import uuid4
 import ddddocr
 from PIL import Image
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -1063,20 +1063,23 @@ def _jqx_combobox_option_signature(driver, selector: str) -> tuple[tuple[str, st
         element = driver.find_element(By.CSS_SELECTOR, selector)
     except NoSuchElementException:
         return None
-    raw_items = driver.execute_script(
-        """
-        const outer = arguments[0];
-        const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-        if (!window.jQuery || !window.jQuery.fn || !window.jQuery.fn.jqxComboBox) return null;
-        try {
-          const items = window.jQuery(outer).jqxComboBox('getItems') || [];
-          return items.map((item) => [clean(item.label), clean(item.value)]);
-        } catch (_) {
-          return null;
-        }
-        """,
-        element,
-    )
+    try:
+        raw_items = driver.execute_script(
+            """
+            const outer = arguments[0];
+            const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+            if (!window.jQuery || !window.jQuery.fn || !window.jQuery.fn.jqxComboBox) return null;
+            try {
+              const items = window.jQuery(outer).jqxComboBox('getItems') || [];
+              return items.map((item) => [clean(item.label), clean(item.value)]);
+            } catch (_) {
+              return null;
+            }
+            """,
+            element,
+        )
+    except StaleElementReferenceException:
+        return None
     if raw_items is None:
         return None
     return tuple(
@@ -1095,67 +1098,76 @@ def _jqx_combobox_option_ready(driver, selector: str, text: str) -> bool:
         element = driver.find_element(By.CSS_SELECTOR, selector)
     except NoSuchElementException:
         return False
-    return bool(
-        driver.execute_script(
-            """
-            const outer = arguments[0];
-            const expected = arguments[1].replace(/\\s+/g, ' ').trim();
-            const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-            if (!window.jQuery || !window.jQuery.fn || !window.jQuery.fn.jqxComboBox) return true;
-            try {
-              const widget = window.jQuery(outer);
-              if (widget.jqxComboBox('disabled')) return false;
-              const items = widget.jqxComboBox('getItems') || [];
-              return items.some((item) => clean(item.label) === expected || clean(item.value) === expected);
-            } catch (_) {
-              return false;
-            }
-            """,
-            element,
-            text,
+    try:
+        return bool(
+            driver.execute_script(
+                """
+                const outer = arguments[0];
+                const expected = arguments[1].replace(/\\s+/g, ' ').trim();
+                const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                if (!window.jQuery || !window.jQuery.fn || !window.jQuery.fn.jqxComboBox) return true;
+                try {
+                  const widget = window.jQuery(outer);
+                  if (widget.jqxComboBox('disabled')) return false;
+                  const items = widget.jqxComboBox('getItems') || [];
+                  return items.some((item) => clean(item.label) === expected || clean(item.value) === expected);
+                } catch (_) {
+                  return false;
+                }
+                """,
+                element,
+                text,
+            )
         )
-    )
+    except StaleElementReferenceException:
+        return False
 
 
 def _select_jqx_combobox(driver, wait: WebDriverWait, selector: str, text: str) -> None:
-    element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
     _wait_for_jqx_combobox_option(driver, wait, selector, text)
-    selected = driver.execute_script(
-        """
-        const outer = arguments[0];
-        const expected = arguments[1].replace(/\\s+/g, ' ').trim();
-        const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-        const input = outer.matches('input') ? outer : outer.querySelector('input');
-        if (window.jQuery && window.jQuery.fn && window.jQuery.fn.jqxComboBox) {
-          const widget = window.jQuery(outer);
-          try {
-            if (widget.jqxComboBox('disabled')) return false;
-            const items = widget.jqxComboBox('getItems') || [];
-            const item = items.find((candidate) => clean(candidate.label) === expected || clean(candidate.value) === expected);
-            if (!item) return false;
-            widget.jqxComboBox('selectItem', item);
-            widget.jqxComboBox('val', item.value);
-            if (input) input.dispatchEvent(new Event('change', {bubbles: true}));
-            return true;
-          } catch (_) {
-            return false;
-          }
-        }
-        if (input) {
-          input.focus();
-          input.value = expected;
-          input.dispatchEvent(new Event('input', {bubbles: true}));
-          input.dispatchEvent(new Event('change', {bubbles: true}));
-          input.blur();
-          return true;
-        }
-        return false;
-        """,
-        element,
-        text,
-    )
-    if not selected:
-        raise RuntimeError(f"民力系統找不到單位下拉選項：{text}")
+    def select_option(current) -> bool:
+        try:
+            element = current.find_element(By.CSS_SELECTOR, selector)
+            return bool(
+                current.execute_script(
+                    """
+                    const outer = arguments[0];
+                    const expected = arguments[1].replace(/\\s+/g, ' ').trim();
+                    const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                    const input = outer.matches('input') ? outer : outer.querySelector('input');
+                    if (window.jQuery && window.jQuery.fn && window.jQuery.fn.jqxComboBox) {
+                      const widget = window.jQuery(outer);
+                      try {
+                        if (widget.jqxComboBox('disabled')) return false;
+                        const items = widget.jqxComboBox('getItems') || [];
+                        const item = items.find((candidate) => clean(candidate.label) === expected || clean(candidate.value) === expected);
+                        if (!item) return false;
+                        widget.jqxComboBox('selectItem', item);
+                        widget.jqxComboBox('val', item.value);
+                        if (input) input.dispatchEvent(new Event('change', {bubbles: true}));
+                        return true;
+                      } catch (_) {
+                        return false;
+                      }
+                    }
+                    if (input) {
+                      input.focus();
+                      input.value = expected;
+                      input.dispatchEvent(new Event('input', {bubbles: true}));
+                      input.dispatchEvent(new Event('change', {bubbles: true}));
+                      input.blur();
+                      return true;
+                    }
+                    return false;
+                    """,
+                    element,
+                    text,
+                )
+            )
+        except (NoSuchElementException, StaleElementReferenceException):
+            return False
+
+    wait.until(select_option)
     wait.until(lambda current: _token_matches(_control_value(current, selector), text))
 
 
