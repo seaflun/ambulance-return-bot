@@ -254,11 +254,138 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["failure_stage"], "啟動 Chrome")
         self.assertIn("Google Chrome", payload["failure_reason"])
 
-    def test_vehicle_not_found_points_to_mileage_fill_stage(self):
-        payload = diagnostic_payload("vehicle_mileage", "vehicle_mileage_failed", "vehicle not found: 新坡91")
+    def test_vehicle_not_found_with_login_audit_points_to_vehicle_selection(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage",
+            "vehicle_mileage_failed",
+            (
+                "登入帳號：里程=任務司機，14番 王浩任 - tyfd02116。"
+                "車輛里程操作失敗：Message: vehicle not found: BPE-5951"
+            ),
+        )
 
-        self.assertEqual(payload["failure_stage"], "填寫返隊時間與里程")
+        self.assertEqual(payload["exception_type"], "vehicle_not_found")
+        self.assertEqual(payload["failure_stage"], "選取車輛")
         self.assertIn("救護車", payload["failure_reason"])
+        self.assertNotIn("登入", payload["failure_reason"])
+
+    def test_merge_replaces_legacy_login_diagnosis_for_vehicle_not_found(self):
+        merged = merge_diagnostic_fields(
+            {
+                "key": "vehicle_mileage",
+                "status": "vehicle_mileage_failed",
+                "detail": (
+                    "登入帳號：里程=任務司機，14番 王浩任 - tyfd02116。"
+                    "車輛里程操作失敗：Message: vehicle not found: BPE-5951"
+                ),
+                "failure_stage": "登入 PPE",
+                "failure_reason": "登入、帳密、SSO 或驗證碼尚未完成。",
+                "next_action": "完成登入後重試。",
+                "exception_type": "login",
+            }
+        )
+
+        self.assertEqual(merged["exception_type"], "vehicle_not_found")
+        self.assertEqual(merged["failure_stage"], "選取車輛")
+        self.assertNotIn("登入", merged["failure_reason"])
+
+    def test_duty_case_choose_failure_with_login_audit_points_to_case_selection(self):
+        payload = diagnostic_payload(
+            "duty_work_log",
+            "duty_case_choose_failed",
+            (
+                "登入帳號：工作=任務司機，15番 李仕詮 - tyfd02115。"
+                "找到案件但無法按選擇：緊急救護-車禍 桃園市觀音區聖心一街257號"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "element_missing")
+        self.assertEqual(payload["failure_stage"], "選取案件")
+        self.assertIn("按鈕", payload["failure_reason"])
+        self.assertNotIn("登入", payload["failure_reason"])
+
+    def test_consumables_vehicle_row_failure_points_to_patient_selection(self):
+        payload = diagnostic_payload(
+            "consumables",
+            "consumables_failed",
+            (
+                "登入帳號：耗材=同步帳號。"
+                "耗材內容頁找不到符合車輛的紀錄：車輛=新坡92 候選=1"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "vehicle_not_found")
+        self.assertEqual(payload["failure_stage"], "選取患者頁")
+        self.assertIn("救護車", payload["failure_reason"])
+
+    def test_civilpower_case_import_failure_with_login_audit_points_to_case_verification(self):
+        payload = diagnostic_payload(
+            "volunteer_assist",
+            "volunteer_assist_failed",
+            (
+                "登入帳號：民力系統=任務司機。"
+                "民力系統驗證案件代入失敗：案件代入後未帶入有效案件派遣時間。"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "civilpower_case_verify")
+        self.assertEqual(payload["failure_stage"], "驗證案件代入")
+        self.assertIn("派遣時間", payload["failure_reason"])
+        self.assertNotIn("登入", payload["failure_reason"])
+
+    def test_civilpower_case_selection_timeout_points_to_case_import(self):
+        payload = diagnostic_payload(
+            "volunteer_assist",
+            "volunteer_assist_failed",
+            "選取視窗在 15 秒內找不到符合條件的紀錄：創傷、1036",
+        )
+
+        self.assertEqual(payload["exception_type"], "civilpower_selection")
+        self.assertEqual(payload["failure_stage"], "案件代入")
+        self.assertIn("案件", payload["failure_reason"])
+
+    def test_civilpower_io_selection_timeout_points_to_out_record_selection(self):
+        payload = diagnostic_payload(
+            "volunteer_assist",
+            "volunteer_assist_failed",
+            "選取視窗在 15 秒內找不到符合條件的紀錄：張贊鏡、大園救護分隊、救護出勤、1036",
+        )
+
+        self.assertEqual(payload["exception_type"], "civilpower_selection")
+        self.assertEqual(payload["failure_stage"], "選取救護出勤登記")
+
+    def test_civilpower_io_query_refresh_failure_points_to_io_query(self):
+        payload = diagnostic_payload(
+            "volunteer_assist",
+            "volunteer_assist_failed",
+            "出入登記簿查詢結果未完成更新，為避免重複新增，請保持原登入帳號後重試。",
+        )
+
+        self.assertEqual(payload["exception_type"], "civilpower_io_query")
+        self.assertEqual(payload["failure_stage"], "查詢既有出／入登記")
+        self.assertIn("尚未完成更新", payload["failure_reason"])
+
+    def test_civilpower_work_log_readback_failure_points_to_work_log_verify(self):
+        payload = diagnostic_payload(
+            "volunteer_assist",
+            "volunteer_assist_failed",
+            "工作紀錄簿儲存後回查不到本次救護義消協勤紀錄。",
+        )
+
+        self.assertEqual(payload["exception_type"], "civilpower_work_log_verify")
+        self.assertEqual(payload["failure_stage"], "工作紀錄回查")
+        self.assertIn("回查不到", payload["failure_reason"])
+
+    def test_connection_timeout_points_to_page_wait(self):
+        payload = diagnostic_payload(
+            "consumables",
+            "consumables_failed",
+            "一站通耗材: Message: unknown error: net::ERR_CONNECTION_TIMED_OUT",
+        )
+
+        self.assertEqual(payload["exception_type"], "web_page_timeout")
+        self.assertEqual(payload["failure_stage"], "開啟耗材紀錄")
+        self.assertIn("載入", payload["failure_reason"])
 
     def test_fuel_card_not_found_is_not_classified_as_login_failure(self):
         payload = diagnostic_payload(

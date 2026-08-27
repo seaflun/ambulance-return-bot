@@ -50,6 +50,7 @@ from ambulance_bot.selenium_local import (
     _save_disinfection_probe_enabled,
     _save_disinfection_record_enabled,
     _save_vehicle_mileage_enabled,
+    _select_vehicle_record,
     _vehicle_mileage_previous_request,
     _vehicle_mileage_driver_value,
     _vehicle_mileage_values,
@@ -3516,6 +3517,51 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(cases[0]["reason"], "溺水")
         self.assertIn("includes('其他-打撈浮屍')", driver.script)
         self.assertIn("isSalvagedBody ? '溺水'", driver.script)
+
+    def test_select_vehicle_record_reads_offscreen_kendo_rows(self):
+        class FakeDriver:
+            def __init__(self):
+                self.script = ""
+
+            def find_elements(self, *_args):
+                return []
+
+            def execute_script(self, script, *args):
+                self.script = script
+                self.args = args
+                return True
+
+        driver = FakeDriver()
+
+        _select_vehicle_record(driver, "CDD-2171")
+
+        self.assertEqual(("CDD-2171",), driver.args)
+        self.assertIn("'License'", driver.script)
+        self.assertIn("dataSource.data()", driver.script)
+        self.assertIn("serverPaged", driver.script)
+        self.assertIn("getBoundingClientRect().height", driver.script)
+        self.assertIn("scrollIntoView", driver.script)
+        self.assertIn("scrollTop", driver.script)
+
+    def test_select_vehicle_record_retries_after_server_paging(self):
+        class FakeDriver:
+            def __init__(self):
+                self.calls = 0
+
+            def find_elements(self, *_args):
+                return []
+
+            def execute_script(self, _script, *_args):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"ok": False, "vehicle_found": False, "needs_retry": True, "next_page": 2}
+                return {"ok": True, "vehicle_found": True, "row_index": 1}
+
+        driver = FakeDriver()
+
+        _select_vehicle_record(driver, "CDD-2171")
+
+        self.assertEqual(2, driver.calls)
 
     def test_attach_case_form_details_reuses_cached_personnel(self):
         cases = [{"case_id": "20260603080000001", "address": "新坡分隊"}]

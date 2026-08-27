@@ -71,7 +71,7 @@ VEHICLE_TYPE_OPTIONS = (VEHICLE_TYPE_BUILT_IN, VEHICLE_TYPE_CUSTOM)
 DEFAULT_CUSTOM_VEHICLES = [
     {
         "label": "\u65b0\u576195",
-        "ppe_name": "BPE-5951",
+        "ppe_name": "CDD-2171",
         "vehicle_type": VEHICLE_TYPE_BUILT_IN,
     }
 ]

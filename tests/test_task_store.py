@@ -16,7 +16,9 @@ from ambulance_bot.task_store import (
 )
 from ambulance_bot.vehicle_reconciliation import (
     normalize_vehicle_candidates,
+    selected_lookup_vehicle,
     site_vehicle_reconciliation_ready_to_retry,
+    task_has_pending_vehicle_reconciliation,
     vehicle_reconciliation_run_block_detail,
 )
 
@@ -136,9 +138,13 @@ class JsonTaskStoreTests(unittest.TestCase):
                     reconciliation_vehicle_key="新坡92",
                 ),
             )
-            self.assertNotIn(
-                "vehicle_reconciliation",
-                saved["site_statuses"]["consumables"],
+            target = saved["site_statuses"]["consumables"]["vehicle_reconciliation"]["targets"]["新坡92"]
+            self.assertEqual(target["state"], "resolved")
+            self.assertEqual(target["selected_vehicle"], "新坡93")
+            self.assertFalse(task_has_pending_vehicle_reconciliation(saved))
+            self.assertEqual(
+                selected_lookup_vehicle(saved["site_statuses"]["consumables"], "新坡92"),
+                "新坡93",
             )
 
     def test_disaster_completion_uses_only_work_log_mileage_and_enabled_fuel(self):

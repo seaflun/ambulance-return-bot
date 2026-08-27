@@ -270,6 +270,19 @@
       font-size: var(--text-sm);
       line-height: 1.5;
     }
+    .vehicle-reconciliation-summary {
+      display: grid;
+      gap: 4px;
+      margin: 10px 0 14px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--idle-bg);
+      color: var(--ink);
+      font-size: var(--text-sm);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
     .vehicle-reconciliation__choices {
       display: flex;
       flex-wrap: wrap;
@@ -443,6 +456,8 @@
         <div class="vehicle-reconciliation__copy">系統車輛：{{ row.original_vehicle }}</div>
         {% if row.state == 'selected' %}
           <div class="vehicle-reconciliation__selected">已選擇查找車輛：{{ row.selected_vehicle }}</div>
+        {% elif row.state == 'resolved' %}
+          <div class="vehicle-reconciliation__selected">已完成查找車輛：{{ row.selected_vehicle }}</div>
         {% else %}
           <div class="vehicle-reconciliation__choices">
             {% for candidate in row.candidates %}
@@ -457,7 +472,7 @@
           </div>
         {% endif %}
       {% endfor %}
-      <div class="vehicle-reconciliation__copy">此選擇只用於本卡片查找，不會修改救護登打案件的車輛。</div>
+      <div class="vehicle-reconciliation__copy">原始案件車輛不變；替代查找車輛只套用於耗材、消毒查找並保留稽核關聯。</div>
     </section>
   {% endif %}
 {%- endmacro %}
@@ -525,6 +540,14 @@
       <div class="section-head">
         <h2>任務內容</h2>
       </div>
+      {% set vehicle_substitutions = task_vehicle_substitution_rows(payload) %}
+      {% if vehicle_substitutions %}
+        <div class="vehicle-reconciliation-summary" role="status">
+          {% for substitution in vehicle_substitutions %}
+            <div>替代查找車輛：{{ substitution.original_vehicle }} → {{ substitution.selected_vehicle }}（{{ substitution.site_names | join('、') }}）</div>
+          {% endfor %}
+        </div>
+      {% endif %}
       {% set vehicle_entries = task_vehicle_display_entries(payload.task) %}
       <div class="task-grid">
         {% set duty_site = payload.site_statuses.get('duty_work_log', {}) %}
@@ -561,9 +584,10 @@
           {{ task_card_head(payload.task.task_id, 'volunteer_assist', volunteer_site, '民力系統', task_card_station_label(payload.task, payload.site_statuses, 'volunteer_assist'), task_active, completion) }}
           <ul class="line-list">
             <li><span class="label">協勤人員</span><span class="value">{{ payload.task.volunteer_assist_member_name or '未選取' }}{% if payload.task.volunteer_assist_member_title %} / {{ payload.task.volunteer_assist_member_title }}{% endif %}</span></li>
-            <li><span class="label">所屬／服勤</span><span class="value">{{ payload.task.volunteer_assist_member_unit or '大園救護分隊' }} / 新坡分隊</span></li>
-            <li><span class="label">出／入</span><span class="value">{{ task_datetime_display(payload.task, 'case_date', 'case_time') }} / {{ task_datetime_display(payload.task, 'return_date', 'return_time') }}</span></li>
-            {% if volunteer_site.detail %}<li><span class="label">回報</span><span class="value">{{ site_display_detail(volunteer_site) }}</span></li>{% endif %}
+            <li><span class="label">所屬單位</span><span class="value">{{ payload.task.volunteer_assist_member_unit or '大園救護分隊' }}</span></li>
+            <li><span class="label">服勤單位</span><span class="value">新坡分隊</span></li>
+            <li><span class="label">出勤時間</span><span class="value">{{ task_datetime_display(payload.task, 'case_date', 'case_time') }}</span></li>
+            <li><span class="label">返隊時間</span><span class="value">{{ task_datetime_display(payload.task, 'return_date', 'return_time') }}</span></li>
             {% if volunteer_diagnostic.next_action %}<li><span class="label">建議</span><span class="value">{{ volunteer_diagnostic.next_action }}</span></li>{% endif %}
           </ul>
           {{ vehicle_candidate_controls(payload.task.task_id, 'volunteer_assist', volunteer_site, task_active) }}

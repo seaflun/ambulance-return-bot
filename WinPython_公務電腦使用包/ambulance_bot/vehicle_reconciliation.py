@@ -141,7 +141,7 @@ def vehicle_reconciliation_run_block_detail(payload: object, run_site_key: str =
 def selected_lookup_vehicle(site: object, original_vehicle: object) -> str:
     original = str(original_vehicle or "").strip()
     target = reconciliation_targets(site).get(original)
-    if not target or str(target.get("state") or "") != "selected":
+    if not target or str(target.get("state") or "") not in {"selected", "resolved"}:
         return original
     selected = str(target.get("selected_vehicle") or "").strip()
     return selected or original

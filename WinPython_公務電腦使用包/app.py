@@ -6,6 +6,7 @@ from copy import deepcopy
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import socket
@@ -2932,6 +2933,10 @@ def upsert_public_pc_report(data: dict) -> dict:
             if incoming_site_statuses_provided
             else existing.get("site_statuses", {})
         )
+        site_statuses = _preserve_public_pc_vehicle_reconciliation(
+            site_statuses,
+            existing.get("site_statuses", {}),
+        )
         site_statuses = _store_public_pc_failure_evidence(
             task_id,
             site_statuses,
@@ -2970,6 +2975,31 @@ def upsert_public_pc_report(data: dict) -> dict:
         write_json_atomic(path, output)
         write_json_atomic(public_pc_report_backup_file(), output)
         return payload
+
+
+def _preserve_public_pc_vehicle_reconciliation(
+    site_statuses: object,
+    existing_site_statuses: object,
+) -> dict[str, dict]:
+    raw_statuses = site_statuses if isinstance(site_statuses, Mapping) else {}
+    statuses = {
+        str(site_key): dict(site)
+        for site_key, site in raw_statuses.items()
+        if isinstance(site, dict)
+    }
+    existing_statuses = existing_site_statuses if isinstance(existing_site_statuses, Mapping) else {}
+    for raw_site_key, raw_existing_site in existing_statuses.items():
+        if not isinstance(raw_existing_site, Mapping):
+            continue
+        existing_reconciliation = raw_existing_site.get("vehicle_reconciliation")
+        if not isinstance(existing_reconciliation, Mapping):
+            continue
+        site_key = str(raw_site_key or "").strip()
+        current_site = statuses.setdefault(site_key, {})
+        current_reconciliation = current_site.get("vehicle_reconciliation")
+        if not isinstance(current_reconciliation, Mapping) or not current_reconciliation.get("targets"):
+            current_site["vehicle_reconciliation"] = deepcopy(dict(existing_reconciliation))
+    return statuses
 
 
 def _store_public_pc_failure_evidence(
@@ -5736,6 +5766,18 @@ def site_stage_summary_rows(site_statuses: dict, site_key: str) -> list[dict[str
     return summaries
 
 
+def site_active_stage_summary(site_statuses: Mapping[str, object], site_key: str) -> dict[str, str]:
+    statuses = dict(site_statuses) if isinstance(site_statuses, Mapping) else {}
+    return next(
+        (
+            dict(row)
+            for row in site_stage_summary_rows(statuses, site_key)
+            if str(row.get("class") or "") in {"failed", "running", "waiting"}
+        ),
+        {},
+    )
+
+
 def civilpower_stage_summary_rows(site_statuses: dict) -> list[dict[str, str]]:
     rows_by_name = {
         str(stage["name"]): stage
@@ -6146,6 +6188,20 @@ def task_time_range(task: dict) -> str:
     return f"{start} - {end}" if end != "未填" else start
 
 
+def _fuel_total_amount(quantity: object, unit_price: object) -> str:
+    quantity_text = str(quantity if quantity is not None else "").strip()
+    unit_price_text = str(unit_price if unit_price is not None else "").strip()
+    if not quantity_text or not unit_price_text:
+        return ""
+    try:
+        total = float(quantity_text) * float(unit_price_text)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(total) or total < 0:
+        return ""
+    return str(int(total + 0.5))
+
+
 def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
     task = dict(task or {})
     raw_entries = task.get("vehicle_entries")
@@ -6200,7 +6256,12 @@ def task_vehicle_display_entries(task: dict) -> list[dict[str, object]]:
                 "fuel_product": str(fuel_record.get("product") or "").strip() if fuel_enabled else "",
                 "fuel_quantity": str(fuel_record.get("quantity") or "").strip() if fuel_enabled else "",
                 "fuel_unit_price": str(fuel_record.get("unit_price") or "").strip() if fuel_enabled else "",
+                "fuel_total": _fuel_total_amount(
+                    fuel_record.get("quantity"),
+                    fuel_record.get("unit_price"),
+                ) if fuel_enabled else "",
                 "fuel_summary": " / ".join(part for part in fuel_parts if part) if fuel_enabled else "",
+                "volunteer_assist_member_name": str(task.get("volunteer_assist_member_name") or "").strip(),
                 "disinfection": str(entry.get("disinfection") or "").strip(),
                 "disinfection_items": disinfection_items,
                 "disinfection_count": len(disinfection_items),
@@ -6286,6 +6347,101 @@ def site_vehicle_candidate_rows(site: dict | object) -> list[dict[str, object]]:
                 "candidates": candidates,
             }
         )
+    return rows
+
+
+def task_vehicle_substitution_rows(payload: Mapping[str, object] | object) -> list[dict[str, object]]:
+    """Summarize lookup vehicles that differ from the task's original vehicle."""
+
+    if not isinstance(payload, Mapping):
+        return []
+    task = payload.get("task") if isinstance(payload.get("task"), Mapping) else {}
+    raw_entries = task.get("vehicle_entries")
+    entries = raw_entries if isinstance(raw_entries, list) and raw_entries else [task]
+    original_vehicles = {
+        str(entry.get("vehicle") or "").strip()
+        for entry in entries
+        if isinstance(entry, Mapping) and str(entry.get("vehicle") or "").strip()
+    }
+    rows_by_pair: dict[tuple[str, str], dict[str, object]] = {}
+
+    def add_row(original: object, selected: object, site_key: object, state: object) -> None:
+        original_vehicle = str(original or "").strip()
+        selected_vehicle = str(selected or "").strip()
+        normalized_site_key = str(site_key or "").strip()
+        if (
+            not original_vehicle
+            or not selected_vehicle
+            or original_vehicle == selected_vehicle
+            or normalized_site_key not in {"consumables", "disinfection"}
+            or (original_vehicles and original_vehicle not in original_vehicles)
+        ):
+            return
+        pair = (original_vehicle, selected_vehicle)
+        row = rows_by_pair.setdefault(
+            pair,
+            {
+                "original_vehicle": original_vehicle,
+                "selected_vehicle": selected_vehicle,
+                "state": "selected",
+                "site_keys": [],
+            },
+        )
+        site_keys = row["site_keys"]
+        if isinstance(site_keys, list) and normalized_site_key not in site_keys:
+            site_keys.append(normalized_site_key)
+        if str(state or "").strip() == "resolved":
+            row["state"] = "resolved"
+
+    site_statuses = payload.get("site_statuses")
+    if isinstance(site_statuses, Mapping):
+        for raw_site_key, raw_site in site_statuses.items():
+            site_key = str(raw_site_key or "").strip()
+            if site_key not in {"consumables", "disinfection"}:
+                continue
+            for original_vehicle, target in reconciliation_targets(raw_site).items():
+                add_row(
+                    target.get("original_vehicle") or original_vehicle,
+                    target.get("selected_vehicle"),
+                    site_key,
+                    target.get("state"),
+                )
+
+    substitution_pattern = re.compile(
+        r"系統車輛\s*=\s*(?P<original>[^；;.。]+)\s*[；;]\s*"
+        r"已選擇查找車輛\s*=\s*(?P<selected>[^。.]+)\s*[。.]?"
+    )
+    events = payload.get("events")
+    if isinstance(events, list):
+        for raw_event in events:
+            if not isinstance(raw_event, Mapping):
+                continue
+            detail = str(raw_event.get("detail") or "")
+            match = substitution_pattern.search(detail)
+            if not match:
+                continue
+            add_row(
+                match.group("original"),
+                match.group("selected"),
+                event_site_key(dict(raw_event)),
+                "selected",
+            )
+
+    site_order = {site_key: index for index, site_key in enumerate(SITE_RUN_ORDER)}
+    rows = sorted(
+        rows_by_pair.values(),
+        key=lambda row: (
+            min(
+                site_order.get(site_key, len(SITE_RUN_ORDER))
+                for site_key in list(row.get("site_keys") or [])
+            ),
+            str(row.get("original_vehicle") or ""),
+            str(row.get("selected_vehicle") or ""),
+        ),
+    )
+    for row in rows:
+        site_keys = [str(site_key) for site_key in list(row.get("site_keys") or [])]
+        row["site_names"] = [SITE_SHORT_NAMES.get(site_key, site_key) for site_key in site_keys]
     return rows
 
 
@@ -6563,17 +6719,19 @@ def visible_events(events: list[dict], task: dict | None = None) -> list[dict]:
 def event_site_key(event: dict) -> str:
     status = str(event.get("status") or "")
     detail = str(event.get("detail") or "")
-    if status.startswith("volunteer_assist") or "義消協勤" in detail or "民力運用" in detail or "民力系統" in detail:
+    action = str(event.get("action") or "")
+    source_text = f"{status} {detail} {action}"
+    if status.startswith("volunteer_assist") or "義消協勤" in source_text or "民力運用" in source_text or "民力系統" in source_text:
         return "volunteer_assist"
-    if status.startswith("vehicle_mileage") or "車輛里程" in detail:
+    if status.startswith("vehicle_mileage") or "車輛里程" in source_text:
         return "vehicle_mileage"
-    if status.startswith("fuel_record") or "加油" in detail or "油耗" in detail:
+    if status.startswith("fuel_record") or "加油" in source_text or "油耗" in source_text:
         return "fuel_record"
-    if status.startswith("consumables") or "一站通耗材" in detail:
+    if status.startswith("consumables") or "一站通耗材" in source_text:
         return "consumables"
-    if status.startswith("disinfection") or "緊急救護消毒" in detail:
+    if status.startswith("disinfection") or "緊急救護消毒" in source_text:
         return "disinfection"
-    if status.startswith("duty_work_log") or "消防勤務工作紀錄" in detail:
+    if status.startswith("duty_work_log") or "消防勤務工作紀錄" in source_text:
         return "duty_work_log"
     return status or detail[:24]
 
@@ -6602,11 +6760,12 @@ def public_pc_event_display_detail(
     detail: str,
     site_statuses: Mapping[str, object] | None = None,
     maximum: int = 160,
+    action: str = "",
 ) -> str:
     raw_status = str(status or "")
     raw_detail = str(detail or "").strip()
     if "failed" in raw_status or "error" in raw_status:
-        site_key = event_site_key({"status": raw_status, "detail": raw_detail})
+        site_key = event_site_key({"status": raw_status, "detail": raw_detail, "action": action})
         source_site = (site_statuses or {}).get(site_key) if isinstance(site_statuses, Mapping) else {}
         site = dict(source_site) if isinstance(source_site, Mapping) else {}
         site.update({"key": site_key, "status": raw_status, "detail": raw_detail})
@@ -6624,6 +6783,7 @@ def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
         status = str(site.get("status") or "")
         detail = str(site.get("detail") or "").strip()
         diagnostic = site_diagnostic(site)
+        active_stage = site_active_stage_summary(site_statuses, site_key)
         current_class = status_class(status)
         site_name = SITE_SHORT_NAMES.get(site_key, site_key)
 
@@ -6633,7 +6793,7 @@ def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
                     "site_key": site_key,
                     "site_name": site_name,
                     "state": "失敗",
-                    "stage": diagnostic.get("failure_stage") or "未判定",
+                    "stage": active_stage.get("detail") or diagnostic.get("failure_stage") or "未判定",
                     "reason": diagnostic.get("failure_reason") or "程式回報此站未完成。",
                     "detail": site_display_detail(site),
                     "action": diagnostic.get("next_action") or site_next_action(site_key, status, detail),
@@ -6647,7 +6807,7 @@ def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
                     "site_key": site_key,
                     "site_name": site_name,
                     "state": "待確認",
-                    "stage": diagnostic.get("failure_stage") or "儲存",
+                    "stage": active_stage.get("detail") or diagnostic.get("failure_stage") or "儲存",
                     "reason": diagnostic.get("failure_reason") or "此站需要人工確認後才能視為完成。",
                     "detail": site_display_detail(site),
                     "action": diagnostic.get("next_action") or site_next_action(site_key, status, detail),
@@ -6679,17 +6839,19 @@ def site_next_action(site_key: str, status: str, detail: str) -> str:
 def event_site_name(event: dict) -> str:
     status = str(event.get("status") or "")
     detail = str(event.get("detail") or "")
-    if status.startswith("volunteer_assist") or "義消協勤" in detail or "民力運用" in detail or "民力系統" in detail:
+    action = str(event.get("action") or "")
+    source_text = f"{status} {detail} {action}"
+    if status.startswith("volunteer_assist") or "義消協勤" in source_text or "民力運用" in source_text or "民力系統" in source_text:
         return "民力系統"
-    if status.startswith("vehicle_mileage") or "車輛里程" in detail:
+    if status.startswith("vehicle_mileage") or "車輛里程" in source_text:
         return "里程"
-    if status.startswith("fuel_record") or "加油" in detail or "油耗" in detail:
+    if status.startswith("fuel_record") or "加油" in source_text or "油耗" in source_text:
         return "加油"
-    if status.startswith("consumables") or "一站通耗材" in detail or "耗材" in detail:
+    if status.startswith("consumables") or "一站通耗材" in source_text or "耗材" in source_text:
         return "耗材"
-    if status.startswith("disinfection") or "緊急救護消毒" in detail or "消毒" in detail:
+    if status.startswith("disinfection") or "緊急救護消毒" in source_text or "消毒" in source_text:
         return "消毒"
-    if status.startswith("duty_work_log") or "消防勤務工作紀錄" in detail or "工作紀錄" in detail:
+    if status.startswith("duty_work_log") or "消防勤務工作紀錄" in source_text or "工作紀錄" in source_text:
         return "工作"
     return "任務"
 
@@ -6719,10 +6881,12 @@ def template_helpers() -> dict:
         "site_vehicle_candidate_rows": site_vehicle_candidate_rows,
         "site_vehicle_candidate_token": site_vehicle_candidate_token,
         "site_vehicle_reconciliation_ready_to_retry": site_vehicle_reconciliation_ready_to_retry,
+        "task_vehicle_substitution_rows": task_vehicle_substitution_rows,
         "site_short_name": site_short_name,
         "site_error_guidance": site_error_guidance,
         "site_stage_rows": site_stage_rows,
         "site_stage_summary_rows": site_stage_summary_rows,
+        "site_active_stage_summary": site_active_stage_summary,
         "civilpower_stage_summary_rows": civilpower_stage_summary_rows,
         "show_nas_home_button": show_nas_home_button,
         "show_public_pc_admin_button": show_public_pc_admin_button,
@@ -6953,6 +7117,10 @@ def case_entry_status_index(service_type: str = "ems") -> dict[str, list[str]]:
             for vehicle in task_vehicle_identifiers(task):
                 if vehicle not in vehicles:
                     vehicles.append(vehicle)
+            for substitution in task_vehicle_substitution_rows(payload):
+                selected_vehicle = str(substitution.get("selected_vehicle") or "").strip()
+                if selected_vehicle and selected_vehicle not in vehicles:
+                    vehicles.append(selected_vehicle)
     return case_vehicles
 
 

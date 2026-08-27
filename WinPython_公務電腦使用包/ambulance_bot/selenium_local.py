@@ -3513,31 +3513,120 @@ def _select_vehicle_record(driver: webdriver.Chrome, vehicle_label: str) -> None
         return
 
     script = """
-    const vehicleLabel = arguments[0];
-    const rows = Array.from(document.querySelectorAll('tr, .row, [role=row]'));
-    const row = rows.find(item => item.innerText && item.innerText.includes(vehicleLabel));
-    if (row) {
+    const vehicleLabel = String(arguments[0] || '').trim();
+    const normalized = value => String(value ?? '').replace(/\\s+/g, '').toLowerCase();
+    const wanted = normalized(vehicleLabel);
+    const rowValue = (row, field) => {
+      if (!row) return '';
+      try {
+        return typeof row.get === 'function' ? row.get(field) : row[field];
+      } catch (_) {
+        return row[field];
+      }
+    };
+    const rowText = row => {
+      if (!row) return '';
+      const plain = typeof row.toJSON === 'function' ? row.toJSON() : row;
+      const fields = [
+        'License', 'PlateNo', 'CarNo', 'VehicleNo', 'VehicleName', 'Name', 'Text', 'Label',
+        'UseCarNo', 'CarNumber', 'LicensePlate', '車號', '車牌號碼'
+      ];
+      const values = fields.map(field => rowValue(plain, field) ?? rowValue(row, field));
+      if (plain && typeof plain === 'object') values.push(...Object.values(plain));
+      return values.join(' ');
+    };
+    const clickControl = row => {
+      if (!row) return false;
+      row.scrollIntoView && row.scrollIntoView({block: 'center', inline: 'center'});
       const controls = Array.from(row.querySelectorAll('input, button, a'));
       const control = controls.find(el => {
-        const text = [el.value, el.innerText, el.title].map(x => String(x || '')).join(' ');
+        const text = [el.value, el.innerText, el.title, el.getAttribute('aria-label')]
+          .map(value => String(value || '')).join(' ');
         return text.includes('登打') || text.includes('選擇') || text.includes('明細') || el.type === 'radio';
       }) || row;
+      if (typeof control.click !== 'function') return false;
       control.click();
       return true;
+    };
+    const grid = window.jQuery ? window.jQuery('#grid').data('kendoGrid') : null;
+    if (grid && grid.dataSource && typeof grid.dataSource.data === 'function') {
+      const dataSource = grid.dataSource;
+      const data = Array.from(dataSource.data());
+      const total = Number(typeof dataSource.total === 'function' ? dataSource.total() : data.length) || data.length;
+      const pageSize = Number(typeof dataSource.pageSize === 'function' ? dataSource.pageSize() : data.length) || data.length || 1;
+      const serverPaged = total > data.length;
+      const rowIndex = data.findIndex(row => normalized(rowText(row)).includes(wanted));
+      if (rowIndex >= 0) {
+        const model = data[rowIndex];
+        const uid = String(rowValue(model, 'uid') || model.uid || '');
+        const renderedRows = () => {
+          const body = grid.tbody && grid.tbody[0] ? grid.tbody[0] : document.querySelector('#grid tbody');
+          return body ? Array.from(body.querySelectorAll('tr')) : [];
+        };
+        const renderedRow = () => renderedRows().find(row => {
+          if (uid && String(row.getAttribute('data-uid') || '') === uid) return true;
+          return normalized(row.innerText || row.textContent || '').includes(wanted);
+        });
+        let row = renderedRow();
+        if (clickControl(row)) return {ok: true, vehicle_found: true, row_index: rowIndex};
+        const currentPage = Number(typeof dataSource.page === 'function' ? dataSource.page() : 1) || 1;
+        const targetPage = pageSize ? Math.floor(rowIndex / pageSize) + 1 : currentPage;
+        if (!serverPaged && targetPage !== currentPage && typeof dataSource.page === 'function') {
+          dataSource.page(targetPage);
+        }
+        const scrollTargets = [
+          grid.content && grid.content[0],
+          document.querySelector('#grid .k-grid-content'),
+          document.querySelector('#grid .k-grid-content-locked')
+        ].filter(Boolean);
+        const rendered = renderedRows();
+        const rowHeight = rendered.length > 1
+          ? rendered[1].getBoundingClientRect().height
+          : (rendered[0] ? rendered[0].getBoundingClientRect().height : 42);
+        const visibleIndex = serverPaged ? rowIndex : rowIndex % pageSize;
+        scrollTargets.forEach(target => {
+          target.scrollTop = Math.max(0, visibleIndex * (rowHeight || 42));
+          target.dispatchEvent(new Event('scroll', {bubbles: true}));
+        });
+        row = renderedRow();
+        if (clickControl(row)) return {ok: true, vehicle_found: true, row_index: rowIndex};
+        return {ok: false, vehicle_found: true, row_index: rowIndex, needs_retry: true};
+      }
+      const currentPage = Number(typeof dataSource.page === 'function' ? dataSource.page() : 1) || 1;
+      const pageCount = Math.ceil(total / pageSize);
+      if (total > data.length && currentPage < pageCount && typeof dataSource.page === 'function') {
+        dataSource.page(currentPage + 1);
+        return {ok: false, vehicle_found: false, needs_retry: true, next_page: currentPage + 1};
+      }
     }
+    const rows = Array.from(document.querySelectorAll('tr, .row, [role=row]'));
+    const row = rows.find(item => normalized(item.innerText || item.textContent || '').includes(wanted));
+    if (clickControl(row)) return {ok: true, vehicle_found: true};
     const select = Array.from(document.querySelectorAll('select')).find(el => {
-      return Array.from(el.options || []).some(option => option.text.includes(vehicleLabel));
+      return Array.from(el.options || []).some(option => normalized(option.text).includes(wanted));
     });
     if (select) {
-      const option = Array.from(select.options).find(option => option.text.includes(vehicleLabel));
+      const option = Array.from(select.options).find(option => normalized(option.text).includes(wanted));
       select.value = option.value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
+      select.dispatchEvent(new Event('change', {bubbles: true}));
+      return {ok: true, vehicle_found: true};
     }
-    return false;
+    return {ok: false, vehicle_found: false};
     """
-    if not driver.execute_script(script, vehicle_label):
-        raise WebDriverException(f"vehicle not found: {vehicle_label}")
+    for _ in range(10):
+        result = driver.execute_script(script, vehicle_label)
+        if isinstance(result, dict):
+            if result.get("ok"):
+                time.sleep(2)
+                return
+            if result.get("vehicle_found") or result.get("needs_retry"):
+                time.sleep(0.4)
+                continue
+        elif result:
+            time.sleep(2)
+            return
+        break
+    raise WebDriverException(f"vehicle not found: {vehicle_label}")
 
 
 def _with_vehicle_update_identity(

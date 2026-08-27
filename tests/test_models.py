@@ -331,7 +331,7 @@ class ModelParsingTests(unittest.TestCase):
 
     def test_vehicle_options_include_borrowed_ambulance(self):
         self.assertIn("新坡95", vehicle_options())
-        self.assertEqual(vehicle_ppe_names()["新坡95"], "BPE-5951")
+        self.assertEqual(vehicle_ppe_names()["新坡95"], "CDD-2171")
 
     def test_current_ambulances_are_built_in_and_only_new_custom_can_be_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -341,7 +341,7 @@ class ModelParsingTests(unittest.TestCase):
             self.assertTrue(
                 all(record["vehicle_type"] == "內建" for record in load_vehicle_records(base_dir))
             )
-            save_vehicle_record("新坡95", "BPE-9595", base_dir, vehicle_type="自訂")
+            save_vehicle_record("新坡95", "CDD-9595", base_dir, vehicle_type="自訂")
             newpo_95 = next(record for record in load_vehicle_records(base_dir) if record["label"] == "新坡95")
             self.assertEqual("內建", newpo_95["vehicle_type"])
             self.assertFalse(delete_vehicle_record("新坡95", base_dir))
@@ -366,7 +366,7 @@ class ModelParsingTests(unittest.TestCase):
             )
 
             self.assertIn("新坡95", vehicle_options(base_dir))
-            save_vehicle_record("新坡95", "BPE-5951", base_dir)
+            save_vehicle_record("新坡95", "CDD-2171", base_dir)
 
             persisted = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertNotIn("新坡95", persisted["deleted"])

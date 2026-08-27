@@ -3965,7 +3965,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("新增或更新車輛", page_body)
         self.assertNotIn("返回 APP", page_body)
         self.assertNotIn('placeholder="新坡95"', page_body)
-        self.assertNotIn('placeholder="BPE-5951"', page_body)
+        self.assertNotIn('placeholder="CDD-2171"', page_body)
 
         response = self.client.post(
             "/admin/vehicles",
@@ -4201,6 +4201,63 @@ class WebAppTests(unittest.TestCase):
             "8番 曾彥綸 - C123***789（同步帳號）",
         )
 
+    def test_admin_public_pc_detail_lists_refusal_fuel_and_volunteer_in_order(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        response = self.client.post(
+            "/worker/public-pc-task-events",
+            headers={"X-Worker-Token": "test-token"},
+            json={
+                "event_id": "evt-detail-fields",
+                "task_id": "local-task-detail-fields",
+                "task": {
+                    "task_id": "local-task-detail-fields",
+                    "case_reason": "車禍",
+                    "case_address": "桃園市觀音區大福路180號",
+                    "vehicle": "新坡91",
+                    "driver": "曾彥綸",
+                    "case_time": "0830",
+                    "return_time": "0910",
+                    "patient_summary": "男一名",
+                    "refusal_summary": "女1名拒送",
+                    "mileage": "54620",
+                    "fuel_record": {
+                        "enabled": True,
+                        "quantity": "20.5",
+                        "unit_price": "30.1",
+                    },
+                    "volunteer_assist": True,
+                    "volunteer_assist_member_name": "張贊鏡",
+                    "consumables": {"桃-口罩(片)": 2},
+                    "disinfection_items": ["擦拭消毒"],
+                },
+                "worker_id": "public-duty-pc",
+                "action": "五站登打成功",
+                "status": "desktop_fast_completed",
+                "detail": "本機快速執行完成。",
+                "overall_status": "desktop_fast_completed",
+                "site_statuses": {
+                    "duty_work_log": {"status": "duty_work_log_saved"},
+                    "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                    "fuel_record": {"status": "fuel_record_saved"},
+                    "volunteer_assist": {"status": "volunteer_assist_saved"},
+                    "consumables": {"status": "consumables_saved"},
+                    "disinfection": {"status": "disinfection_saved"},
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+        expected = (
+            "新坡91 / 男 / 拒送 女1名拒送 / 出勤 0830 / 返隊 0910 / 曾彥綸 / 54620 / "
+            "油量 20.5 / 單價 30.1 / 總金額 617 / 協勤人員 張贊鏡 / 桃-口罩(片) x2 / 消毒1項"
+        )
+        self.assertIn(expected, body)
+        self.assertLess(body.index("拒送 女1名拒送"), body.index("出勤 0830"))
+        self.assertLess(body.index("54620"), body.index("油量 20.5"))
+        self.assertLess(body.index("總金額 617"), body.index("協勤人員 張贊鏡"))
+        self.assertLess(body.index("協勤人員 張贊鏡"), body.index("桃-口罩(片) x2"))
+
     def test_admin_public_pc_shows_two_vehicle_task_entries(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         worker_headers = {"X-Worker-Token": "test-token"}
@@ -4259,6 +4316,143 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("\u738b\u6631\u52db", body)
         self.assertIn("23456", body)
         self.assertIn("\u6843-9\u540b\u624b\u5957-L(\u96d9) x1", body)
+
+    def test_vehicle_reconciliation_is_preserved_and_linked_to_case_entry_status(self):
+        task = {
+            "task_id": "task-vehicle-reconciliation-display",
+            "case_id": "case-vehicle-reconciliation-display",
+            "case_reason": "車禍",
+            "case_address": "桃園市觀音區大福路180號",
+            "case_date": "2026-08-26",
+            "case_time": "1959",
+            "return_date": "2026-08-26",
+            "return_time": "2058",
+            "vehicle": "新坡92",
+            "driver": "曾彥綸",
+            "patient_summary": "男一名",
+        }
+        resolved_site_statuses = {
+            "duty_work_log": {"status": "duty_work_log_saved"},
+            "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+            "consumables": {
+                "status": "consumables_saved",
+                "vehicle_reconciliation": {
+                    "targets": {
+                        "新坡92": {
+                            "state": "resolved",
+                            "original_vehicle": "新坡92",
+                            "selected_vehicle": "新坡93",
+                            "candidates": [{"vehicle": "新坡93", "source": "一站通耗材"}],
+                        }
+                    }
+                },
+            },
+            "disinfection": {
+                "status": "disinfection_saved",
+                "vehicle_reconciliation": {
+                    "targets": {
+                        "新坡92": {
+                            "state": "resolved",
+                            "original_vehicle": "新坡92",
+                            "selected_vehicle": "新坡93",
+                            "candidates": [{"vehicle": "新坡93", "source": "緊急救護消毒"}],
+                        }
+                    }
+                },
+            },
+        }
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "evt-vehicle-reconciliation-resolved",
+                "task_id": task["task_id"],
+                "task": task,
+                "action": "四站登打成功",
+                "status": "desktop_fast_completed",
+                "overall_status": "desktop_fast_completed",
+                "site_statuses": resolved_site_statuses,
+            }
+        )
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "evt-vehicle-reconciliation-legacy-overwrite",
+                "task_id": task["task_id"],
+                "task": task,
+                "action": "補正舊版後台重送狀態",
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": {
+                    "duty_work_log": {"status": "duty_work_log_saved"},
+                    "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                    "consumables": {"status": "consumables_failed"},
+                    "disinfection": {"status": "disinfection_failed"},
+                },
+            }
+        )
+
+        report = app_module.public_pc_reports()[0]
+        self.assertEqual(
+            report["site_statuses"]["consumables"]["vehicle_reconciliation"]["targets"]["新坡92"]["selected_vehicle"],
+            "新坡93",
+        )
+        self.assertEqual(
+            app_module.case_entry_status_index("ems")[task["case_id"]],
+            ["新坡92", "新坡93"],
+        )
+
+        page = self.client.get("/admin/ems")
+        body = html.unescape(page.get_data(as_text=True))
+        self.assertIn("緊急救護-車禍 - 桃園市觀音區大福路180號", body)
+        self.assertIn("替代查找車輛：新坡92 → 新坡93（耗材、消毒）", body)
+
+    def test_legacy_vehicle_reconciliation_events_link_case_entry_status(self):
+        task = {
+            "task_id": "task-legacy-vehicle-reconciliation",
+            "case_id": "case-legacy-vehicle-reconciliation",
+            "case_reason": "車禍",
+            "case_address": "桃園市觀音區大福路180號",
+            "case_date": "2026-08-26",
+            "case_time": "1959",
+            "return_date": "2026-08-26",
+            "return_time": "2058",
+            "vehicle": "新坡92",
+        }
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "evt-legacy-vehicle-reconciliation",
+                "task_id": task["task_id"],
+                "task": task,
+                "action": "四站登打部分失敗",
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": {
+                    "duty_work_log": {"status": "duty_work_log_saved"},
+                    "vehicle_mileage": {"status": "vehicle_mileage_saved"},
+                    "consumables": {"status": "consumables_failed"},
+                    "disinfection": {"status": "disinfection_failed"},
+                },
+            }
+        )
+        report = app_module.public_pc_reports()[0]
+        report["events"] = [
+            {
+                "event_id": "evt-legacy-consumables-selected",
+                "status": "consumables_vehicle_candidate_selected",
+                "detail": "一站通耗材：同案件不同車輛：系統車輛=新坡92；已選擇查找車輛=新坡93。",
+            },
+            {
+                "event_id": "evt-legacy-disinfection-selected",
+                "status": "disinfection_vehicle_candidate_selected",
+                "detail": "緊急救護消毒：同案件不同車輛：系統車輛=新坡92；已選擇查找車輛=新坡93。",
+            },
+        ]
+        app_module.write_json_atomic(app_module.public_pc_report_file(), {"tasks": [report]})
+
+        self.assertEqual(
+            app_module.case_entry_status_index("ems")[task["case_id"]],
+            ["新坡92", "新坡93"],
+        )
+        body = html.unescape(self.client.get("/admin/ems").get_data(as_text=True))
+        self.assertIn("替代查找車輛：新坡92 → 新坡93（耗材、消毒）", body)
 
     def test_sinposmart_event_api_requires_token(self):
         response = self.client.post("/api/sinposmart/events", json={"event_id": "evt-1"})
@@ -6069,6 +6263,73 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("登入、帳密、SSO 或驗證碼尚未完成", body)
         self.assertIn("下一步", body)
 
+    def test_admin_public_pc_uses_stage_summary_for_unfinished_point(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        response = self.client.post(
+            "/worker/public-pc-task-events",
+            headers=worker_headers,
+            json={
+                "event_id": "evt-stage-summary-diagnostic",
+                "task_id": "local-task-stage-summary-diagnostic",
+                "task": {
+                    "task_id": "local-task-stage-summary-diagnostic",
+                    "case_reason": "急病",
+                    "case_address": "桃園市中壢區福祥路852巷7號",
+                },
+                "action": "五站登打部分失敗",
+                "status": "desktop_fast_completed_with_errors",
+                "overall_status": "desktop_fast_completed_with_errors",
+                "site_statuses": {
+                    "vehicle_mileage": {
+                        "key": "vehicle_mileage",
+                        "status": "vehicle_mileage_failed",
+                        "detail": "公務電腦 worker 車輛里程：選取車輛",
+                        "failure_stage": "登入 PPE",
+                        "failure_reason": "測試保留原因",
+                        "next_action": "測試保留下一步",
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        expected_stage = next(
+            row["detail"]
+            for row in app_module.site_stage_summary_rows(
+                {
+                    "vehicle_mileage": {
+                        "key": "vehicle_mileage",
+                        "status": "vehicle_mileage_failed",
+                        "detail": "公務電腦 worker 車輛里程：選取車輛",
+                        "failure_stage": "登入 PPE",
+                        "failure_reason": "測試保留原因",
+                        "next_action": "測試保留下一步",
+                    }
+                },
+                "vehicle_mileage",
+            )
+            if row["class"] == "failed"
+        )
+        body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+
+        self.assertEqual("選取車輛", expected_stage)
+        guidance = app_module.site_error_guidance(
+            {
+                "vehicle_mileage": {
+                    "key": "vehicle_mileage",
+                    "status": "vehicle_mileage_failed",
+                    "detail": "公務電腦 worker 車輛里程：選取車輛",
+                    "failure_stage": "登入 PPE",
+                    "failure_reason": "測試保留原因",
+                    "next_action": "測試保留下一步",
+                }
+            }
+        )
+        self.assertEqual(expected_stage, guidance[0]["stage"])
+        self.assertIn(f"<strong>未完成點</strong> {expected_stage}", body)
+        self.assertNotIn("<strong>未完成點</strong> 登入 PPE", body)
+
     def test_public_pc_report_collects_only_failed_site_png_evidence(self):
         selenium_dir = Path(self.tmp.name) / "selenium"
         selenium_dir.mkdir(parents=True)
@@ -7292,6 +7553,45 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("Stacktrace", body)
         self.assertNotIn("chromedriver!GetHandleVerifier", body)
 
+    def test_task_detail_separates_civilpower_units_and_times_and_hides_report(self):
+        request = AmbulanceReturnRequest(
+            task_id="civilpower-card-fields",
+            created_at=datetime.now(),
+            raw_text="",
+            case_date="2026-08-26",
+            case_time="1036",
+            return_date="2026-08-26",
+            return_time="1147",
+            volunteer_assist=True,
+            volunteer_assist_member_name="張贊鏡",
+            volunteer_assist_member_title="小隊長",
+            volunteer_assist_member_unit="大園救護分隊",
+        )
+        self.store.create(request)
+        self.store.update_site_result(
+            request.task_id,
+            app_module.SiteAutomationResult(
+                "volunteer_assist",
+                "民力系統",
+                "volunteer_assist_saved",
+                "登入帳號：民力系統=值班人員 > 任務司機 > 出勤人員 > 同步帳號。",
+            ),
+        )
+
+        body = html.unescape(self.client.get(f"/tasks/{request.task_id}").data.decode("utf-8"))
+        task_section = body[body.index('aria-label="任務內容"') : body.index('class="stage-panel"')]
+        volunteer_start = task_section.index("<h3>民力系統</h3>")
+        volunteer_end = task_section.index("<h3>里程", volunteer_start)
+        volunteer_card = task_section[volunteer_start:volunteer_end]
+
+        self.assertIn('<span class="label">協勤人員</span><span class="value">張贊鏡 / 小隊長</span>', volunteer_card)
+        self.assertIn('<span class="label">所屬單位</span><span class="value">大園救護分隊</span>', volunteer_card)
+        self.assertIn('<span class="label">服勤單位</span><span class="value">新坡分隊</span>', volunteer_card)
+        self.assertIn('<span class="label">出勤時間</span><span class="value">08/26 1036</span>', volunteer_card)
+        self.assertIn('<span class="label">返隊時間</span><span class="value">08/26 1147</span>', volunteer_card)
+        self.assertNotIn('<span class="label">回報</span>', volunteer_card)
+        self.assertNotIn("登入帳號：", volunteer_card)
+
     def test_public_pc_event_detail_compacts_renderer_stacktrace(self):
         raw_detail = "Message: timeout: Timed out receiving message from renderer\nStacktrace:\n" + (
             "chromedriver!GetHandleVerifier\n" * 80
@@ -7311,6 +7611,29 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("網頁轉譯程序逾時", detail)
         self.assertNotIn("Stacktrace", detail)
         self.assertNotIn("chromedriver!GetHandleVerifier", detail)
+
+    def test_public_pc_failed_callback_uses_action_to_identify_site(self):
+        detail = "案件代入後欄位不符：#txt_AddBackMin 預期=47 實際=46"
+        event = {
+            "status": "failed",
+            "action": "公務電腦回報民力系統",
+            "detail": detail,
+        }
+
+        self.assertEqual(app_module.event_site_key(event), "volunteer_assist")
+        self.assertEqual(app_module.event_site_name(event), "民力系統")
+        self.assertEqual(
+            app_module.public_pc_event_display_detail(
+                "failed",
+                detail,
+                action="公務電腦回報民力系統",
+            ),
+            "案件代入後未帶入有效案件派遣時間或返隊時間。",
+        )
+        self.assertEqual(
+            app_module.event_detail_text(event),
+            "案件代入後未帶入有效案件派遣時間或返隊時間。",
+        )
 
     def test_worker_civilpower_roster_get_requires_token_and_returns_snapshot(self):
         os.environ["WORKER_TOKEN"] = "test-token"

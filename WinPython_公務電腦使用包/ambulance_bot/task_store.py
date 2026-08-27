@@ -251,9 +251,16 @@ def clear_vehicle_reconciliation_target(site: dict[str, Any], vehicle_key: str) 
         return
     reconciliation = dict(site.get("vehicle_reconciliation") or {})
     targets = reconciliation_targets_for_storage(reconciliation.get("targets"))
-    if normalized_vehicle_key not in targets:
+    target = targets.get(normalized_vehicle_key)
+    if target is None:
         return
-    targets.pop(normalized_vehicle_key, None)
+    selected_vehicle = str(target.get("selected_vehicle") or "").strip()
+    if str(target.get("state") or "") == "selected" and selected_vehicle:
+        target["state"] = "resolved"
+        target["resolved_at"] = now_text()
+        targets[normalized_vehicle_key] = target
+    else:
+        targets.pop(normalized_vehicle_key, None)
     if targets:
         reconciliation["targets"] = targets
         site["vehicle_reconciliation"] = reconciliation

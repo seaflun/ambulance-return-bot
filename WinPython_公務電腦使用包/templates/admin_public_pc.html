@@ -243,6 +243,19 @@
       overflow-wrap: anywhere;
     }
     .vehicle-line strong { margin-right: 6px; color: var(--ink); }
+    .vehicle-reconciliation-summary {
+      display: grid;
+      gap: 4px;
+      margin: 10px 0 12px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
     .task-details { margin-top: 12px; border-top: 1px solid var(--line); }
     .task-details summary {
       cursor: pointer;
@@ -417,9 +430,18 @@
                       {% set fuel_state = fuel_results.get(entry.vehicle, {}) if fuel_results is mapping else {} %}
                       {{ entry.vehicle or '未填車輛' }} / {{ entry.driver or '未填司機' }} / 返隊 {{ entry.return_time or '未填' }} / 里程 {{ entry.mileage or '未填' }} / 里程狀態 {{ status_label(mileage_state.status or item.site_statuses.get('vehicle_mileage', {}).status or 'not_started') }}{% if entry.fuel_enabled %} / 加油狀態 {{ status_label(fuel_state.status or item.site_statuses.get('fuel_record', {}).status or 'not_started') }}{% endif %}
                     {% else %}
-                      {{ entry.vehicle or '未填車輛' }} / {{ entry.patient_gender or '未填傷病患' }} / 出勤 {{ entry.case_time or '未填' }} / 返隊 {{ entry.return_time or '未填' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }} / {{ entry.consumables_summary or '未填耗材' }} / {{ entry.disinfection_count_text or '消毒0項' }}
+                      {{ entry.vehicle or '未填車輛' }} / {{ entry.patient_gender or '未填傷病患' }}{% if entry.refusal_summary and entry.refusal_summary != '無' %} / 拒送 {{ entry.refusal_summary }}{% endif %} / 出勤 {{ entry.case_time or '未填' }} / 返隊 {{ entry.return_time or '未填' }} / {{ entry.driver or '未填司機' }} / {{ entry.mileage or '未填里程' }}{% if entry.fuel_enabled %} / 油量 {{ entry.fuel_quantity or '未填' }} / 單價 {{ entry.fuel_unit_price or '未填' }} / 總金額 {{ entry.fuel_total or '未填' }}{% endif %}{% if entry.volunteer_assist_member_name %} / 協勤人員 {{ entry.volunteer_assist_member_name }}{% endif %} / {{ entry.consumables_summary or '未填耗材' }} / {{ entry.disinfection_count_text or '消毒0項' }}
                     {% endif %}
                   </div>
+                {% endfor %}
+              </section>
+            {% endif %}
+
+            {% set vehicle_substitutions = task_vehicle_substitution_rows(item) %}
+            {% if vehicle_substitutions %}
+              <section class="vehicle-reconciliation-summary" aria-label="案件實際查找車輛">
+                {% for substitution in vehicle_substitutions %}
+                  <div>替代查找車輛：{{ substitution.original_vehicle }} → {{ substitution.selected_vehicle }}（{{ substitution.site_names | join('、') }}）</div>
                 {% endfor %}
               </section>
             {% endif %}
@@ -442,6 +464,7 @@
               {% for site_key, title in task_site_display_pairs(task) %}
                 {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
                 {% set diag = site_diagnostic(site) %}
+                {% set active_stage = site_active_stage_summary(item.site_statuses, site_key) %}
                 <div class="site">
                   <div class="site-name">{{ title }}</div>
                   <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
@@ -454,7 +477,7 @@
                   {% if diag.failure_reason %}
                     <div class="site-diagnostic">
                       <div class="site-diagnostic-title">錯誤指引</div>
-                      <div><strong>未完成點</strong> {{ diag.failure_stage }}</div>
+                      <div><strong>未完成點</strong> {{ active_stage.detail or diag.failure_stage or '未判定' }}</div>
                       <div><strong>原因</strong> {{ diag.failure_reason }}</div>
                       <div class="action"><strong>下一步</strong> {{ diag.next_action }}</div>
                     </div>
@@ -492,7 +515,7 @@
                     <div class="event-main">
                       <div class="event-action">{{ event.action }}</div>
                       {% if event.detail %}
-                        <div class="event-detail">{{ public_pc_event_display_detail(event.status, event.detail, item.site_statuses) }}</div>
+                        <div class="event-detail">{{ public_pc_event_display_detail(event.status, event.detail, item.site_statuses, action=event.action) }}</div>
                       {% endif %}
                     </div>
                   </li>

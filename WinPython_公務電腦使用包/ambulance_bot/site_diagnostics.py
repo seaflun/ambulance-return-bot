@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import is_dataclass, replace
 from typing import Any
 
@@ -173,7 +174,7 @@ SITE_STATUS_STAGE = {
     "duty_login_failed": "登入勤務系統",
     "case_picker_opened": "由案件帶入",
     "duty_case_not_found": "由案件帶入",
-    "duty_case_choose_failed": "由案件帶入",
+    "duty_case_choose_failed": "選取案件",
     "duty_work_log_prefill_partial": "填寫勤務資料",
     "duty_work_log_prefilled": "儲存",
     "duty_work_log_save_failed": "儲存",
@@ -208,6 +209,12 @@ def civilpower_stage_from_detail(detail: str) -> str:
     return max(matches, key=detail_text.rfind) if matches else ""
 
 
+def _detail_without_login_audit(detail: str) -> str:
+    """Remove the account-audit prefix before classifying the actual failure."""
+
+    return re.sub(r"登入帳號\s*[：:][^。\n]*(?:。|\n|$)", "", str(detail or ""), count=1).strip()
+
+
 def site_stage_from_detail(site_key: str, detail: str) -> str:
     """Extract a live stage only from our structured progress detail."""
     detail_text = " ".join(str(detail or "").split())
@@ -223,7 +230,7 @@ def site_stage_from_detail(site_key: str, detail: str) -> str:
 def diagnostic_payload(site_key: str, status: str, detail: str, exception: BaseException | None = None) -> dict[str, str]:
     status_text = str(status or "")
     detail_text = str(detail or "")
-    category = _diagnostic_category(status_text, detail_text, exception)
+    category = _diagnostic_category(site_key, status_text, detail_text, exception)
     if not category:
         return {field: "" for field in DIAGNOSTIC_FIELDS}
     stage = _stage_for(site_key, status_text, detail_text, category)
@@ -250,8 +257,16 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         "chromedriver_ended",
         "civilpower_io_verify",
         "civilpower_io_form_timeout",
+        "civilpower_case_verify",
+        "civilpower_selection",
+        "civilpower_io_query",
+        "civilpower_work_log_verify",
         "stale_element",
+        "vehicle_not_found",
+        "element_missing",
+        "case_not_found",
     }
+
     def value_for(field: str) -> str:
         if prefer_computed:
             return str(computed[field])
@@ -303,9 +318,15 @@ def make_site_result(
     )
 
 
-def _diagnostic_category(status: str, detail: str, exception: BaseException | None) -> str:
-    text = f"{status} {detail}".lower()
+def _diagnostic_category(
+    site_key: str,
+    status: str,
+    detail: str,
+    exception: BaseException | None,
+) -> str:
     raw_detail = detail or ""
+    analysis_detail = _detail_without_login_audit(raw_detail)
+    text = f"{status} {analysis_detail}".lower()
     if "running" in status or status in {"not_started", "created", "desktop_fast_completed", "completed_by_user"}:
         return ""
     if status.endswith("_saved"):
@@ -326,11 +347,19 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
             return browser_category
     if "timed out receiving message from renderer" in text:
         return "renderer_timeout_unverified"
+    if "err_connection_timed_out" in text:
+        return "web_page_timeout"
     if "stale element reference" in text or "staleelementreferenceexception" in text:
         return "stale_element"
     if _is_invalid_argument_oserror(exception, text):
         return "chrome_session"
-    if "chrome" in text or "devtoolsactiveport" in text or "session not created" in text or "not reachable" in text:
+    if (
+        "devtoolsactiveport" in text
+        or "session not created" in text
+        or "chrome not reachable" in text
+        or "chrome failed to start" in text
+        or "disconnected: not connected to devtools" in text
+    ):
         return "chrome_session"
     if "讀取任務狀態失敗" in raw_detail or "worker api" in text or "http 403" in text or "nas" in text:
         return "worker_api"
@@ -344,38 +373,62 @@ def _diagnostic_category(status: str, detail: str, exception: BaseException | No
         or ("fuel_record" in status and "missing driver" in text)
     ):
         return "ppe_driver"
-    if "同案多患者耗材分配／確認失敗" in raw_detail:
+    if "同案多患者耗材分配／確認失敗" in analysis_detail:
         return "multi_patient_consumables"
     if (
-        "耗材列表找不到符合案件的內容列" in raw_detail
+        "耗材列表找不到符合案件的內容列" in analysis_detail
         or "missing disinfection detail" in text
-        or ("耗材儲存後讀回不一致" in raw_detail and "actual=[]" in raw_detail)
+        or ("耗材儲存後讀回不一致" in analysis_detail and "actual=[]" in analysis_detail)
     ):
         return "case_not_closed"
-    if "出入登記簿" in raw_detail and ("儲存後回查不到" in raw_detail or "找到多筆相同" in raw_detail):
+    if site_key == "volunteer_assist" and (
+        "案件代入失敗" in analysis_detail
+        or "案件代入後未帶入有效案件" in analysis_detail
+        or "案件代入後欄位不符" in analysis_detail
+    ):
+        return "civilpower_case_verify"
+    if site_key == "volunteer_assist" and "選取視窗" in analysis_detail:
+        return "civilpower_selection"
+    if site_key == "volunteer_assist" and "出入登記簿查詢結果未完成更新" in analysis_detail:
+        return "civilpower_io_query"
+    if "出入登記簿" in analysis_detail and ("儲存後回查不到" in analysis_detail or "找到多筆相同" in analysis_detail):
         return "civilpower_io_verify"
-    if "民力系統確認救護" in raw_detail and "出入登記" in raw_detail and "逾時" in raw_detail:
+    if site_key == "volunteer_assist" and (
+        "服勤單位或人員連動" in analysis_detail
+        or (
+            "民力系統確認救護" in analysis_detail
+            and "出入登記" in analysis_detail
+            and "逾時" in analysis_detail
+        )
+    ):
         return "civilpower_io_form_timeout"
-    if "captcha" in text or "驗證碼" in raw_detail or "sso" in text or "login" in text or "登入" in raw_detail or "帳密" in raw_detail:
-        return "login"
+    if site_key == "volunteer_assist" and "工作紀錄簿儲存後回查不到" in analysis_detail:
+        return "civilpower_work_log_verify"
+    if (
+        "耗材內容頁找不到符合車輛的紀錄" in analysis_detail
+        or "找不到符合車輛的紀錄" in analysis_detail
+        or "vehicle not found" in text
+        or "找不到車輛" in analysis_detail
+    ):
+        return "vehicle_not_found"
     if (
         "case not found" in text
-        or "找不到符合案件" in raw_detail
-        or "未在前 24 小時案件清單找到" in raw_detail
-        or "未在案件查詢區間" in raw_detail
+        or "找不到符合案件" in analysis_detail
+        or "未在前 24 小時案件清單找到" in analysis_detail
+        or "未在案件查詢區間" in analysis_detail
     ):
         return "case_not_found"
-    if "missing disinfection detail" in text or "無法開啟消毒紀錄" in raw_detail:
+    if "missing disinfection detail" in text or "無法開啟消毒紀錄" in analysis_detail:
         return "case_detail"
-    if "vehicle not found" in text or "找不到車輛" in raw_detail:
-        return "vehicle_not_found"
-    if "query failed" in text or "查詢" in raw_detail:
+    if "captcha" in text or "驗證碼" in analysis_detail or "sso" in text or "login" in text or "登入" in analysis_detail or "帳密" in analysis_detail:
+        return "login"
+    if "query failed" in text or "查詢" in analysis_detail:
         return "query"
-    if "missing" in text or "not found" in text or "找不到" in raw_detail or "無法按" in raw_detail:
+    if "missing" in text or "not found" in text or "找不到" in analysis_detail or "無法按" in analysis_detail:
         return "element_missing"
-    if "不一致" in raw_detail or "停止儲存" in raw_detail or "驗證" in raw_detail:
+    if "不一致" in analysis_detail or "停止儲存" in analysis_detail or "驗證" in analysis_detail:
         return "validation"
-    if "save" in text or "儲存" in raw_detail or "確認" in raw_detail:
+    if "save" in text or "儲存" in analysis_detail or "確認" in analysis_detail:
         return "save"
     if "failed" in status or "error" in status or exception is not None:
         return "unknown"
@@ -392,6 +445,14 @@ def _is_invalid_argument_oserror(exception: BaseException | None, text: str) -> 
 
 
 def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
+    if category == "civilpower_case_verify":
+        return CIVILPOWER_STAGE_LABELS["case_verify"]
+    if category == "civilpower_selection":
+        return _civilpower_selection_stage(detail)
+    if category == "civilpower_io_query":
+        return CIVILPOWER_STAGE_LABELS["io_query"]
+    if category == "civilpower_work_log_verify":
+        return CIVILPOWER_STAGE_LABELS["work_log_verify"]
     if site_key == "volunteer_assist":
         reported_stage = civilpower_stage_from_detail(detail)
         if reported_stage:
@@ -403,6 +464,12 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return stage
     if category in {"chrome_session", "chrome_unresponsive", "chromedriver_ended"}:
         return "啟動 Chrome"
+    if category in {"web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified"}:
+        return (
+            CIVILPOWER_STAGE_LABELS["io_add"]
+            if site_key == "volunteer_assist"
+            else SITE_DEFAULT_FAILURE_STAGE.get(site_key, "執行流程")
+        )
     if category == "worker_api":
         return "讀取任務"
     if category == "multi_patient_consumables":
@@ -430,6 +497,10 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
     if category == "case_detail":
         return "開啟消毒紀錄"
     if category == "vehicle_not_found":
+        if site_key == "vehicle_mileage":
+            return "選取車輛"
+        if site_key == "consumables":
+            return "選取患者頁"
         if site_key == "fuel_record":
             return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "開啟登打油耗")
         return "填寫返隊時間與里程"
@@ -458,6 +529,15 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
     if category == "waiting_confirmation":
         return SITE_STATUS_STAGE.get(status) or "儲存"
     return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "執行流程")
+
+
+def _civilpower_selection_stage(detail: str) -> str:
+    detail_text = " ".join(str(detail or "").split())
+    if "人員選取視窗" in detail_text:
+        return CIVILPOWER_STAGE_LABELS["io_person"]
+    if any(marker in detail_text for marker in ("救護出勤", "救護返隊", "確認救護出勤")):
+        return CIVILPOWER_STAGE_LABELS["work_log_out_record"]
+    return CIVILPOWER_STAGE_LABELS["case_import"]
 
 
 def _login_stage(site_key: str) -> str:
@@ -499,11 +579,15 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "chrome_unresponsive": "Google Chrome 無回應、頁籤崩潰，或 DevTools 連線已中斷。",
         "chromedriver_ended": "ChromeDriver 程序已結束，瀏覽器自動化工作階段無法繼續。",
         "worker_api": "公務電腦與 NAS 任務狀態同步失敗。",
+        "civilpower_case_verify": "案件代入後未帶入有效案件派遣時間或返隊時間。",
         "login": "登入、帳密、SSO 或驗證碼尚未完成。",
         "case_not_found": "系統清單內找不到符合本案件時間或地址的資料。",
         "case_not_closed": "案件可能尚未在救護平板結案，耗材或消毒明細尚未產生。",
         "case_detail": "找到清單後無法開啟該案件的明細頁。",
         "vehicle_not_found": "頁面內找不到任務指定的救護車。",
+        "civilpower_selection": "民力系統選取視窗在期限內找不到符合條件的案件、出勤登記或人員。",
+        "civilpower_io_query": "民力出入登記簿查詢結果尚未完成更新，程式未安全判定既有紀錄。",
+        "civilpower_work_log_verify": "民力工作紀錄簿已送出，但回查不到本次救護義消協勤紀錄。",
         "fuel_period": "加油頁月份與任務加油月份不一致，油卡清單尚未切到任務月份。",
         "ppe_driver": "PPE 駕駛清單找不到指定人員或有效代碼。",
         "civilpower_io_verify": "民力出入登記簿已送出，但查詢清單尚未出現可驗證的紀錄。",
@@ -545,6 +629,12 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "等待民力出入登記簿清單刷新後確認剛儲存的紀錄；若仍找不到，再確認人員、日期、狀態與時間。"
     if category == "civilpower_io_form_timeout":
         return "保留截圖；重新開啟民力出入登記簿後單獨重跑，程式會先回查避免重複新增。"
+    if category == "civilpower_selection":
+        return "確認民力案件或出勤出入登記已存在且日期、時間、人員、單位一致，再單獨重跑民力系統。"
+    if category == "civilpower_io_query":
+        return "保持原登入帳號，重新整理出入登記簿並查詢；確認結果更新後再重試，避免重複新增。"
+    if category == "civilpower_work_log_verify":
+        return "保持原登入帳號查詢工作紀錄簿；確認已儲存後再重試，避免重複新增。"
     if category == "stale_element":
         return f"重新整理{site_name}頁面後單獨重跑；若持續發生，保留截圖與失敗時間回報。"
     if category == "login":
@@ -556,7 +646,11 @@ def _next_action_for(site_key: str, category: str) -> str:
     if category == "case_detail":
         return "保留目前清單畫面，先人工開啟明細；若仍無法開啟，回報該站頁面變更。"
     if category == "vehicle_not_found":
+        if site_key == "consumables":
+            return "確認案件已結案且患者頁含任務車輛後，再單獨重跑耗材。"
         return "確認任務車號與系統車輛名稱一致，必要時到救護各項設定修正後重試。"
+    if category == "civilpower_case_verify":
+        return "確認案件代入後的派遣／返隊時間與第一站工作狀態，再單獨重跑民力系統。"
     if category == "fuel_period":
         return "將加油頁月份切到任務月份後重新查詢油卡；新版 Worker 會自動切換月份後再登打。"
     if category == "ppe_driver":
