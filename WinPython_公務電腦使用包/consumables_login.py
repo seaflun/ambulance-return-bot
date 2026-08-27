@@ -74,6 +74,7 @@ def login_acs_and_get_driver(
     tile_name: str = "",
     task: dict[str, object] | AmbulanceReturnRequest | None = None,
     artifacts_dir: Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> webdriver.Chrome:
     account_text, password_text = _load_acs_credentials(task)
 
@@ -87,6 +88,8 @@ def login_acs_and_get_driver(
         options.add_argument(f"--remote-debugging-port={debugger_port}")
     options.add_experimental_option("detach", True)
 
+    if progress is not None:
+        progress("啟動 Chrome")
     driver = create_chrome_driver_with_retry(options, "一站通耗材", fresh_session=True)
     page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
     driver.set_page_load_timeout(page_timeout)
@@ -94,6 +97,8 @@ def login_acs_and_get_driver(
     apply_tile(driver, tile_name)
     try:
         login_error = ""
+        if progress is not None:
+            progress("登入一站通")
         for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
             driver.get(SSO_URL)
             wait = WebDriverWait(driver, 15)
@@ -107,6 +112,8 @@ def login_acs_and_get_driver(
 
         _open_acs_system(driver, wait)
         return driver
+    except TaskCancellationError:
+        raise
     except Exception as exc:
         request = _request_or_none(task)
         evidence = _capture_consumables_failure(
@@ -124,6 +131,7 @@ def open_consumable_record_for_task(
     cancel_check: Callable[[], None] | None = None,
     update_context: dict[str, object] | None = None,
     artifacts_dir: Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     mark_driver_operation_active(driver)
     try:
@@ -132,6 +140,7 @@ def open_consumable_record_for_task(
             task,
             cancel_check=cancel_check,
             update_context=update_context,
+            progress=progress,
         )
     except (TaskCancellationError, ManualUpdateRequiredError, VehicleCandidateLookupError):
         raise
@@ -153,6 +162,7 @@ def _open_consumable_record_for_task(
     task: dict[str, object] | AmbulanceReturnRequest,
     cancel_check: Callable[[], None] | None = None,
     update_context: dict[str, object] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     request = task if isinstance(task, AmbulanceReturnRequest) else AmbulanceReturnRequest.from_dict(task)
     manual_reason = manual_update_reason("consumables", request, update_context)
@@ -161,7 +171,11 @@ def _open_consumable_record_for_task(
     if save_consumables_record_enabled() and not _normalized_consumable_case_id(request.case_id):
         raise RuntimeError("耗材自動儲存需要有效的官方案件案號，已停止處理。")
     wait = WebDriverWait(driver, 15)
+    if progress is not None:
+        progress("開啟耗材紀錄")
     _open_consumable_maintenance_page(driver, wait)
+    if progress is not None:
+        progress("查詢案件")
     hrefs = _find_consumable_detail_hrefs(driver, request)
     if len(hrefs) > 1 and not save_consumables_record_enabled():
         raise RuntimeError("同案多患者耗材必須啟用自動儲存，否則切換頁面會遺失未送出的資料。")
@@ -173,6 +187,8 @@ def _open_consumable_record_for_task(
     for index, (href, allocation) in enumerate(zip(hrefs, allocations)):
         suffix = _patient_sid_parts(_emm_temsis_id_from_href(href))[1]
         try:
+            if progress is not None:
+                progress("選取患者頁")
             driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
             if not _wait_for_consumable_detail_page(driver, wait):
                 raise RuntimeError("consumable detail page did not open; SSO login may be required")
@@ -188,12 +204,18 @@ def _open_consumable_record_for_task(
             if request.vehicle and actual_vehicle and actual_vehicle != request.vehicle:
                 raise RuntimeError(f"患者序號 {suffix} 車輛不符：預期={request.vehicle} 實際={actual_vehicle}")
             page_request = replace(request, consumables=dict(allocation))
+            if progress is not None:
+                progress("填寫耗材品項")
+                if save_consumables_record_enabled():
+                    progress("儲存")
             single_detail = _write_current_consumable_page(
                 driver,
                 wait,
                 page_request,
                 **({"cancel_check": cancel_check} if cancel_check is not None else {}),
             )
+            if progress is not None and save_consumables_record_enabled():
+                progress("回查耗材紀錄")
         except TaskCancellationError:
             raise
         except Exception as exc:

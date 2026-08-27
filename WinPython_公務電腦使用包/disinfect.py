@@ -4,6 +4,7 @@ import os
 import re
 from io import BytesIO
 from pathlib import Path
+from typing import Callable
 
 import ddddocr
 from PIL import Image
@@ -18,6 +19,7 @@ from ambulance_bot.duty_credentials import DutyCredential, load_duty_credential,
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.profile_paths import runtime_profile_dir
+from ambulance_bot.task_cancellation import TaskCancellationError
 from ambulance_bot.window_layout import apply_tile
 
 
@@ -49,6 +51,7 @@ def login_and_get_driver(
     debugger_port: int | None = None,
     tile_name: str = "",
     artifacts_dir: Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> webdriver.Chrome:
     credentials = _disinfection_credential_attempts(request)
     if not credentials:
@@ -63,6 +66,8 @@ def login_and_get_driver(
     if debugger_port:
         options.add_argument(f"--remote-debugging-port={debugger_port}")
 
+    if progress is not None:
+        progress("啟動 Chrome")
     driver = create_chrome_driver_with_retry(options, "緊急救護消毒", fresh_session=True)
     page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
     driver.set_page_load_timeout(page_timeout)
@@ -71,6 +76,8 @@ def login_and_get_driver(
     errors: list[str] = []
 
     try:
+        if progress is not None:
+            progress("登入消毒系統")
         for credential, source in credentials:
             account = _mask_login_account(credential.user_id)
             for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
@@ -87,6 +94,8 @@ def login_and_get_driver(
                     driver.get(URL)
 
         raise RuntimeError("消毒紀錄登入失敗，已重新整理並重試 3 次：" + "；".join(errors))
+    except TaskCancellationError:
+        raise
     except Exception as exc:
         output_dir = Path(artifacts_dir or os.getenv("ARTIFACTS_DIR", "artifacts")) / "selenium"
         try:

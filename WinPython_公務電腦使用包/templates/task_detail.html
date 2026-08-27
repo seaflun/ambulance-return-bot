@@ -375,6 +375,14 @@
     .stage-state.waiting { background: var(--waiting-bg); color: var(--waiting); }
     .stage-summary-list { margin-bottom: 10px; }
     .stage-summary-detail { color: var(--muted); font-size: var(--text-xs); font-weight: 680; }
+    .stage-details { border-top: 1px solid var(--line); padding-top: 10px; }
+    .stage-details summary {
+      color: var(--ink);
+      cursor: pointer;
+      font-size: var(--text-sm);
+      font-weight: 760;
+    }
+    .stage-details[open] summary { margin-bottom: 10px; }
     .civilpower-stage-details { border-top: 1px solid var(--line); padding-top: 10px; }
     .civilpower-stage-details summary {
       color: var(--ink);
@@ -645,7 +653,7 @@
       <div class="stage-grid">
         {% for site_key, title in task_site_display_pairs(payload.task, payload.site_statuses) %}
           {% set stage_rows = site_stage_rows(payload.site_statuses, site_key) %}
-          <article class="stage-card{% if site_key == 'volunteer_assist' %} civilpower-stage-card{% endif %}">
+          <article class="stage-card{% if site_key == 'volunteer_assist' %} civilpower-stage-card{% else %} compact-stage-card{% endif %}">
             <h3>{{ title }}</h3>
             {% if site_key == 'volunteer_assist' %}
               <ul class="stage-list stage-summary-list">
@@ -668,14 +676,25 @@
                 </ul>
               </details>
             {% else %}
-              <ul class="stage-list">
-                {% for stage in stage_rows %}
+              <ul class="stage-list stage-summary-list">
+                {% for stage in site_stage_summary_rows(payload.site_statuses, site_key) %}
                   <li>
-                    <span class="stage-name">{{ loop.index }}. {{ stage.name }}</span>
+                    <span class="stage-name">{{ stage.name }}{% if stage.detail %}／<span class="stage-summary-detail">{{ stage.detail }}</span>{% endif %}</span>
                     <span class="stage-state {{ stage.class }}">{{ stage.state }}</span>
                   </li>
                 {% endfor %}
               </ul>
+              <details class="stage-details">
+                <summary>查看完整 {{ stage_rows|length }} 段</summary>
+                <ul class="stage-list">
+                  {% for stage in stage_rows %}
+                    <li>
+                      <span class="stage-name">{{ loop.index }}. {{ stage.name }}</span>
+                      <span class="stage-state {{ stage.class }}">{{ stage.state }}</span>
+                    </li>
+                  {% endfor %}
+                </ul>
+              </details>
             {% endif %}
           </article>
         {% endfor %}

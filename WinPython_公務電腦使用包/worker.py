@@ -1925,6 +1925,33 @@ def maybe_run_credential_sync(server_url: str) -> None:
     print(f"[worker] credential sync {status}: {detail}", flush=True)
 
 
+def _report_worker_site_progress(
+    server_url: str,
+    task_id: str,
+    site_key: str,
+    site_name: str,
+    stage: str,
+    login_audit: str,
+) -> None:
+    try:
+        post_status(
+            server_url,
+            task_id,
+            f"{site_key}_running",
+            with_login_audit(f"公務電腦 worker {site_name}：{stage}", login_audit),
+            site_key=site_key,
+            site_name=site_name,
+        )
+    except TaskCancellationError:
+        raise
+    except Exception as exc:
+        print(
+            f"[worker] stage progress deferred task={task_id} site={site_key} "
+            f"stage={stage}: {exc}",
+            flush=True,
+        )
+
+
 def run_task(
     server_url: str,
     worker_id: str,
@@ -1944,6 +1971,17 @@ def run_task(
     login_audit = login_audit_for_site("duty_work_log", request)
     print(f"[worker] claimed task {request.task_id}", flush=True)
     post_status(server_url, request.task_id, "worker_running", with_login_audit(f"公務電腦 worker 執行中：{worker_id}", login_audit))
+
+    def report_progress(stage: str) -> None:
+        _report_worker_site_progress(
+            server_url,
+            request.task_id,
+            "duty_work_log",
+            "消防勤務工作紀錄",
+            stage,
+            login_audit,
+        )
+
     try:
         result = run_local_selenium_task(
             request,
@@ -1955,6 +1993,7 @@ def run_task(
             force_new_driver=force_new_driver,
             update_context=update_context,
             cancel_check=cancel_check,
+            progress=report_progress,
         )
     except TaskCancellationError:
         raise
@@ -2580,6 +2619,17 @@ def run_vehicle_task(
         "vehicle_mileage_running",
         with_login_audit(f"公務電腦 worker 執行車輛里程：{worker_id}", login_audit),
     )
+
+    def report_progress(stage: str) -> None:
+        _report_worker_site_progress(
+            server_url,
+            request.task_id,
+            "vehicle_mileage",
+            "車輛里程",
+            stage,
+            login_audit,
+        )
+
     if len(request.vehicle_requests()) > 1:
         shared_port = debugger_port or int(os.getenv("VEHICLE_MILEAGE_DEBUGGER_PORT", "9234"))
         result = _run_worker_per_vehicle_site(
@@ -2597,6 +2647,7 @@ def run_vehicle_task(
                 force_new_driver=index == 1,
                 update_context=_vehicle_specific_update_context(update_context, vehicle_request, index),
                 cancel_check=cancel_check,
+                progress=report_progress,
             ),
             vehicle_results=vehicle_results,
             login_audit=login_audit,
@@ -2613,6 +2664,7 @@ def run_vehicle_task(
                 force_new_driver=force_new_driver,
                 update_context=update_context,
                 cancel_check=cancel_check,
+                progress=report_progress,
             )
         except TaskCancellationError:
             raise
@@ -2671,6 +2723,17 @@ def run_fuel_worker_task(
         "fuel_record_running",
         with_login_audit(f"公務電腦 worker 登打加油紀錄：{worker_id}", login_audit),
     )
+
+    def report_progress(stage: str) -> None:
+        _report_worker_site_progress(
+            server_url,
+            request.task_id,
+            "fuel_record",
+            "登打加油紀錄",
+            stage,
+            login_audit,
+        )
+
     try:
         if len(all_vehicle_requests) > 1:
             original_indexes = {id(item): index for index, item in enumerate(all_vehicle_requests, start=1)}
@@ -2694,6 +2757,7 @@ def run_fuel_worker_task(
                         original_indexes[id(vehicle_request)],
                     ),
                     cancel_check=cancel_check,
+                    progress=report_progress,
                 ),
                 vehicle_results=vehicle_results,
                 login_audit=login_audit,
@@ -2710,6 +2774,7 @@ def run_fuel_worker_task(
                 force_new_driver=force_new_driver,
                 update_context=update_context,
                 cancel_check=cancel_check,
+                progress=report_progress,
             )
     except TaskCancellationError:
         raise
@@ -2819,6 +2884,7 @@ def _run_worker_disinfection_vehicle(
     update_context: dict[str, object] | None,
     cancel_check: Callable[[], None] | None,
     reconciliation: dict[str, object],
+    progress: Callable[[str], None] | None = None,
 ) -> SiteAutomationResult:
     lookup_request = request_with_selected_lookup_vehicle(vehicle_request, reconciliation)
     selenium_result = run_disinfection_task(
@@ -2832,6 +2898,7 @@ def _run_worker_disinfection_vehicle(
         force_new_driver=False,
         update_context=update_context,
         cancel_check=cancel_check,
+        progress=progress,
     )
     return SiteAutomationResult(
         "disinfection",
@@ -2877,6 +2944,17 @@ def run_disinfection_worker_task(
         "disinfection_running",
         with_login_audit(f"公務電腦 worker 執行消毒紀錄：{worker_id}", login_audit),
     )
+
+    def report_progress(stage: str) -> None:
+        _report_worker_site_progress(
+            server_url,
+            request.task_id,
+            "disinfection",
+            "緊急救護消毒",
+            stage,
+            login_audit,
+        )
+
     try:
         require_safe_automated_update("disinfection", request, update_context)
         if len(request.vehicle_requests()) > 1:
@@ -2886,6 +2964,7 @@ def run_disinfection_worker_task(
                 debugger_port=debugger_port,
                 tile_name=tile_name,
                 artifacts_dir=artifacts_dir,
+                progress=report_progress,
             )
             result = _run_worker_per_vehicle_site(
                 server_url,
@@ -2903,6 +2982,7 @@ def run_disinfection_worker_task(
                     update_context=_vehicle_specific_update_context(update_context, vehicle_request, _index),
                     cancel_check=cancel_check,
                     reconciliation=vehicle_reconciliation,
+                    progress=report_progress,
                 ),
                 vehicle_results=vehicle_results,
                 login_audit=login_audit,
@@ -2915,6 +2995,7 @@ def run_disinfection_worker_task(
                 debugger_port=debugger_port,
                 tile_name=tile_name,
                 artifacts_dir=artifacts_dir,
+                progress=report_progress,
             )
             selenium_result = run_disinfection_task(
                 lookup_request,
@@ -2927,6 +3008,7 @@ def run_disinfection_worker_task(
                 force_new_driver=False,
                 update_context=update_context,
                 cancel_check=cancel_check,
+                progress=report_progress,
             )
             result = SiteAutomationResult(
                 "disinfection",
@@ -3016,6 +3098,17 @@ def run_consumables_worker_task(
         site_key="consumables",
         site_name="一站通耗材",
     )
+
+    def report_progress(stage: str) -> None:
+        _report_worker_site_progress(
+            server_url,
+            request.task_id,
+            "consumables",
+            "一站通耗材",
+            stage,
+            login_audit,
+        )
+
     try:
         require_safe_automated_update("consumables", request, update_context)
         driver = login_acs_and_get_driver(
@@ -3024,6 +3117,7 @@ def run_consumables_worker_task(
             tile_name=tile_name,
             task=request,
             artifacts_dir=artifacts_dir,
+            progress=report_progress,
         )
         if len(request.vehicle_requests()) > 1:
             def run_vehicle(vehicle_request, vehicle_index):
@@ -3051,6 +3145,7 @@ def run_consumables_worker_task(
                         ),
                         **({"cancel_check": cancel_check} if cancel_check is not None else {}),
                         artifacts_dir=artifacts_dir,
+                        progress=report_progress,
                     ),
                     reconciliation_vehicle_key=selected_vehicle_target_key(
                         vehicle_reconciliation,
@@ -3075,6 +3170,7 @@ def run_consumables_worker_task(
                 **({"update_context": update_context} if update_context is not None else {}),
                 **({"cancel_check": cancel_check} if cancel_check is not None else {}),
                 artifacts_dir=artifacts_dir,
+                progress=report_progress,
             )
             status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
             result = SiteAutomationResult(

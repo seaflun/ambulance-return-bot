@@ -90,6 +90,11 @@ _PPE_OPTION_ID_FIELDS = ("Value", "Id", "UserId", "EmpId", "Code", "Driver")
 WAITING_CONFIRMATION_MARKER = "waiting_confirmation:"
 
 
+def _report_progress(progress: Callable[[str], None] | None, stage: str) -> None:
+    if progress is not None:
+        progress(stage)
+
+
 def _normalize_ppe_option_name(value: object) -> str:
     return " ".join(str(value or "").split())
 
@@ -227,6 +232,7 @@ def run_local_selenium_task(
     force_new_driver: bool = False,
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +262,7 @@ def run_local_selenium_task(
     try:
         if use_session_lock:
             lock_acquired = _acquire_selenium_session(f"task {request.task_id}")
+        _report_progress(progress, "啟動 Chrome")
         print(f"[task] creating selenium driver for {request.task_id}", flush=True)
         if debugger_port is None and not force_new_driver:
             debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
@@ -278,6 +285,7 @@ def run_local_selenium_task(
             output_dir,
             summary_path,
             **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+            **({"progress": progress} if progress is not None else {}),
         )
         if not result.ok:
             close_driver_on_exit = True
@@ -331,6 +339,7 @@ def run_vehicle_mileage_task(
     force_new_driver: bool = False,
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -360,6 +369,7 @@ def run_vehicle_mileage_task(
         if use_session_lock:
             lock_acquired = _acquire_selenium_session(f"vehicle_mileage {request.task_id}")
         if driver is None:
+            _report_progress(progress, "啟動 Chrome")
             if debugger_port is None and not force_new_driver:
                 debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
             driver = _create_driver(
@@ -379,6 +389,7 @@ def run_vehicle_mileage_task(
             output_dir,
             update_context=update_context,
             **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+            **({"progress": progress} if progress is not None else {}),
         )
         status = _confirmation_aware_status(
             "vehicle_mileage",
@@ -666,6 +677,7 @@ def run_fuel_record_task(
     force_new_driver: bool = False,
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -695,6 +707,7 @@ def run_fuel_record_task(
         if use_session_lock:
             lock_acquired = _acquire_selenium_session(f"fuel_record {request.task_id}")
         if driver is None:
+            _report_progress(progress, "啟動 Chrome")
             if debugger_port is None and not force_new_driver:
                 debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
             driver = _create_driver(
@@ -714,6 +727,7 @@ def run_fuel_record_task(
             output_dir,
             update_context=update_context,
             **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+            **({"progress": progress} if progress is not None else {}),
         )
         status = _confirmation_aware_status(
             "fuel_record",
@@ -759,6 +773,7 @@ def run_disinfection_task(
     force_new_driver: bool = False,
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -788,6 +803,7 @@ def run_disinfection_task(
         if use_session_lock:
             lock_acquired = _acquire_selenium_session(f"disinfection {request.task_id}")
         if driver is None:
+            _report_progress(progress, "啟動 Chrome")
             if debugger_port is None and not force_new_driver:
                 debugger_port = int(os.getenv("WORKER_CHROME_DEBUGGER_PORT", "9223"))
             driver = _create_driver(
@@ -806,6 +822,7 @@ def run_disinfection_task(
             request,
             output_dir,
             **({"cancel_check": cancel_check} if cancel_check is not None else {}),
+            **({"progress": progress} if progress is not None else {}),
         )
         status = _confirmation_aware_status(
             "disinfection",
@@ -1437,7 +1454,9 @@ def _prepare_duty_work_log_form(
     output_dir: Path,
     summary_path: Path,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> SeleniumRunResult:
+    _report_progress(progress, "登入勤務系統")
     if not _ensure_duty_login(driver, request):
         _save_artifacts(driver, output_dir, request.task_id, "duty_login")
         return SeleniumRunResult(
@@ -1447,14 +1466,17 @@ def _prepare_duty_work_log_form(
             summary_path=summary_path,
         )
 
+    _report_progress(progress, "新增工作紀錄")
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
     time.sleep(1)
     _click_by_text_or_id(driver, ["_btnInsert"], ["\u65b0\u589e"])
     time.sleep(1.5)
+    _report_progress(progress, "由案件帶入")
     _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
     _switch_to_window_containing(driver, "_txtSDATE")
     time.sleep(1.5)
     case_query_start_at = _case_query_start_at(request)
+    _report_progress(progress, "查詢案件")
     _set_case_query_date_range(driver, lookup_range="24h", start_at=case_query_start_at)
     _click_query_if_present(driver)
     time.sleep(1)
@@ -1473,6 +1495,7 @@ def _prepare_duty_work_log_form(
             detail=f"未在案件查詢區間（{query_range_label}）找到符合時間={request.case_time}、地址={request.case_address} 的案件；已保存查詢頁截圖。",
             summary_path=summary_path,
         )
+    _report_progress(progress, "選取案件")
     if not _click_case_choose(driver, case["case_id"]):
         _save_artifacts(driver, output_dir, request.task_id, "duty_case_picker")
         return SeleniumRunResult(
@@ -1483,12 +1506,14 @@ def _prepare_duty_work_log_form(
         )
     time.sleep(1.5)
     _switch_to_work_log_form_for_case(driver, case)
+    _report_progress(progress, "填寫勤務資料")
     fill_result = _fill_duty_work_log_values(driver, request)
     _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_prefilled")
     if fill_result:
         detail = f"消防勤務工作紀錄已預填但有欄位未確認：{', '.join(fill_result)}。已保存截圖，不會自動儲存。"
         status = "duty_work_log_prefill_partial"
     elif _save_duty_work_log_enabled():
+        _report_progress(progress, "儲存")
         save_result = _click_duty_work_log_save(driver, cancel_check=cancel_check)
         time.sleep(1.5)
         _save_artifacts(driver, output_dir, request.task_id, "duty_work_log_saved")
@@ -1498,6 +1523,7 @@ def _prepare_duty_work_log_form(
             if str(save_result.get(key) or "").strip()
         ]
         confirmation = _save_confirmation_state(*confirmation_messages)
+        _report_progress(progress, "確認勤務紀錄")
         if save_result.get("ok") and confirmation == "success":
             detail = f"消防勤務工作紀錄已預填並確認儲存成功：{' / '.join(confirmation_messages)}"
             status = "duty_work_log_saved"
@@ -1523,8 +1549,10 @@ def _open_vehicle_mileage_page(
     output_dir: Path,
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     try:
+        _report_progress(progress, "登入 PPE")
         if not _ensure_ppe_vehicle_mileage_session(driver, request):
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_login")
             raise WebDriverException("PPE login did not reach vehicle mileage page")
@@ -1534,6 +1562,7 @@ def _open_vehicle_mileage_page(
             output_dir.parent,
             update_context=update_context,
             cancel_check=cancel_check,
+            progress=progress,
         )
         _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage")
     except WebDriverException:
@@ -2105,7 +2134,9 @@ def _prepare_vehicle_mileage_form(
     artifacts_dir: Path | None = None,
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
+    _report_progress(progress, "開啟車輛里程")
     driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
     if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page before vehicle mileage form")
@@ -2121,10 +2152,12 @@ def _prepare_vehicle_mileage_form(
         )
 
     vehicle_label = vehicle_mileage_record_label(request, artifacts_dir)
+    _report_progress(progress, "選取車輛")
     _select_vehicle_record(driver, vehicle_label)
     time.sleep(1)
     current_matches = _vehicle_mileage_matching_row_indices(driver, request)
     if len(current_matches) == 1:
+        _report_progress(progress, "確認里程紀錄")
         return f"{request.vehicle} 車輛里程紀錄已存在，略過新增。"
     if len(current_matches) > 1:
         raise WebDriverException(
@@ -2140,17 +2173,23 @@ def _prepare_vehicle_mileage_form(
         row_index = previous_matches[0]
         start_mileage = _vehicle_mileage_row_value(driver, row_index, "StartMileage")
         values = _vehicle_mileage_values(request, start_mileage)
+        _report_progress(progress, "填寫返隊時間與里程")
         _fill_vehicle_grid_values(driver, values, row_index=row_index)
         _assert_vehicle_mileage_values_present(driver, values, row_index=row_index)
         if _save_vehicle_mileage_enabled():
-            return f"已修正原車輛里程列。{_save_vehicle_mileage_form(driver, cancel_check=cancel_check)}"
+            _report_progress(progress, "儲存")
+            detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
+            _report_progress(progress, "確認里程紀錄")
+            return f"已修正原車輛里程列。{detail}"
         return "已修正原車輛里程列，未按儲存。"
 
+    _report_progress(progress, "填寫返隊時間與里程")
     return _add_vehicle_mileage_record(
         driver,
         request,
         artifacts_dir,
         cancel_check=cancel_check,
+        progress=progress,
     )
 
 
@@ -2160,6 +2199,7 @@ def _open_fuel_record_page(
     output_dir: Path,
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     all_vehicle_requests = request.vehicle_requests()
     fuel_requests = [
@@ -2169,6 +2209,7 @@ def _open_fuel_record_page(
     ]
     if not fuel_requests:
         return "未勾選加油紀錄，已略過。"
+    _report_progress(progress, "登入 PPE")
     if not _ensure_ppe_fuel_record_session(driver, request):
         _save_artifacts(driver, output_dir, request.task_id, "fuel_record_login")
         raise WebDriverException("PPE login did not reach fuel record page")
@@ -2185,6 +2226,7 @@ def _open_fuel_record_page(
                     vehicle_index,
                 ),
                 cancel_check=cancel_check,
+                progress=progress,
             )
         )
     _save_artifacts(driver, output_dir, request.task_id, "fuel_record")
@@ -2197,8 +2239,10 @@ def _prepare_fuel_record_form(
     artifacts_dir: Path | None = None,
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     fuel = request.fuel_record
+    _report_progress(progress, "開啟登打油耗")
     driver.get("https://ppe.tyfd.gov.tw/FUC04100/Query")
     if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page before fuel record query")
@@ -2221,6 +2265,7 @@ def _prepare_fuel_record_form(
                 f"fuel period change requires manual correction: previous={previous_period} current={current_period_key}"
             )
     target_period = f"{fuel.date[:4]}/{fuel.date[4:6]}"
+    _report_progress(progress, "選取月份")
     current_period = _ensure_fuel_query_period(driver, target_period)
     if current_period != target_period:
         raise WebDriverException(f"fuel period mismatch: page={current_period} task={target_period}")
@@ -2228,6 +2273,7 @@ def _prepare_fuel_record_form(
     if not fuel_card_plates:
         raise WebDriverException(f"missing fuel vehicle plate mapping: {request.vehicle}")
     try:
+        _report_progress(progress, "選取車輛")
         _click_fuel_card_register(driver, fuel_card_plates)
     except WebDriverException as exc:
         raise WebDriverException(
@@ -2238,6 +2284,7 @@ def _prepare_fuel_record_form(
 
     current_matches = _fuel_grid_matching_row_indices(driver, request)
     if len(current_matches) == 1:
+        _report_progress(progress, "確認加油紀錄")
         return f"{request.vehicle} 加油紀錄已存在，略過新增。"
     if len(current_matches) > 1:
         raise WebDriverException(
@@ -2251,17 +2298,25 @@ def _prepare_fuel_record_form(
                 f"previous fuel row must match exactly once: "
                 f"vehicle={previous_request.vehicle} matches={previous_matches}"
             )
+        _report_progress(progress, "填寫加油紀錄")
         _fill_fuel_grid_record(driver, request, row_index=previous_matches[0])
         _assert_fuel_grid_record_present(driver, request)
         if _save_fuel_record_enabled():
-            return f"{request.vehicle} 已更新原加油紀錄。{_save_fuel_record_form(driver, request, cancel_check=cancel_check)}"
+            _report_progress(progress, "儲存")
+            detail = _save_fuel_record_form(driver, request, cancel_check=cancel_check)
+            _report_progress(progress, "確認加油紀錄")
+            return f"{request.vehicle} 已更新原加油紀錄。{detail}"
         return f"{request.vehicle} 已更新原加油紀錄，未按儲存。"
 
+    _report_progress(progress, "填寫加油紀錄")
     _click_fuel_add_row(driver)
     _fill_fuel_grid_record(driver, request)
     _assert_fuel_grid_record_present(driver, request)
     if _save_fuel_record_enabled():
-        return _save_fuel_record_form(driver, request, cancel_check=cancel_check)
+        _report_progress(progress, "儲存")
+        detail = _save_fuel_record_form(driver, request, cancel_check=cancel_check)
+        _report_progress(progress, "確認加油紀錄")
+        return detail
     return f"{request.vehicle} 已填寫加油紀錄，未按儲存。"
 
 
@@ -2695,6 +2750,7 @@ def _add_vehicle_mileage_record(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path | None = None,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     latest_end_mileage = _extract_latest_end_mileage(driver)
     _add_vehicle_mileage_row(driver)
@@ -2704,7 +2760,10 @@ def _add_vehicle_mileage_record(
     _fill_vehicle_grid_values(driver, values)
     _assert_vehicle_mileage_values_present(driver, values)
     if _save_vehicle_mileage_enabled():
-        return _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
+        _report_progress(progress, "儲存")
+        detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
+        _report_progress(progress, "確認里程紀錄")
+        return detail
     return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
 
 
@@ -2713,6 +2772,7 @@ def _open_disinfection_page(
     request: AmbulanceReturnRequest,
     output_dir: Path,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     current_url = driver.current_url.lower()
     if "emsdt.tyfd.gov.tw/emmweb" not in current_url:
@@ -2725,6 +2785,7 @@ def _open_disinfection_page(
         request,
         output_dir,
         cancel_check=cancel_check,
+        progress=progress,
     )
     if _save_disinfection_probe_enabled():
         controls_path = _save_disinfection_probe(driver, output_dir, request.task_id)
@@ -2786,7 +2847,9 @@ def _prepare_disinfection_record(
     request: AmbulanceReturnRequest,
     output_dir: Path,
     cancel_check: Callable[[], None] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
+    _report_progress(progress, "查詢案件")
     driver.switch_to.default_content()
     driver.get(_ems_ap_url(EMS_DISINFECTION_AP))
     _switch_to_disinfection_content_if_present(driver)
@@ -2801,6 +2864,7 @@ def _prepare_disinfection_record(
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_query")
     _assert_disinfection_not_login(driver, "query")
 
+    _report_progress(progress, "開啟消毒紀錄")
     if not _open_disinfection_detail_for_case(driver, request.case_time, request.vehicle):
         rows = _disinfection_detail_rows(driver)
         candidates = _disinfection_vehicle_candidates(rows, request)
@@ -2811,6 +2875,7 @@ def _prepare_disinfection_record(
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
 
     selected_items = _effective_disinfection_items(request.disinfection_items)
+    _report_progress(progress, "填寫消毒項目")
     if selected_items:
         updated = _set_disinfection_item_statuses(driver, selected_items, "\u5df2\u9078\u53d6\u5340")
         if updated != len(selected_items):
@@ -2823,6 +2888,7 @@ def _prepare_disinfection_record(
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_prefilled")
 
     if _save_disinfection_record_enabled():
+        _report_progress(progress, "儲存")
         if not _click_disinfection_save(driver, cancel_check=cancel_check):
             raise WebDriverException("missing disinfection save button")
         alert_text = _accept_alert_if_present(driver)
@@ -2831,6 +2897,7 @@ def _prepare_disinfection_record(
         _assert_disinfection_not_login(driver, "save")
         confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
         confirmation = _save_confirmation_state(*confirmations)
+        _report_progress(progress, "確認消毒紀錄")
         if confirmation == "failure":
             raise WebDriverException(f"disinfection save rejected: {' / '.join(confirmations)}")
         if confirmation == "success":

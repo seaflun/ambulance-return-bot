@@ -7591,6 +7591,90 @@ class WebAppTests(unittest.TestCase):
             rows,
         )
 
+    def test_non_civilpower_stage_summary_keeps_the_current_step_in_its_group(self):
+        rows = app_module.site_stage_summary_rows(
+            {
+                "vehicle_mileage": {
+                    "status": "vehicle_mileage_running",
+                    "detail": "公務電腦 worker 車輛里程：填寫返隊時間與里程",
+                }
+            },
+            "vehicle_mileage",
+        )
+
+        self.assertEqual(
+            [
+                {"name": "登入與車輛", "detail": "", "state": "已通過", "class": "complete"},
+                {"name": "填寫里程", "detail": "填寫返隊時間與里程", "state": "執行中", "class": "running"},
+                {"name": "儲存確認", "detail": "", "state": "待執行", "class": "idle"},
+            ],
+            rows,
+        )
+
+    def test_task_detail_collapses_non_civilpower_stages_but_keeps_live_step_visible(self):
+        request = AmbulanceReturnRequest(
+            task_id="vehicle-mileage-compact-stage-card",
+            created_at=datetime.now(),
+            raw_text="",
+            vehicle="新坡92",
+        )
+        self.store.create(request)
+        self.store.update_site_result(
+            request.task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_running",
+                "公務電腦 worker 車輛里程：填寫返隊時間與里程",
+            ),
+        )
+
+        body = html.unescape(self.client.get(f"/tasks/{request.task_id}").get_data(as_text=True))
+        self.assertIn("登入與車輛", body)
+        self.assertIn("填寫里程", body)
+        self.assertIn("儲存確認", body)
+        self.assertIn('<span class="stage-summary-detail">填寫返隊時間與里程</span>', body)
+        self.assertIn("<summary>查看完整 7 段</summary>", body)
+        self.assertNotIn('<details class="stage-details" open>', body)
+
+    def test_other_site_stage_rows_follow_structured_worker_progress(self):
+        cases = {
+            "duty_work_log": ("選取案件", "公務電腦 worker 消防勤務工作紀錄：選取案件"),
+            "vehicle_mileage": ("選取車輛", "公務電腦 worker 車輛里程：選取車輛"),
+            "fuel_record": ("選取月份", "公務電腦 worker 登打加油紀錄：選取月份"),
+            "consumables": ("選取患者頁", "公務電腦 worker 一站通耗材：選取患者頁"),
+            "disinfection": ("開啟消毒紀錄", "公務電腦 worker 緊急救護消毒：開啟消毒紀錄"),
+        }
+
+        for site_key, (stage_name, detail) in cases.items():
+            with self.subTest(site_key=site_key):
+                rows = app_module.site_stage_rows(
+                    {site_key: {"status": f"{site_key}_running", "detail": detail}},
+                    site_key,
+                )
+                states = {row["name"]: row["state"] for row in rows}
+                self.assertEqual("執行中", states[stage_name])
+                stage_index = next(index for index, row in enumerate(rows) if row["name"] == stage_name)
+                if stage_index:
+                    self.assertEqual("已通過", rows[stage_index - 1]["state"])
+
+    def test_other_site_stage_summaries_have_three_compact_groups(self):
+        expected = {
+            "duty_work_log": ["登入與案件", "填寫勤務", "儲存確認"],
+            "vehicle_mileage": ["登入與車輛", "填寫里程", "儲存確認"],
+            "fuel_record": ["登入與車輛", "填寫加油", "儲存確認"],
+            "consumables": ["登入與案件", "填寫耗材", "儲存回查"],
+            "disinfection": ["登入與案件", "填寫消毒", "儲存確認"],
+        }
+
+        for site_key, group_names in expected.items():
+            with self.subTest(site_key=site_key):
+                rows = app_module.site_stage_summary_rows(
+                    {site_key: {"status": "not_started"}},
+                    site_key,
+                )
+                self.assertEqual(group_names, [row["name"] for row in rows])
+
     def test_task_detail_collapses_civilpower_stages_but_keeps_failure_visible(self):
         request = AmbulanceReturnRequest(
             task_id="civilpower-compact-stage-card",

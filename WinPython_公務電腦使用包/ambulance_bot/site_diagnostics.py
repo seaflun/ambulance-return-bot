@@ -63,12 +63,100 @@ CIVILPOWER_STAGE_GROUPS = (
 )
 
 SITE_STAGE_DEFINITIONS = {
-    "duty_work_log": ["啟動 Chrome", "登入勤務系統", "新增工作紀錄", "由案件帶入", "填寫勤務資料", "儲存"],
-    "vehicle_mileage": ["啟動 Chrome", "登入 PPE", "開啟車輛里程", "填寫返隊時間與里程", "儲存"],
-    "fuel_record": ["啟動 Chrome", "登入 PPE", "開啟登打油耗", "填寫加油紀錄", "儲存"],
-    "consumables": ["啟動 Chrome", "登入一站通", "開啟耗材紀錄", "填寫耗材品項", "儲存"],
-    "disinfection": ["啟動 Chrome", "登入消毒系統", "查詢案件", "開啟消毒紀錄", "填寫消毒項目", "儲存"],
+    "duty_work_log": [
+        "啟動 Chrome",
+        "登入勤務系統",
+        "新增工作紀錄",
+        "由案件帶入",
+        "查詢案件",
+        "選取案件",
+        "填寫勤務資料",
+        "儲存",
+        "確認勤務紀錄",
+    ],
+    "vehicle_mileage": [
+        "啟動 Chrome",
+        "登入 PPE",
+        "開啟車輛里程",
+        "選取車輛",
+        "填寫返隊時間與里程",
+        "儲存",
+        "確認里程紀錄",
+    ],
+    "fuel_record": [
+        "啟動 Chrome",
+        "登入 PPE",
+        "開啟登打油耗",
+        "選取月份",
+        "選取車輛",
+        "填寫加油紀錄",
+        "儲存",
+        "確認加油紀錄",
+    ],
+    "consumables": [
+        "啟動 Chrome",
+        "登入一站通",
+        "開啟耗材紀錄",
+        "查詢案件",
+        "選取患者頁",
+        "填寫耗材品項",
+        "儲存",
+        "回查耗材紀錄",
+    ],
+    "disinfection": [
+        "啟動 Chrome",
+        "登入消毒系統",
+        "查詢案件",
+        "開啟消毒紀錄",
+        "填寫消毒項目",
+        "儲存",
+        "確認消毒紀錄",
+    ],
     "volunteer_assist": list(CIVILPOWER_STAGES),
+}
+
+SITE_STAGE_GROUPS = {
+    "duty_work_log": (
+        (
+            "登入與案件",
+            ("啟動 Chrome", "登入勤務系統", "新增工作紀錄", "由案件帶入", "查詢案件", "選取案件"),
+        ),
+        ("填寫勤務", ("填寫勤務資料",)),
+        ("儲存確認", ("儲存", "確認勤務紀錄")),
+    ),
+    "vehicle_mileage": (
+        (
+            "登入與車輛",
+            ("啟動 Chrome", "登入 PPE", "開啟車輛里程", "選取車輛"),
+        ),
+        ("填寫里程", ("填寫返隊時間與里程",)),
+        ("儲存確認", ("儲存", "確認里程紀錄")),
+    ),
+    "fuel_record": (
+        (
+            "登入與車輛",
+            ("啟動 Chrome", "登入 PPE", "開啟登打油耗", "選取月份", "選取車輛"),
+        ),
+        ("填寫加油", ("填寫加油紀錄",)),
+        ("儲存確認", ("儲存", "確認加油紀錄")),
+    ),
+    "consumables": (
+        (
+            "登入與案件",
+            ("啟動 Chrome", "登入一站通", "開啟耗材紀錄", "查詢案件", "選取患者頁"),
+        ),
+        ("填寫耗材", ("填寫耗材品項",)),
+        ("儲存回查", ("儲存", "回查耗材紀錄")),
+    ),
+    "disinfection": (
+        (
+            "登入與案件",
+            ("啟動 Chrome", "登入消毒系統", "查詢案件", "開啟消毒紀錄"),
+        ),
+        ("填寫消毒", ("填寫消毒項目",)),
+        ("儲存確認", ("儲存", "確認消毒紀錄")),
+    ),
+    "volunteer_assist": CIVILPOWER_STAGE_GROUPS,
 }
 
 SITE_SHORT_NAMES = {
@@ -117,6 +205,18 @@ SITE_DEFAULT_FAILURE_STAGE = {
 def civilpower_stage_from_detail(detail: str) -> str:
     detail_text = " ".join(str(detail or "").split())
     matches = [stage for stage in CIVILPOWER_STAGES if stage in detail_text]
+    return max(matches, key=detail_text.rfind) if matches else ""
+
+
+def site_stage_from_detail(site_key: str, detail: str) -> str:
+    """Extract a live stage only from our structured progress detail."""
+    detail_text = " ".join(str(detail or "").split())
+    if not detail_text or site_key == "volunteer_assist":
+        return ""
+    if "worker" not in detail_text.lower() and "本機快速" not in detail_text:
+        return ""
+    stages = SITE_STAGE_DEFINITIONS.get(site_key, ())
+    matches = [stage for stage in stages if stage in detail_text]
     return max(matches, key=detail_text.rfind) if matches else ""
 
 

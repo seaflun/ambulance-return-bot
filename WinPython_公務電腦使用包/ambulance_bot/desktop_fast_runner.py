@@ -65,6 +65,7 @@ def active_site_groups(request, profile_suffix: str, runner: "DesktopFastRunner"
                     force_new_driver=True,
                     update_context=runner._site_update_context(request.task_id, "duty_work_log"),
                     cancel_check=runner._cancel_check(request.task_id),
+                    progress=runner._site_progress_callback(request.task_id, "duty_work_log"),
                 ),
             )
         ],
@@ -365,6 +366,32 @@ class DesktopFastRunner:
             ),
         )
 
+    def _site_progress_callback(self, task_id: str, site_key: str) -> Callable[[str], None]:
+        return lambda stage: self._report_site_progress(task_id, site_key, stage)
+
+    def _report_site_progress(self, task_id: str, site_key: str, stage: str) -> None:
+        self._raise_if_cancelled(task_id)
+        try:
+            site_name = SITE_NAMES[site_key]
+            login_audit = login_audit_for_site(site_key, self.store.request_for(task_id))
+            self._update_site_result_owned(
+                task_id,
+                SiteAutomationResult(
+                    site_key,
+                    site_name,
+                    f"{site_key}_running",
+                    with_login_audit(f"本機快速 {site_name}：{stage}", login_audit),
+                ),
+            )
+        except TaskCancellationError:
+            raise
+        except Exception as exc:
+            print(
+                f"[desktop-fast] stage progress deferred task={task_id} site={site_key} "
+                f"stage={stage}: {exc}",
+                flush=True,
+            )
+
     def _update_vehicle_site_result_owned(
         self,
         task_id: str,
@@ -619,6 +646,7 @@ class DesktopFastRunner:
                 force_new_driver=True,
                 update_context=self._site_update_context(request.task_id, "duty_work_log"),
                 cancel_check=self._cancel_check(request.task_id),
+                progress=self._site_progress_callback(request.task_id, "duty_work_log"),
             )
         if site_key == "vehicle_mileage":
             return lambda: self._run_vehicle_mileage(request, profile_suffix)
@@ -766,6 +794,7 @@ class DesktopFastRunner:
                 force_new_driver=True,
                 update_context=self._site_update_context(request.task_id, "vehicle_mileage"),
                 cancel_check=self._cancel_check(request.task_id),
+                progress=self._site_progress_callback(request.task_id, "vehicle_mileage"),
             )
         debugger_port = _site_debugger_port("VEHICLE_MILEAGE_DEBUGGER_PORT", 9234)
         first_driver = True
@@ -789,6 +818,7 @@ class DesktopFastRunner:
                     index,
                 ),
                 cancel_check=self._cancel_check(request.task_id),
+                progress=self._site_progress_callback(request.task_id, "vehicle_mileage"),
             )
 
         return self._run_per_vehicle_site(
@@ -805,6 +835,7 @@ class DesktopFastRunner:
             tile_name="consumables",
             task=request,
             artifacts_dir=self.artifacts_dir,
+            progress=self._site_progress_callback(request.task_id, "consumables"),
         )
         self._raise_if_cancelled(request.task_id)
         if len(request.vehicle_requests()) <= 1:
@@ -815,6 +846,7 @@ class DesktopFastRunner:
                 update_context=self._site_update_context(request.task_id, "consumables"),
                 cancel_check=self._cancel_check(request.task_id),
                 artifacts_dir=self.artifacts_dir,
+                progress=self._site_progress_callback(request.task_id, "consumables"),
             )
             status = "consumables_saved" if save_consumables_record_enabled() else "consumables_prefilled"
             return SiteAutomationResult(
@@ -845,6 +877,7 @@ class DesktopFastRunner:
                     ),
                     cancel_check=self._cancel_check(request.task_id),
                     artifacts_dir=self.artifacts_dir,
+                    progress=self._site_progress_callback(request.task_id, "consumables"),
                 ),
                 reconciliation_vehicle_key=selected_vehicle_target_key(
                     reconciliation,
@@ -870,6 +903,7 @@ class DesktopFastRunner:
                 force_new_driver=True,
                 update_context=self._site_update_context(request.task_id, "fuel_record"),
                 cancel_check=self._cancel_check(request.task_id),
+                progress=self._site_progress_callback(request.task_id, "fuel_record"),
             )
         indexed_fuel_requests = [
             (index, vehicle_request)
@@ -898,6 +932,7 @@ class DesktopFastRunner:
                     index,
                 ),
                 cancel_check=self._cancel_check(request.task_id),
+                progress=self._site_progress_callback(request.task_id, "fuel_record"),
             )
 
         return self._run_per_vehicle_site(
@@ -920,6 +955,7 @@ class DesktopFastRunner:
                 profile_name=profile_name,
                 tile_name="disinfection",
                 artifacts_dir=self.artifacts_dir,
+                progress=self._site_progress_callback(request.task_id, "disinfection"),
             )
             self._raise_if_cancelled(request.task_id)
             result = run_disinfection_task(
@@ -932,6 +968,7 @@ class DesktopFastRunner:
                 force_new_driver=True,
                 update_context=vehicle_update_context,
                 cancel_check=self._cancel_check(request.task_id),
+                progress=self._site_progress_callback(request.task_id, "disinfection"),
             )
             return SiteAutomationResult(
                 "disinfection",
