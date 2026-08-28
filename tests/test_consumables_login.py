@@ -1961,7 +1961,7 @@ class ConsumablesLoginTests(unittest.TestCase):
                     consumables_login_module._consumable_detail_payload_ready(FakeDriver(state))
                 )
 
-    def test_load_acs_credentials_prioritizes_task_personnel_before_fixed_sync_account(self):
+    def test_load_acs_credentials_prioritizes_synced_account_before_task_people(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_path = os.environ.get("DUTY_SAVED_LOGIN_PATH")
             previous_override = os.environ.get("DUTY_SAVED_LOGIN_PATH_OVERRIDE")
@@ -2000,7 +2000,7 @@ class ConsumablesLoginTests(unittest.TestCase):
                     personnel_accounts=["tyfd01510"],
                 )
 
-                self.assertEqual(_load_acs_credentials(request), ("B123017532", "secret"))
+                self.assertEqual(_load_acs_credentials(request), ("C123456789", "selected-secret"))
             finally:
                 if previous_path is None:
                     os.environ.pop("DUTY_SAVED_LOGIN_PATH", None)

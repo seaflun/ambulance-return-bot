@@ -254,7 +254,7 @@ class LoginAuditTests(unittest.TestCase):
                 self.assertIn(f"{site}={priority_label}，{source}", audit)
                 self.assertIn(account_label, audit)
         self.assertEqual(summaries["duty_work_log"], "12番 任務司機 - tyfd00012（任務司機）")
-        self.assertEqual(summaries["consumables"], "8番 同步帳號 - tyfd00008（同步帳號）")
+        self.assertEqual(summaries["consumables"], "8番 同步帳號 - tyfd00008（同步帳號，缺 ACS 帳號）")
         self.assertEqual(summaries["volunteer_assist"], "7番 值班人員 - tyfd00007（值班人員）")
 
     def test_site_login_account_summaries_can_match_driver_name_without_case_account(self):

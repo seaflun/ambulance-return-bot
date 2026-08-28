@@ -212,6 +212,8 @@ WORKER_HEARTBEAT_ONLINE_SECONDS = 45
 WORKER_HEARTBEAT_STATES = frozenset({"starting", "idle", "busy", "update_handoff", "recovering", "stopping"})
 WORKER_ROUTE_IDENTITY_STATUSES = frozenset({"verified", "unverified"})
 PUBLIC_PC_LEGACY_RECONCILE_LIMIT = 500
+PUBLIC_PC_LEGACY_RECONCILE_ACTION = "補正舊版後台重送狀態"
+PUBLIC_PC_SUCCESS_RECONCILE_ACTION = "依成功事件修正狀態"
 PUBLIC_PC_PENDING_REPORT_FLUSH_INTERVAL_SECONDS = 30
 PUBLIC_PC_LEGACY_RECONCILE_ERRORS = (
     AttributeError,
@@ -2933,6 +2935,11 @@ def upsert_public_pc_report(data: dict) -> dict:
             if incoming_site_statuses_provided
             else existing.get("site_statuses", {})
         )
+        if str(data.get("action") or "").strip() == PUBLIC_PC_LEGACY_RECONCILE_ACTION:
+            site_statuses = _preserve_public_pc_completed_site_statuses(
+                site_statuses,
+                existing.get("site_statuses", {}),
+            )
         site_statuses = _preserve_public_pc_vehicle_reconciliation(
             site_statuses,
             existing.get("site_statuses", {}),
@@ -2944,6 +2951,12 @@ def upsert_public_pc_report(data: dict) -> dict:
             existing.get("site_statuses", {}),
             now_value,
         )
+        overall_status = str(data.get("overall_status") or existing.get("overall_status") or "")
+        if (
+            str(data.get("action") or "").strip() == PUBLIC_PC_LEGACY_RECONCILE_ACTION
+            and public_pc_report_result({"task": stored_task, "site_statuses": site_statuses}) == "success"
+        ):
+            overall_status = "desktop_fast_completed"
         payload = {
             **existing,
             "task_id": task_id,
@@ -2955,7 +2968,7 @@ def upsert_public_pc_report(data: dict) -> dict:
             "site_login_accounts": site_login_accounts,
             "worker_id": event["worker_id"],
             "package_version": event["package_version"] or str(existing.get("package_version") or ""),
-            "overall_status": str(data.get("overall_status") or existing.get("overall_status") or ""),
+            "overall_status": overall_status,
             "site_statuses": site_statuses,
             "completion": task_completion_snapshot(
                 {
@@ -2999,6 +3012,28 @@ def _preserve_public_pc_vehicle_reconciliation(
         current_reconciliation = current_site.get("vehicle_reconciliation")
         if not isinstance(current_reconciliation, Mapping) or not current_reconciliation.get("targets"):
             current_site["vehicle_reconciliation"] = deepcopy(dict(existing_reconciliation))
+    return statuses
+
+
+def _preserve_public_pc_completed_site_statuses(
+    site_statuses: object,
+    existing_site_statuses: object,
+) -> dict[str, dict]:
+    raw_statuses = site_statuses if isinstance(site_statuses, Mapping) else {}
+    statuses = {
+        str(site_key): deepcopy(dict(site))
+        for site_key, site in raw_statuses.items()
+        if isinstance(site, Mapping)
+    }
+    existing_statuses = existing_site_statuses if isinstance(existing_site_statuses, Mapping) else {}
+    for raw_site_key, raw_existing_site in existing_statuses.items():
+        if not isinstance(raw_existing_site, Mapping):
+            continue
+        site_key = str(raw_site_key or "").strip()
+        existing_site = dict(raw_existing_site)
+        current_site = statuses.get(site_key, {})
+        if site_is_complete(existing_site.get("status")) and not site_is_complete(current_site.get("status")):
+            statuses[site_key] = deepcopy(existing_site)
     return statuses
 
 
@@ -5541,6 +5576,166 @@ def recover_public_pc_report_retry_task(
     return marked_payload
 
 
+def _public_pc_event_time(event: Mapping[str, object]) -> datetime:
+    raw_time = str(event.get("time") or event.get("updated_at") or "").strip()
+    if not raw_time:
+        return datetime.min
+    try:
+        parsed = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def _public_pc_terminal_event_kind(event: Mapping[str, object]) -> str:
+    status = str(event.get("status") or "").strip()
+    detail = str(event.get("detail") or "").strip()
+    action = str(event.get("action") or "").strip()
+    if status == "completed_by_user" or status.endswith("_saved"):
+        return "success"
+    if "failed" in status or "error" in status:
+        return "failed"
+    if status not in {"site_run_completed", "desktop_fast_completed"}:
+        return ""
+    text = f"{action} {detail}"
+    if any(word in text for word in ("完成", "成功")) and not any(
+        word in text for word in ("失敗", "錯誤")
+    ):
+        return "success"
+    return ""
+
+
+def _latest_public_pc_site_terminal_events(
+    report: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    events = report.get("events")
+    if not isinstance(events, list):
+        return {}
+    latest: dict[str, dict[str, object]] = {}
+    for index, raw_event in enumerate(events):
+        if not isinstance(raw_event, Mapping):
+            continue
+        event = dict(raw_event)
+        site_key = event_site_key(event)
+        if site_key not in VALID_SITE_KEYS:
+            continue
+        kind = _public_pc_terminal_event_kind(event)
+        if not kind:
+            continue
+        event_time = _public_pc_event_time(event)
+        previous = latest.get(site_key)
+        previous_key = (
+            previous.get("time", datetime.min),
+            int(previous.get("index") or -1),
+        ) if previous else (datetime.min, -1)
+        if (event_time, index) >= previous_key:
+            latest[site_key] = {
+                "kind": kind,
+                "event": event,
+                "time": event_time,
+                "index": index,
+            }
+    return latest
+
+
+def _public_pc_report_has_legacy_reconcile_event(report: Mapping[str, object]) -> bool:
+    events = report.get("events")
+    if not isinstance(events, list):
+        return False
+    return any(
+        isinstance(event, Mapping)
+        and (
+            str(event.get("action") or "").strip() == PUBLIC_PC_LEGACY_RECONCILE_ACTION
+            or str(event.get("event_id") or "").startswith("retry-reconcile:")
+        )
+        for event in events
+    )
+
+
+def _recover_public_pc_report_successes_from_events(
+    report: Mapping[str, object],
+) -> tuple[dict[str, dict], list[str], dict[str, dict[str, object]]] | None:
+    if not _public_pc_report_has_legacy_reconcile_event(report):
+        return None
+    task = report.get("task") if isinstance(report.get("task"), Mapping) else {}
+    raw_statuses = report.get("site_statuses")
+    statuses = {
+        str(site_key): deepcopy(dict(site))
+        for site_key, site in (raw_statuses.items() if isinstance(raw_statuses, Mapping) else [])
+        if isinstance(site, Mapping)
+    }
+    latest_events = _latest_public_pc_site_terminal_events(report)
+    changed_sites: list[str] = []
+    for site_key in active_site_keys_for_task(dict(task), statuses):
+        current_site = statuses.get(site_key, {})
+        if site_is_complete(current_site.get("status")):
+            continue
+        latest = latest_events.get(site_key)
+        if not latest or latest.get("kind") != "success":
+            continue
+        event_time = latest.get("time")
+        if not isinstance(event_time, datetime) or event_time == datetime.min:
+            continue
+        current_time = _public_pc_event_time({"time": current_site.get("updated_at")})
+        if current_time != datetime.min and event_time <= current_time:
+            continue
+        event = latest.get("event") if isinstance(latest.get("event"), Mapping) else {}
+        repaired_site = deepcopy(current_site)
+        repaired_site["status"] = f"{site_key}_saved"
+        repaired_site["detail"] = str(
+            event.get("detail") or f"{SITE_SHORT_NAMES.get(site_key, site_key)}已完成。"
+        ).strip()
+        repaired_site["updated_at"] = str(event.get("time") or "").strip()
+        for field in DIAGNOSTIC_FIELDS:
+            repaired_site[field] = ""
+        statuses[site_key] = repaired_site
+        changed_sites.append(site_key)
+    if not changed_sites:
+        return None
+    return statuses, changed_sites, latest_events
+
+
+def _sync_public_pc_recovered_statuses_to_task_store(
+    task_id: str,
+    recovered_statuses: Mapping[str, object],
+) -> None:
+    try:
+        local_payload = store.get(task_id)
+    except FileNotFoundError:
+        return
+    if not public_pc_report_retry_task(local_payload) or task_payload_is_active(local_payload):
+        return
+    local_statuses = local_payload.get("site_statuses")
+    local_statuses = deepcopy(local_statuses) if isinstance(local_statuses, Mapping) else {}
+    changed = False
+    for raw_site_key, raw_recovered_site in recovered_statuses.items():
+        if not isinstance(raw_recovered_site, Mapping):
+            continue
+        recovered_site = dict(raw_recovered_site)
+        if not site_is_complete(recovered_site.get("status")):
+            continue
+        site_key = str(raw_site_key or "").strip()
+        local_site = dict(local_statuses.get(site_key) or {})
+        recovered_time = _public_pc_event_time({"time": recovered_site.get("updated_at")})
+        local_time = _public_pc_event_time({"time": local_site.get("updated_at")})
+        if site_is_complete(local_site.get("status")) and local_time >= recovered_time:
+            continue
+        if recovered_time != datetime.min and recovered_time <= local_time:
+            continue
+        local_statuses[site_key] = deepcopy(recovered_site)
+        changed = True
+    if not changed:
+        return
+    local_payload["site_statuses"] = local_statuses
+    snapshot = task_completion_snapshot(local_payload)
+    local_payload["completion"] = snapshot
+    if snapshot["all_complete"]:
+        local_payload["overall_status"] = "desktop_fast_completed"
+    store.save_payload(task_id, local_payload)
+
+
 def reconcile_public_pc_report_retries(reports: Sequence[dict]) -> list[dict]:
     reconciled = False
     for report in reports:
@@ -5548,6 +5743,57 @@ def reconcile_public_pc_report_retries(reports: Sequence[dict]) -> list[dict]:
         task_id = str(report.get("task_id") or task.get("task_id") or "").strip()
         if not task_id:
             continue
+        recovered = _recover_public_pc_report_successes_from_events(report)
+        if recovered:
+            recovered_statuses, changed_sites, latest_events = recovered
+            signature = "|".join(
+                f"{site_key}:{dict(latest_events[site_key].get('event') or {}).get('event_id') or latest_events[site_key].get('time')}"
+                for site_key in changed_sites
+                if site_key in latest_events
+            )
+            repair_event_id = (
+                f"success-reconcile:{task_id}:"
+                f"{hashlib.sha256(signature.encode('utf-8')).hexdigest()[:12]}"
+            )
+            recovery_snapshot = task_completion_snapshot(
+                {
+                    "task": task,
+                    "site_statuses": recovered_statuses,
+                }
+            )
+            recovery_status = (
+                "desktop_fast_completed"
+                if recovery_snapshot["all_complete"]
+                else "desktop_fast_completed_with_errors"
+            )
+            recovery_payload = {
+                "event_id": repair_event_id,
+                "task_id": task_id,
+                "title": str(report.get("title") or task_title(task) or task_id),
+                "task": task,
+                "operator": str(report.get("operator") or report.get("user") or ""),
+                "synced_account": str(report.get("synced_account") or ""),
+                "site_login_accounts": report.get("site_login_accounts", {}),
+                "worker_id": str(report.get("worker_id") or ""),
+                "package_version": str(report.get("package_version") or ""),
+                "action": PUBLIC_PC_SUCCESS_RECONCILE_ACTION,
+                "status": recovery_status,
+                "detail": (
+                    f"已依較新的成功事件修正：{'、'.join(SITE_SHORT_NAMES.get(key, key) for key in changed_sites)}；"
+                    "未重新操作官方網站。"
+                ),
+                "overall_status": recovery_status,
+                "site_statuses": recovered_statuses,
+                "created_at": str(report.get("created_at") or ""),
+            }
+            upsert_public_pc_report(recovery_payload)
+            _sync_public_pc_recovered_statuses_to_task_store(task_id, recovered_statuses)
+            reconciled = True
+            continue
+        if public_pc_report_result(report) == "success":
+            report_statuses = report.get("site_statuses")
+            if isinstance(report_statuses, Mapping):
+                _sync_public_pc_recovered_statuses_to_task_store(task_id, report_statuses)
         try:
             payload = store.get(task_id)
         except FileNotFoundError:
@@ -5555,11 +5801,13 @@ def reconcile_public_pc_report_retries(reports: Sequence[dict]) -> list[dict]:
         payload = recover_public_pc_report_retry_task(task_id, payload, report)
         if not public_pc_report_retry_task(payload):
             continue
+        if public_pc_report_result(report) == "success" and public_pc_report_result(payload) != "success":
+            continue
         if public_pc_report_result(report) == public_pc_report_result(payload):
             continue
         sync_public_pc_report_retry_task(
             payload,
-            action="補正舊版後台重送狀態",
+            action=PUBLIC_PC_LEGACY_RECONCILE_ACTION,
             detail=task_progress_summary(payload),
             event_id=f"retry-reconcile:{task_id}",
         )

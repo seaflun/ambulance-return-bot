@@ -4390,6 +4390,15 @@ class WebAppTests(unittest.TestCase):
         )
 
         report = app_module.public_pc_reports()[0]
+        self.assertEqual("success", app_module.public_pc_report_result(report))
+        self.assertEqual(
+            report["site_statuses"]["consumables"]["status"],
+            "consumables_saved",
+        )
+        self.assertEqual(
+            report["site_statuses"]["disinfection"]["status"],
+            "disinfection_saved",
+        )
         self.assertEqual(
             report["site_statuses"]["consumables"]["vehicle_reconciliation"]["targets"]["新坡92"]["selected_vehicle"],
             "新坡93",
@@ -4403,6 +4412,182 @@ class WebAppTests(unittest.TestCase):
         body = html.unescape(page.get_data(as_text=True))
         self.assertIn("緊急救護-車禍 - 桃園市觀音區大福路180號", body)
         self.assertIn("替代查找車輛：新坡92 → 新坡93（耗材、消毒）", body)
+
+    def test_legacy_report_reconcile_does_not_downgrade_newer_success(self):
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                case_id="case-legacy-reconcile-success",
+                vehicle="新坡92",
+                case_address="桃園市觀音區大福路180號",
+            ),
+            follow_redirects=False,
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        task = payload["task"]
+        successful_site_statuses = {
+            site_key: {**dict(site), "status": f"{site_key}_saved"}
+            for site_key, site in payload["site_statuses"].items()
+        }
+        app_module.upsert_public_pc_report(
+            {
+                "event_id": "evt-legacy-reconcile-success",
+                "task_id": task_id,
+                "task": task,
+                "action": "四站登打成功",
+                "status": "desktop_fast_completed",
+                "overall_status": "desktop_fast_completed",
+                "site_statuses": successful_site_statuses,
+            }
+        )
+
+        stale_payload = dict(payload)
+        stale_payload["task_source"] = app_module.PUBLIC_PC_REPORT_RETRY_SOURCE
+        stale_payload["overall_status"] = "desktop_fast_completed_with_errors"
+        stale_payload["site_statuses"] = {
+            site_key: {**dict(site), "status": (
+                f"{site_key}_failed"
+                if site_key in {"consumables", "disinfection"}
+                else f"{site_key}_saved"
+            )}
+            for site_key, site in payload["site_statuses"].items()
+        }
+        self.store.save_payload(task_id, stale_payload)
+
+        app_module.reconcile_public_pc_report_retries(app_module.public_pc_reports())
+
+        report = app_module.public_pc_report_for_task(task_id)
+        self.assertIsNotNone(report)
+        assert report is not None
+        self.assertEqual("success", app_module.public_pc_report_result(report))
+        self.assertEqual(
+            report["site_statuses"]["consumables"]["status"],
+            "consumables_saved",
+        )
+        self.assertEqual(
+            report["site_statuses"]["disinfection"]["status"],
+            "disinfection_saved",
+        )
+        local_recovered = self.store.get(task_id)
+        self.assertEqual(
+            local_recovered["site_statuses"]["consumables"]["status"],
+            "consumables_saved",
+        )
+        self.assertEqual(
+            local_recovered["site_statuses"]["disinfection"]["status"],
+            "disinfection_saved",
+        )
+
+    def test_legacy_report_reconcile_recovers_success_events_after_overwrite(self):
+        create_response = self.client.post(
+            "/tasks",
+            data=self.valid_task_data(
+                case_id="case-legacy-reconcile-recovery",
+                vehicle="新坡92",
+                case_address="桃園市觀音區大福路180號",
+            ),
+            follow_redirects=False,
+        )
+        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        stale_payload = dict(payload)
+        stale_payload["task_source"] = app_module.PUBLIC_PC_REPORT_RETRY_SOURCE
+        stale_payload["overall_status"] = "desktop_fast_completed_with_errors"
+        stale_payload["site_statuses"] = {
+            site_key: {
+                **dict(site),
+                "status": (
+                    f"{site_key}_failed"
+                    if site_key in {"consumables", "disinfection"}
+                    else f"{site_key}_saved"
+                ),
+                "updated_at": "2026-08-24T21:02:06",
+            }
+            for site_key, site in payload["site_statuses"].items()
+        }
+        self.store.save_payload(task_id, stale_payload)
+        report = {
+            "task_id": task_id,
+            "title": "緊急救護-車禍 - 桃園市觀音區大福路180號",
+            "task": payload["task"],
+            "overall_status": "desktop_fast_completed_with_errors",
+            "site_statuses": stale_payload["site_statuses"],
+            "created_at": "2026-08-24T20:58:28",
+            "updated_at": "2026-08-26T23:51:44",
+            "events": [
+                {
+                    "event_id": "old-consumables-failed",
+                    "time": "2026-08-24T21:02:06",
+                    "action": "一站通耗材 結果",
+                    "status": "consumables_failed",
+                    "detail": "耗材內容頁找不到符合車輛的紀錄。",
+                },
+                {
+                    "event_id": "old-disinfection-failed",
+                    "time": "2026-08-24T21:00:56",
+                    "action": "緊急救護消毒 結果",
+                    "status": "disinfection_failed",
+                    "detail": "消毒紀錄尚未產生。",
+                },
+                {
+                    "event_id": "new-consumables-saved",
+                    "time": "2026-08-26T22:50:45",
+                    "action": "一站通耗材 結果",
+                    "status": "consumables_saved",
+                    "detail": "一站通耗材已儲存。",
+                },
+                {
+                    "event_id": "new-disinfection-saved",
+                    "time": "2026-08-26T22:51:22",
+                    "action": "緊急救護消毒 結果",
+                    "status": "desktop_fast_completed",
+                    "detail": "緊急救護消毒完成後，所有有效站別皆已完成。",
+                },
+                {
+                    "event_id": f"retry-reconcile:{task_id}",
+                    "time": "2026-08-26T23:51:44",
+                    "action": app_module.PUBLIC_PC_LEGACY_RECONCILE_ACTION,
+                    "status": "failed",
+                    "detail": "程式回報失敗，但未能歸類到明確原因。",
+                },
+            ],
+        }
+        app_module.write_json_atomic(app_module.public_pc_report_file(), {"tasks": [report]})
+
+        response = self.client.get("/admin/ems")
+        body = html.unescape(response.get_data(as_text=True))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("四站登打完成", body)
+        self.assertNotIn("2 站失敗", body)
+
+        recovered = app_module.public_pc_report_for_task(task_id)
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertEqual("success", app_module.public_pc_report_result(recovered))
+        self.assertEqual(
+            recovered["site_statuses"]["consumables"]["status"],
+            "consumables_saved",
+        )
+        self.assertEqual(
+            recovered["site_statuses"]["disinfection"]["status"],
+            "disinfection_saved",
+        )
+        self.assertTrue(
+            any(
+                event.get("event_id", "").startswith("success-reconcile:")
+                for event in recovered["events"]
+            )
+        )
+        local_recovered = self.store.get(task_id)
+        self.assertEqual(
+            local_recovered["site_statuses"]["consumables"]["status"],
+            "consumables_saved",
+        )
+        self.assertEqual(
+            local_recovered["site_statuses"]["disinfection"]["status"],
+            "disinfection_saved",
+        )
 
     def test_legacy_vehicle_reconciliation_events_link_case_entry_status(self):
         task = {
