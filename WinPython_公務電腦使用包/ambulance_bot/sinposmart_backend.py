@@ -447,13 +447,49 @@ def sinposmart_rescue_video_summary(event: dict[str, Any]) -> dict[str, Any]:
         return {}
     if not target_date or not vehicle:
         return {}
-    return {
+    mode = sanitize_scalar(snapshot.get("mode"), 40)
+    mode_label = {
+        "preview": "預覽分類",
+        "copy": "實際複製",
+        "delete": "複製並刪除來源",
+    }.get(mode, "")
+    reason_labels = {
+        "no_matching_work_or_return_time": "沒有符合工作／返隊時間的案件",
+        "destination_mismatch": "目的地不一致",
+        "source_unreadable": "影片無法讀取",
+        "classification_error": "分類或驗證失敗",
+    }
+    classification_rows: list[dict[str, str]] = []
+    raw_rows = snapshot.get("classification_rows")
+    if isinstance(raw_rows, list):
+        for raw_row in raw_rows[:200]:
+            if not isinstance(raw_row, dict):
+                continue
+            source_file = sanitize_scalar(raw_row.get("source_file"), 160).replace("\\", "/").rsplit("/", 1)[-1]
+            case_name = sanitize_scalar(raw_row.get("case"), 160).replace("\\", "/").rsplit("/", 1)[-1]
+            reason = sanitize_scalar(raw_row.get("reason"), 80)
+            row = {
+                "video_time": sanitize_scalar(raw_row.get("video_time"), 40),
+                "source_file": source_file,
+                "case": case_name or "待確認",
+                "status": sanitize_scalar(raw_row.get("status"), 80),
+                "reason_label": reason_labels.get(reason, ""),
+            }
+            if any(row.values()):
+                classification_rows.append(row)
+    summary: dict[str, Any] = {
         "target_date": target_date,
         "vehicle": vehicle,
         "case_count": case_count,
         "total_count": total_count,
         "usage_time": sinposmart_elapsed_label(usage_seconds),
     }
+    if mode_label:
+        summary["mode_label"] = mode_label
+    if classification_rows:
+        summary["classification_rows"] = classification_rows
+        summary["classification_rows_omitted"] = max(0, total_count - len(classification_rows))
+    return summary
 
 
 def sinposmart_waiting_state(

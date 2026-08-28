@@ -5064,14 +5064,30 @@ class WebAppTests(unittest.TestCase):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}
         fire_day = datetime.now().date().isoformat()
-        for run_id, case_count, total_count, usage_seconds in (
-            ("rescue-web-run-1", 2, 5, 65),
-            ("rescue-web-run-2", 1, 2, 30),
+        for run_id, case_count, total_count, usage_seconds, mode, classification_rows in (
+            (
+                "rescue-web-run-1",
+                2,
+                5,
+                65,
+                "preview",
+                [
+                    {
+                        "video_time": "08/24 10:00:00",
+                        "source_file": "V0000004.TS",
+                        "case": "待確認",
+                        "status": "待確認",
+                        "reason": "no_matching_work_or_return_time",
+                    },
+                ],
+            ),
+            ("rescue-web-run-2", 1, 2, 30, "copy", []),
         ):
             shared_snapshot = {
                 "tool_name": "rescue_video",
                 "tool_label": "救護行車紀錄器",
                 "run_id": run_id,
+                "mode": mode,
             }
             for record_type, status, snapshot in (
                 ("tool_action_started", "started", shared_snapshot),
@@ -5085,6 +5101,7 @@ class WebAppTests(unittest.TestCase):
                         "case_count": case_count,
                         "total_count": total_count,
                         "usage_seconds": usage_seconds,
+                        "classification_rows": classification_rows,
                     },
                 ),
             ):
@@ -5116,6 +5133,12 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("案件數：1", body)
         self.assertIn("總數量：2", body)
         self.assertIn("使用時間：30 秒", body)
+        self.assertIn("模式：預覽分類", body)
+        self.assertIn("模式：實際複製", body)
+        self.assertIn("分類排查明細", body)
+        self.assertIn("V0000004.TS", body)
+        self.assertIn("原因：沒有符合工作／返隊時間的案件", body)
+        self.assertNotIn(r"C:\\private", body)
 
     def test_sinposmart_admin_tool_start_shows_waiting_state_not_pause_reason(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"

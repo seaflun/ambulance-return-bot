@@ -145,6 +145,9 @@
     .event-title { font-weight: 800; overflow-wrap: anywhere; }
     .event-meta { margin-top: 4px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .event-detail { margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
+    .rescue-video-diagnostics { margin-top: 10px; }
+    .rescue-video-diagnostics > summary { cursor: pointer; color: var(--ink); font-weight: 760; }
+    .rescue-video-diagnostic-row { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: var(--text-sm); }
     .event-steps { display: grid; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
     .event-step { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; gap: 10px; align-items: center; color: var(--muted); font-size: var(--text-sm); }
     .event-step-name { color: var(--ink); font-weight: 760; }
@@ -394,8 +397,19 @@
             {% endif %}
             {% if event.rescue_video_summary %}
               <div class="event-detail">
-                日期：{{ event.rescue_video_summary.target_date }}｜車輛：{{ event.rescue_video_summary.vehicle }}｜案件數：{{ event.rescue_video_summary.case_count }}｜總數量：{{ event.rescue_video_summary.total_count }}｜使用時間：{{ event.rescue_video_summary.usage_time }}
+                日期：{{ event.rescue_video_summary.target_date }}｜車輛：{{ event.rescue_video_summary.vehicle }}{% if event.rescue_video_summary.mode_label %}｜模式：{{ event.rescue_video_summary.mode_label }}{% endif %}｜案件數：{{ event.rescue_video_summary.case_count }}｜總數量：{{ event.rescue_video_summary.total_count }}｜使用時間：{{ event.rescue_video_summary.usage_time }}
               </div>
+              {% if event.rescue_video_summary.classification_rows %}
+                <details class="event-detail rescue-video-diagnostics">
+                  <summary>分類排查明細（{{ event.rescue_video_summary.classification_rows | length }} / {{ event.rescue_video_summary.total_count }} 筆）</summary>
+                  {% for row in event.rescue_video_summary.classification_rows %}
+                    <div class="rescue-video-diagnostic-row">影片：{{ row.video_time or '未提供時間' }}｜檔案：{{ row.source_file or '未提供檔名' }}｜案件：{{ row.case }}｜狀態：{{ row.status or '未提供狀態' }}{% if row.reason_label %}｜原因：{{ row.reason_label }}{% endif %}</div>
+                  {% endfor %}
+                  {% if event.rescue_video_summary.classification_rows_omitted %}
+                    <div class="event-detail">另有 {{ event.rescue_video_summary.classification_rows_omitted }} 筆未傳送至 NAS。</div>
+                  {% endif %}
+                </details>
+              {% endif %}
             {% endif %}
             {% if event.failure_stage_label %}
               <div class="event-detail">失敗階段：{{ event.failure_stage_label }}</div>
