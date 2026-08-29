@@ -174,6 +174,36 @@ def classify_browser_failure(exception: BaseException | None, probe: dict[str, A
     return {"category": category, "reason": reason, "next_action": next_action}
 
 
+_BROWSER_SESSION_RECOVERY_MARKERS = (
+    "invalid session id",
+    "session deleted",
+    "invalidsessionidexception",
+    "[browser_failure:chrome_unresponsive]",
+    "[browser_failure:chromedriver_ended]",
+)
+
+
+def browser_session_recovery_attempts() -> int:
+    try:
+        return max(0, min(int(os.getenv("SELENIUM_SESSION_RECOVERY_ATTEMPTS", "1")), 1))
+    except ValueError:
+        return 1
+
+
+def is_browser_session_recovery_error(value: object) -> bool:
+    """Return whether a failure should trigger one fresh browser-session retry."""
+
+    text_parts = [
+        str(getattr(value, "detail", "") or ""),
+        str(getattr(value, "failure_reason", "") or ""),
+        str(getattr(value, "exception_type", "") or ""),
+    ]
+    if isinstance(value, BaseException) or not any(text_parts):
+        text_parts.append(str(value or ""))
+    text = " ".join(text_parts).lower()
+    return any(marker in text for marker in _BROWSER_SESSION_RECOVERY_MARKERS)
+
+
 def compact_failure_text(value: object, maximum: int = FAILURE_DETAIL_MAX_CHARS) -> str:
     text = " ".join(str(value or "").split())
     stacktrace_at = text.lower().find("stacktrace:")

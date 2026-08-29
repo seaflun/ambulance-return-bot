@@ -36,6 +36,7 @@ from ambulance_bot.daily_vehicle_mileage import (
     vehicle_mileage_sync_due,
 )
 from ambulance_bot.duty_credentials import save_credential_sync_payload
+from ambulance_bot.failure_evidence import browser_session_recovery_attempts, is_browser_session_recovery_error
 from ambulance_bot.login_audit import login_audit_for_site, with_login_audit
 from ambulance_bot.manual_task_lock import (
     acquire_manual_task_lock,
@@ -2343,12 +2344,114 @@ def _run_worker_site_group(
                     )
                     failed_results.append(result)
                     continue
-            last_result = runner(payload)
+            last_result = _run_worker_site_with_browser_recovery(
+                server_url,
+                task_id,
+                site_key,
+                runner,
+                payload,
+                effective_cancellation_event,
+            )
             if _result_blocks_progress(last_result):
                 failed_results.append(last_result)
         finally:
             maximize_worker_site_windows()
     return last_result, failed_results
+
+
+def _run_worker_site_with_browser_recovery(
+    server_url: str,
+    task_id: str,
+    site_key: str,
+    runner: Callable[[dict[str, object]], object],
+    payload: dict[str, object],
+    cancellation_event: threading.Event,
+) -> object:
+    site_name = SITE_NAMES.get(site_key, site_key)
+    try:
+        result = runner(payload)
+    except TaskCancellationError:
+        raise
+    except Exception as exc:
+        if not is_browser_session_recovery_error(exc):
+            raise
+        result = make_site_result(
+            site_key,
+            site_name,
+            f"{site_key}_failed",
+            f"{site_name}操作失敗：{exc}",
+            exc,
+        )
+
+    recovery_attempts = browser_session_recovery_attempts()
+    if recovery_attempts <= 0 or not is_browser_session_recovery_error(result):
+        return result
+
+    _raise_if_task_cancelled(task_id, cancellation_event)
+    try:
+        retry_payload = fetch_task_payload(server_url, task_id)
+    except TaskCancellationError:
+        raise
+    except Exception as exc:
+        print(
+            f"[worker] browser session recovery status fetch failed task={task_id} site={site_key}: {exc}",
+            flush=True,
+        )
+        return result
+    if not isinstance(retry_payload, dict):
+        print(
+            f"[worker] browser session recovery skipped without fresh payload task={task_id} site={site_key}",
+            flush=True,
+        )
+        return result
+
+    _assert_task_payload_claim_current(task_id, retry_payload)
+    _raise_if_task_cancelled(task_id, cancellation_event)
+    site_statuses = retry_payload.get("site_statuses") if isinstance(retry_payload.get("site_statuses"), dict) else {}
+    current_site = site_statuses.get(site_key) if isinstance(site_statuses.get(site_key), dict) else {}
+    current_status = str(current_site.get("status") or "")
+    if _site_is_complete(current_status):
+        return make_site_result(
+            site_key,
+            site_name,
+            current_status,
+            str(current_site.get("detail") or "NAS 已顯示此站完成，略過重試。"),
+        )
+
+    recovery_detail = f"{site_name} Chrome 工作階段失效，正在自動重啟瀏覽器並重試。"
+    try:
+        post_status(
+            server_url,
+            task_id,
+            f"{site_key}_running",
+            recovery_detail,
+            site_key=site_key,
+            site_name=site_name,
+        )
+    except TaskCancellationError:
+        raise
+    except Exception as exc:
+        print(
+            f"[worker] browser session recovery status post deferred task={task_id} site={site_key}: {exc}",
+            flush=True,
+        )
+    print(
+        f"[worker] browser session recovery task={task_id} site={site_key} attempt=1/{recovery_attempts}",
+        flush=True,
+    )
+    _raise_if_task_cancelled(task_id, cancellation_event)
+    try:
+        return runner(retry_payload)
+    except TaskCancellationError:
+        raise
+    except Exception as exc:
+        return make_site_result(
+            site_key,
+            site_name,
+            f"{site_key}_failed",
+            f"{site_name}自動重啟後仍失敗：{exc}",
+            exc,
+        )
 
 
 def worker_claim_heartbeat_seconds() -> float:

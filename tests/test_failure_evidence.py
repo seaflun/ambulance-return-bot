@@ -12,8 +12,10 @@ from PIL import Image
 import ambulance_bot.failure_evidence as failure_evidence_module
 from ambulance_bot.failure_evidence import (
     augment_failure_detail,
+    browser_session_recovery_attempts,
     capture_failure_artifacts,
     classify_browser_failure,
+    is_browser_session_recovery_error,
     probe_browser_runtime,
 )
 
@@ -44,6 +46,33 @@ class _FakeDriver:
 
 
 class FailureEvidenceTests(unittest.TestCase):
+    def test_browser_session_recovery_attempts_are_bounded_and_disableable(self):
+        with patch.dict(
+            failure_evidence_module.os.environ,
+            {"SELENIUM_SESSION_RECOVERY_ATTEMPTS": "99"},
+            clear=False,
+        ):
+            self.assertEqual(browser_session_recovery_attempts(), 1)
+        with patch.dict(
+            failure_evidence_module.os.environ,
+            {"SELENIUM_SESSION_RECOVERY_ATTEMPTS": "0"},
+            clear=False,
+        ):
+            self.assertEqual(browser_session_recovery_attempts(), 0)
+
+    def test_browser_session_recovery_error_is_detected_without_matching_page_timeout(self):
+        self.assertTrue(is_browser_session_recovery_error(RuntimeError("Message: invalid session id")))
+        self.assertTrue(
+            is_browser_session_recovery_error(
+                SimpleNamespace(detail="Chrome session deleted because of page crash")
+            )
+        )
+        self.assertFalse(
+            is_browser_session_recovery_error(
+                RuntimeError("timeout: Timed out receiving message from renderer: 45.000")
+            )
+        )
+
     def test_renderer_timeout_with_live_devtools_is_webpage_stall(self):
         diagnosis = classify_browser_failure(
             RuntimeError("timeout: Timed out receiving message from renderer: 45.000"),

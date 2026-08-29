@@ -1090,6 +1090,65 @@ class WorkerGuiEnvTests(unittest.TestCase):
 
         end_execution.assert_called_once_with(task["task_id"], event, mock.ANY)
 
+    def test_manual_site_restarts_invalid_browser_session_once_and_keeps_success(self):
+        task_id = "task-gui-session-recovery"
+        task = {"task_id": task_id, "created_at": "2026-07-13T08:00:00", "vehicle": "新坡91"}
+        initial_payload = {"task": task, "site_statuses": {}}
+        retry_payload = {
+            "task": task,
+            "site_statuses": {"duty_work_log": {"status": "not_started"}},
+        }
+        gui = self._manual_gui_stub()
+        event = __import__("threading").Event()
+        results = iter(
+            [
+                SimpleNamespace(
+                    ok=False,
+                    status="duty_work_log_failed",
+                    detail="Message: invalid session id",
+                ),
+                SimpleNamespace(ok=True, status="duty_work_log_saved", detail="verified"),
+            ]
+        )
+        statuses: list[tuple[str, str]] = []
+
+        with mock.patch.object(worker_gui.worker, "begin_manual_task_execution", return_value=event), mock.patch.object(
+            worker_gui.worker,
+            "end_manual_task_execution",
+        ), mock.patch.object(worker_gui.worker, "_start_worker_claim_heartbeat", return_value=lambda: None), mock.patch.object(
+            worker_gui.worker,
+            "claim_task",
+            return_value={**task, "_worker_payload": initial_payload},
+        ), mock.patch.object(
+            worker_gui.worker,
+            "fetch_task_payload",
+            return_value=retry_payload,
+        ), mock.patch.object(
+            worker_gui.worker,
+            "post_status",
+            side_effect=lambda _server, _task, status, detail, **_kwargs: statuses.append((status, detail)),
+        ), mock.patch.object(worker_gui.worker, "run_task", side_effect=lambda *args, **kwargs: next(results)) as run_task:
+            result = worker_gui.WorkerGui._run_selected_site_background_common(
+                gui,
+                "duty_work_log",
+                task_id,
+                profile_name="duty_work_log_profile",
+                debugger_port=None,
+                use_session_lock=True,
+                tile_name="duty_work_log",
+                force_new_driver=False,
+                manage_manual_lock=True,
+                update_overall=None,
+                claimed_task=None,
+                cancellation_event=None,
+            )
+
+        self.assertEqual(result.status, "duty_work_log_saved")
+        self.assertEqual(run_task.call_count, 2)
+        self.assertFalse(run_task.call_args_list[0].kwargs["force_new_driver"])
+        self.assertTrue(run_task.call_args_list[1].kwargs["force_new_driver"])
+        self.assertTrue(any("自動重啟" in detail for _status, detail in statuses))
+
     def test_manual_all_sites_heartbeat_stop_error_still_ends_execution_lease(self):
         task = {"task_id": "task-all-stop-error", "created_at": "2026-07-13T08:00:00", "vehicle": "新坡91"}
         gui = self._manual_gui_stub(

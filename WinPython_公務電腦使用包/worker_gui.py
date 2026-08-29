@@ -1357,64 +1357,89 @@ class WorkerGui(ctk.CTk):
                 "update_overall": effective_update_overall,
                 "cancel_check": cancel_check,
             }
-            if site_key == "duty_work_log":
-                result = worker.run_task(
-                    server_url,
-                    worker_id,
-                    task,
-                    artifacts_dir,
-                    use_session_lock=use_session_lock,
-                    force_new_driver=force_new_driver,
-                    **common_kwargs,
-                )
-            elif site_key == "vehicle_mileage":
-                result = worker.run_vehicle_task(
-                    server_url,
-                    worker_id,
-                    task,
-                    artifacts_dir,
-                    use_session_lock=use_session_lock,
-                    force_new_driver=force_new_driver,
-                    **common_kwargs,
-                )
-            elif site_key == "fuel_record":
-                result = worker.run_fuel_worker_task(
-                    server_url,
-                    worker_id,
-                    task,
-                    artifacts_dir,
-                    use_session_lock=use_session_lock,
-                    force_new_driver=force_new_driver,
-                    **common_kwargs,
-                )
-            elif site_key == "consumables":
-                result = worker.run_consumables_worker_task(
-                    server_url,
-                    worker_id,
-                    task,
-                    artifacts_dir,
-                    **common_kwargs,
-                )
-            elif site_key == "volunteer_assist":
-                result = worker.run_volunteer_assist_worker_task(
-                    server_url,
-                    worker_id,
-                    task,
-                    artifacts_dir,
-                    **common_kwargs,
-                )
-            elif site_key == "disinfection":
-                result = worker.run_disinfection_worker_task(
-                    server_url,
-                    worker_id,
-                    task,
-                    artifacts_dir,
-                    use_session_lock=use_session_lock,
-                    force_new_driver=force_new_driver,
-                    **common_kwargs,
-                )
-            else:
+            initial_payload = task.get("_worker_payload")
+            if not isinstance(initial_payload, dict):
+                initial_payload = {"task": task, "site_statuses": {}}
+            first_target_call = True
+
+            def run_target(current_payload: dict[str, object]):
+                nonlocal first_target_call
+                target_task = task
+                retrying = not first_target_call
+                if retrying:
+                    target_task = dict(current_payload.get("task") or task)
+                    target_task["_worker_payload"] = current_payload
+                    worker_queue = current_payload.get("worker_queue")
+                    if isinstance(worker_queue, dict):
+                        target_task["_worker_queue"] = dict(worker_queue)
+                first_target_call = False
+                target_force_new_driver = force_new_driver or retrying
+                if site_key == "duty_work_log":
+                    return worker.run_task(
+                        server_url,
+                        worker_id,
+                        target_task,
+                        artifacts_dir,
+                        use_session_lock=use_session_lock,
+                        force_new_driver=target_force_new_driver,
+                        **common_kwargs,
+                    )
+                if site_key == "vehicle_mileage":
+                    return worker.run_vehicle_task(
+                        server_url,
+                        worker_id,
+                        target_task,
+                        artifacts_dir,
+                        use_session_lock=use_session_lock,
+                        force_new_driver=target_force_new_driver,
+                        **common_kwargs,
+                    )
+                if site_key == "fuel_record":
+                    return worker.run_fuel_worker_task(
+                        server_url,
+                        worker_id,
+                        target_task,
+                        artifacts_dir,
+                        use_session_lock=use_session_lock,
+                        force_new_driver=target_force_new_driver,
+                        **common_kwargs,
+                    )
+                if site_key == "consumables":
+                    return worker.run_consumables_worker_task(
+                        server_url,
+                        worker_id,
+                        target_task,
+                        artifacts_dir,
+                        **common_kwargs,
+                    )
+                if site_key == "volunteer_assist":
+                    return worker.run_volunteer_assist_worker_task(
+                        server_url,
+                        worker_id,
+                        target_task,
+                        artifacts_dir,
+                        **common_kwargs,
+                    )
+                if site_key == "disinfection":
+                    return worker.run_disinfection_worker_task(
+                        server_url,
+                        worker_id,
+                        target_task,
+                        artifacts_dir,
+                        use_session_lock=use_session_lock,
+                        force_new_driver=target_force_new_driver,
+                        **common_kwargs,
+                    )
                 raise KeyError(site_key)
+
+            result = worker._run_worker_site_with_browser_recovery(
+                server_url,
+                task_id,
+                site_key,
+                run_target,
+                initial_payload,
+                execution_event or threading.Event(),
+            )
             if site_key == "disinfection":
                 if result is not None:
                     self.log_queue.put(

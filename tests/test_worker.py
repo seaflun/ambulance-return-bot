@@ -3869,6 +3869,72 @@ class WorkerTests(unittest.TestCase):
 
         runner.assert_not_called()
 
+    def test_site_group_restarts_invalid_browser_session_once_and_keeps_success(self):
+        task_id = "session-recovery-task"
+        payload = {"task": {"task_id": task_id}, "site_statuses": {}}
+        results = iter(
+            [
+                SimpleNamespace(
+                    ok=False,
+                    status="consumables_failed",
+                    detail="Message: invalid session id",
+                ),
+                SimpleNamespace(ok=True, status="consumables_saved", detail="verified"),
+            ]
+        )
+        runner_calls = []
+
+        def runner(value):
+            runner_calls.append(value)
+            return next(results)
+
+        with mock.patch.object(
+            worker_module,
+            "fetch_task_payload",
+            side_effect=[payload, payload],
+        ), mock.patch.object(worker_module, "post_status") as post_status, mock.patch.object(
+            worker_module,
+            "maximize_worker_site_windows",
+        ):
+            last_result, failed_results = worker_module._run_worker_site_group(
+                "http://nas",
+                task_id,
+                [("consumables", runner)],
+            )
+
+        self.assertEqual(len(runner_calls), 2)
+        self.assertEqual(last_result.status, "consumables_saved")
+        self.assertEqual(failed_results, [])
+        self.assertTrue(any("自動重啟" in call.args[3] for call in post_status.call_args_list))
+
+    def test_site_group_does_not_retry_a_second_invalid_browser_session(self):
+        task_id = "session-recovery-limit-task"
+        payload = {"task": {"task_id": task_id}, "site_statuses": {}}
+        result = SimpleNamespace(
+            ok=False,
+            status="consumables_failed",
+            detail="Message: invalid session id",
+        )
+        runner = mock.Mock(return_value=result)
+
+        with mock.patch.object(
+            worker_module,
+            "fetch_task_payload",
+            side_effect=[payload, payload],
+        ), mock.patch.object(worker_module, "post_status"), mock.patch.object(
+            worker_module,
+            "maximize_worker_site_windows",
+        ):
+            last_result, failed_results = worker_module._run_worker_site_group(
+                "http://nas",
+                task_id,
+                [("consumables", runner)],
+            )
+
+        self.assertEqual(runner.call_count, 2)
+        self.assertIs(last_result, result)
+        self.assertEqual(failed_results, [result])
+
     def test_daily_vehicle_mileage_retries_only_failed_vehicle_after_thirty_minutes(self):
         now = datetime(2026, 8, 22, 6, 30)
         target = {"vehicle_key": "KEC-2608", "ppe_name": "KEC-2608", "labels": ["新坡91"]}

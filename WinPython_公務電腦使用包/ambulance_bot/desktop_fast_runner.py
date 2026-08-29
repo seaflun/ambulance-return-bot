@@ -14,6 +14,7 @@ from consumables_login import login_acs_and_get_driver, open_consumable_record_f
 from disinfect import login_and_get_driver as login_disinfection_and_get_driver
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
+from .failure_evidence import browser_session_recovery_attempts, is_browser_session_recovery_error
 from .login_audit import login_audit_for_site, with_login_audit
 from .manual_task_lock import (
     acquire_manual_task_lock,
@@ -689,8 +690,7 @@ class DesktopFastRunner:
         self._notify(task_id, f"{site_name} 開始")
         try:
             self._raise_if_cancelled(task_id)
-            result = action()
-            self._raise_if_cancelled(task_id)
+            result = self._run_site_action_with_browser_recovery(task_id, site_key, site_name, action)
             result = _result_with_login_audit(result, login_audit)
             result = make_site_result(
                 site_key,
@@ -745,6 +745,39 @@ class DesktopFastRunner:
             )
             self._notify(task_id, f"{site_name} 失敗")
             return True
+
+    def _run_site_action_with_browser_recovery(self, task_id: str, site_key: str, site_name: str, action):
+        try:
+            result = action()
+        except TaskCancellationError:
+            raise
+        except Exception as exc:
+            if not is_browser_session_recovery_error(exc):
+                raise
+            result = exc
+
+        self._raise_if_cancelled(task_id)
+        recovery_attempts = browser_session_recovery_attempts()
+        if recovery_attempts <= 0 or not is_browser_session_recovery_error(result):
+            return result
+
+        site = dict(self.store.get(task_id).get("site_statuses", {}).get(site_key) or {})
+        current_status = str(site.get("status") or "")
+        if _site_is_complete(current_status):
+            return SiteAutomationResult(
+                site_key,
+                site_name,
+                current_status,
+                str(site.get("detail") or "NAS 已顯示此站完成，略過重試。"),
+            )
+
+        self._notify(task_id, f"{site_name} 網頁工作階段失效，自動重啟瀏覽器後重試")
+        print(
+            f"[desktop-fast] browser session recovery task={task_id} site={site_key} attempt=1/{recovery_attempts}",
+            flush=True,
+        )
+        self._raise_if_cancelled(task_id)
+        return action()
 
     def _notify(self, task_id: str, action: str) -> None:
         if not self.event_callback:

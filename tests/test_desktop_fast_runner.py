@@ -143,6 +143,47 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertEqual(site["status"], "consumables_waiting_confirmation")
             self.assertIn("人工", site["detail"])
 
+    def test_site_restarts_invalid_browser_session_once_and_keeps_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-session-recovery",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+            results = iter(
+                [
+                    SimpleNamespace(
+                        ok=False,
+                        status="consumables_failed",
+                        detail="Message: invalid session id",
+                    ),
+                    SimpleNamespace(ok=True, status="consumables_saved", detail="verified"),
+                ]
+            )
+            action_calls = []
+
+            def action():
+                action_calls.append("run")
+                return next(results)
+
+            runner._running.add(request.task_id)
+            owner = runner._prepare_execution(request.task_id, request.task_id, "busy")
+            try:
+                with patch.object(runner, "_notify") as notify:
+                    blocked = runner._run_site(request.task_id, "consumables", action)
+            finally:
+                runner._finish_execution(request.task_id, owner, request.task_id, lambda: None)
+
+            site = store.get(request.task_id)["site_statuses"]["consumables"]
+            self.assertFalse(blocked)
+            self.assertEqual(action_calls, ["run", "run"])
+            self.assertEqual(site["status"], "consumables_saved")
+            self.assertTrue(any("自動重啟" in call.args[1] for call in notify.call_args_list))
+
     def test_manual_task_lock_heartbeat_returns_joining_stop_callback(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ, {"MANUAL_TASK_LOCK_HEARTBEAT_SECONDS": "0.01"}
