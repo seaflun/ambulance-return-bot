@@ -754,6 +754,8 @@ class DesktopFastRunner:
         except Exception as exc:
             if not is_browser_session_recovery_error(exc):
                 raise
+            if browser_session_recovery_attempts() <= 0:
+                raise
             result = exc
 
         self._raise_if_cancelled(task_id)

@@ -184,6 +184,38 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertEqual(site["status"], "consumables_saved")
             self.assertTrue(any("自動重啟" in call.args[1] for call in notify.call_args_list))
 
+    def test_site_preserves_invalid_browser_session_when_recovery_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"SELENIUM_SESSION_RECOVERY_ATTEMPTS": "0"}
+        ):
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-session-recovery-disabled",
+                created_at=__import__("datetime").datetime.now(),
+                raw_text="",
+                vehicle="新坡92",
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+            action_calls = []
+
+            def action():
+                action_calls.append("run")
+                raise RuntimeError("Message: invalid session id")
+
+            runner._running.add(request.task_id)
+            owner = runner._prepare_execution(request.task_id, request.task_id, "busy")
+            try:
+                blocked = runner._run_site(request.task_id, "consumables", action)
+            finally:
+                runner._finish_execution(request.task_id, owner, request.task_id, lambda: None)
+
+            site = store.get(request.task_id)["site_statuses"]["consumables"]
+            self.assertTrue(blocked)
+            self.assertEqual(action_calls, ["run"])
+            self.assertEqual(site["status"], "consumables_failed")
+            self.assertIn("invalid session id", site["detail"])
+
     def test_manual_task_lock_heartbeat_returns_joining_stop_callback(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ, {"MANUAL_TASK_LOCK_HEARTBEAT_SECONDS": "0.01"}
