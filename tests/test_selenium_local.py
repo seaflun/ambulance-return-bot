@@ -29,6 +29,7 @@ from ambulance_bot.selenium_local import (
     _fill_vehicle_grid_values,
     _fuel_card_labels,
     _fuel_query_period,
+    _fuel_query_results_refreshed,
     _id_number_from_cases_for_credential,
     _is_ppe_fuel_record_page,
     lookup_synced_credential_id_number,
@@ -3108,7 +3109,7 @@ class SeleniumLocalTests(unittest.TestCase):
                     self.clicked_query = True
                     return {"changed": True, "clicked": True, "value": self.period}
                 if "__sinpoFuelQueryState" in script:
-                    return {"refreshed": True}
+                    return {"refreshed": True, "dataReady": True}
                 if "FuelUseYM" in script:
                     return self.period
                 return None
@@ -3132,7 +3133,7 @@ class SeleniumLocalTests(unittest.TestCase):
                     self.clicked_query = True
                     return {"changed": True, "clicked": True, "value": self.period}
                 if "__sinpoFuelQueryState" in script:
-                    return {"refreshed": True}
+                    return {"refreshed": True, "dataReady": True}
                 return self.period
 
         driver = FakeDriver()
@@ -3140,6 +3141,20 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(_ensure_fuel_query_period(driver, "2026/07"), "2026/07")
         self.assertEqual(_fuel_query_period(driver), "2026/07")
         self.assertTrue(driver.clicked_query)
+
+    def test_fuel_query_results_require_target_month_data(self):
+        class FakeDriver:
+            def execute_script(self, script: str, *args):
+                self.script = script
+                return {
+                    "refreshed": True,
+                    "dataReady": False,
+                    "dataPeriods": ["202607"],
+                }
+
+        driver = FakeDriver()
+
+        self.assertFalse(_fuel_query_results_refreshed(driver, "2026/08"))
 
     def test_fuel_record_query_page_requires_exact_route_and_month_control(self):
         class FakeDriver:

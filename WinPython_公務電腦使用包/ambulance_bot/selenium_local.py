@@ -2341,7 +2341,16 @@ def _ensure_fuel_query_period(driver: webdriver.Chrome, target_period: str) -> s
             const el = document.getElementById('FuelUseYM');
             const refreshStateKey = '__sinpoFuelQueryState';
             const refreshStorageKey = '__sinpoFuelQueryPending';
-            const queryState = {targetPeriod, refreshed: false};
+            const normalizePeriod = value => String(value ?? '').replace(/\\D/g, '');
+            const queryState = {
+              targetPeriod,
+              refreshed: false,
+              requestStarted: false,
+              requestCompleted: false,
+              responseSuccess: false,
+              dataReady: false,
+              dataPeriods: []
+            };
             const markRefreshed = () => { queryState.refreshed = true; };
             const bindOnce = (source, eventName) => {
               if (!source) return;
@@ -2387,12 +2396,49 @@ def _ensure_fuel_query_period(driver: webdriver.Chrome, target_period: str) -> s
             if (typeof window.queryFCNo !== 'function') {
               return {changed, clicked: false, value};
             }
-            const originalMakeKendo = window.MakeKendo;
-            if (typeof originalMakeKendo === 'function') {
-              window.MakeKendo = function (...args) {
-                markRefreshed();
-                window.MakeKendo = originalMakeKendo;
-                return originalMakeKendo.apply(this, args);
+            const originalPostJsonData = window.PostJsonData;
+            if (typeof originalPostJsonData === 'function') {
+              window.PostJsonData = function (...args) {
+                const url = String(args[0] || '');
+                const payload = args[1] || {};
+                const callback = args[2];
+                const requestPeriod = normalizePeriod(payload?.period);
+                if (
+                  !url.includes('/FUC04100/QueryFCUseInfo')
+                  || requestPeriod !== compactTarget
+                  || typeof callback !== 'function'
+                ) {
+                  return originalPostJsonData.apply(this, args);
+                }
+                queryState.requestStarted = true;
+                const nextArgs = Array.from(args);
+                nextArgs[2] = function (...callbackArgs) {
+                  const data = callbackArgs[0] || {};
+                  const rows = Array.isArray(data.Data) ? data.Data : null;
+                  const periods = rows
+                    ? rows.map(row => normalizePeriod(row?.Close_Period))
+                    : [];
+                  queryState.requestCompleted = true;
+                  queryState.responseSuccess = !!data.Success;
+                  queryState.dataPeriods = periods;
+                  try {
+                    const callbackResult = callback.apply(this, callbackArgs);
+                    queryState.dataReady = queryState.responseSuccess
+                      && rows !== null
+                      && (
+                        rows.length === 0
+                        || (
+                          periods.length === rows.length
+                          && periods.every(period => period === compactTarget)
+                        )
+                      );
+                    queryState.refreshed = queryState.dataReady;
+                    return callbackResult;
+                  } finally {
+                    window.PostJsonData = originalPostJsonData;
+                  }
+                };
+                return originalPostJsonData.apply(this, nextArgs);
               };
             }
             window.queryFCNo();
@@ -2425,20 +2471,30 @@ def _fuel_query_results_refreshed(driver: webdriver.Chrome, target_period: str) 
                 """
                 const targetPeriod = arguments[0];
                 const state = window.__sinpoFuelQueryState;
-                const stateRefreshed = !!state && state.targetPeriod === targetPeriod && !!state.refreshed;
+                const stateRefreshed = !!state
+                  && state.targetPeriod === targetPeriod
+                  && !!state.refreshed
+                  && !!state.requestStarted
+                  && !!state.requestCompleted
+                  && !!state.responseSuccess
+                  && !!state.dataReady;
                 let pageReloaded = false;
                 try {
                   const pending = JSON.parse(sessionStorage.getItem('__sinpoFuelQueryPending') || 'null');
                   pageReloaded = !!pending && pending.targetPeriod === targetPeriod
                     && Number(performance.timeOrigin || 0) >= Number(pending.issuedAt || Number.MAX_SAFE_INTEGER);
                 } catch (_) {}
-                return {refreshed: stateRefreshed || pageReloaded};
+                return {
+                  refreshed: stateRefreshed || pageReloaded,
+                  dataReady: stateRefreshed || pageReloaded,
+                  dataPeriods: Array.isArray(state?.dataPeriods) ? state.dataPeriods : []
+                };
                 """,
                 target_period,
             )
             or {}
         )
-        return bool(result.get("refreshed"))
+        return bool(result.get("refreshed")) and bool(result.get("dataReady"))
     except WebDriverException:
         return False
 
