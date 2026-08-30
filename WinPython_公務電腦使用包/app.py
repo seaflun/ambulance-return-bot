@@ -7372,6 +7372,32 @@ def case_entry_status_index(service_type: str = "ems") -> dict[str, list[str]]:
     return case_vehicles
 
 
+def case_lookup_sort_key(case: dict) -> tuple[datetime, str]:
+    date_value = case.get("case_date") or case.get("report_time") or ""
+    parsed_date = parse_datetime_text(date_value) or parse_case_date(str(date_value))
+    time_key = ""
+    hour = str(case.get("case_time_h") or "").strip()
+    minute = str(case.get("case_time_m") or "").strip()
+    if hour.isdigit() and minute.isdigit():
+        time_key = f"{int(hour):02d}{int(minute):02d}"
+    if len(time_key) != 4:
+        time_key = normalize_hhmm(str(case.get("case_time_hhmm") or ""))
+    if len(time_key) != 4:
+        time_key = _time_from_text(case.get("report_time"))
+    case_datetime = parsed_date or datetime.min
+    if len(time_key) == 4:
+        try:
+            case_datetime = case_datetime.replace(
+                hour=int(time_key[:2]),
+                minute=int(time_key[2:]),
+                second=0,
+                microsecond=0,
+            )
+        except ValueError:
+            pass
+    return case_datetime, str(case.get("case_id") or "")
+
+
 def prepared_case_lookup(service_type: str = "ems") -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
@@ -7390,6 +7416,7 @@ def prepared_case_lookup(service_type: str = "ems") -> dict:
                 "entry_status_label": case_entry_status_label(vehicles) if vehicles is not None else "尚未建立",
             }
         )
+    cases.sort(key=case_lookup_sort_key, reverse=True)
     if _case_lookup_start_error:
         case_lookup["detail"] = _case_lookup_start_error
         case_lookup["is_running"] = False

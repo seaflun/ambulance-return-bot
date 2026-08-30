@@ -7160,6 +7160,48 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("服勤人員：王小明", body)
         self.assertLess(body.index("已查到 2 筆"), body.index('<div class="case-list">'))
 
+    def test_case_lookup_orders_latest_case_first(self):
+        cases_dir = app_module.artifacts_dir / "cases"
+        cases_dir.mkdir(parents=True)
+        app_module.write_json_atomic(
+            cases_dir / "latest.json",
+            {
+                "status": "cases_loaded",
+                "lookup_range": "24h",
+                "cases": [
+                    {
+                        "case_id": "older-case",
+                        "case_date": "1150829",
+                        "case_time_h": "23",
+                        "case_time_m": "59",
+                        "category": "緊急救護-急病",
+                        "address": "較舊案件地址",
+                    },
+                    {
+                        "case_id": "middle-case",
+                        "case_date": "1150830",
+                        "case_time_h": "00",
+                        "case_time_m": "00",
+                        "category": "緊急救護-急病",
+                        "address": "中間案件地址",
+                    },
+                    {
+                        "case_id": "latest-case",
+                        "case_date": "1150830",
+                        "case_time_h": "00",
+                        "case_time_m": "01",
+                        "category": "緊急救護-急病",
+                        "address": "最新案件地址",
+                    },
+                ],
+            },
+        )
+
+        body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+
+        self.assertLess(body.index("最新案件地址"), body.index("中間案件地址"))
+        self.assertLess(body.index("中間案件地址"), body.index("較舊案件地址"))
+
     def test_case_lookup_shows_established_vehicle_per_service_before_import_button(self):
         self.store.create(
             AmbulanceReturnRequest(
