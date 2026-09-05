@@ -764,6 +764,235 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(card["completed_at"], "2026-08-14T18:01:39")
         self.assertEqual(card["pause_reason"], "")
 
+    def test_admin_view_preserves_submission_after_relogin_existing_check(self):
+        now = datetime(2026, 9, 5, 8, 3)
+        base = {
+            "record_type": "action_result",
+            "trigger_type": "due",
+            "actor_no": "8",
+            "display_name": "8番 測試員",
+            "item_kind": "工作",
+            "item_title": "值班交接",
+            "target_time": "08:00",
+            "snapshot": {"completion_key": "work:2026-09-05:8:值班交接:8"},
+        }
+        submitted = {
+            **base,
+            "event_id": "evt-original-submission",
+            "occurred_at": "2026-09-05T08:00:26",
+            "status": "submitted",
+            "result_ref": "original_submission.json",
+        }
+        existing = {
+            **base,
+            "event_id": "evt-relogin-existing",
+            "occurred_at": "2026-09-05T08:02:14",
+            "actor_no": "15",
+            "display_name": "15番 測試員",
+            "status": "skipped_duplicate",
+        }
+        for order in ((submitted, existing), (existing, submitted)):
+            with self.subTest(first=order[0]["status"]), tempfile.TemporaryDirectory() as tmp:
+                store = SinpoSmartBackendStore(Path(tmp))
+                for event in order:
+                    store.upsert_event(event, now=now)
+
+                day = store.read_day("2026-09-05", now=now)
+                view = day["admin_view"]
+                card = view["action_events"][0]
+
+                self.assertEqual(len(day["events"]), 2)
+                self.assertEqual({event["status"] for event in day["events"]}, {"submitted", "skipped_duplicate"})
+                self.assertEqual(len(view["action_events"]), 1)
+                self.assertEqual(card["status_label"], "已登打")
+                self.assertEqual(card["completed_at"], submitted["occurred_at"])
+                self.assertEqual(card["person_label"], "8番 測試員")
+                self.assertEqual(card["event_id"], submitted["event_id"])
+                source = next(event for event in day["events"] if event["event_id"] == card["event_id"])
+                self.assertEqual(source["result_ref"], "original_submission.json")
+                self.assertEqual(view["summary"]["submitted"], 1)
+                self.assertEqual(view["summary"]["existing"], 0)
+
+    def test_admin_view_existing_check_does_not_invent_submission_or_hide_failure(self):
+        now = datetime(2026, 9, 5, 8, 3)
+        for statuses, expected in (
+            (("skipped_duplicate",), "已存在"),
+            (("skipped_duplicate", "submitted"), "已登打"),
+            (("submitted", "failed"), "失敗"),
+            (("failed", "skipped_duplicate"), "已存在"),
+        ):
+            with self.subTest(statuses=statuses):
+                events = [
+                    normalize_sinposmart_event(
+                        {
+                            "event_id": f"evt-state-{index}",
+                            "occurred_at": f"2026-09-05T08:0{index}:26",
+                            "record_type": "action_result",
+                            "status": status,
+                            "snapshot": {"completion_key": "same-duty-action"},
+                        },
+                        now=now,
+                    )
+                    for index, status in enumerate(statuses)
+                ]
+
+                view = build_sinposmart_admin_view(events, now=now)
+
+                self.assertEqual(len(view["action_events"]), 1)
+                self.assertEqual(view["action_events"][0]["status_label"], expected)
+
+    def test_admin_view_finds_submission_before_fire_day_boundary_without_moving_events(self):
+        now = datetime(2026, 9, 5, 8, 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            submitted = store.upsert_event(
+                {
+                    "event_id": "evt-before-boundary",
+                    "occurred_at": "2026-09-05T07:55:22",
+                    "record_type": "action_result",
+                    "status": "submitted",
+                    "actor_no": "8",
+                    "display_name": "8番 測試員",
+                    "result_ref": "original_arrival.json",
+                    "snapshot": {"completion_key": "entry:2026-09-05:755:in:5:到勤"},
+                },
+                now=now,
+            )
+            for suffix, key in (
+                ("matching", "entry:2026-09-05:755:in:5:到勤"),
+                ("other-target", "entry:2026-09-05:755:in:15:到勤"),
+                ("other-date", "entry:2026-09-04:755:in:5:到勤"),
+            ):
+                store.upsert_event(
+                    {
+                        "event_id": f"evt-recheck-{suffix}",
+                        "occurred_at": "2026-09-05T08:02:15",
+                        "record_type": "action_result",
+                        "status": "skipped_duplicate",
+                        "actor_no": "15",
+                        "content": suffix,
+                        "snapshot": {"completion_key": key},
+                    },
+                    now=now,
+                )
+            original_files = {path: path.read_bytes() for path in Path(tmp).glob("*.json")}
+
+            day = store.read_day("2026-09-05", now=now)
+            listed_day = store.list_days(limit=1, now=now)[0]
+
+            for payload in (day, listed_day):
+                view = payload["admin_view"]
+                self.assertEqual(view["summary"]["actions"], 3)
+                self.assertEqual(view["summary"]["submitted"], 1)
+                self.assertEqual(view["summary"]["existing"], 2)
+                card = next(card for card in view["action_events"] if card["status_label"] == "已登打")
+                self.assertEqual(card["event_id"], submitted["event_id"])
+                self.assertEqual(card["completed_at"], "2026-09-05T07:55:22")
+                self.assertEqual(card["person_label"], "8番 測試員")
+                self.assertEqual({event["status"] for event in payload["events"]}, {"skipped_duplicate"})
+                self.assertEqual({event["fire_day"] for event in payload["events"]}, {"2026-09-05"})
+            self.assertEqual(store.read_day("2026-09-04", now=now)["events"], [submitted])
+            self.assertEqual({path: path.read_bytes() for path in original_files}, original_files)
+
+    def test_admin_view_cross_day_evidence_requires_prior_success_and_exact_task_key(self):
+        now = datetime(2026, 9, 5, 8, 3)
+        recheck = {
+            "event_id": "evt-current-recheck",
+            "occurred_at": "2026-09-05T08:02:15",
+            "record_type": "action_result",
+            "status": "skipped_duplicate",
+            "snapshot": {"completion_key": "entry:2026-09-05:755:in:5:到勤"},
+        }
+        original = {
+            **recheck,
+            "event_id": "evt-historical-result",
+            "occurred_at": "2026-09-05T07:55:22",
+            "status": "submitted",
+        }
+        for current_changes, history_changes, expected in (
+            ({}, {}, "已登打"),
+            ({}, {"occurred_at": "2026-09-05T08:03:00"}, "已存在"),
+            ({}, {"status": "failed"}, "已存在"),
+            ({}, {"record_type": "tool_action_finished"}, "已存在"),
+            ({}, {"snapshot": {"completion_key": "entry:2026-09-04:755:in:5:到勤"}}, "已存在"),
+            ({"snapshot": {}}, {"snapshot": {}}, "已存在"),
+            ({"status": "failed"}, {}, "失敗"),
+        ):
+            with self.subTest(current=current_changes, history=history_changes):
+                view = build_sinposmart_admin_view(
+                    [normalize_sinposmart_event({**recheck, **current_changes}, now=now)],
+                    related_results=[normalize_sinposmart_event({**original, **history_changes}, now=now)],
+                    now=now,
+                )
+
+                self.assertEqual(view["summary"]["actions"], 1)
+                self.assertEqual(view["action_events"][0]["status_label"], expected)
+
+    def test_admin_view_cross_day_evidence_does_not_match_truncated_completion_key(self):
+        now = datetime(2026, 9, 5, 8, 3)
+        shared_prefix = "entry:" + "x" * 1200
+        recheck = normalize_sinposmart_event(
+            {
+                "event_id": "evt-long-recheck",
+                "occurred_at": "2026-09-05T08:02:15",
+                "record_type": "action_result",
+                "status": "skipped_duplicate",
+                "snapshot": {"completion_key": f"{shared_prefix}:current"},
+            },
+            now=now,
+        )
+        unrelated_submission = normalize_sinposmart_event(
+            {
+                "event_id": "evt-long-unrelated-submission",
+                "occurred_at": "2026-09-05T07:55:22",
+                "record_type": "action_result",
+                "status": "submitted",
+                "snapshot": {"completion_key": f"{shared_prefix}:other"},
+            },
+            now=now,
+        )
+
+        view = build_sinposmart_admin_view([recheck], related_results=[unrelated_submission], now=now)
+
+        self.assertEqual(view["summary"]["actions"], 1)
+        self.assertEqual(view["action_events"][0]["status_label"], "已存在")
+
+    def test_admin_view_cross_day_evidence_does_not_match_redacted_completion_key(self):
+        now = datetime(2026, 9, 5, 8, 3)
+        recheck = normalize_sinposmart_event(
+            {
+                "event_id": "evt-redacted-recheck",
+                "occurred_at": "2026-09-05T08:02:15",
+                "record_type": "action_result",
+                "status": "skipped_duplicate",
+                "snapshot": {"completion_key": "entry:token=current"},
+            },
+            now=now,
+        )
+        unrelated_submission = normalize_sinposmart_event(
+            {
+                "event_id": "evt-redacted-unrelated-submission",
+                "occurred_at": "2026-09-05T07:55:22",
+                "record_type": "action_result",
+                "status": "submitted",
+                "snapshot": {"completion_key": "entry:token=other"},
+            },
+            now=now,
+        )
+
+        self.assertEqual(
+            recheck["snapshot"]["completion_key"],
+            unrelated_submission["snapshot"]["completion_key"],
+        )
+        self.assertNotEqual(
+            recheck["snapshot"]["completion_key_sha256"],
+            unrelated_submission["snapshot"]["completion_key_sha256"],
+        )
+        view = build_sinposmart_admin_view([recheck], related_results=[unrelated_submission], now=now)
+
+        self.assertEqual(view["summary"]["actions"], 1)
+        self.assertEqual(view["action_events"][0]["status_label"], "已存在")
+
     def test_admin_view_keeps_same_time_duty_items_separate(self):
         events = []
         for index, (item_kind, title, target) in enumerate(

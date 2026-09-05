@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import date, datetime, timedelta
@@ -302,11 +303,27 @@ def sinposmart_display_status_class(label: str, value: str) -> str:
     return sinposmart_status_class(value)
 
 
+def sinposmart_completion_key_identity(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("\x00", "").strip()
+
+
+def sinposmart_completion_key_digest(snapshot: dict[str, Any]) -> str:
+    completion_key = sinposmart_completion_key_identity(snapshot.get("completion_key"))
+    if not completion_key:
+        return ""
+    recorded_digest = sinposmart_completion_key_identity(snapshot.get("completion_key_sha256")).lower()
+    if re.fullmatch(r"[0-9a-f]{64}", recorded_digest):
+        return recorded_digest
+    return hashlib.sha256(completion_key.encode("utf-8")).hexdigest()
+
+
 def sinposmart_action_group_key(event: dict[str, Any], *, include_target: bool = True) -> tuple[str, ...]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
-    completion_key = sanitize_scalar(snapshot.get("completion_key"), 160) if snapshot else ""
+    completion_key = sinposmart_completion_key_identity(snapshot.get("completion_key")) if snapshot else ""
     if completion_key:
-        return ("completion_key", completion_key)
+        return ("completion_key", sinposmart_completion_key_digest(snapshot))
     fields = [
         "fields",
         str(event.get("target_time") or ""),
@@ -743,6 +760,13 @@ def sinposmart_action_display_title(
 def better_sinposmart_action_result(current: dict[str, Any] | None, candidate: dict[str, Any]) -> dict[str, Any]:
     if current is None:
         return candidate
+    current_label = sinposmart_action_status_label(str(current.get("status") or ""), str(current.get("record_type") or ""))
+    candidate_label = sinposmart_action_status_label(str(candidate.get("status") or ""), str(candidate.get("record_type") or ""))
+    # A later existence check is not a replacement for a recorded submission.
+    if current_label == "已登打" and candidate_label == "已存在":
+        return current
+    if current_label == "已存在" and candidate_label == "已登打":
+        return candidate
     current_time = sinposmart_event_time(current)
     candidate_time = sinposmart_event_time(candidate)
     if candidate_time > current_time:
@@ -1045,6 +1069,7 @@ def build_sinposmart_admin_view(
     events: list[dict[str, Any]],
     *,
     now: datetime | None = None,
+    related_results: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     action_groups: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     tool_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
@@ -1098,6 +1123,21 @@ def build_sinposmart_admin_view(
             continue
         if sinposmart_is_login_event(event):
             login_events.append(event)
+
+    # Rechecks can cross the 08:00 storage boundary; borrow proof, not day events.
+    for event in sorted(related_results or [], key=sinposmart_event_time, reverse=True):
+        key = sinposmart_action_group_key(event)
+        if key[0] != "completion_key" or key not in action_groups:
+            continue
+        current = action_groups[key].get("result")
+        if not current or str(current.get("status") or "") != "skipped_duplicate":
+            continue
+        if str(event.get("record_type") or "") != "action_result":
+            continue
+        if sinposmart_action_status_label(str(event.get("status") or ""), "action_result") != "已登打":
+            continue
+        if sinposmart_event_time(event) <= sinposmart_event_time(current):
+            action_groups[key]["result"] = event
 
     merge_sinposmart_targetless_action_groups(action_groups)
     action_events = [sinposmart_admin_action_event(action_state, now=now) for action_state in action_groups.values()]
@@ -1209,7 +1249,9 @@ class SinpoSmartBackendStore:
                 if isinstance(payload, dict):
                     payload["events"] = compact_sinposmart_events(payload.get("events") or [])
                     payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
-                    payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [], now=now)
+                    payload["admin_view"] = build_sinposmart_admin_view(
+                        payload["events"], now=now, related_results=self._related_submission_results(payload["events"])
+                    )
                     days.append(payload)
             return days[:limit]
 
@@ -1226,8 +1268,36 @@ class SinpoSmartBackendStore:
                 return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([], now=now)}
             payload["events"] = compact_sinposmart_events(payload.get("events") or [])
             payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
-            payload["admin_view"] = build_sinposmart_admin_view(payload.get("events") or [], now=now)
+            payload["admin_view"] = build_sinposmart_admin_view(
+                payload["events"], now=now, related_results=self._related_submission_results(payload["events"])
+            )
             return payload
+
+    def _related_submission_results(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        keys = {
+            sinposmart_action_group_key(event)
+            for event in events
+            if event.get("record_type") == "action_result" and event.get("status") == "skipped_duplicate"
+        }
+        keys = {key for key in keys if key[0] == "completion_key"}
+        if not keys:
+            return []
+        results: list[dict[str, Any]] = []
+        for path in self.root_dir.glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
+                continue
+            for event in payload["events"]:
+                if not isinstance(event, dict) or event.get("record_type") != "action_result":
+                    continue
+                if sinposmart_action_group_key(event) not in keys:
+                    continue
+                if sinposmart_action_status_label(str(event.get("status") or ""), "action_result") == "已登打":
+                    results.append(event)
+        return results
 
     def cleanup(self, now: datetime | None = None) -> None:
         with self._lock:
@@ -1260,6 +1330,12 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
     fire_day = str(raw_event.get("fire_day") or sinposmart_fire_day_for(occurred_at)).strip()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fire_day):
         fire_day = sinposmart_fire_day_for(occurred_at)
+    raw_snapshot = raw_event.get("snapshot")
+    snapshot = sanitize_value(raw_snapshot, depth=0)
+    if isinstance(raw_snapshot, dict) and isinstance(snapshot, dict):
+        completion_key = sinposmart_completion_key_identity(raw_snapshot.get("completion_key"))
+        if completion_key:
+            snapshot["completion_key_sha256"] = hashlib.sha256(completion_key.encode("utf-8")).hexdigest()
     event = {
         "event_id": str(raw_event.get("event_id") or uuid4()).strip(),
         "merged_event_ids": [],
@@ -1283,7 +1359,7 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         "repeat_count": 1,
         "first_occurred_at": occurred_at.isoformat(timespec="seconds"),
         "last_occurred_at": occurred_at.isoformat(timespec="seconds"),
-        "snapshot": sanitize_value(raw_event.get("snapshot"), depth=0),
+        "snapshot": snapshot,
     }
     event["merged_event_ids"] = [event["event_id"]]
     if record_type == "tool_action_started" and not event["item_title"]:
