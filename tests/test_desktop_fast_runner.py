@@ -19,6 +19,24 @@ from ambulance_bot.update_safety import ManualUpdateRequiredError
 
 
 class DesktopFastRunnerTests(unittest.TestCase):
+    def test_progress_reports_group_transitions_with_the_exact_site_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            store.create(AmbulanceReturnRequest(task_id="phases", created_at=datetime.now(), raw_text=""))
+            reports = []
+            runner = DesktopFastRunner(Path(tmp), store=store, event_callback=lambda payload, action: reports.append((payload, action)))
+            owner = runner._prepare_execution("phases", "phases", "busy")
+            self.assertTrue(owner)
+            try:
+                for stage in ("登入一站通", "查詢案件", "填寫耗材品項", "儲存", "回查耗材紀錄"):
+                    runner._report_site_progress("phases", "consumables", stage)
+            finally:
+                runner._release_prepared_execution("phases", owner, "phases")
+            self.assertEqual(["一站通耗材 階段：登入與案件", "一站通耗材 階段：填寫耗材", "一站通耗材 階段：儲存回查"],
+                             [action for _, action in reports])
+            self.assertIn("登入一站通", reports[0][0]["site_statuses"]["consumables"]["detail"])
+            self.assertNotIn("回查耗材紀錄", reports[0][0]["site_statuses"]["consumables"]["detail"])
+
     def test_disaster_active_site_groups_exclude_ems_sites(self):
         request = AmbulanceReturnRequest(
             task_id="disaster-groups",

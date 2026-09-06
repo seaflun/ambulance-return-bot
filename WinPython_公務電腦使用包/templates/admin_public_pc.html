@@ -509,13 +509,13 @@
             <details class="task-details">
               <summary>完整事件</summary>
               <ul class="events">
-                {% for event in item.events | reverse %}
+                {% for event in public_pc_event_rows(item) | reverse %}
                   <li>
                     <time class="event-time">{{ event.time }}</time>
                     <div class="event-main">
                       <div class="event-action">{{ event.action }}</div>
                       {% if event.detail %}
-                        <div class="event-detail">{{ public_pc_event_display_detail(event.status, event.detail, item.site_statuses, action=event.action) }}</div>
+                        <div class="event-detail">{{ event.detail }}</div>
                       {% endif %}
                     </div>
                   </li>

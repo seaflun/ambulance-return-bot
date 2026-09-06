@@ -40,7 +40,11 @@ class FakeDesktopRunner:
         self.started: list[str] = []
         self.started_sites: list[tuple[str, str]] = []
 
-    def start_existing(self, task_id: str) -> str:
+    def start_existing(self, task_id: str, *, auto_start: bool = False) -> str:
+        if auto_start and not self.store.begin_auto_start(task_id, mode="desktop_fast"):
+            return task_id
+        if not auto_start:
+            self.store.cancel_auto_start(task_id)
         self.started.append(task_id)
         self.store.set_overall_status(task_id, "desktop_fast_running", "本機快速執行已啟動。")
         return task_id
@@ -3801,6 +3805,82 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("請選擇正確案件類型", html.unescape(response.data.decode("utf-8")))
         self.assertEqual([], self.store.list_recent())
 
+    def test_local_created_task_gets_persistent_ten_minute_auto_start(self):
+        os.environ["DESKTOP_FAST_MODE"] = "1"
+        response = self.client.post("/tasks", data=self.valid_task_data())
+        self.assertEqual(302, response.status_code)
+        payload = self.store.list_recent()[0]
+        self.assertEqual("desktop_fast", payload["auto_start"]["mode"])
+        self.assertEqual("pending", payload["auto_start"]["status"])
+        self.assertEqual(timedelta(minutes=10), datetime.fromisoformat(payload["auto_start"]["due_at"])
+                         - datetime.fromisoformat(payload["created_at"]))
+        self.assertEqual([], app_module.desktop_runner.started)
+        page = self.client.get(response.headers["Location"]).get_data(as_text=True)
+        self.assertNotIn("建立滿 10 分鐘", page)
+
+    def test_remote_creation_keeps_immediate_worker_queue(self):
+        with mock.patch.object(app_module, "request_is_local_host", return_value=False):
+            response = self.client.post("/tasks", data=self.valid_task_data())
+        self.assertEqual(302, response.status_code)
+        payload = self.store.list_recent()[0]
+        self.assertEqual("queued_for_worker", payload["overall_status"])
+        self.assertNotIn("auto_start", payload)
+
+    def test_auto_start_tick_dispatches_without_http_request(self):
+        for mode in ("desktop_fast", "worker_queue"):
+            with self.subTest(mode=mode):
+                task_id = "auto-" + mode
+                task = AmbulanceReturnRequest(task_id=task_id, created_at=datetime.now(), raw_text="", vehicle="新坡91")
+                payload = self.store.create(task, auto_start_mode=mode)
+                payload["ems_case_closed_confirmed"] = False
+                payload["auto_start"]["due_at"] = (datetime.now() - timedelta(seconds=1)).isoformat()
+                self.store.save_payload(task_id, payload)
+                with mock.patch.object(app_module.desktop_runner, "start_existing") as start:
+                    app_module.run_due_task_auto_starts()
+                    if mode == "desktop_fast":
+                        start.assert_called_once_with(task_id, auto_start=True)
+                        self.store.cancel_auto_start(task_id)
+                    else:
+                        start.assert_not_called()
+                        self.assertEqual("queued_for_worker", self.store.get(task_id)["overall_status"])
+                        claim = self.store.claim_next_for_worker("test-worker")
+                        self.assertEqual(task_id, claim["task"]["task_id"])
+
+    def test_auto_start_runs_unconfirmed_case_once_without_pending_notice(self):
+        os.environ["DESKTOP_FAST_MODE"] = "1"
+        response = self.client.post("/tasks", data=self.valid_task_data())
+        payload = self.store.list_recent()[0]
+        task_id = payload["task"]["task_id"]
+        payload["auto_start"]["due_at"] = (datetime.now() - timedelta(seconds=1)).isoformat()
+        self.store.save_payload(task_id, payload)
+        app_module.run_due_task_auto_starts()
+        app_module.run_due_task_auto_starts()
+        self.assertEqual([task_id], app_module.desktop_runner.started)
+        self.assertFalse(self.store.get(task_id).get("ems_case_closed_confirmed"))
+        page = self.client.get(response.headers["Location"]).get_data(as_text=True)
+        self.assertNotIn("系統會自動開始登打，不等待結案確認", page)
+
+    def test_auto_start_scheduler_keeps_polling_after_scan_error_and_stops(self):
+        with mock.patch.object(app_module.threading, "Thread") as thread_factory:
+            stop, thread = app_module.start_task_auto_start_scheduler()
+            poll = thread_factory.call_args.kwargs["target"]
+            self.assertTrue(thread_factory.call_args.kwargs["daemon"])
+            thread.start.assert_called_once()
+        with mock.patch.object(stop, "wait", side_effect=[False, False, True]) as wait, \
+                mock.patch.object(app_module, "run_due_task_auto_starts", side_effect=[OSError("test"), None]) as tick:
+            poll()
+        self.assertEqual(2, tick.call_count)
+        self.assertEqual([mock.call(10)] * 3, wait.call_args_list)
+
+    def test_web_lifecycle_starts_and_stops_auto_start_scheduler(self):
+        stop, thread = mock.Mock(), mock.Mock()
+        with mock.patch.object(app_module, "start_task_auto_start_scheduler", return_value=(stop, thread)), \
+                mock.patch("waitress.serve") as serve:
+            app_module.run_web_app(host="127.0.0.1", port=18080)
+        serve.assert_called_once()
+        stop.set.assert_called_once()
+        thread.join.assert_called_once_with(timeout=2)
+
     def test_create_task_writes_json_and_redirects(self):
         response = self.client.post(
             "/tasks",
@@ -5725,6 +5805,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("四站登打完成", body)
         self.assertIn("單站補打成功：消毒", body)
+        self.assertIn("消毒｜儲存確認｜已完成", body)
         report = app_module.public_pc_reports()[0]
         self.assertTrue(report["completion"]["all_complete"])
         self.assertEqual(report["completion"]["site_count_label"], "四站")
@@ -6780,6 +6861,104 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("NAS 後台", body)
         self.assertIn("公務電腦版本：未標示", body)
         self.assertIn("最後任務回報版本：2026.06.19.0801-installed", body)
+
+    def test_site_result_event_uses_its_site_snapshot_not_last_overall_event(self):
+        payload = {
+            "overall_status": "desktop_fast_completed",
+            "site_statuses": {"consumables": {"status": "consumables_saved", "detail": "回查耗材紀錄成功。"}},
+            "events": [{"status": "desktop_fast_completed", "detail": "一站通耗材完成後，所有有效站別皆已完成。"}],
+        }
+        event = app_module.public_pc_event_for_action(payload, "一站通耗材 結果")
+        self.assertEqual("consumables_saved", event["status"])
+        self.assertEqual("回查耗材紀錄成功。", event["detail"])
+        summary = app_module.public_pc_event_for_action(payload, "四站登打成功")
+        self.assertEqual("desktop_fast_completed", summary["status"])
+        self.assertNotEqual(event["detail"], summary["detail"])
+
+    def test_full_event_rows_align_with_all_site_stage_groups_without_mutating_history(self):
+        for site_key, groups in app_module.SITE_STAGE_GROUPS.items():
+            with self.subTest(site_key=site_key):
+                site_name = app_module.site_display_name(site_key)
+                events = [{"time": "2026-09-06T18:58:05", "action": f"{site_name} 階段",
+                           "status": f"{site_key}_running", "detail": f"本機快速 {site_name}：{stage_names[-1]}"}
+                          for _, stage_names in groups]
+                report = {"events": events, "site_statuses": {site_key: {"status": f"{site_key}_saved"}}}
+                before = json.dumps(report, ensure_ascii=False)
+                rows = app_module.public_pc_event_rows(report)
+                self.assertEqual([group for group, _ in groups], [row["stage_group"] for row in rows])
+                self.assertTrue(all("執行中" in row["action"] for row in rows))
+                self.assertEqual(before, json.dumps(report, ensure_ascii=False))
+
+    def test_legacy_last_site_and_overall_complete_events_display_distinct_meanings(self):
+        detail = "一站通耗材完成後，所有有效站別皆已完成。"
+        report = {"events": [
+            {"time": "2026-09-06T18:58:05", "action": "一站通耗材 結果", "status": "desktop_fast_completed", "detail": detail},
+            {"time": "2026-09-06T18:58:06", "action": "四站登打成功", "status": "desktop_fast_completed", "detail": detail},
+        ]}
+        rows = app_module.public_pc_event_rows(report)
+        self.assertEqual(2, len(rows))
+        self.assertEqual("耗材｜儲存回查｜已完成", rows[0]["action"])
+        self.assertEqual("四站登打成功", rows[1]["action"])
+        self.assertNotEqual(rows[0]["detail"], rows[1]["detail"])
+        self.assertEqual("2026-09-06T18:58:05", rows[0]["time"])
+        self.assertEqual(detail, report["events"][0]["detail"])
+
+    def test_historical_failure_does_not_borrow_latest_success_or_failure_stage(self):
+        report = {"site_statuses": {"consumables": {"status": "consumables_saved", "failure_stage": "儲存"}},
+                  "events": [{"time": "2026-09-06T18:55:00", "action": "一站通耗材 失敗",
+                              "status": "consumables_failed", "detail": "登入一站通失敗：無法登入。"}]}
+        row = app_module.public_pc_event_rows(report)[0]
+        self.assertEqual("登入與案件", row["stage_group"])
+        self.assertIn("失敗", row["action"])
+
+    def test_site_result_report_delivers_correct_event_through_real_report_pipeline(self):
+        payload = {
+            "task": {"task_id": "last-site-report", "vehicle": "新坡91"},
+            "overall_status": "desktop_fast_completed",
+            "site_statuses": {"consumables": {"status": "consumables_saved", "detail": "回查耗材紀錄成功。"}},
+            "events": [{"status": "desktop_fast_completed", "detail": "一站通耗材完成後，所有有效站別皆已完成。"}],
+        }
+        sent = []
+        def post(url, body):
+            sent.append(body)
+            return {"ack_id": body["event_id"]}
+        with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True), \
+                mock.patch.object(app_module, "public_pc_report_server_url", return_value="http://nas.test"), \
+                mock.patch.object(app_module, "current_public_pc_user_label", return_value="測試人員"), \
+                mock.patch.object(app_module, "public_pc_site_login_accounts", return_value={}), \
+                mock.patch.object(app_module, "_post_public_pc_report", side_effect=post):
+            self.assertTrue(app_module.report_public_pc_task_event(payload, "一站通耗材 結果"))
+        self.assertEqual(1, len(sent))
+        self.assertEqual("consumables_saved", sent[0]["status"])
+        self.assertEqual("回查耗材紀錄成功。", sent[0]["detail"])
+        os.environ["WORKER_TOKEN"] = "test-token"
+        response = self.client.post("/worker/public-pc-task-events", json=sent[0], headers={"X-Worker-Token": "test-token"})
+        self.assertEqual(200, response.status_code)
+        page = self.client.get("/admin/ems").get_data(as_text=True)
+        self.assertIn("耗材｜儲存回查｜已完成", page)
+
+    def test_unknown_event_is_retained_and_success_is_not_inferred_from_latest_state(self):
+        report = {"events": [{"time": "old", "action": "自訂維護", "status": "custom", "detail": "原始訊息"}],
+                  "site_statuses": {"consumables": {"status": "consumables_saved"}}}
+        rows = app_module.public_pc_event_rows(report)
+        self.assertEqual(report["events"], rows)
+
+    def test_late_progress_event_preserves_newer_site_results_but_remains_in_history(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        headers = {"X-Worker-Token": "test-token"}
+        base = {"task_id": "late-stage", "task": {"task_id": "late-stage", "vehicle": "新坡91"}}
+        for event_id, action, status, time_text in (
+            ("done", "一站通耗材 結果", "consumables_saved", "2026-09-06T18:58:05"),
+            ("late", "一站通耗材 階段：儲存回查", "consumables_running", "2026-09-06T18:58:04"),
+        ):
+            response = self.client.post("/worker/public-pc-task-events", headers=headers, json={
+                **base, "event_id": event_id, "action": action, "status": status,
+                "site_statuses": {"consumables": {"status": status, "detail": "本機快速 一站通耗材：儲存", "updated_at": time_text}},
+            })
+            self.assertEqual(200, response.status_code)
+        report = app_module.public_pc_report_for_task("late-stage")
+        self.assertEqual("consumables_saved", report["site_statuses"]["consumables"]["status"])
+        self.assertEqual(2, len(report["events"]))
 
     def test_public_pc_report_is_queued_on_failure_and_flushed_on_next_success(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "true"

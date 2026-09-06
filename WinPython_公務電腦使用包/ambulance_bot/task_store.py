@@ -373,7 +373,7 @@ class JsonTaskStore:
         self.claim_lease_seconds = max(60, int(claim_lease_seconds))
         self._lock = threading.RLock()
 
-    def create(self, request: AmbulanceReturnRequest) -> dict[str, Any]:
+    def create(self, request: AmbulanceReturnRequest, *, auto_start_mode: str = "") -> dict[str, Any]:
         payload = {
             "task": request.to_dict(),
             "created_at": now_text(),
@@ -391,8 +391,74 @@ class JsonTaskStore:
                 }
             ],
         }
+        if auto_start_mode in {"desktop_fast", "worker_queue"}:
+            payload["auto_start"] = {
+                "status": "pending",
+                "mode": auto_start_mode,
+                "due_at": (datetime.fromisoformat(payload["created_at"]) + timedelta(minutes=10)).isoformat(timespec="seconds"),
+            }
         with self._lock:
             self.save_payload(request.task_id, payload)
+            return payload
+
+    @staticmethod
+    def _auto_start_is_due(payload: dict[str, Any], now: datetime) -> bool:
+        marker = payload.get("auto_start")
+        if not isinstance(marker, dict) or marker.get("status") != "pending":
+            return False
+        if marker.get("mode") not in {"desktop_fast", "worker_queue"}:
+            return False
+        if payload.get("overall_status") != "created" or worker_queue_state(payload)["status"] != "idle":
+            return False
+        if any(site.get("status") not in {"not_started", "not_applicable"}
+               for site in dict(payload.get("site_statuses") or {}).values()):
+            return False
+        if any(dict(payload.get("site_attempts") or {}).values()) or payload.get("pending_edit_impact"):
+            return False
+        try:
+            return datetime.fromisoformat(str(marker.get("due_at") or "")) <= now
+        except (ValueError, TypeError):
+            return False
+
+    def list_due_auto_starts(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
+        now = now or datetime.now()
+        with self._lock:
+            due = []
+            for path in self.tasks_dir.glob("*.json"):
+                payload = self._read_payload_or_quarantine(path)
+                if payload is not None and self._auto_start_is_due(payload, now):
+                    due.append(payload)
+            return sorted(due, key=lambda payload: payload["auto_start"]["due_at"])
+
+    def begin_auto_start(self, task_id: str, *, mode: str, now: datetime | None = None) -> bool:
+        with self._lock:
+            payload = self.get(task_id)
+            if not self._auto_start_is_due(payload, now or datetime.now()):
+                return False
+            if payload["auto_start"]["mode"] != mode:
+                return False
+            payload["auto_start"]["status"] = "started"
+            self.add_event_to_payload(payload, "auto_start_triggered", "建立滿 10 分鐘仍未開始，系統自動開始登打。")
+            self.save_payload(task_id, payload)
+            return True
+
+    def cancel_auto_start(self, task_id: str) -> None:
+        with self._lock:
+            payload = self.get(task_id)
+            marker = payload.get("auto_start")
+            if isinstance(marker, dict) and marker.get("status") == "pending":
+                marker["status"] = "cancelled"
+                self.save_payload(task_id, payload)
+
+    def queue_due_auto_start(self, task_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            payload = self.get(task_id)
+            if not self._auto_start_is_due(payload, datetime.now()) or payload["auto_start"]["mode"] != "worker_queue":
+                return None
+            payload = self.queue_for_worker(task_id)
+            payload["auto_start"]["status"] = "started"
+            self.add_event_to_payload(payload, "auto_start_triggered", "建立滿 10 分鐘仍未開始，系統自動排隊登打。")
+            self.save_payload(task_id, payload)
             return payload
 
     def update_task(
@@ -695,6 +761,8 @@ class JsonTaskStore:
                     "任務已全部完成；如需修正，請先編輯內容產生待更新站別。",
                 )
             payload["overall_status"] = "queued_for_worker"
+            if isinstance(payload.get("auto_start"), dict):
+                payload["auto_start"]["status"] = "cancelled"
             queue_state = worker_queue_state(payload)
             prior_claim_attempt = worker_claim_attempt(payload, queue_state)
             queue_state.update(

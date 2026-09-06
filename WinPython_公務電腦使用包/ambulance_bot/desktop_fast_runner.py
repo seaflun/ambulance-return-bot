@@ -25,7 +25,7 @@ from .manual_task_lock import (
 )
 from .record_folders import ensure_ems_record_folders
 from .selenium_local import run_disinfection_task, run_fuel_record_task, run_local_selenium_task, run_vehicle_mileage_task
-from .site_diagnostics import make_site_result
+from .site_diagnostics import SITE_STAGE_GROUPS, civilpower_stage_from_detail, make_site_result, site_stage_from_detail
 from .task_cancellation import (
     TaskCancellationError,
     clear_task_cancellation,
@@ -136,8 +136,9 @@ class DesktopFastRunner:
         self._running: set[str] = set()
         self._execution_owners: dict[str, str] = {}
         self._lease_lost_events: dict[str, threading.Event] = {}
+        self._reported_stage_groups: dict[tuple[str, str], str] = {}
 
-    def start_existing(self, task_id: str) -> str:
+    def start_existing(self, task_id: str, *, auto_start: bool = False) -> str:
         with self._lock:
             if self._task_running_locked(task_id):
                 return task_id
@@ -146,6 +147,12 @@ class DesktopFastRunner:
         if not lock_owner:
             return task_id
         try:
+            if auto_start:
+                if not self.store.begin_auto_start(task_id, mode="desktop_fast"):
+                    self._release_prepared_execution(task_id, lock_owner, task_id)
+                    return task_id
+            else:
+                self.store.cancel_auto_start(task_id)
             thread = threading.Thread(target=self._run, args=(task_id, lock_owner), daemon=True)
             thread.start()
         except Exception as exc:
@@ -174,6 +181,7 @@ class DesktopFastRunner:
         if not lock_owner:
             return task_id
         try:
+            self.store.cancel_auto_start(task_id)
             thread = threading.Thread(
                 target=self._run_single_site,
                 args=(task_id, site_key, run_key, lock_owner),
@@ -282,6 +290,9 @@ class DesktopFastRunner:
             if self._execution_owners.get(task_id) == owner:
                 self._execution_owners.pop(task_id, None)
                 self._lease_lost_events.pop(task_id, None)
+                for key in list(self._reported_stage_groups):
+                    if key[0] == owner:
+                        self._reported_stage_groups.pop(key, None)
 
     def _lease_lost_event(self, task_id: str) -> threading.Event | None:
         with self._lock:
@@ -375,7 +386,7 @@ class DesktopFastRunner:
         try:
             site_name = SITE_NAMES[site_key]
             login_audit = login_audit_for_site(site_key, self.store.request_for(task_id))
-            self._update_site_result_owned(
+            payload = self._update_site_result_owned(
                 task_id,
                 SiteAutomationResult(
                     site_key,
@@ -384,6 +395,16 @@ class DesktopFastRunner:
                     with_login_audit(f"本機快速 {site_name}：{stage}", login_audit),
                 ),
             )
+            stage_name = (civilpower_stage_from_detail(stage) if site_key == "volunteer_assist"
+                          else site_stage_from_detail(site_key, f"本機快速 {stage}"))
+            group = next((name for name, stages in SITE_STAGE_GROUPS.get(site_key, ()) if stage_name in stages), "")
+            owner = self._execution_owner(task_id)
+            with self._lock:
+                changed = bool(group and self._reported_stage_groups.get((owner, site_key)) != group)
+                if changed:
+                    self._reported_stage_groups[(owner, site_key)] = group
+            if changed and isinstance(payload, dict):
+                self._notify(task_id, f"{site_name} 階段：{group}", payload=payload)
         except TaskCancellationError:
             raise
         except Exception as exc:
@@ -687,6 +708,9 @@ class DesktopFastRunner:
             task_id,
             SiteAutomationResult(site_key, site_name, f"{site_key}_running", with_login_audit("本機快速執行中。", login_audit)),
         )
+        owner = self._execution_owner(task_id)
+        with self._lock:
+            self._reported_stage_groups[(owner, site_key)] = SITE_STAGE_GROUPS[site_key][0][0]
         self._notify(task_id, f"{site_name} 開始")
         try:
             self._raise_if_cancelled(task_id)
@@ -781,11 +805,11 @@ class DesktopFastRunner:
         self._raise_if_cancelled(task_id)
         return action()
 
-    def _notify(self, task_id: str, action: str) -> None:
+    def _notify(self, task_id: str, action: str, *, payload: dict | None = None) -> None:
         if not self.event_callback:
             return
         try:
-            self.event_callback(self.store.get(task_id), action)
+            self.event_callback(payload if payload is not None else self.store.get(task_id), action)
         except Exception:
             pass
 

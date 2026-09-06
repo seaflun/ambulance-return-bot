@@ -508,7 +508,7 @@ def create_task():
     if existing:
         existing_task_id = str(dict(existing.get("task") or {}).get("task_id") or "")
         return redirect(url_for("task_detail", task_id=existing_task_id))
-    payload = store.create(task_request)
+    payload = store.create(task_request, auto_start_mode=created_task_auto_start_mode())
     report_public_pc_task_event(payload, "建立任務")
     if should_auto_queue_task_on_create():
         queue_task_for_worker(task_request.task_id)
@@ -566,7 +566,7 @@ def create_disaster_task():
             last_vehicle_mileages=last_vehicle_mileages(nas_settings=nas_settings),
             form_errors=[f"行車紀錄器資料夾建立失敗：{exc}"],
         ), 400
-    payload = store.create(task_request)
+    payload = store.create(task_request, auto_start_mode=created_task_auto_start_mode())
     for folder in folder_results:
         store.add_event_to_payload(
             payload,
@@ -2915,6 +2915,7 @@ def upsert_public_pc_report(data: dict) -> dict:
             "action": public_pc_action_for_task(task, str(data.get("action") or "更新")),
             "status": event_status,
             "detail": event_detail,
+            **{field: str(data.get(field) or "") for field in DIAGNOSTIC_FIELDS},
         }
         reports = [item for item in current_reports if str(item.get("task_id") or "") != task_id]
         existing = next((item for item in current_reports if str(item.get("task_id") or "") == task_id), {})
@@ -2935,6 +2936,20 @@ def upsert_public_pc_report(data: dict) -> dict:
             if incoming_site_statuses_provided
             else existing.get("site_statuses", {})
         )
+        if " 階段：" in str(data.get("action") or ""):
+            # A delayed progress notification must not roll back a newer result snapshot.
+            site_statuses = dict(site_statuses)
+            for site_key, previous in dict(existing.get("site_statuses") or {}).items():
+                incoming = site_statuses.get(site_key)
+                if not isinstance(previous, dict) or not isinstance(incoming, dict):
+                    continue
+                previous_time = str(previous.get("updated_at") or "")
+                incoming_time = str(incoming.get("updated_at") or "")
+                if previous_time and incoming_time and (
+                    previous_time > incoming_time
+                    or (previous_time == incoming_time and status_class(str(previous.get("status") or "")) in {"complete", "failed", "waiting"})
+                ):
+                    site_statuses[site_key] = previous
         if str(data.get("action") or "").strip() == PUBLIC_PC_LEGACY_RECONCILE_ACTION:
             site_statuses = _preserve_public_pc_completed_site_statuses(
                 site_statuses,
@@ -3420,8 +3435,7 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
     task_id = str(task.get("task_id") or "").strip()
     if not task_id:
         return False
-    events = payload.get("events") if isinstance(payload.get("events"), list) else []
-    latest_event = events[-1] if events else {}
+    latest_event = public_pc_event_for_action(payload, action)
     operator_label = current_public_pc_user_label()
     site_login_accounts = public_pc_site_login_accounts(task)
     site_statuses = payload.get("site_statuses") or {}
@@ -3430,6 +3444,7 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
         latest_status,
         str(latest_event.get("detail") or ""),
         site_statuses if isinstance(site_statuses, Mapping) else {},
+        action=action,
     )
     body = {
         "event_id": str(event_id or "").strip() or str(uuid4()),
@@ -3445,6 +3460,8 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
         "action": public_pc_action_for_task(task, action),
         "status": latest_status,
         "detail": latest_detail,
+        "time": str(latest_event.get("time") or datetime.now().isoformat(timespec="seconds")),
+        **{field: str(latest_event.get(field) or "") for field in DIAGNOSTIC_FIELDS},
         "overall_status": str(payload.get("overall_status") or ""),
         "site_statuses": site_statuses,
         "completion": task_completion_snapshot(payload),
@@ -7003,6 +7020,76 @@ def event_detail_text(event: dict) -> str:
     return detail[:80] or status_label(status)
 
 
+def public_pc_event_for_action(payload: dict, action: str) -> dict:
+    events = payload.get("events") if isinstance(payload.get("events"), list) else []
+    event = dict(events[-1]) if events else {}
+    site_key = event_site_key({"action": action})
+    if site_key in SITE_STAGE_GROUPS:
+        site = dict(dict(payload.get("site_statuses") or {}).get(site_key) or {})
+        event = {
+            "status": str(site.get("status") or "unknown"),
+            "detail": str(site.get("detail") or action),
+            "time": str(site.get("updated_at") or event.get("time") or ""),
+            **{field: str(site.get(field) or "") for field in DIAGNOSTIC_FIELDS},
+        }
+        if "開始" in action or "重試" in action or "略過" in action:
+            event["detail"] = action
+            event["time"] = datetime.now().isoformat(timespec="seconds")
+            if "略過" not in action:
+                event["status"] = f"{site_key}_running"
+    elif re.fullmatch(r".+站登打成功", action):
+        event.update(status="desktop_fast_completed", detail="所有有效站別皆已完成。",
+                     time=datetime.now().isoformat(timespec="seconds"))
+    return event
+
+
+def public_pc_event_rows(report: dict) -> list[dict]:
+    rows = []
+    for raw in report.get("events") or []:
+        if not isinstance(raw, dict):
+            continue
+        event = dict(raw)
+        action = str(event.get("action") or "更新")
+        status = str(event.get("status") or "")
+        detail = str(event.get("detail") or "")
+        # Classify history from the event itself, never from the site's latest state.
+        site_key = event_site_key({"action": action})
+        if site_key not in SITE_STAGE_GROUPS:
+            site_key = next((key for key in SITE_STAGE_GROUPS if status.startswith(key + "_")), "")
+        if site_key:
+            groups = SITE_STAGE_GROUPS[site_key]
+            if status == "desktop_fast_completed" and ("結果" in action or "成功" in action):
+                status = f"{site_key}_saved"
+                detail = f"{site_display_name(site_key)}登打完成。"
+            stage = (
+                civilpower_stage_from_detail(detail) if site_key == "volunteer_assist"
+                else site_stage_from_detail(site_key, detail)
+            ) or str(event.get("failure_stage") or "")
+            group = next((name for name, stages in groups if stage in stages), "")
+            state_class = status_class(status)
+            if state_class == "complete":
+                group = groups[-1][0]
+            elif "開始" in action:
+                group = groups[0][0]
+                state_class = "running"
+            elif not group:
+                diagnostic = site_diagnostic({"key": site_key, "status": status, "detail": detail})
+                stage = str(diagnostic.get("failure_stage") or "")
+                group = next((name for name, stages in groups if stage in stages), "階段未判定")
+            state = {"complete": "已完成", "failed": "失敗", "waiting": "待確認", "running": "執行中"}.get(state_class, status_label(status))
+            if "略過" in action:
+                state = "略過（已完成）" if state_class == "complete" else "略過"
+            event.update(action=f"{SITE_SHORT_NAMES[site_key]}｜{group}｜{state}", stage_group=group)
+            if any(word in action for word in ("單站", "重試", "手動")) and action not in detail:
+                detail = f"{action}。{detail}"
+        elif re.fullmatch(r".+站登打成功", action) and status == "desktop_fast_completed":
+            detail = "所有有效站別皆已完成。"
+        event["status"] = status
+        event["detail"] = public_pc_event_display_detail(status, detail, action=action)
+        rows.append(event)
+    return rows
+
+
 def public_pc_event_display_detail(
     status: str,
     detail: str,
@@ -7120,6 +7207,7 @@ def template_helpers() -> dict:
         "patient_counts_from_summary": patient_counts_from_summary,
         "compact_login_account_summary": compact_login_account_summary,
         "public_pc_event_display_detail": public_pc_event_display_detail,
+        "public_pc_event_rows": public_pc_event_rows,
         "recent_tasks_need_refresh": recent_tasks_need_refresh,
         "site_action_button_label": site_action_button_label,
         "site_diagnostic": site_diagnostic,
@@ -7190,6 +7278,41 @@ def show_task_entry_controls() -> bool:
 
 def should_auto_queue_task_on_create() -> bool:
     return effective_task_execution_mode() == "worker_queue" and not request_is_local_host()
+
+
+def created_task_auto_start_mode() -> str:
+    return "" if should_auto_queue_task_on_create() else effective_task_execution_mode()
+
+
+def run_due_task_auto_starts() -> None:
+    for payload in store.list_due_auto_starts():
+        task_id = str(dict(payload.get("task") or {}).get("task_id") or "")
+        try:
+            if payload["auto_start"]["mode"] == "desktop_fast":
+                desktop_runner.start_existing(task_id, auto_start=True)
+            else:
+                queued = store.queue_due_auto_start(task_id)
+                if queued is not None:
+                    report_public_pc_task_event(queued, "建立滿 10 分鐘，自動排隊登打")
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            print(f"[task-auto-start] deferred task={task_id} error={type(exc).__name__}", flush=True)
+
+
+def start_task_auto_start_scheduler() -> tuple[threading.Event, threading.Thread]:
+    stop = threading.Event()
+
+    def poll() -> None:
+        while not stop.wait(10):
+            try:
+                run_due_task_auto_starts()
+            except Exception as exc:
+                print(f"[task-auto-start] scan deferred error={type(exc).__name__}", flush=True)
+
+    thread = threading.Thread(target=poll, name="task-auto-start", daemon=True)
+    thread.start()
+    return stop, thread
 
 
 def queue_task_for_worker(task_id: str, run_site_key: str = "") -> None:
@@ -7800,14 +7923,19 @@ def run_web_app(host: str | None = None, port: int | None = None) -> None:
         start_public_pc_legacy_reconciliation()
         start_public_pc_pending_report_flusher()
     print(f"[app] starting SinpoSmart disaster EMS worker web app on {host}:{port}", flush=True)
+    auto_start_stop, auto_start_thread = start_task_auto_start_scheduler()
     try:
-        from waitress import serve
-    except ImportError:
-        print("[app] waitress unavailable, using Flask development server", flush=True)
-        app.run(host=host, port=port, threaded=True, use_reloader=False)
-    else:
-        print("[app] waitress serving", flush=True)
-        serve(app, host=host, port=port, threads=8)
+        try:
+            from waitress import serve
+        except ImportError:
+            print("[app] waitress unavailable, using Flask development server", flush=True)
+            app.run(host=host, port=port, threaded=True, use_reloader=False)
+        else:
+            print("[app] waitress serving", flush=True)
+            serve(app, host=host, port=port, threads=8)
+    finally:
+        auto_start_stop.set()
+        auto_start_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
