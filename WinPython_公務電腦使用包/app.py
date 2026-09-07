@@ -6833,6 +6833,30 @@ def last_vehicle_mileages(
     return {vehicle: mileage for vehicle, (mileage, _occurred_at) in records.items()}
 
 
+def vehicle_mileage_hint_history() -> dict[str, list[dict[str, str]]]:
+    history: dict[str, list[dict[str, str]]] = {}
+    for payload in store.list_recent(limit=300):
+        if not isinstance(payload, dict) or not isinstance(payload.get("task"), dict):
+            continue
+        occurred_at = _last_vehicle_mileage_sort_key(payload)[0]
+        for entry in task_vehicle_display_entries(payload["task"]):
+            vehicle = str(entry.get("vehicle") or "").strip()
+            mileage = str(entry.get("mileage") or "").strip()
+            if vehicle and mileage.isdigit():
+                history.setdefault(vehicle, []).append({
+                    "time": occurred_at.strftime("%Y%m%d%H%M"), "mileage": mileage,
+                })
+    records = getattr(g, "vehicle_mileage_display_records", None) if has_request_context() else None
+    if records is None:
+        records = _last_vehicle_mileage_records()
+    for vehicle, (mileage, occurred_at) in records.items():
+        history.setdefault(vehicle, []).append({
+            "time": occurred_at.strftime("%Y%m%d%H%M"), "mileage": mileage,
+        })
+    return {vehicle: sorted(rows, key=lambda row: row["time"], reverse=True)
+            for vehicle, rows in history.items()}
+
+
 def last_vehicle_mileage_times() -> dict[str, str]:
     records = getattr(g, "vehicle_mileage_display_records", None) if has_request_context() else None
     if records is None:
@@ -7225,6 +7249,7 @@ def event_site_name(event: dict) -> str:
 def template_helpers() -> dict:
     return {
         "last_vehicle_mileage_times": last_vehicle_mileage_times,
+        "vehicle_mileage_hint_history": vehicle_mileage_hint_history,
         "case_time_range": case_time_range,
         "combined_mileage_site_status": combined_mileage_site_status,
         "display_case_title": display_case_title,

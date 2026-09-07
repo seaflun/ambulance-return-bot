@@ -17,6 +17,59 @@ def record(identity, start, end, first, last, month="2026/09"):
 
 
 class MileageBackfillTests(unittest.TestCase):
+    def test_month_query_clicks_form_button_not_sidebar_query_link(self):
+        class Button:
+            def __init__(self, driver):
+                self.driver = driver
+
+            def is_displayed(self):
+                return True
+
+            def is_enabled(self):
+                return True
+
+            def click(self):
+                self.driver.clicked.append("form-query")
+
+        class Driver:
+            def __init__(self):
+                self.current_url = ""
+                self.clicked = []
+
+            def get(self, url):
+                self.current_url = url
+
+            def find_elements(self, by, selector):
+                if selector == "#grid tbody":
+                    return []
+                return [self.find_element(by, selector)]
+
+            def find_element(self, by, selector):
+                if by != runtime.By.CSS_SELECTOR or selector != "#QueryForm button[onclick='Query()']":
+                    raise AssertionError(f"unscoped query selector: {by} {selector}")
+                return Button(self)
+
+            def execute_script(self, script, *args):
+                if "const ids = arguments[0]" in script:
+                    # The live page has no _btnQuery; its first matching control is the sidebar link.
+                    self.clicked.append("sidebar-query")
+                    self.current_url = "https://ppe.tyfd.gov.tw/CarRecord/query"
+                    return {"ok": True}
+                if "return Boolean" in script:
+                    return True
+                return {"rows": []}
+
+        driver = Driver()
+        def select_vehicle(current, label):
+            self.assertEqual(["form-query"], current.clicked)
+            self.assertEqual("/CarRecord/List", runtime.urlsplit(current.current_url).path)
+            current.current_url = "https://ppe.tyfd.gov.tw/CarRecord/Edit?id=1524&period=2026/09"
+        with patch.object(runtime, "_wait_for_ppe_vehicle_mileage_page", return_value=True), \
+             patch.object(runtime, "_select_daily_vehicle_mileage_month"), \
+             patch.object(runtime, "_select_vehicle_record", side_effect=select_vehicle), \
+             patch.object(runtime, "vehicle_mileage_record_label", return_value="CDD-2171"):
+            self.assertEqual([], runtime._load_vehicle_mileage_month(driver, self.request(), "2026/09"))
+
     def request(self):
         return AmbulanceReturnRequest(
             task_id="backfill", created_at=datetime(2026, 9, 7, 18), raw_text="",
@@ -168,6 +221,33 @@ class ScriptDriver:
 
 @unittest.skipUnless(shutil.which("node"), "Node.js required for browser-script tests")
 class MileageGridScriptTests(unittest.TestCase):
+    def test_historical_hint_uses_previous_mileage_and_changes_with_case_or_vehicle(self):
+        source = (runtime.Path(runtime.__file__).parent.parent / "templates/new_task.html").read_text(encoding="utf-8")
+        function = source[source.index("function updateLastMileageHint("):source.index("function updateReasonOptionsForSummaryType(")]
+        script = """
+        const lastVehicleMileages = {car: '10050', other: '20000'};
+        const vehicleMileageHintHistory = {car: [
+          {time:'202609071200', mileage:'10050'}, {time:'202609070800', mileage:'10000'}]};
+        let clock = '1000', car = 'car';
+        const hint = {textContent:''};
+        const document = {querySelector(selector) {
+          if (selector.includes('data-last-mileage')) return hint;
+          return {value: selector.includes('case_date') ? '2026/09/07' : selector.includes('case_time') ? clock : car};
+        }};
+        """ + function + """
+        const values = [];
+        for (const time of ['1000', '1400', '0700']) {
+          clock = time; updateLastMileageHint('vehicle'); values.push(hint.textContent);
+        }
+        car = 'other'; updateLastMileageHint('vehicle_2'); values.push(hint.textContent);
+        process.stdout.write(JSON.stringify(values));
+        """
+        result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, encoding="utf-8", check=True)
+        self.assertEqual([
+            "前一件案件結束里程：10000", "上次該車輛登打的里程：10050",
+            "前一件案件結束里程：尚無紀錄，登打時查詢里程系統", "上次該車輛登打的里程：20000",
+        ], json.loads(result.stdout))
+
     def test_following_row_is_found_by_id_after_insert_and_only_mileages_change(self):
         request = MileageBackfillTests().request()
         before = record(1, "0800", "0900", 9980, 10000)

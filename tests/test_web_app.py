@@ -10822,6 +10822,19 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="fuel_date_2" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" maxlength="10" value="2026/06/07"', body)
         self.assertIn('value="\u8d85\u7d1a\u67f4\u6cb9"', body)
 
+    def test_mileage_hint_history_preserves_prior_case_despite_later_creation(self):
+        for task_id, day, mileage in [("later", "2026/09/07", "10050"), ("earlier", "2026/09/06", "10000")]:
+            app_module.store.create(AmbulanceReturnRequest(
+                task_id=task_id, created_at=datetime.now(), raw_text="", vehicle="新坡91",
+                case_date=day, case_time="0800", mileage=mileage,
+            ))
+        with app_module.app.test_request_context():
+            app_module.g.vehicle_mileage_display_records = {"新坡91": ("10050", datetime(2026, 9, 7, 8))}
+            history = app_module.vehicle_mileage_hint_history()["新坡91"]
+        self.assertEqual("10050", history[0]["mileage"])
+        self.assertEqual({"time": "202609060800", "mileage": "10000"}, history[-1])
+        self.assertTrue(all(set(row) == {"time", "mileage"} for row in history))
+
     def test_last_vehicle_mileages_scans_beyond_recent_ten_tasks(self):
         for index in range(65):
             request = AmbulanceReturnRequest(

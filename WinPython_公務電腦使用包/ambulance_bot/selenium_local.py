@@ -2933,7 +2933,12 @@ def _load_vehicle_mileage_month(
     if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page during mileage history query")
     _select_daily_vehicle_mileage_month(driver, month)
-    _click_by_text_or_id(driver, ["_btnQuery"], ["查詢"])
+    previous_rows = driver.find_elements(By.CSS_SELECTOR, "#grid tbody")
+    WebDriverWait(driver, 12).until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, "#QueryForm button[onclick='Query()']"))
+    ).click()
+    if previous_rows:
+        WebDriverWait(driver, 12).until(EC.staleness_of(previous_rows[0]))
     WebDriverWait(driver, 12).until(
         lambda current: current.execute_script(
             "return Boolean(window.$ && $('#grid').data('kendoGrid'));"

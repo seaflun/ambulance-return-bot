@@ -933,6 +933,7 @@
     const selectedConsumablePackages = {{ selected_consumable_packages | default([]) | tojson }};
     const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
     const lastVehicleMileageTimes = {{ last_vehicle_mileage_times() | tojson }};
+    const vehicleMileageHintHistory = {{ vehicle_mileage_hint_history() | tojson }};
     const maxVehicleMileageChangeKm = 300;
     const enforceMileageChangeLimit = {{ enforce_mileage_change_limit | default(true) | tojson }};
     const twoVehicleToggle = document.getElementById("two-vehicle-toggle");
@@ -1106,6 +1107,14 @@
       const select = document.querySelector(`select[name="${vehicleFieldName}"]`);
       const hint = document.querySelector(`[data-last-mileage-for="${vehicleFieldName}"]`);
       if (!select || !hint) return;
+      const caseStamp = String(document.querySelector('[name="case_date"]')?.value || '').replace(/\D/g, '')
+        + String(document.querySelector('[name="case_time"]')?.value || '').replace(/\D/g, '');
+      const history = vehicleMileageHintHistory[select.value] || [];
+      if (/^\d{12}$/.test(caseStamp) && history.some((row) => row.time > caseStamp)) {
+        const previous = history.find((row) => row.time < caseStamp);
+        hint.textContent = `前一件案件結束里程：${previous ? previous.mileage : '尚無紀錄，登打時查詢里程系統'}`;
+        return;
+      }
       const mileage = String(lastVehicleMileages[select.value] || "").trim();
       hint.textContent = /^\d+$/.test(mileage) ? `上次該車輛登打的里程：${mileage}` : "";
     }
@@ -1415,6 +1424,7 @@
     }
 
     function updateFieldVisualHints() {
+      updateLastMileageHints();
       requiredTaskFields.forEach((field) => {
         const errorMessage = currentErrorMessage(field.name);
         if (errorMessage && fieldErrorStillApplies(field.name, errorMessage)) {
@@ -1449,6 +1459,13 @@
         updateVehicleOptionAvailability();
         updateLastMileageHints();
       });
+    });
+
+    ["case_date", "case_time"].forEach((fieldName) => {
+      const input = document.querySelector(`[name="${fieldName}"]`);
+      if (!input) return;
+      input.addEventListener("input", updateLastMileageHints);
+      input.addEventListener("change", updateLastMileageHints);
     });
 
     document.querySelectorAll("[data-numeric]").forEach((input) => {
