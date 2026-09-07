@@ -8557,6 +8557,31 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(prepared["detail"], "登入失敗")
         self.assertNotIn("empty_message", prepared)
 
+    def test_case_lookup_pages_hide_technical_errors_and_preserve_diagnostics(self):
+        samples = (
+            ("case_lookup_timeout", "案件查詢逾時：Message: timeout: Timed out receiving message from renderer\nStacktrace: chromedriver!GetHandleVerifier [0x123]",
+             "公務電腦目前無法連線消防勤務系統，案件查詢暫時無法完成，請稍後重試。"),
+            ("case_lookup_failed", "Message: unknown error\nStacktrace: chromedriver!GetHandleVerifier [0x123]",
+             "案件查詢失敗，請稍後重試。"),
+        )
+        for status, detail, message in samples:
+            for request_status in ("case_lookup_failed", ""):
+                with self.subTest(status=status, request_status=request_status):
+                    payload = {"status": status, "detail": detail, "cases": []}
+                    request = {"status": request_status, "detail": detail}
+                    with mock.patch.object(app_module, "read_case_lookup", return_value=payload.copy()), \
+                         mock.patch.object(app_module, "read_case_lookup_request", return_value=request):
+                        for route in ("/app", "/app/disaster"):
+                            response = self.client.get(route)
+                            self.assertEqual(response.status_code, 200)
+                            page = response.get_data(as_text=True)
+                            self.assertIn(message, page)
+                            self.assertNotIn("GetHandleVerifier", page)
+                            self.assertNotIn("Stacktrace", page)
+                            self.assertNotIn("沒有找到案件", page)
+                    self.assertEqual(payload["detail"], detail)
+                    self.assertEqual(request["detail"], detail)
+
     def test_worker_api_requires_configured_token(self):
         os.environ["WORKER_TOKEN"] = ""
 

@@ -7521,6 +7521,19 @@ def case_lookup_sort_key(case: dict) -> tuple[datetime, str]:
     return case_datetime, str(case.get("case_id") or "")
 
 
+def case_lookup_display_detail(detail: str) -> str:
+    technical_detail = detail.lower()
+    if any(marker in technical_detail for marker in (
+        "timeout", "timed out", "案件查詢逾時：", "err_connection", "err_name_not_resolved",
+    )):
+        return "公務電腦目前無法連線消防勤務系統，案件查詢暫時無法完成，請稍後重試。"
+    if any(marker in technical_detail for marker in (
+        "stacktrace", "traceback", "chromedriver", "session info:", "message:",
+    )):
+        return "案件查詢失敗，請稍後重試。"
+    return detail
+
+
 def prepared_case_lookup(service_type: str = "ems") -> dict:
     case_lookup = read_case_lookup()
     lookup_request = read_case_lookup_request()
@@ -7541,7 +7554,7 @@ def prepared_case_lookup(service_type: str = "ems") -> dict:
         )
     cases.sort(key=case_lookup_sort_key, reverse=True)
     if _case_lookup_start_error:
-        case_lookup["detail"] = _case_lookup_start_error
+        case_lookup["detail"] = case_lookup_display_detail(_case_lookup_start_error)
         case_lookup["is_running"] = False
         case_lookup["cases"] = cases
         case_lookup["case_count"] = len(cases)
@@ -7584,6 +7597,7 @@ def prepared_case_lookup(service_type: str = "ems") -> dict:
         lookup_range = str(case_lookup.get("lookup_range") or lookup_request.get("lookup_range") or "24h")
         range_label = case_lookup_range_label(lookup_range)
         case_lookup["empty_message"] = f"查詢完成，{range_label}沒有找到案件。"
+    case_lookup["detail"] = case_lookup_display_detail(str(case_lookup.get("detail") or ""))
     case_lookup["cases"] = cases
     case_lookup["case_count"] = len(cases)
     case_lookup["debug_artifacts"] = case_lookup_debug_artifacts()
