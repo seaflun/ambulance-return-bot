@@ -407,17 +407,17 @@ def sinposmart_background_summary_events(event: dict[str, Any]) -> list[dict[str
     return summary_events
 
 
-def sinposmart_tool_group_key(event: dict[str, Any]) -> tuple[str, ...]:
+def sinposmart_tool_group_key(event: dict[str, Any], *, run_id: str | None = None) -> tuple[str, ...]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     tool_name = sanitize_scalar(snapshot.get("tool_name"), 120) if snapshot else ""
     tool_label = sanitize_scalar(snapshot.get("tool_label"), 120) if snapshot else ""
-    run_id = sanitize_scalar(snapshot.get("run_id"), 120) if snapshot else ""
+    resolved_run_id = run_id if run_id is not None else sanitize_scalar(snapshot.get("run_id"), 120) if snapshot else ""
     title = str(event.get("item_title") or "")
     return (
         str(event.get("actor_no") or ""),
         sinposmart_person_label(event),
         tool_name or tool_label or title,
-        run_id,
+        resolved_run_id,
     )
 
 
@@ -1073,6 +1073,7 @@ def build_sinposmart_admin_view(
 ) -> dict[str, Any]:
     action_groups: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
     tool_events: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
+    legacy_tool_starts: dict[tuple[str, ...], list[str]] = {}
     background_updates: dict[tuple[str, ...], dict[str, Any]] = {}
     unreturned_return_events: dict[str, dict[str, Any]] = {}
     unreturned_return_history_events: dict[str, list[dict[str, Any]]] = {}
@@ -1102,7 +1103,20 @@ def build_sinposmart_admin_view(
                 action_state["result"] = better_sinposmart_action_result(action_state.get("result"), event)
             continue
         if record_type in {"tool_action_started", "tool_action_finished"}:
-            key = sinposmart_tool_group_key(event)
+            snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+            run_id = sanitize_scalar(snapshot.get("run_id"), 120) if snapshot else ""
+            if run_id:
+                key = sinposmart_tool_group_key(event)
+            else:
+                base_key = sinposmart_tool_group_key(event, run_id="")
+                event_id = str(event.get("event_id") or sinposmart_event_time(event) or "unknown")
+                if record_type == "tool_action_started":
+                    run_id = f"legacy:{event_id}"
+                    legacy_tool_starts.setdefault(base_key, []).append(run_id)
+                else:
+                    pending_starts = legacy_tool_starts.get(base_key, [])
+                    run_id = pending_starts.pop(0) if pending_starts else f"legacy:{event_id}"
+                key = sinposmart_tool_group_key(event, run_id=run_id)
             tool_state = tool_events.setdefault(key, {})
             if record_type == "tool_action_started":
                 tool_state["started"] = newer_sinposmart_event(tool_state.get("started"), event)
@@ -1395,7 +1409,11 @@ def sinposmart_event_merge_key(event: dict[str, Any]) -> tuple[str, ...]:
 
 
 def sinposmart_event_keeps_individual_record(event: dict[str, Any]) -> bool:
-    return sinposmart_is_login_event(event) or str(event.get("record_type") or "") == "unreturned_return"
+    return sinposmart_is_login_event(event) or str(event.get("record_type") or "") in {
+        "tool_action_started",
+        "tool_action_finished",
+        "unreturned_return",
+    }
 
 
 def event_repeat_count(event: dict[str, Any]) -> int:
@@ -1440,7 +1458,15 @@ def compact_sinposmart_events(events: list[dict[str, Any]]) -> list[dict[str, An
         event.setdefault("last_occurred_at", event.get("occurred_at") or "")
         event["merged_event_ids"] = sinposmart_event_ids(event)
         if sinposmart_event_keeps_individual_record(event):
-            event["repeat_count"] = 1
+            is_legacy_merged_tool_event = (
+                str(event.get("record_type") or "") in {"tool_action_started", "tool_action_finished"}
+                and len(event["merged_event_ids"]) > 1
+            )
+            event["repeat_count"] = (
+                max(event_repeat_count(event), len(event["merged_event_ids"]))
+                if is_legacy_merged_tool_event
+                else 1
+            )
         event_ids = sinposmart_event_ids(event)
         event_id = event_ids[0] if event_ids else ""
         if any(item in known_ids for item in event_ids):

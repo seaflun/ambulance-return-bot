@@ -7,6 +7,7 @@ from pathlib import Path
 from ambulance_bot.sinposmart_backend import (
     SinpoSmartBackendStore,
     build_sinposmart_admin_view,
+    compact_sinposmart_events,
     normalize_sinposmart_event,
     sinposmart_fire_day_for,
     sinposmart_status_label,
@@ -207,6 +208,27 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
 
             self.assertEqual(day["events"][0]["repeat_count"], 1)
             self.assertEqual(day["admin_view"]["login_events"][0]["repeat_count"], 1)
+
+    def test_existing_merged_tool_event_keeps_its_audit_repeat_count(self):
+        compacted = compact_sinposmart_events(
+            [
+                {
+                    "event_id": "legacy-tool-start-1",
+                    "merged_event_ids": ["legacy-tool-start-1", "legacy-tool-start-2"],
+                    "occurred_at": "2026-09-07T08:00:00",
+                    "record_type": "tool_action_started",
+                    "repeat_count": 2,
+                    "snapshot": {"tool_name": "duty_sheet"},
+                }
+            ]
+        )
+
+        self.assertEqual(len(compacted), 1)
+        self.assertEqual(compacted[0]["repeat_count"], 2)
+        self.assertEqual(
+            compacted[0]["merged_event_ids"],
+            ["legacy-tool-start-1", "legacy-tool-start-2"],
+        )
 
     def test_login_events_with_different_ids_do_not_merge_when_content_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -410,6 +432,123 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             all(
                 [step["label"] for step in event["steps"]] == ["開始執行", "結束執行"]
                 for event in view["tool_events"]
+            )
+        )
+
+    def test_store_keeps_same_tool_runs_separate_by_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            for run_id, started_at, finished_at, status, result_text in (
+                ("duty-run-1", "2026-09-07T09:00:00", "2026-09-07T09:00:20", "failed", "第一次失敗"),
+                ("duty-run-2", "2026-09-07T09:05:00", "2026-09-07T09:05:20", "completed", "第二次完成"),
+            ):
+                snapshot = {
+                    "tool_name": "duty_sheet",
+                    "tool_label": "勤務表登打",
+                    "run_id": run_id,
+                }
+                store.upsert_event(
+                    {
+                        "event_id": f"{run_id}-started",
+                        "occurred_at": started_at,
+                        "record_type": "tool_action_started",
+                        "trigger_type": "tool_start",
+                        "status": "started",
+                        "actor_no": "14",
+                        "display_name": "14番 隊員 測試",
+                        "snapshot": snapshot,
+                    },
+                    now=datetime(2026, 9, 7, 9, 0),
+                )
+                store.upsert_event(
+                    {
+                        "event_id": f"{run_id}-finished",
+                        "occurred_at": finished_at,
+                        "record_type": "tool_action_finished",
+                        "trigger_type": "tool_finish",
+                        "status": status,
+                        "actor_no": "14",
+                        "display_name": "14番 隊員 測試",
+                        "content": result_text if status == "completed" else "",
+                        "error": result_text if status == "failed" else "",
+                        "snapshot": snapshot,
+                    },
+                    now=datetime(2026, 9, 7, 9, 5),
+                )
+
+            day = store.read_day("2026-09-07", now=datetime(2026, 9, 7, 9, 6))
+
+        self.assertEqual(len(day["events"]), 4)
+        self.assertEqual(
+            {event["event_id"] for event in day["events"]},
+            {
+                "duty-run-1-started",
+                "duty-run-1-finished",
+                "duty-run-2-started",
+                "duty-run-2-finished",
+            },
+        )
+        self.assertEqual([event["repeat_count"] for event in day["events"]], [1, 1, 1, 1])
+        cards_by_event_id = {card["event_id"]: card for card in day["admin_view"]["tool_events"]}
+        self.assertEqual(len(cards_by_event_id), 2)
+        self.assertEqual(cards_by_event_id["duty-run-1-finished"]["status_label"], "失敗")
+        self.assertEqual(cards_by_event_id["duty-run-2-finished"]["status_label"], "完成")
+        self.assertTrue(
+            all(
+                [step["label"] for step in card["steps"]] == ["開始執行", "結束執行"]
+                for card in cards_by_event_id.values()
+            )
+        )
+
+    def test_store_keeps_sequential_same_tool_runs_without_run_id_separate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            for event_id, occurred_at, record_type, trigger_type, status, result_text in (
+                ("legacy-run-1-started", "2026-09-07T10:00:00", "tool_action_started", "tool_start", "started", ""),
+                ("legacy-run-1-finished", "2026-09-07T10:00:20", "tool_action_finished", "tool_finish", "failed", "第一次失敗"),
+                ("legacy-run-2-started", "2026-09-07T10:05:00", "tool_action_started", "tool_start", "started", ""),
+                ("legacy-run-2-finished", "2026-09-07T10:05:20", "tool_action_finished", "tool_finish", "completed", "第二次完成"),
+            ):
+                store.upsert_event(
+                    {
+                        "event_id": event_id,
+                        "occurred_at": occurred_at,
+                        "record_type": record_type,
+                        "trigger_type": trigger_type,
+                        "status": status,
+                        "actor_no": "14",
+                        "display_name": "14番 隊員 測試",
+                        "content": result_text if status == "completed" else "",
+                        "error": result_text if status == "failed" else "",
+                        "snapshot": {
+                            "tool_name": "duty_sheet",
+                            "tool_label": "勤務表登打",
+                        },
+                    },
+                    now=datetime(2026, 9, 7, 10, 6),
+                )
+
+            day = store.read_day("2026-09-07", now=datetime(2026, 9, 7, 10, 7))
+
+        self.assertEqual(len(day["events"]), 4)
+        self.assertEqual(
+            {event["event_id"] for event in day["events"]},
+            {
+                "legacy-run-1-started",
+                "legacy-run-1-finished",
+                "legacy-run-2-started",
+                "legacy-run-2-finished",
+            },
+        )
+        self.assertEqual([event["repeat_count"] for event in day["events"]], [1, 1, 1, 1])
+        cards_by_event_id = {card["event_id"]: card for card in day["admin_view"]["tool_events"]}
+        self.assertEqual(len(cards_by_event_id), 2)
+        self.assertEqual(cards_by_event_id["legacy-run-1-finished"]["status_label"], "失敗")
+        self.assertEqual(cards_by_event_id["legacy-run-2-finished"]["status_label"], "完成")
+        self.assertTrue(
+            all(
+                [step["label"] for step in card["steps"]] == ["開始執行", "結束執行"]
+                for card in cards_by_event_id.values()
             )
         )
 
