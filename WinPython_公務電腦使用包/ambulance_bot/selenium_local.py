@@ -8,6 +8,7 @@ import shlex
 import threading
 import time
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -2144,6 +2145,10 @@ def _prepare_vehicle_mileage_form(
     _click_text_if_present(driver, ["\u8eca\u8f1b\u4f7f\u7528\u7d00\u9304"])
     time.sleep(1)
     previous_request = _vehicle_mileage_previous_request(update_context, request)
+    if previous_request is None:
+        return _add_vehicle_mileage_record(
+            driver, request, artifacts_dir, cancel_check=cancel_check, progress=progress,
+        )
     if previous_request and previous_request.vehicle and previous_request.vehicle != request.vehicle:
         raise WebDriverException(
             "vehicle change requires manual correction: "
@@ -2808,19 +2813,261 @@ def _add_vehicle_mileage_record(
     cancel_check: Callable[[], None] | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> str:
-    latest_end_mileage = _extract_latest_end_mileage(driver)
-    _add_vehicle_mileage_row(driver)
-    time.sleep(1)
-
-    values = _vehicle_mileage_values(request, latest_end_mileage)
-    _fill_vehicle_grid_values(driver, values)
-    _assert_vehicle_mileage_values_present(driver, values)
-    if _save_vehicle_mileage_enabled():
-        _report_progress(progress, "儲存")
-        detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
-        _report_progress(progress, "確認里程紀錄")
+    _report_progress(progress, "依案件時間查詢前後里程")
+    history = _vehicle_mileage_history(driver, request, artifacts_dir, cancel_check)
+    plan = _vehicle_mileage_backfill_plan(request, history)
+    month = request.service_case_date().strftime("%Y/%m")
+    following = plan["following"]
+    same_month = following is not None and following["month"] == month
+    needs_following = following is not None and (
+        int(following["StartMileage"]) != int(plan["end_mileage"])
+        or int(following.get("Mileage", -1)) != int(following["EndMileage"]) - int(plan["end_mileage"])
+    )
+    if plan["existing"] is not None and not needs_following:
+        return f"{request.vehicle} 車輛里程紀錄已存在，前後里程已確認。"
+    if not _save_vehicle_mileage_enabled() and needs_following and not same_month:
+        return f"{WAITING_CONFIRMATION_MARKER} 補登需跨月修正後一筆開始里程，未啟用儲存，尚未修改。"
+    if cancel_check:
+        cancel_check()
+    refreshed = _load_vehicle_mileage_month(driver, request, month, artifacts_dir)
+    current_plan = _vehicle_mileage_backfill_plan(
+        request, [row for row in history if row["month"] != month] + refreshed,
+    )
+    if current_plan != plan:
+        raise WebDriverException("查詢後前後里程已變動，請重新執行。")
+    _write_vehicle_mileage_backfill(driver, request, plan, include_following=same_month)
+    if not _save_vehicle_mileage_enabled():
+        return "已填寫本案及後一筆里程，未按儲存。"
+    detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
+    if WAITING_CONFIRMATION_MARKER in detail:
         return detail
-    return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\uff0c\u672a\u6309\u5132\u5b58\u3002"
+    _verify_vehicle_mileage_backfill(driver, request, plan, month, artifacts_dir, same_month)
+    if needs_following and not same_month:
+        if cancel_check:
+            cancel_check()
+        refreshed = _load_vehicle_mileage_month(driver, request, following["month"], artifacts_dir)
+        current_plan = _vehicle_mileage_backfill_plan(
+            request, [row for row in history if row["month"] != following["month"]] + refreshed,
+        )
+        if current_plan != plan:
+            raise WebDriverException("本案已儲存，但後一筆資料已變動，請重新執行。")
+        _write_vehicle_mileage_backfill(driver, request, plan, include_following=True, following_only=True)
+        detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
+        if WAITING_CONFIRMATION_MARKER in detail:
+            return detail
+        _verify_vehicle_mileage_backfill(driver, request, plan, following["month"], artifacts_dir, True)
+    _report_progress(progress, "本案與後一筆里程已核對")
+    return f"{detail} 已依案件時間銜接前後里程。"
+
+
+def _mileage_record_datetime(row: dict, prefix: str) -> datetime:
+    day = re.sub(r"\D", "", str(row.get(prefix + "Day") or ""))
+    clock = normalize_hhmm_local(str(row.get(prefix + "Time") or ""))
+    if len(day) == 7:
+        day = str(int(day[:3]) + 1911) + day[3:]
+    try:
+        if len(day) != 8 or len(clock) != 4:
+            raise ValueError("missing date/time")
+        return datetime.strptime(day + clock, "%Y%m%d%H%M")
+    except ValueError as exc:
+        raise WebDriverException("里程紀錄日期時間不完整，無法判斷前後順序。") from exc
+
+
+def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[dict]) -> dict:
+    start = _mileage_record_datetime({"StartDay": request.service_case_date().strftime("%Y%m%d"),
+                                     "StartTime": request.case_time}, "Start")
+    end = _mileage_record_datetime({"EndDay": request.service_return_date().strftime("%Y%m%d"),
+                                   "EndTime": request.return_time}, "End")
+    if end < start:
+        raise WebDriverException("返隊時間早於案件時間。")
+    before, after, current = [], [], []
+    for row in rows:
+        first, last = _mileage_record_datetime(row, "Start"), _mileage_record_datetime(row, "End")
+        if last < first or not all(re.fullmatch(r"\d+", str(row.get(key, "")))
+                                    for key in ("StartMileage", "EndMileage")):
+            raise WebDriverException("里程歷史資料不完整，停止補登。")
+        if first == start:
+            current.append(row)
+        elif last <= start:
+            before.append(row)
+        elif first >= end:
+            after.append(row)
+        else:
+            raise WebDriverException("案件與既有用車時間重疊，停止補登。")
+    before.sort(key=lambda row: _mileage_record_datetime(row, "End"), reverse=True)
+    after.sort(key=lambda row: _mileage_record_datetime(row, "Start"))
+    if not before:
+        raise WebDriverException("查無案件之前的結束里程，停止補登。")
+    for candidates, prefix in ((before, "End"), (after, "Start")):
+        if len(candidates) > 1 and _mileage_record_datetime(candidates[0], prefix) == _mileage_record_datetime(candidates[1], prefix):
+            raise WebDriverException("前後里程紀錄時間重複，無法唯一定位。")
+    first = str(before[0]["EndMileage"])
+    last = _resolve_end_mileage(first, request.mileage)
+    if not re.fullmatch(r"\d+", last) or int(last) < int(first):
+        raise WebDriverException("本案結束里程小於前一筆結束里程。")
+    if int(last) - int(first) > 300:
+        raise WebDriverException("本案與前一筆結束里程相差不可超過 300 公里。")
+    following = after[0] if after else None
+    if following and int(last) > int(following["EndMileage"]):
+        raise WebDriverException("本案結束里程超過後一筆結束里程。")
+    if len(current) > 1:
+        raise WebDriverException("multiple current mileage rows")
+    existing = current[0] if current else None
+    if existing and (
+        _mileage_record_datetime(existing, "End") != end
+        or str(existing["EndMileage"]) != last
+        or str(existing["StartMileage"]) != first
+        or clean_case_address(str(existing.get("Destination") or "")) != clean_case_address(request.case_address)
+        or str(existing.get("DriverName") or "").strip() != request.driver.strip()
+    ):
+        raise WebDriverException("相同案件時間已有不同內容的里程紀錄，停止補登。")
+    return dict(start_mileage=first, end_mileage=last, previous=before[0],
+                following=following, existing=existing)
+
+
+def _load_vehicle_mileage_month(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest, month: str,
+    artifacts_dir: Path | None = None,
+) -> list[dict]:
+    driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
+    if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
+        raise WebDriverException("PPE session returned to login page during mileage history query")
+    _select_daily_vehicle_mileage_month(driver, month)
+    _click_by_text_or_id(driver, ["_btnQuery"], ["查詢"])
+    WebDriverWait(driver, 12).until(
+        lambda current: current.execute_script(
+            "return Boolean(window.$ && $('#grid').data('kendoGrid'));"
+        )
+    )
+    _select_vehicle_record(driver, vehicle_mileage_record_label(request, artifacts_dir))
+    WebDriverWait(driver, 12).until(
+        lambda current: "/CarRecord/Edit" in current.current_url
+    )
+    if parse_qs(urlsplit(driver.current_url).query).get("period") != [month]:
+        raise WebDriverException("登打頁月份與案件查詢月份不一致。")
+    result = driver.execute_script(
+        """
+        const grid = window.$ && $('#grid').data('kendoGrid');
+        if (!grid) return {error: 'grid not found'};
+        const source = grid.dataSource;
+        const rows = Array.from(source.data());
+        if (source.total() !== rows.length) return {error: 'incomplete mileage history page'};
+        return {rows: JSON.parse(JSON.stringify(rows.map(row => row.toJSON())))};
+        """
+    )
+    if not isinstance(result, dict) or result.get("error") or not isinstance(result.get("rows"), list):
+        raise WebDriverException(f"里程歷史查詢未完成：{result}")
+    rows = result["rows"]
+    for row in rows:
+        if _mileage_record_datetime(row, "Start").strftime("%Y/%m") != month:
+            raise WebDriverException("里程查詢月份與回傳資料不一致。")
+        if not str(row.get("Id") or "").strip():
+            raise WebDriverException("里程紀錄缺少穩定識別碼。")
+        row["month"] = month
+    return rows
+
+
+def _vehicle_mileage_history(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest,
+    artifacts_dir: Path | None = None, cancel_check: Callable[[], None] | None = None,
+) -> list[dict]:
+    case_day = request.service_case_date()
+    rows = []
+    for month in _daily_vehicle_mileage_months_to_search(case_day):
+        if cancel_check:
+            cancel_check()
+        found = _load_vehicle_mileage_month(driver, request, month, artifacts_dir)
+        rows.extend(found)
+        if month != case_day.strftime("%Y/%m") and found:
+            break
+    end = _mileage_record_datetime({"EndDay": request.service_return_date().strftime("%Y%m%d"),
+                                   "EndTime": request.return_time}, "End")
+    cursor = case_day.replace(day=1)
+    # Search later months only when this month has no following record.
+    while not any(_mileage_record_datetime(row, "Start") >= end for row in rows):
+        cursor = (cursor + timedelta(days=32)).replace(day=1)
+        if cursor.strftime("%Y/%m") > datetime.now().strftime("%Y/%m"):
+            break
+        if cancel_check:
+            cancel_check()
+        rows.extend(_load_vehicle_mileage_month(driver, request, cursor.strftime("%Y/%m"), artifacts_dir))
+    return rows
+
+
+def _write_vehicle_mileage_backfill(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest, plan: dict,
+    *, include_following: bool, following_only: bool = False,
+) -> None:
+    # Re-find by persisted Id and compare the snapshot before touching any fields.
+    targets = []
+    if not following_only:
+        targets.extend(row for row in (plan["previous"], plan["existing"])
+                       if row and row["month"] == request.service_case_date().strftime("%Y/%m"))
+    if include_following and plan["following"]:
+        targets.append(plan["following"])
+    result = driver.execute_script(
+        """
+        const grid = window.$ && $('#grid').data('kendoGrid');
+        if (!grid) return false;
+        const rows = Array.from(grid.dataSource.data());
+        return arguments[0].every(expected => {
+          const matches = rows.filter(row => String(row.Id) === String(expected.Id));
+          return matches.length === 1 && Object.keys(expected).filter(key => key !== 'month')
+            .every(key => JSON.stringify(matches[0].get(key)) === JSON.stringify(expected[key]));
+        });
+        """, targets,
+    )
+    if result is not True:
+        raise WebDriverException("里程資料已變動或識別不唯一，停止修改。")
+    if not following_only and plan["existing"] is None:
+        _add_vehicle_mileage_row(driver)
+        values = _vehicle_mileage_values(request, plan["start_mileage"])
+        _fill_vehicle_grid_values(driver, values)
+        _assert_vehicle_mileage_values_present(driver, values)
+    if include_following and plan["following"]:
+        result = driver.execute_script(
+            """
+            const grid = window.$ && $('#grid').data('kendoGrid');
+            if (!grid) return false;
+            const rows = Array.from(grid.dataSource.data()).filter(row => String(row.Id) === String(arguments[0]));
+            if (rows.length !== 1) return false;
+            const row = rows[0], start = Number(arguments[1]), end = Number(row.EndMileage);
+            if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return false;
+            row.set('StartMileage', start);
+            row.set('Mileage', end - start);
+            grid.refresh();
+            return row.StartMileage === start && row.Mileage === end - start;
+            """, plan["following"]["Id"], plan["end_mileage"],
+        )
+        if result is not True:
+            raise WebDriverException("後一筆開始里程未正確填入，停止儲存。")
+
+
+def _verify_vehicle_mileage_backfill(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest, plan: dict, month: str,
+    artifacts_dir: Path | None, include_following: bool,
+) -> None:
+    rows = _load_vehicle_mileage_month(driver, request, month, artifacts_dir)
+    if month == request.service_case_date().strftime("%Y/%m"):
+        if len(_vehicle_mileage_matching_row_indices(driver, request)) != 1:
+            raise WebDriverException("儲存後查無唯一的本案里程紀錄。")
+        matches = [row for row in rows if _mileage_record_datetime(row, "Start") ==
+                   _mileage_record_datetime({"StartDay": request.service_case_date().strftime("%Y%m%d"),
+                                             "StartTime": request.case_time}, "Start")]
+        if len(matches) != 1 or str(matches[0]["StartMileage"]) != plan["start_mileage"]:
+            raise WebDriverException("儲存後本案開始里程不符。")
+    if include_following and plan["following"]:
+        following = plan["following"]
+        matches = [row for row in rows if str(row["Id"]) == str(following["Id"])]
+        unchanged = ("Id", "StartDay", "StartTime", "EndDay", "EndTime", "EndMileage",
+                     "DeptNo", "DeptName", "Reason", "Destination", "Driver", "DriverName", "Remarks")
+        if len(matches) != 1:
+            raise WebDriverException("儲存後查無唯一的後一筆里程紀錄。")
+        saved = matches[0]
+        if (any(saved.get(key) != following.get(key) for key in unchanged)
+                or int(saved["StartMileage"]) != int(plan["end_mileage"])
+                or int(saved["Mileage"]) != int(following["EndMileage"]) - int(plan["end_mileage"])):
+            raise WebDriverException("儲存後後一筆里程核對失敗，重試時將重新查詢修正。")
 
 
 def _open_disinfection_page(
@@ -3402,7 +3649,7 @@ def _save_confirmation_state(*messages: str) -> str:
     compact = re.sub(r"\s+", "", text)
     if any(marker in compact for marker in ("失敗", "錯誤", "未成功", "無法儲存", "error", "failed")):
         return "failure"
-    if any(marker in compact for marker in ("儲存成功", "存檔成功", "成功儲存", "操作成功", "success")):
+    if any(marker in compact for marker in ("儲存成功", "存檔成功", "存檔完成", "成功儲存", "操作成功", "success")):
         return "success"
     return "unknown"
 
@@ -3790,6 +4037,11 @@ def _vehicle_mileage_matching_row_indices(
         const rows = grid.dataSource.data();
         const norm = value => String(value ?? '').replace(/\\s+/g, '').trim();
         const exactIfProvided = (actual, wanted) => !norm(wanted) || norm(actual) === norm(wanted);
+        const dayMatches = (actual, wanted) => {
+          let day = norm(actual).replace(/\\D/g, '');
+          if (day.length === 7) day = String(Number(day.slice(0, 3)) + 1911) + day.slice(3);
+          return !norm(wanted) || day === norm(wanted);
+        };
         const mileageMatches = row => {
           if (norm(expected.EndMileageDelta)) {
             const start = Number(norm(row.StartMileage));
@@ -3803,9 +4055,9 @@ def _vehicle_mileage_matching_row_indices(
         const matches = [];
         rows.forEach((row, index) => {
           if (
-            exactIfProvided(row.StartDay, expected.StartDay)
+            dayMatches(row.StartDay, expected.StartDay)
             && exactIfProvided(row.StartTime, expected.StartTime)
-            && exactIfProvided(row.EndDay, expected.EndDay)
+            && dayMatches(row.EndDay, expected.EndDay)
             && exactIfProvided(row.EndTime, expected.EndTime)
             && mileageMatches(row)
             && exactIfProvided(row.Destination, expected.Destination)

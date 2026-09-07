@@ -360,6 +360,7 @@
   const reason = document.getElementById('case-reason');
   const reasonOptionsByType = {{ disaster_reason_options_by_type | tojson }};
   const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
+  const lastVehicleMileageTimes = {{ last_vehicle_mileage_times() | tojson }};
   const maxVehicleMileageChangeKm = 300;
   const lockedSubcategory = document.getElementById('locked-recorder-subcategory');
   const folderPreview = document.getElementById('disaster-folder-preview');
@@ -559,6 +560,9 @@
     const vehicle=card.querySelector('[name="vehicle"]');
     const mileageInput=card.querySelector('[name="mileage"]');
     if(!vehicle||!mileageInput||!vehicle.value) return [];
+    const caseStamp=String(form.querySelector('[name="case_date"]')?.value||'').replace(/\D/g,'')
+      +String(form.querySelector('[name="case_time"]')?.value||'').replace(/\D/g,'');
+    if(/^\d{12}$/.test(caseStamp)&&caseStamp<=(lastVehicleMileageTimes[vehicle.value]||'')) return [];
     const previousMileageText=String(lastVehicleMileages[vehicle.value]||'').trim();
     const currentMileageText=mileageInput.value.trim();
     if(!/^\d+$/.test(previousMileageText)||!/^\d+$/.test(currentMileageText)) return [];

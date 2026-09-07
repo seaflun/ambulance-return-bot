@@ -1795,7 +1795,9 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module,
             "_delete_vehicle_mileage_row",
         ) as delete, patch.object(selenium_local_module, "_save_vehicle_mileage_form") as save:
-            detail = selenium_local_module._prepare_vehicle_mileage_form(FakeDriver(), request, Path("artifacts"))
+            detail = selenium_local_module._prepare_vehicle_mileage_form(
+                FakeDriver(), request, Path("artifacts"), update_context={"previous_task": request.to_dict()},
+            )
 
         self.assertIn("已存在", detail)
         find_previous.assert_not_called()
@@ -1839,7 +1841,9 @@ class SeleniumLocalTests(unittest.TestCase):
             "_add_vehicle_mileage_record",
         ) as add, patch.object(selenium_local_module, "_delete_vehicle_mileage_row") as delete:
             with self.assertRaisesRegex(selenium_local_module.WebDriverException, "multiple current mileage rows"):
-                selenium_local_module._prepare_vehicle_mileage_form(FakeDriver(), request, Path("artifacts"))
+                selenium_local_module._prepare_vehicle_mileage_form(
+                    FakeDriver(), request, Path("artifacts"), update_context={"previous_task": request.to_dict()},
+                )
 
         fill.assert_not_called()
         add.assert_not_called()

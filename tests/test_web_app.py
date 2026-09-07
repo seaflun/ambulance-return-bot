@@ -3953,6 +3953,23 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("里程只能輸入數字", body)
         self.assertIn('"里程只能輸入數字": { name: "mileage", message: "里程只能輸入數字" }', body)
 
+    def test_create_historical_task_uses_mileage_before_case_time(self):
+        for identity, clock, mileage in (("earlier", "0800", "12000"), ("later", "1500", "12060")):
+            self.store.create(AmbulanceReturnRequest(
+                task_id=identity, created_at=datetime(2026, 6, 7, 18), raw_text="",
+                vehicle="新坡91", case_date="2026/06/07", case_time=clock, mileage=mileage,
+            ))
+        response = self.client.post("/tasks", data=self.valid_task_data(
+            case_id="historical-mileage", case_date="2026/06/07", case_time="1000",
+            return_date="2026/06/07", return_time="1100", mileage="12020",
+        ))
+        self.assertEqual(302, response.status_code)
+        invalid = self.client.post("/tasks", data=self.valid_task_data(
+            case_id="historical-invalid", case_date="2026/06/07", case_time="0900",
+            return_date="2026/06/07", return_time="0930", mileage="11999",
+        ))
+        self.assertEqual(400, invalid.status_code)
+
     def test_create_task_rejects_mileage_below_or_more_than_300_from_previous_entry(self):
         self.store.create(
             AmbulanceReturnRequest(

@@ -24,7 +24,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from flask import Flask, abort, has_request_context, jsonify, make_response, redirect, render_template, request, send_from_directory, url_for
+from flask import Flask, abort, g, has_request_context, jsonify, make_response, redirect, render_template, request, send_from_directory, url_for
 
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
@@ -6732,7 +6732,7 @@ def _last_vehicle_mileage_sort_key(payload: object) -> tuple[datetime, datetime]
     return case_datetime, created_at
 
 
-def _stored_last_vehicle_mileage_records(limit: int) -> dict[str, tuple[str, datetime]]:
+def _stored_last_vehicle_mileage_records(limit: int, before: datetime | None = None) -> dict[str, tuple[str, datetime]]:
     mileages: dict[str, tuple[str, datetime]] = {}
     recent_payloads = sorted(
         store.list_recent(limit=limit),
@@ -6746,6 +6746,8 @@ def _stored_last_vehicle_mileage_records(limit: int) -> dict[str, tuple[str, dat
         if not isinstance(task, dict):
             continue
         occurred_at = _last_vehicle_mileage_sort_key(payload)[0]
+        if before is not None and occurred_at >= before:
+            continue
         for entry in task_vehicle_display_entries(task):
             vehicle = str(entry.get("vehicle") or "").strip()
             mileage = str(entry.get("mileage") or "").strip()
@@ -6789,11 +6791,12 @@ def _daily_vehicle_mileage_record_time(record: Mapping[str, object]) -> datetime
         return datetime.min
 
 
-def last_vehicle_mileages(
+def _last_vehicle_mileage_records(
     limit: int = 300,
     nas_settings: Mapping[str, object] | None = None,
-) -> dict[str, str]:
-    records = _stored_last_vehicle_mileage_records(limit)
+    before: datetime | None = None,
+) -> dict[str, tuple[str, datetime]]:
+    records = _stored_last_vehicle_mileage_records(limit, before)
     snapshot = effective_daily_vehicle_mileage_snapshot(nas_settings)
     mileage_system_names = configured_vehicle_mileage_system_names(nas_settings)
     for snapshot_record in snapshot.get("vehicles") or []:
@@ -6809,12 +6812,33 @@ def last_vehicle_mileages(
             continue
         mileage = str(snapshot_record.get("mileage") or "").strip()
         occurred_at = _daily_vehicle_mileage_record_time(snapshot_record)
+        if before is not None and occurred_at >= before:
+            continue
         if not mileage:
             continue
         existing = records.get(vehicle)
         if existing is None or occurred_at >= existing[1]:
             records[vehicle] = (mileage, occurred_at)
+    return records
+
+
+def last_vehicle_mileages(
+    limit: int = 300,
+    nas_settings: Mapping[str, object] | None = None,
+    before: datetime | None = None,
+) -> dict[str, str]:
+    records = _last_vehicle_mileage_records(limit, nas_settings, before)
+    if has_request_context() and before is None:
+        g.vehicle_mileage_display_records = records
     return {vehicle: mileage for vehicle, (mileage, _occurred_at) in records.items()}
+
+
+def last_vehicle_mileage_times() -> dict[str, str]:
+    records = getattr(g, "vehicle_mileage_display_records", None) if has_request_context() else None
+    if records is None:
+        records = _last_vehicle_mileage_records()
+    return {vehicle: occurred_at.strftime("%Y%m%d%H%M")
+            for vehicle, (_mileage, occurred_at) in records.items()}
 
 
 MAX_VEHICLE_MILEAGE_CHANGE_KM = 300
@@ -6825,10 +6849,16 @@ def validate_vehicle_mileage_change(
     labels: Sequence[str],
     *,
     previous_mileages: Mapping[str, object] | None = None,
+    case_datetime: datetime | None = None,
 ) -> list[str]:
-    references = previous_mileages if previous_mileages is not None else last_vehicle_mileages()
     errors: list[str] = []
     for index, entry in enumerate(vehicle_entries):
+        occurred_at = case_datetime
+        if occurred_at is None and getattr(entry, "case_date", "") and getattr(entry, "case_time", ""):
+            occurred_at = _last_vehicle_mileage_sort_key({"task": {
+                "case_date": entry.case_date, "case_time": entry.case_time,
+            }})[0]
+        references = previous_mileages if previous_mileages is not None else last_vehicle_mileages(before=occurred_at)
         vehicle = str(getattr(entry, "vehicle", "") or "").strip()
         mileage = str(getattr(entry, "mileage", "") or "").strip()
         previous_mileage = str(references.get(vehicle) or "").strip()
@@ -7194,6 +7224,7 @@ def event_site_name(event: dict) -> str:
 @app.context_processor
 def template_helpers() -> dict:
     return {
+        "last_vehicle_mileage_times": last_vehicle_mileage_times,
         "case_time_range": case_time_range,
         "combined_mileage_site_status": combined_mileage_site_status,
         "display_case_title": display_case_title,
@@ -7801,6 +7832,7 @@ def validate_disaster_task_form(task_request) -> list[str]:
         validate_vehicle_mileage_change(
             entries,
             [f"第{index}車" for index in range(1, len(entries) + 1)],
+            case_datetime=_last_vehicle_mileage_sort_key({"task": task_request.to_dict()})[0],
         )
     )
     return errors
