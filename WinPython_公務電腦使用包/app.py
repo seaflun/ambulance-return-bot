@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -7205,16 +7205,49 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
         add(site, str(site.get("updated_at") or ""), legacy=True)
         rows[-1].update(current=True, label="目前待確認")
 
-    # Older reports kept attachments only on the latest site snapshot. Do not invent
-    # an attempt association for these files, or show them as a current failure.
+    # Older reports kept attachments only on the latest site snapshot. Match only
+    # the next failure in the same run; naive report times are Taiwan time.
+    def evidence_time(value: object) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        local_zone = timezone(timedelta(hours=8))
+        return parsed.replace(tzinfo=local_zone) if parsed.tzinfo is None else parsed.astimezone(local_zone)
+
     known_urls = {image["url"] for row in rows for image in row["failure_screenshots"]}
     images = [image for image in site.get("failure_screenshots") or []
               if isinstance(image, dict) and image.get("url") and image["url"] not in known_urls]
+    boundaries = []
+    for event in events:
+        action = str(event.get("action") or "")
+        if action.startswith(("按下", "重試", "重新送出")) or " 階段：" in action:
+            continue
+        if event_site_key(event) == site_key and status_class(event.get("status")) in {"running", "complete"}:
+            boundary = evidence_time(event.get("time") or event.get("updated_at"))
+            if boundary is not None:
+                boundaries.append(boundary)
+    unmatched_images = []
+    for image in images:
+        captured = evidence_time(image.get("captured_at"))
+        candidates = []
+        if captured is not None:
+            for row in rows:
+                failed = evidence_time(row["time"])
+                if row["number"] is not None and failed is not None and captured <= failed:
+                    if any(captured < boundary <= failed for boundary in boundaries):
+                        break
+                    candidates.append(row)
+                    break
+        if len(candidates) == 1:
+            candidates[0]["failure_screenshots"].append(dict(image))
+        else:
+            unmatched_images.append(image)
     capture_error = str(site.get("failure_screenshot_error") or "")
     if any(row["failure_screenshot_error"] == capture_error for row in rows):
         capture_error = ""
-    if images or capture_error:
-        add({"failure_screenshots": images, "failure_screenshot_error": capture_error}, "", legacy=True)
+    if unmatched_images or capture_error:
+        add({"failure_screenshots": unmatched_images, "failure_screenshot_error": capture_error}, "", legacy=True)
     return rows
 
 

@@ -6633,6 +6633,39 @@ class WebAppTests(unittest.TestCase):
         self.assertNotEqual(history[0]["failure_screenshots"], history[1]["failure_screenshots"])
         self.assertFalse(any(row["current"] for row in history))
 
+    def test_legacy_screenshots_join_their_failure_attempt_by_capture_time(self):
+        report = {"events": [
+            {"time": "2026-09-07T19:57:00", "action": "車輛里程 開始",
+             "status": "vehicle_mileage_running"},
+            {"time": "2026-09-07T19:58:26", "action": "車輛里程 結果",
+             "status": "vehicle_mileage_failed", "failure_reason": "第一次錯誤"},
+            {"time": "2026-09-07T19:59:45", "action": "車輛里程 結果",
+             "status": "vehicle_mileage_failed", "failure_reason": "第二次錯誤"},
+        ], "site_statuses": {"vehicle_mileage": {
+            "status": "vehicle_mileage_saved", "updated_at": "2026-09-07T21:14:47",
+            "failure_screenshots": [
+                {"url": "/second.png", "captured_at": "2026-09-07T11:59:40Z"},
+                {"url": "/first.png", "captured_at": "2026-09-07T19:57:20+08:00"},
+                {"url": "/unknown.png", "captured_at": "invalid"},
+                {"url": "/old.png", "captured_at": "2026-09-06T19:58:20+08:00"},
+            ],
+        }}}
+        original = json.dumps(report)
+        rows = app_module.public_pc_site_failure_history(report, "vehicle_mileage")
+        self.assertEqual(["/first.png"], [image["url"] for image in rows[0]["failure_screenshots"]])
+        self.assertEqual("第一次錯誤", rows[0]["diagnostic"]["failure_reason"])
+        self.assertEqual(["/second.png"], [image["url"] for image in rows[1]["failure_screenshots"]])
+        self.assertEqual("第二次錯誤", rows[1]["diagnostic"]["failure_reason"])
+        self.assertEqual(["/unknown.png", "/old.png"], [image["url"] for image in rows[2]["failure_screenshots"]])
+        self.assertFalse(any(row["current"] for row in rows))
+        self.assertEqual(original, json.dumps(report))
+
+        report["events"][2]["time"] = "2026-09-07T19:58:29"
+        rows = app_module.public_pc_site_failure_history(report, "vehicle_mileage")
+        self.assertEqual(["/first.png"], [image["url"] for image in rows[0]["failure_screenshots"]])
+        self.assertFalse(rows[1]["failure_screenshots"])
+        self.assertEqual(3, len(rows[2]["failure_screenshots"]))
+
     def test_site_failure_history_keeps_current_confirmation_guidance(self):
         report = {"events": None, "site_statuses": {"consumables": {
             "status": "manual_captcha_required", "failure_reason": "請完成驗證碼",
