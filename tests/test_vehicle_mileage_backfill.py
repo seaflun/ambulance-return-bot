@@ -3,7 +3,9 @@ import json
 import shutil
 import subprocess
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot import selenium_local as runtime
@@ -17,6 +19,47 @@ def record(identity, start, end, first, last, month="2026/09"):
 
 
 class MileageBackfillTests(unittest.TestCase):
+    def test_month_query_retries_loading_overlay_before_opening_vehicle(self):
+        self._run_obstructed_month_query(2)
+
+    def test_month_query_stops_when_loading_overlay_never_clears(self):
+        self._run_obstructed_month_query(None)
+
+    def _run_obstructed_month_query(self, blocked_attempts):
+        driver = Mock()
+        driver.current_url = "https://ppe.tyfd.gov.tw/CarRecord/List"
+        driver.find_elements.return_value = []
+        button = driver.find_element.return_value
+        button.is_displayed.return_value = True
+        button.is_enabled.return_value = True
+        attempts = []
+
+        def click():
+            attempts.append(1)
+            if blocked_attempts is None or len(attempts) <= blocked_attempts:
+                raise ElementClickInterceptedException("Other element: jquery-spinner")
+
+        def select_vehicle(current, label):
+            self.assertGreater(len(attempts), blocked_attempts)
+            current.current_url = "https://ppe.tyfd.gov.tw/CarRecord/Edit?id=1&period=2026/09"
+
+        button.click.side_effect = click
+        driver.execute_script.side_effect = [True, {"rows": []}]
+        real_wait = runtime.WebDriverWait
+        with patch.object(runtime, "WebDriverWait", side_effect=lambda d, t: real_wait(d, 0.05, poll_frequency=0.001)), \
+             patch.object(runtime, "_wait_for_ppe_vehicle_mileage_page", return_value=True), \
+             patch.object(runtime, "_select_daily_vehicle_mileage_month"), \
+             patch.object(runtime, "_select_vehicle_record", side_effect=select_vehicle) as select, \
+             patch.object(runtime, "vehicle_mileage_record_label", return_value="BSL-9230"):
+            if blocked_attempts is None:
+                with self.assertRaises(TimeoutException):
+                    runtime._load_vehicle_mileage_month(driver, self.request(), "2026/09")
+                select.assert_not_called()
+                self.assertGreater(len(attempts), 1)
+            else:
+                self.assertEqual([], runtime._load_vehicle_mileage_month(driver, self.request(), "2026/09"))
+                self.assertEqual(blocked_attempts + 1, len(attempts))
+
     def test_month_query_clicks_form_button_not_sidebar_query_link(self):
         class Button:
             def __init__(self, driver):

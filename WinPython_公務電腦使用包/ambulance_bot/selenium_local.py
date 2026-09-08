@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, WebDriverException
+from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException, TimeoutException, UnexpectedAlertPresentException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
@@ -2933,10 +2933,25 @@ def _load_vehicle_mileage_month(
     if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page during mileage history query")
     _select_daily_vehicle_mileage_month(driver, month)
-    previous_rows = driver.find_elements(By.CSS_SELECTOR, "#grid tbody")
-    WebDriverWait(driver, 12).until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, "#QueryForm button[onclick='Query()']"))
-    ).click()
+    previous_rows = []
+
+    def click_query_when_ready(current):
+        try:
+            button = EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "#QueryForm button[onclick='Query()']")
+            )(current)
+            if not button:
+                return False
+            previous_rows[:] = current.find_elements(By.CSS_SELECTOR, "#grid tbody")
+            button.click()
+            return True
+        except (ElementClickInterceptedException, StaleElementReferenceException):
+            # PPE can show an enabled button underneath its loading overlay.
+            return False
+
+    WebDriverWait(driver, 20).until(
+        click_query_when_ready, "車輛里程查詢按鈕仍被載入畫面遮擋或尚未就緒，請稍後重試。"
+    )
     if previous_rows:
         WebDriverWait(driver, 12).until(EC.staleness_of(previous_rows[0]))
     WebDriverWait(driver, 12).until(

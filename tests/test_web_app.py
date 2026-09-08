@@ -2512,7 +2512,8 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         payload = response.get_json()
         self.assertTrue(payload["ok"])
-        self.assertIn("新坡91", [item["label"] for item in payload["ems_vehicles"]])
+        self.assertNotIn("新坡91", [item["label"] for item in payload["ems_vehicles"]])
+        self.assertIn("新坡92", [item["label"] for item in payload["ems_vehicles"]])
         self.assertIn("新坡11", [item["label"] for item in payload["disaster_vehicles"]])
         self.assertIn("現場待命", payload["disaster_action_packages"])
         self.assertRegex(payload["revision"], r"^[0-9a-f]{64}$")
@@ -4093,6 +4094,15 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("BPE-5960", response_body)
         self.assertIn('action="/admin/vehicles/delete"', response_body)
 
+    def test_retired_ambulance_is_absent_from_new_task_and_admin_options(self):
+        admin = self.client.get("/admin/vehicles", headers={"Host": "100.114.126.58:8080"})
+        self.assertNotIn("新坡91", admin.data.decode("utf-8"))
+        self.import_case_for_form({"case_id": "retired-vehicle-options", "case_time_hhmm": "0905"})
+        body = html.unescape(self.client.get("/app").data.decode("utf-8"))
+        self.assertNotIn('<option value="新坡91">', body)
+        for label in ("新坡92", "新坡93", "新坡95"):
+            self.assertIn(f'<option value="{label}">', body)
+
     def test_admin_pages_share_layout_tokens(self):
         vehicle_body = html.unescape(
             self.client.get("/admin/vehicles", headers={"Host": "100.114.126.58:8080"}).data.decode("utf-8")
@@ -4192,7 +4202,7 @@ class WebAppTests(unittest.TestCase):
 
         builtin_response = self.client.post(
             "/admin/vehicles/delete",
-            data={"label": "新坡91"},
+            data={"label": "新坡92"},
             headers=nas_headers,
             follow_redirects=False,
         )
@@ -4200,7 +4210,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(builtin_response.status_code, 400)
         self.assertIn("內建救護車不能刪除", builtin_body)
-        self.assertIn("新坡91", builtin_body)
+        self.assertIn("新坡92", builtin_body)
 
     def test_admin_public_pc_receives_and_lists_local_task_events(self):
         os.environ["WORKER_TOKEN"] = "test-token"

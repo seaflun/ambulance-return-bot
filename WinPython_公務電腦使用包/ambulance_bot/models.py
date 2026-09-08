@@ -58,7 +58,8 @@ DEFAULT_DISINFECTION_ITEMS: list[str] = [
     "血壓計",
 ]
 COMMAND_PREFIX = "\u6551\u8b77\u56de\u7a0b"
-VEHICLE_OPTIONS = ["\u65b0\u576191", "\u65b0\u576192", "\u65b0\u576193"]
+RETIRED_VEHICLE_LABELS = frozenset({"\u65b0\u576191"})
+VEHICLE_OPTIONS = ["\u65b0\u576192", "\u65b0\u576193"]
 VEHICLE_PPE_NAMES = {
     "\u65b0\u576191": "BGV-2310",
     "\u65b0\u576192": "BXB-7593",
@@ -76,7 +77,7 @@ DEFAULT_CUSTOM_VEHICLES = [
     }
 ]
 BUILT_IN_VEHICLE_LABELS = frozenset(
-    [*VEHICLE_OPTIONS, *(record["label"] for record in DEFAULT_CUSTOM_VEHICLES)]
+    [*VEHICLE_PPE_NAMES, *(record["label"] for record in DEFAULT_CUSTOM_VEHICLES)]
 )
 PERSON_OPTIONS = [
     ("6", "\u5433\u5b97\u8015"),
@@ -330,7 +331,7 @@ def delete_vehicle_record(label: str, base_dir: Path | None = None) -> bool:
 def vehicle_options(base_dir: Path | None = None) -> list[str]:
     options = list(VEHICLE_OPTIONS)
     for record in load_vehicle_records(base_dir):
-        if record["label"] not in options:
+        if record["label"] not in options and record["label"] not in RETIRED_VEHICLE_LABELS:
             options.append(record["label"])
     return options
 

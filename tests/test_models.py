@@ -333,6 +333,15 @@ class ModelParsingTests(unittest.TestCase):
         self.assertIn("新坡95", vehicle_options())
         self.assertEqual(vehicle_ppe_names()["新坡95"], "CDD-2171")
 
+    def test_retired_91_is_not_selectable_but_history_keeps_plate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            self.assertNotIn("新坡91", vehicle_options(base_dir))
+            save_vehicle_record("新坡91", "BGV-2310", base_dir)
+            self.assertNotIn("新坡91", vehicle_options(base_dir))
+            self.assertEqual("BGV-2310", vehicle_ppe_names(base_dir)["新坡91"])
+            self.assertTrue({"新坡92", "新坡93", "新坡95"}.issubset(vehicle_options(base_dir)))
+
     def test_current_ambulances_are_built_in_and_only_new_custom_can_be_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -346,7 +355,7 @@ class ModelParsingTests(unittest.TestCase):
             self.assertEqual("內建", newpo_95["vehicle_type"])
             self.assertFalse(delete_vehicle_record("新坡95", base_dir))
             self.assertFalse(delete_vehicle_record("新坡91", base_dir))
-            self.assertIn("新坡91", vehicle_options(base_dir))
+            self.assertNotIn("新坡91", vehicle_options(base_dir))
             save_vehicle_record("測試自訂救護車", "CUSTOM-EMS", base_dir)
             custom = next(
                 record for record in load_vehicle_records(base_dir) if record["label"] == "測試自訂救護車"
