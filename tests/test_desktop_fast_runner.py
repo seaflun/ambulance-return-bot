@@ -689,7 +689,19 @@ class DesktopFastRunnerTests(unittest.TestCase):
             self.assertEqual(payload["site_statuses"]["fuel_record"]["status"], "fuel_record_saved")
             fuel_mock.assert_called_once()
 
-    def test_full_run_limits_parallel_sites_to_two_and_keeps_mileage_fuel_sequential(self):
+    def test_full_run_defaults_to_four_parallel_sites(self):
+        self._assert_parallel_site_limit("", 4)
+
+    def test_full_run_can_switch_back_to_two_parallel_sites(self):
+        self._assert_parallel_site_limit("2", 2)
+
+    def test_full_run_accepts_explicit_four_parallel_sites(self):
+        self._assert_parallel_site_limit("4", 4)
+
+    def test_full_run_invalid_parallel_setting_falls_back_to_two(self):
+        self._assert_parallel_site_limit("8", 2)
+
+    def _assert_parallel_site_limit(self, setting, expected):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp) / "tasks")
             request = AmbulanceReturnRequest(
@@ -697,6 +709,7 @@ class DesktopFastRunnerTests(unittest.TestCase):
                 created_at=__import__("datetime").datetime.now(),
                 raw_text="",
                 vehicle="新坡91",
+                volunteer_assist=True,
                 fuel_record=FuelRecord(enabled=True, date="20260707", time="1240", quantity="35.0", unit_price="30.3"),
             )
             store.create(request)
@@ -705,6 +718,7 @@ class DesktopFastRunnerTests(unittest.TestCase):
             peak = 0
             intervals: dict[str, dict[str, float]] = {}
             lock = threading.Lock()
+            first_wave = threading.Event()
 
             def fake_run_site(task_id, site_key, action):
                 nonlocal active, peak
@@ -712,13 +726,16 @@ class DesktopFastRunnerTests(unittest.TestCase):
                     active += 1
                     peak = max(peak, active)
                     intervals.setdefault(site_key, {})["start"] = time.perf_counter()
-                time.sleep(0.05)
+                    if active == expected:
+                        first_wave.set()
+                first_wave.wait(3)
+                time.sleep(0.02)
                 with lock:
                     intervals[site_key]["end"] = time.perf_counter()
                     active -= 1
                 return False
 
-            with patch.object(runner, "_ensure_record_folders", return_value=""), patch.object(
+            with patch.dict(os.environ, {"WORKER_PARALLEL_SITE_GROUPS": setting}), patch.object(runner, "_ensure_record_folders", return_value=""), patch.object(
                 runner,
                 "_run_site",
                 side_effect=fake_run_site,
@@ -726,8 +743,9 @@ class DesktopFastRunnerTests(unittest.TestCase):
                 runner.start_existing("task-parallel")
                 self.assertTrue(runner.wait_for_idle())
 
-            self.assertEqual(peak, 2)
+            self.assertEqual(peak, expected)
             self.assertLessEqual(intervals["vehicle_mileage"]["end"], intervals["fuel_record"]["start"])
+            self.assertLessEqual(intervals["duty_work_log"]["end"], intervals["volunteer_assist"]["start"])
 
     def test_continues_to_disinfection_when_consumables_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

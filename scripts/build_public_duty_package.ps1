@@ -320,6 +320,11 @@ Write-PackageText -RelativePath "README_公務電腦.txt" -Text @'
 7. 執行 `SETUP_WINPYTHON.bat` 安裝套件、檢查環境，並建立登入後自動啟動工作排程。
 8. 平常用 `RUN_WORKER_GUI_WINPYTHON.vbs` 啟動，沒有黑色命令列視窗。
 
+## 登打模式
+
+救護預設最多四站同時登打。若要切回雙站，在 `.env` 設定 `WORKER_PARALLEL_SITE_GROUPS=2`；改為 `4` 可恢復四站，修改後重啟 Worker。未設定時使用四站，其他無效值保守使用雙站。
+里程完成後才進行加油，工作紀錄完成後才進行民力；各站保留獨立錯誤紀錄及單站重試。救災只執行任務適用的站點。
+
 ## GitHub 更新
 
 1. 管理端更新專案後執行 `scripts\build_public_duty_package.ps1`。

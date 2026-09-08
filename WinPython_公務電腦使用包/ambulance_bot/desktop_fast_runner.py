@@ -43,9 +43,16 @@ from .window_layout import maximize_worker_site_windows
 
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
 MILEAGE_FUEL_PAIR = ("vehicle_mileage", "fuel_record")
-MAX_PARALLEL_SITE_GROUPS = 2
+DEFAULT_PARALLEL_SITE_GROUPS = 4
 MAX_MANUAL_TASK_LOCK_HEARTBEAT_ERRORS = 3
 DEFAULT_RECORD_ROOT = Path(r"W:\救護硬碟\救護密錄器及行車紀錄器")
+
+
+def parallel_site_groups() -> int:
+    value = os.getenv("WORKER_PARALLEL_SITE_GROUPS", "").strip()
+    if not value:
+        return DEFAULT_PARALLEL_SITE_GROUPS
+    return 4 if value == "4" else 2
 
 
 def active_site_runners(request, profile_suffix: str, runner: "DesktopFastRunner") -> list[tuple[str, Callable[[], object]]]:
@@ -533,7 +540,9 @@ class DesktopFastRunner:
             if folder_detail:
                 self._set_overall_status_owned(task_id, "desktop_fast_running", folder_detail)
             cancelled = False
-            with ThreadPoolExecutor(max_workers=MAX_PARALLEL_SITE_GROUPS) as executor:
+            parallel_limit = parallel_site_groups()
+            print(f"[desktop-fast] task={task_id} parallel_site_groups={parallel_limit}", flush=True)
+            with ThreadPoolExecutor(max_workers=parallel_limit) as executor:
                 futures = [executor.submit(self._run_site_group, task_id, site_group) for site_group in site_groups]
                 for future in as_completed(futures):
                     try:
