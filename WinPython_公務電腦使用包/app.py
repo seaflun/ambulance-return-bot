@@ -2966,6 +2966,45 @@ def upsert_public_pc_report(data: dict) -> dict:
             existing.get("site_statuses", {}),
             now_value,
         )
+        if event_id not in known_event_ids and status_class(event_status) == "failed":
+            # Keep the failure's own diagnostics; later success snapshots must not rewrite history.
+            failures = {}
+            reported_site = event_site_key({"action": event["action"], "status": event_status})
+            evidence_by_site = data.get("failure_evidence")
+            evidence_by_site = evidence_by_site if isinstance(evidence_by_site, dict) else {}
+            for site_key, source in site_statuses.items():
+                if status_class(source.get("status")) != "failed":
+                    continue
+                if reported_site in VALID_SITE_KEYS and reported_site != site_key:
+                    continue
+                failure = {key: source[key] for key in ("key", "status", "detail", "updated_at", *DIAGNOSTIC_FIELDS)
+                           if key in source}
+                evidence = evidence_by_site.get(site_key, {})
+                if isinstance(evidence, dict):
+                    previous_site = (existing.get("site_statuses") or {}).get(site_key) or {}
+                    previous_captures = {(item.get("sha256"), item.get("captured_at"))
+                                         for item in previous_site.get("failure_screenshots") or []
+                                         if isinstance(item, dict)}
+                    screenshots = evidence.get("screenshots")
+                    screenshots = screenshots if isinstance(screenshots, list) else []
+                    captures = set()
+                    for item in screenshots:
+                        if not isinstance(item, dict):
+                            continue
+                        encoded = str(item.get("content_base64") or "")
+                        if len(encoded) > ((PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES + 2) // 3) * 4:
+                            continue
+                        try:
+                            captures.add(hashlib.sha256(base64.b64decode(encoded, validate=True)).hexdigest())
+                        except (ValueError, binascii.Error):
+                            continue
+                    failure["failure_screenshots"] = [dict(item) for item in source.get("failure_screenshots") or []
+                                                      if isinstance(item, dict) and item.get("sha256") in captures
+                                                      and (item.get("sha256"), item.get("captured_at")) not in previous_captures]
+                    if evidence:
+                        failure["failure_screenshot_error"] = source.get("failure_screenshot_error", "")
+                failures[site_key] = failure
+            event["failure_sites"] = failures
         overall_status = str(data.get("overall_status") or existing.get("overall_status") or "")
         if (
             str(data.get("action") or "").strip() == PUBLIC_PC_LEGACY_RECONCILE_ACTION
@@ -7097,6 +7136,88 @@ def public_pc_event_for_action(payload: dict, action: str) -> dict:
     return event
 
 
+def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
+    """Read failure attempts independently of the site's current success state."""
+    site = dict((report.get("site_statuses") or {}).get(site_key) or {})
+    rows: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    seen_ids: set[str] = set()
+    started_since_failure = False
+    events = [event for event in report.get("events") or [] if isinstance(event, dict)]
+    events.sort(key=_public_pc_event_time)
+
+    def add(source: dict, timestamp: str, *, legacy: bool = False) -> None:
+        source = {**source, "key": site_key}
+        diagnostic = site_diagnostic(source)
+        stage = site_active_stage_summary({site_key: source}, site_key)
+        stage_text = stage.get("detail") or diagnostic.get("failure_stage") or "未判定"
+        if site_is_complete(source.get("status")):
+            stage_text = diagnostic.get("failure_stage") or "未記錄"
+        rows.append({
+            "number": None if legacy else len(rows) + 1,
+            "time": timestamp, "diagnostic": diagnostic,
+            "stage": stage_text, "current": False,
+            "failure_screenshots": [dict(image) for image in source.get("failure_screenshots") or []
+                                    if isinstance(image, dict) and image.get("url")],
+            "failure_screenshot_error": str(source.get("failure_screenshot_error") or ""),
+        })
+
+    for event in events:
+        action = str(event.get("action") or "")
+        if action == PUBLIC_PC_LEGACY_RECONCILE_ACTION or str(event.get("event_id") or "").startswith("retry-reconcile:"):
+            continue
+        if action.startswith(("按下", "重試", "重新送出")) or " 階段：" in action or "略過" in action:
+            continue
+        reported_site = event_site_key({"action": action, "status": event.get("status")})
+        if reported_site == site_key and status_class(event.get("status")) == "running":
+            started_since_failure = True
+        if action.startswith("單站登打失敗") and rows and not started_since_failure:
+            continue
+        snapshots = event.get("failure_sites")
+        source = snapshots.get(site_key) if isinstance(snapshots, dict) else None
+        if not isinstance(source, dict):
+            if reported_site != site_key:
+                continue
+            if status_class(event.get("status")) != "failed":
+                continue
+            source = event
+        if status_class(source.get("status")) != "failed":
+            continue
+        timestamp = str(source.get("updated_at") or event.get("time") or "")
+        identity = (timestamp, str(source.get("status") or ""))
+        event_id = str(event.get("event_id") or "")
+        if (event_id and event_id in seen_ids) or (timestamp and identity in seen):
+            continue
+        seen.add(identity)
+        if event_id:
+            seen_ids.add(event_id)
+        add(source, timestamp)
+        started_since_failure = False
+
+    current_class = status_class(site.get("status"))
+    current_failure = current_class == "failed"
+    diagnostic = site_diagnostic(site)
+    if not rows and (current_failure or (current_class == "complete" and diagnostic.get("failure_reason"))):
+        add(site, str(site.get("updated_at") or ""), legacy=not current_failure)
+    if rows and current_failure:
+        rows[-1]["current"] = True
+    if current_class == "waiting" and diagnostic.get("failure_reason"):
+        add(site, str(site.get("updated_at") or ""), legacy=True)
+        rows[-1].update(current=True, label="目前待確認")
+
+    # Older reports kept attachments only on the latest site snapshot. Do not invent
+    # an attempt association for these files, or show them as a current failure.
+    known_urls = {image["url"] for row in rows for image in row["failure_screenshots"]}
+    images = [image for image in site.get("failure_screenshots") or []
+              if isinstance(image, dict) and image.get("url") and image["url"] not in known_urls]
+    capture_error = str(site.get("failure_screenshot_error") or "")
+    if any(row["failure_screenshot_error"] == capture_error for row in rows):
+        capture_error = ""
+    if images or capture_error:
+        add({"failure_screenshots": images, "failure_screenshot_error": capture_error}, "", legacy=True)
+    return rows
+
+
 def public_pc_event_rows(report: dict) -> list[dict]:
     rows = []
     for raw in report.get("events") or []:
@@ -7264,6 +7385,7 @@ def template_helpers() -> dict:
         "compact_login_account_summary": compact_login_account_summary,
         "public_pc_event_display_detail": public_pc_event_display_detail,
         "public_pc_event_rows": public_pc_event_rows,
+        "public_pc_site_failure_history": public_pc_site_failure_history,
         "recent_tasks_need_refresh": recent_tasks_need_refresh,
         "site_action_button_label": site_action_button_label,
         "site_diagnostic": site_diagnostic,

@@ -463,8 +463,6 @@
             <div class="site-grid">
               {% for site_key, title in task_site_display_pairs(task) %}
                 {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
-                {% set diag = site_diagnostic(site) %}
-                {% set active_stage = site_active_stage_summary(item.site_statuses, site_key) %}
                 <div class="site">
                   <div class="site-name">{{ title }}</div>
                   <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
@@ -474,33 +472,43 @@
                       <button type="submit">重新送出{{ title }}</button>
                     </form>
                   {% endif %}
-                  {% if diag.failure_reason %}
-                    <div class="site-diagnostic">
-                      <div class="site-diagnostic-title">錯誤指引</div>
-                      <div><strong>未完成點</strong> {{ active_stage.detail or diag.failure_stage or '未判定' }}</div>
-                      <div><strong>原因</strong> {{ diag.failure_reason }}</div>
-                      <div class="action"><strong>下一步</strong> {{ diag.next_action }}</div>
-                    </div>
-                  {% endif %}
-                  {% set failure_screenshots = site.failure_screenshots if site.failure_screenshots is sequence and site.failure_screenshots is not string else [] %}
-                  {% if failure_screenshots or site.failure_screenshot_error %}
-                    <div class="failure-evidence">
-                      {% if failure_screenshots %}
-                        <div class="failure-evidence-title">失敗畫面</div>
-                        {% for screenshot in failure_screenshots %}
-                          <a class="failure-shot" href="{{ screenshot.url }}" target="_blank" rel="noopener">
-                            <img src="{{ screenshot.url }}" alt="{{ title }}失敗畫面{% if screenshot.vehicle %}（{{ screenshot.vehicle }}）{% endif %}" loading="lazy">
-                            <span class="failure-shot-caption">
-                              {% if screenshot.vehicle %}{{ screenshot.vehicle }}{% endif %}
-                              {% if screenshot.captured_at %}{{ screenshot.captured_at }}{% endif %}
-                            </span>
-                          </a>
-                        {% endfor %}
-                      {% endif %}
-                      {% if site.failure_screenshot_error %}
-                        <div class="failure-shot-error"><strong>截圖擷取失敗</strong> {{ site.failure_screenshot_error }}</div>
-                      {% endif %}
-                    </div>
+                  {% set failure_history = public_pc_site_failure_history(item, site_key) %}
+                  {% if failure_history %}
+                    <details class="site-error-history">
+                      <summary>{% if status_class(site.status) == 'complete' %}歷史錯誤紀錄（已完成）{% else %}錯誤紀錄{% endif %}</summary>
+                      {% for failure in failure_history %}
+                        <details class="failure-attempt">
+                          <summary>{% if failure.label %}{{ failure.label }}{% elif failure.number %}第 {{ failure.number }} 次失敗{% else %}舊版紀錄（次數未記錄）{% endif %}{% if failure.time %}｜{{ failure.time | replace('T', ' ') }}{% endif %}</summary>
+                          {% if failure.diagnostic.failure_reason %}
+                            <div class="site-diagnostic" data-current-error="{{ 'true' if failure.current else 'false' }}">
+                              <div class="site-diagnostic-title">{{ '錯誤指引' if failure.current else '當時錯誤' }}</div>
+                              <div><strong>{{ '未完成點' if failure.current else '失敗階段' }}</strong> {{ failure.stage }}</div>
+                              <div><strong>原因</strong> {{ failure.diagnostic.failure_reason }}</div>
+                              {% if failure.current %}<div class="action"><strong>下一步</strong> {{ failure.diagnostic.next_action }}</div>{% endif %}
+                            </div>
+                          {% endif %}
+                          {% if failure.failure_screenshots or failure.failure_screenshot_error %}
+                            <div class="failure-evidence">
+                              {% if failure.failure_screenshots %}
+                                <div class="failure-evidence-title">失敗畫面</div>
+                                {% for screenshot in failure.failure_screenshots %}
+                                  <a class="failure-shot" href="{{ screenshot.url }}" target="_blank" rel="noopener">
+                                    <img src="{{ screenshot.url }}" alt="{{ title }}失敗畫面{% if screenshot.vehicle %}（{{ screenshot.vehicle }}）{% endif %}" loading="lazy">
+                                    <span class="failure-shot-caption">
+                                      {% if screenshot.vehicle %}{{ screenshot.vehicle }}{% endif %}
+                                      {% if screenshot.captured_at %}{{ screenshot.captured_at }}{% endif %}
+                                    </span>
+                                  </a>
+                                {% endfor %}
+                              {% endif %}
+                              {% if failure.failure_screenshot_error %}
+                                <div class="failure-shot-error"><strong>截圖擷取失敗</strong> {{ failure.failure_screenshot_error }}</div>
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                        </details>
+                      {% endfor %}
+                    </details>
                   {% endif %}
                 </div>
               {% endfor %}

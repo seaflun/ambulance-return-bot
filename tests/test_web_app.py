@@ -6579,6 +6579,129 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("登入、帳密、SSO 或驗證碼尚未完成", body)
         self.assertIn("下一步", body)
 
+    def test_site_failure_history_separates_retries_and_ignores_duplicate_summaries(self):
+        def event(clock, action, status="vehicle_mileage_failed"):
+            return {"time": f"2026-09-08T{clock}", "action": action, "status": status,
+                    "failure_reason": "相同失敗原因", "detail": "查詢失敗"}
+
+        report = {
+            "site_statuses": {"vehicle_mileage": {"key": "vehicle_mileage", "status": "vehicle_mileage_saved"}},
+            "events": [
+                event("12:00:00", "車輛里程 結果"),
+                event("12:00:00", "單站登打失敗：車輛里程"),
+                event("12:00:01", "四站登打部分失敗", "desktop_fast_completed_with_errors"),
+                event("12:00:00", "按下單站登打：車輛里程"),
+                event("12:01:00", "車輛里程 開始", "vehicle_mileage_running"),
+                event("12:02:00", "車輛里程 結果"),
+                event("12:02:01", "單站登打失敗：車輛里程"),
+                event("12:03:00", "車輛里程 結果", "vehicle_mileage_saved"),
+            ],
+        }
+        original = json.dumps(report)
+        history = app_module.public_pc_site_failure_history(report, "vehicle_mileage")
+        self.assertEqual(["2026-09-08T12:00:00", "2026-09-08T12:02:00"], [row["time"] for row in history])
+        self.assertEqual([1, 2], [row["number"] for row in history])
+        self.assertFalse(any(row["current"] for row in history))
+        self.assertEqual(original, json.dumps(report))
+
+    def test_failure_snapshots_keep_each_attempt_reason_after_success(self):
+        task_id = "attempt-history"
+        for index in (1, 2):
+            site = {"key": "vehicle_mileage", "status": "vehicle_mileage_failed",
+                    "detail": f"失敗原因{index}", "failure_reason": f"失敗原因{index}",
+                    "updated_at": f"2026-09-08T12:0{index}:00"}
+            data = {"event_id": f"failure-{index}", "task_id": task_id,
+                    "task": {"task_id": task_id, "vehicle": "新坡93"},
+                    "action": "車輛里程 結果", "status": "vehicle_mileage_failed",
+                    "time": site["updated_at"], "site_statuses": {"vehicle_mileage": site},
+                    "failure_evidence": {"vehicle_mileage": {
+                        "screenshot_error": f"截圖錯誤{index}",
+                        "screenshots": [{"content_base64": base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes([attempt])).decode("ascii")}
+                                        for attempt in range(1, index + 1)],
+                    }}}
+            app_module.upsert_public_pc_report(data)
+            app_module.upsert_public_pc_report(data)
+        report = app_module.upsert_public_pc_report({
+            "event_id": "success", "task_id": task_id, "action": "車輛里程 結果",
+            "status": "vehicle_mileage_saved", "time": "2026-09-08T12:03:00",
+            "site_statuses": {"vehicle_mileage": {"key": "vehicle_mileage", "status": "vehicle_mileage_saved"}},
+        })
+        history = app_module.public_pc_site_failure_history(report, "vehicle_mileage")
+        self.assertEqual(["失敗原因1", "失敗原因2"], [row["diagnostic"]["failure_reason"] for row in history])
+        self.assertEqual(["截圖錯誤1", "截圖錯誤2"], [row["failure_screenshot_error"] for row in history])
+        self.assertEqual([1, 1], [len(row["failure_screenshots"]) for row in history])
+        self.assertNotEqual(history[0]["failure_screenshots"], history[1]["failure_screenshots"])
+        self.assertFalse(any(row["current"] for row in history))
+
+    def test_site_failure_history_keeps_current_confirmation_guidance(self):
+        report = {"events": None, "site_statuses": {"consumables": {
+            "status": "manual_captcha_required", "failure_reason": "請完成驗證碼",
+            "next_action": "驗證後繼續", "failure_screenshots": None,
+        }}}
+        rows = app_module.public_pc_site_failure_history(report, "consumables")
+        self.assertEqual(1, len(rows))
+        self.assertEqual("目前待確認", rows[0]["label"])
+        self.assertTrue(rows[0]["current"])
+        self.assertIsNone(rows[0]["number"])
+
+    def test_failure_history_only_callback_after_new_run_counts_as_another_attempt(self):
+        report = {"events": [
+            {"status": "vehicle_mileage_failed", "action": "車輛里程 結果", "time": "2026-09-08T12:00:00"},
+            {"status": "vehicle_mileage_running", "action": "車輛里程 開始", "time": "2026-09-08T12:01:00"},
+            {"status": "vehicle_mileage_failed", "action": "單站登打失敗：車輛里程", "time": "2026-09-08T12:02:00"},
+        ], "site_statuses": {"vehicle_mileage": {"status": "vehicle_mileage_failed"}}}
+        rows = app_module.public_pc_site_failure_history(report, "vehicle_mileage")
+        self.assertEqual([1, 2], [row["number"] for row in rows])
+        self.assertEqual([False, True], [row["current"] for row in rows])
+
+    def test_completed_backend_sites_collapse_stale_errors_as_history_for_both_services(self):
+        from html.parser import HTMLParser
+
+        class HistoryParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.depth = 0
+                self.histories = []
+                self.outside_errors = []
+                self.current_errors = []
+
+            def handle_starttag(self, tag, attributes):
+                attrs = dict(attributes)
+                classes = attrs.get("class", "").split()
+                if tag == "details" and (self.depth or "site-error-history" in classes):
+                    self.depth += 1
+                    if "site-error-history" in classes:
+                        self.histories.append(attrs)
+                if "site-diagnostic" in classes or "failure-evidence" in classes:
+                    if not self.depth:
+                        self.outside_errors.append(attrs)
+                    if attrs.get("data-current-error") == "true":
+                        self.current_errors.append(attrs)
+
+            def handle_endtag(self, tag):
+                if tag == "details" and self.depth:
+                    self.depth -= 1
+
+        for service in ("ems", "disaster"):
+            task_id = f"completed-history-{service}"
+            task = {"task_id": task_id, "service_type": service, "vehicle": "新坡93"}
+            statuses = {key: {"key": key, "status": f"{key}_saved"}
+                        for key in ("duty_work_log", "vehicle_mileage", "consumables", "disinfection")}
+            statuses["vehicle_mileage"].update(failure_reason="過期失敗原因", next_action="過期重試指示",
+                                               failure_screenshot_error="過期截圖錯誤")
+            app_module.upsert_public_pc_report({"task_id": task_id, "task": task,
+                                               "site_statuses": statuses, "status": "desktop_fast_completed"})
+            body = self.client.get(f"/admin/{service}?result=success").data.decode("utf-8")
+            parsed = HistoryParser()
+            parsed.feed(body)
+            self.assertTrue(parsed.histories)
+            self.assertTrue(all("open" not in attrs for attrs in parsed.histories))
+            self.assertIn("歷史錯誤紀錄", body)
+            self.assertIn("過期截圖錯誤", body)
+            self.assertNotIn("過期重試指示", body)
+            self.assertFalse(parsed.current_errors)
+            self.assertFalse(parsed.outside_errors)
+
     def test_admin_public_pc_uses_stage_summary_for_unfinished_point(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         worker_headers = {"X-Worker-Token": "test-token"}

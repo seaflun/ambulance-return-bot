@@ -420,6 +420,28 @@
   overflow-wrap: anywhere;
 }
 
+.site-error-history {
+  margin-top: 10px;
+  border-top: 1px solid var(--separator);
+  font-size: .76rem;
+  overflow-wrap: anywhere;
+}
+
+.site-error-history summary {
+  padding: 9px 0;
+  color: var(--secondary-label);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.failure-attempt + .failure-attempt {
+  border-top: 1px solid var(--separator);
+}
+
+.failure-attempt > summary { color: var(--label); }
+.failure-attempt { padding-bottom: 4px; }
+.site-error-history .site-diagnostic { margin-top: 0; padding-top: 0; border-top: 0; }
+
 .site-diagnostic-title,
 .site-diagnostic strong,
 .failure-evidence-title {
