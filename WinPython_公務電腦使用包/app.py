@@ -1326,17 +1326,13 @@ def render_admin_public_pc(*, locked_service: str = ""):
         worker_health=worker_heartbeat_admin_view(reports),
         worker_health_enabled=worker_health_enabled,
         remote_update=remote_update_admin_view() if remote_update_enabled else {},
-        duty_gui_remote_update=remote_update_admin_view("duty_gui") if remote_update_enabled else {},
         remote_update_enabled=remote_update_enabled,
         remote_update_csrf_token=csrf_token if remote_update_enabled else "",
         retry_sites_by_task=retry_sites_by_task,
     )
 
 
-@app.post("/admin/public-pc/remote-update")
-def admin_public_pc_remote_update():
-    if public_pc_reporting_enabled():
-        abort(404)
+def _require_remote_update_admin_auth() -> None:
     expected_token = remote_update_csrf_token()
     supplied_token = str(request.form.get("csrf_token") or "").strip()
     if not expected_token or not hmac.compare_digest(supplied_token, expected_token):
@@ -1345,6 +1341,13 @@ def admin_public_pc_remote_update():
     supplied_admin_token = str(request.form.get("admin_token") or "").strip()
     if not expected_admin_token or not hmac.compare_digest(supplied_admin_token, expected_admin_token):
         abort(403)
+
+
+@app.post("/admin/public-pc/remote-update")
+def admin_public_pc_remote_update():
+    if public_pc_reporting_enabled():
+        abort(404)
+    _require_remote_update_admin_auth()
     target = normalize_remote_update_target(request.form.get("target"))
     create_remote_update_command(target=target)
     return_service = str(request.form.get("return_service") or "").strip().lower()
@@ -1358,6 +1361,9 @@ def admin_public_pc_remote_update():
 @app.get("/admin/sinposmart")
 def admin_sinposmart():
     days = sinposmart_store().list_days(limit=7)
+    csrf_token = remote_update_csrf_token()
+    admin_token = remote_update_admin_token()
+    duty_gui_remote_update_enabled = bool(csrf_token and admin_token)
     selected_fire_day = str(request.args.get("fire_day") or "").strip()
     selected_day = next((day for day in days if str(day.get("fire_day") or "") == selected_fire_day), None)
     if selected_day is None and days:
@@ -1370,7 +1376,22 @@ def admin_sinposmart():
         selected_fire_day=selected_fire_day,
         version_info=sinposmart_admin_version_info(selected_day),
         credential_sync_status=credential_sync_admin_view(days),
+        duty_gui_remote_update=(
+            remote_update_admin_view("duty_gui") if duty_gui_remote_update_enabled else {}
+        ),
+        duty_gui_remote_update_enabled=duty_gui_remote_update_enabled,
+        remote_update_csrf_token=csrf_token if duty_gui_remote_update_enabled else "",
     )
+
+
+@app.post("/admin/sinposmart/remote-update")
+def admin_sinposmart_remote_update():
+    _require_remote_update_admin_auth()
+    create_remote_update_command(target="duty_gui")
+    selected_fire_day = str(request.form.get("fire_day") or "").strip()
+    if selected_fire_day:
+        return redirect(url_for("admin_sinposmart", fire_day=selected_fire_day))
+    return redirect(url_for("admin_sinposmart"))
 
 
 @app.post("/admin/vehicles")

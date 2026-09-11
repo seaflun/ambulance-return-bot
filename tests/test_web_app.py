@@ -6003,14 +6003,15 @@ class WebAppTests(unittest.TestCase):
         os.environ["WORKER_TOKEN"] = "worker-token"
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sinposmart-token"
         admin = self.client.post(
-            "/admin/public-pc/remote-update",
+            "/admin/sinposmart/remote-update",
             data={
                 "csrf_token": app_module.remote_update_csrf_token(),
                 "admin_token": "test-admin-token",
-                "target": "duty_gui",
+                "fire_day": "2026-09-11",
             },
         )
         self.assertEqual(admin.status_code, 302)
+        self.assertEqual(admin.headers["Location"], "/admin/sinposmart?fire_day=2026-09-11")
         command = app_module.read_remote_update_command("duty_gui")
         self.assertEqual(command["target"], "duty_gui")
         self.assertEqual(app_module.read_remote_update_command(), {})
@@ -6489,13 +6490,27 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("遠端更新公務電腦", nas_body)
         self.assertIn('action="/admin/public-pc/remote-update"', nas_body)
-        self.assertIn("遠端更新值班台", nas_body)
-        self.assertIn('name="target" value="duty_gui"', nas_body)
+        self.assertNotIn("值班台遠端更新", nas_body)
         self.assertIn("等待公務電腦接收", nas_body)
         self.assertIn("勤務完成並閒置 120 秒後", nas_body)
         self.assertIn("公務電腦狀態", nas_body)
         self.assertIn('<section class="system-overview-card" aria-label="系統狀態">', nas_body)
         self.assertIn('<div class="system-overview-grid">', nas_body)
+
+        duty_update = self.client.post(
+            "/admin/sinposmart/remote-update",
+            data={
+                "csrf_token": app_module.remote_update_csrf_token(),
+                "admin_token": "test-admin-token",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(duty_update.status_code, 302)
+        self.assertEqual(duty_update.headers["Location"], "/admin/sinposmart")
+        duty_body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+        self.assertIn("值班台遠端更新", duty_body)
+        self.assertIn('action="/admin/sinposmart/remote-update"', duty_body)
+        self.assertIn("等待公務電腦接收", duty_body)
 
         admin_css = self.client.get("/static/sinposmart-admin.css").data.decode("utf-8")
         self.assertIn(".system-overview-card {", admin_css)
@@ -6508,6 +6523,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("遠端更新公務電腦", local_body)
         self.assertNotIn('action="/admin/public-pc/remote-update"', local_body)
         self.assertNotIn("公務電腦狀態", local_body)
+        duty_body_when_reporting = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+        self.assertIn("值班台遠端更新", duty_body_when_reporting)
 
     def test_admin_system_overview_deduplicates_matching_versions(self):
         version = "2026.07.23.0300"
@@ -6573,20 +6590,42 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(accepted.status_code, 302)
         self.assertEqual(app_module.read_remote_update_command()["status"], "pending")
 
+        duty_rejected = self.client.post("/admin/sinposmart/remote-update")
+        duty_wrong_admin = self.client.post(
+            "/admin/sinposmart/remote-update",
+            data={"csrf_token": app_module.remote_update_csrf_token(), "admin_token": "wrong-token"},
+        )
+        duty_accepted = self.client.post(
+            "/admin/sinposmart/remote-update",
+            data={
+                "csrf_token": app_module.remote_update_csrf_token(),
+                "admin_token": "test-admin-token",
+            },
+        )
+
+        self.assertEqual(duty_rejected.status_code, 403)
+        self.assertEqual(duty_wrong_admin.status_code, 403)
+        self.assertEqual(duty_accepted.status_code, 302)
+        self.assertEqual(app_module.read_remote_update_command("duty_gui")["status"], "pending")
+
     def test_admin_public_pc_hides_remote_update_when_worker_token_is_unconfigured(self):
         os.environ["WORKER_TOKEN"] = ""
 
         body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+        duty_body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
 
         self.assertNotIn('<section class="remote-update-card"', body)
+        self.assertNotIn('<section class="remote-update-card"', duty_body)
 
     def test_admin_public_pc_hides_remote_update_when_admin_token_is_unconfigured(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         os.environ["REMOTE_UPDATE_ADMIN_TOKEN"] = ""
 
         body = html.unescape(self.client.get("/admin/public-pc").data.decode("utf-8"))
+        duty_body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
 
         self.assertNotIn('<section class="remote-update-card"', body)
+        self.assertNotIn('<section class="remote-update-card"', duty_body)
 
     def test_admin_public_pc_remote_update_meta_wraps_on_mobile(self):
         response = self.client.get("/static/sinposmart-admin.css")

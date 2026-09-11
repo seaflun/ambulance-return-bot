@@ -127,6 +127,37 @@
     .unreturned-return-meta { margin-top: 5px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .version-strip { margin-bottom: 14px; }
     .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
+    .remote-update-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .remote-update-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .remote-update-title h2 { font-size: 18px; font-weight: 820; }
+    .remote-update-card > div { min-width: 0; }
+    .remote-update-detail { margin-top: 8px; color: var(--muted); font-size: var(--text-sm); }
+    .remote-update-meta { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .remote-update-meta span { min-width: 0; overflow-wrap: anywhere; }
+    .remote-update-password {
+      width: 100%;
+      min-height: 42px;
+      margin-bottom: 8px;
+      padding: 0 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+    }
+    .remote-update-password:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
+    .remote-update-card button[disabled] { background: #d7d2ca; color: #706d68; box-shadow: none; cursor: not-allowed; }
     .event-list { display: grid; gap: 10px; }
     .event-card { padding: 14px; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
     .event-card:hover { border-color: var(--line-strong); box-shadow: 0 18px 36px rgba(39, 49, 43, .09); }
@@ -191,6 +222,8 @@
       .event-head { grid-template-columns: 1fr; gap: 4px; }
       .event-step { grid-template-columns: 1fr; gap: 4px; align-items: start; }
       .credential-sync-row { grid-template-columns: 1fr; gap: 4px; align-items: start; }
+      .remote-update-card { grid-template-columns: 1fr; }
+      .remote-update-card form, .remote-update-card button { width: 100%; }
     }
     @media (prefers-reduced-motion: reduce) {
       .button, .event-card { transition: none; }
@@ -213,6 +246,36 @@
         {% if version_info.detail %}
           <div class="event-meta">{{ version_info.detail }}</div>
         {% endif %}
+      </section>
+    {% endif %}
+
+    {% if duty_gui_remote_update_enabled %}
+      <section class="remote-update-card" aria-label="值班台遠端更新">
+        <div>
+          <div class="remote-update-title">
+            <h2>值班台遠端更新</h2>
+            <span class="status {{ duty_gui_remote_update.status_class }}">{{ duty_gui_remote_update.status_label }}</span>
+          </div>
+          <p class="remote-update-detail">
+            先在背景準備套件；值班台下次交接自動登出或按下「登出並更新」時才會套用並重啟。
+          </p>
+          {% if duty_gui_remote_update.detail %}
+            <p class="remote-update-detail">{{ duty_gui_remote_update.detail }}</p>
+          {% endif %}
+          <div class="remote-update-meta">
+            {% if duty_gui_remote_update.requested_at %}<span>下達：{{ duty_gui_remote_update.requested_at }}</span>{% endif %}
+            {% if duty_gui_remote_update.updated_at %}<span>更新：{{ duty_gui_remote_update.updated_at }}</span>{% endif %}
+            {% if duty_gui_remote_update.request_id %}<span>命令：{{ duty_gui_remote_update.request_id }}</span>{% endif %}
+          </div>
+        </div>
+        <form action="{{ url_for('admin_sinposmart_remote_update') }}" method="post" onsubmit="return confirm('確定下達值班台遠端更新？值班台會先在背景準備，交接登出時才套用。');">
+          <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
+          <input type="hidden" name="fire_day" value="{{ selected_fire_day }}">
+          <input class="remote-update-password" type="password" name="admin_token" autocomplete="current-password" placeholder="遠端更新管理密碼" required{% if duty_gui_remote_update.active %} disabled{% endif %}>
+          <button class="button" type="submit"{% if duty_gui_remote_update.active %} disabled aria-disabled="true"{% endif %}>
+            {% if duty_gui_remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
+          </button>
+        </form>
       </section>
     {% endif %}
 
