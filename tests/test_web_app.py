@@ -5999,6 +5999,60 @@ class WebAppTests(unittest.TestCase):
         self.assertIsNone(response.get_json()["command"])
         self.assertEqual(app_module.read_remote_update_command()["status"], "timed_out")
 
+    def test_duty_gui_remote_update_uses_separate_command_and_credential_token(self):
+        os.environ["WORKER_TOKEN"] = "worker-token"
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sinposmart-token"
+        admin = self.client.post(
+            "/admin/public-pc/remote-update",
+            data={
+                "csrf_token": app_module.remote_update_csrf_token(),
+                "admin_token": "test-admin-token",
+                "target": "duty_gui",
+            },
+        )
+        self.assertEqual(admin.status_code, 302)
+        command = app_module.read_remote_update_command("duty_gui")
+        self.assertEqual(command["target"], "duty_gui")
+        self.assertEqual(app_module.read_remote_update_command(), {})
+
+        denied = self.client.get(
+            "/api/sinposmart/remote-update?worker_id=DUTY-GUI-01",
+            headers={"X-Credential-Sync-Token": "wrong-token"},
+        )
+        claimed = self.client.get(
+            "/api/sinposmart/remote-update?worker_id=DUTY-GUI-01&package_version=2026.09.11.0900",
+            headers={"X-Credential-Sync-Token": "sinposmart-token"},
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(claimed.status_code, 200)
+        self.assertEqual(claimed.get_json()["command"]["worker_id"], "DUTY-GUI-01")
+        request_id = claimed.get_json()["command"]["request_id"]
+
+        status = self.client.post(
+            f"/api/sinposmart/remote-update/{request_id}/status",
+            headers={"X-Credential-Sync-Token": "sinposmart-token"},
+            json={
+                "status": "preparing",
+                "worker_id": "DUTY-GUI-01",
+                "detail": "背景準備更新中。",
+            },
+        )
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(app_module.read_remote_update_command("duty_gui")["status"], "preparing")
+        for next_status in ("staged", "waiting_handoff", "applying", "completed"):
+            response = self.client.post(
+                f"/api/sinposmart/remote-update/{request_id}/status",
+                headers={"X-Credential-Sync-Token": "sinposmart-token"},
+                json={
+                    "status": next_status,
+                    "worker_id": "DUTY-GUI-01",
+                    "detail": f"{next_status}。",
+                    "installed_version": "2026.09.11.1100" if next_status == "completed" else "",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(app_module.read_remote_update_command("duty_gui")["status"], "completed")
+
     def test_worker_identity_requires_token_and_is_stable(self):
         self.assertEqual(self.client.get("/worker/identity").status_code, 403)
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -6435,6 +6489,8 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("遠端更新公務電腦", nas_body)
         self.assertIn('action="/admin/public-pc/remote-update"', nas_body)
+        self.assertIn("遠端更新值班台", nas_body)
+        self.assertIn('name="target" value="duty_gui"', nas_body)
         self.assertIn("等待公務電腦接收", nas_body)
         self.assertIn("勤務完成並閒置 120 秒後", nas_body)
         self.assertIn("公務電腦狀態", nas_body)
@@ -6969,6 +7025,47 @@ class WebAppTests(unittest.TestCase):
 
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
+
+    def test_created_folder_paths_survive_reporting_and_later_updates(self):
+        for service in ("ems", "disaster"):
+            with self.subTest(service=service):
+                suffix = "115年/轄內A3/" + "長地址" * 60
+                raw_paths = ([r"W:\救護硬碟\救護密錄器及行車紀錄器\2026\9月\09110830-91"]
+                             if service == "ems" else [
+                                 f"/data/disaster-records/{suffix}-11",
+                                 f"/data/disaster-records/{suffix}-15",
+                                 f"/data/firecam/{suffix}-甲",
+                                 f"/data/firecam/{suffix}-乙",
+                             ])
+                events = ([{"detail": "record folders ready: " + raw_paths[0]}]
+                          if service == "ems" else [
+                              {"status": "disaster_record_folder_ready", "detail": f"人車：created：{path}"}
+                              for path in raw_paths
+                          ])
+                payload = {"task": {"task_id": f"folders-{service}", "service_type": service},
+                           "events": events, "site_statuses": {}, "overall_status": "desktop_fast_running"}
+                sent = []
+                def post(url, body):
+                    sent.append(body)
+                    return {"ack_id": body["event_id"]}
+                with mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True), \
+                        mock.patch.object(app_module, "public_pc_report_server_url", return_value="http://nas.test"), \
+                        mock.patch.object(app_module, "current_public_pc_user_label", return_value="測試人員"), \
+                        mock.patch.object(app_module, "public_pc_site_login_accounts", return_value={}), \
+                        mock.patch.object(app_module, "_post_public_pc_report", side_effect=post):
+                    self.assertTrue(app_module.report_public_pc_task_event(payload, "已建立的資料夾"))
+                expected = app_module.confirmed_record_folders(payload)
+                self.assertEqual(sent[0]["record_folders"], expected)
+                os.environ["WORKER_TOKEN"] = "test-token"
+                response = self.client.post("/worker/public-pc-task-events", json=sent[0],
+                                            headers={"X-Worker-Token": "test-token"})
+                self.assertEqual(response.status_code, 200)
+                app_module.upsert_public_pc_report({"task_id": f"folders-{service}", "action": "後續更新"})
+                page = self.client.get(f"/admin/{service}").get_data(as_text=True)
+                self.assertIn("已建立的資料夾", page)
+                for path in expected:
+                    self.assertIn(path, page)
+                self.assertNotIn("/data/disaster-records/", page)
 
     def test_admin_public_pc_lists_all_task_events(self):
         os.environ["WORKER_TOKEN"] = "test-token"

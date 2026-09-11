@@ -124,6 +124,7 @@ from ambulance_bot.models import (
 from ambulance_bot.profile_paths import runtime_profile_root
 from ambulance_bot.record_folders import (
     RecordFolderError,
+    confirmed_record_folders,
     disaster_folder_plan,
     ems_record_relative_paths,
     ensure_disaster_media_folders,
@@ -225,13 +226,26 @@ PUBLIC_PC_LEGACY_RECONCILE_ERRORS = (
     UnicodeError,
 )
 MAX_CREDENTIAL_RELAY_FILE_BYTES = ((MAX_CREDENTIAL_PAYLOAD_BYTES + 2) // 3) * 4 + (64 * 1024)
-REMOTE_UPDATE_ACTIVE_STATUSES = {"pending", "waiting_busy", "waiting_idle", "updating"}
+REMOTE_UPDATE_ACTIVE_STATUSES = {
+    "pending",
+    "preparing",
+    "staged",
+    "waiting_handoff",
+    "waiting_busy",
+    "waiting_idle",
+    "applying",
+    "updating",
+}
 REMOTE_UPDATE_TERMINAL_STATUSES = {"completed", "up_to_date", "failed", "timed_out"}
 REMOTE_UPDATE_STATUSES = REMOTE_UPDATE_ACTIVE_STATUSES | REMOTE_UPDATE_TERMINAL_STATUSES
 REMOTE_UPDATE_STATUS_LABELS = {
     "pending": "等待公務電腦接收",
+    "preparing": "背景準備更新中",
+    "staged": "更新檔已準備",
+    "waiting_handoff": "等待交接登出套用",
     "waiting_busy": "等待勤務完成",
     "waiting_idle": "等待電腦閒置",
+    "applying": "登出並套用更新",
     "updating": "背景更新中",
     "completed": "更新完成",
     "up_to_date": "已是最新版本",
@@ -239,9 +253,13 @@ REMOTE_UPDATE_STATUS_LABELS = {
     "timed_out": "更新命令逾時",
 }
 REMOTE_UPDATE_TRANSITIONS = {
-    "pending": {"pending", "waiting_busy", "waiting_idle", "updating"},
-    "waiting_busy": {"waiting_busy", "waiting_idle", "updating"},
-    "waiting_idle": {"waiting_idle", "waiting_busy", "updating"},
+    "pending": {"pending", "preparing", "waiting_busy", "waiting_idle", "updating", "completed", "up_to_date", "failed"},
+    "preparing": {"preparing", "staged", "waiting_handoff", "waiting_busy", "waiting_idle", "applying", "updating", "completed", "up_to_date", "failed"},
+    "staged": {"staged", "waiting_handoff", "applying", "updating", "completed", "up_to_date", "failed"},
+    "waiting_handoff": {"waiting_handoff", "applying", "updating", "completed", "up_to_date", "failed"},
+    "waiting_busy": {"waiting_busy", "waiting_idle", "preparing", "staged", "waiting_handoff", "updating", "completed", "up_to_date", "failed"},
+    "waiting_idle": {"waiting_idle", "waiting_busy", "preparing", "staged", "waiting_handoff", "updating", "completed", "up_to_date", "failed"},
+    "applying": {"applying", "updating", "completed", "up_to_date", "failed"},
     "updating": {"updating", "completed", "up_to_date", "failed"},
 }
 VALID_SITE_KEYS = {site.key for site in SITE_DEFINITIONS}
@@ -1308,6 +1326,7 @@ def render_admin_public_pc(*, locked_service: str = ""):
         worker_health=worker_heartbeat_admin_view(reports),
         worker_health_enabled=worker_health_enabled,
         remote_update=remote_update_admin_view() if remote_update_enabled else {},
+        duty_gui_remote_update=remote_update_admin_view("duty_gui") if remote_update_enabled else {},
         remote_update_enabled=remote_update_enabled,
         remote_update_csrf_token=csrf_token if remote_update_enabled else "",
         retry_sites_by_task=retry_sites_by_task,
@@ -1326,7 +1345,8 @@ def admin_public_pc_remote_update():
     supplied_admin_token = str(request.form.get("admin_token") or "").strip()
     if not expected_admin_token or not hmac.compare_digest(supplied_admin_token, expected_admin_token):
         abort(403)
-    create_remote_update_command()
+    target = normalize_remote_update_target(request.form.get("target"))
+    create_remote_update_command(target=target)
     return_service = str(request.form.get("return_service") or "").strip().lower()
     if return_service == "disaster":
         return redirect(url_for("admin_disaster"))
@@ -1794,6 +1814,49 @@ def worker_remote_update_status(request_id: str):
         abort(400)
     with _public_pc_report_lock:
         command, outcome = _apply_remote_update_status_unlocked(request_id, data)
+    if outcome == "not_found":
+        abort(404)
+    if outcome in {"owner_conflict", "terminal_conflict", "transition_conflict"}:
+        abort(409)
+    return jsonify({"ok": True, "command": command, "ack_id": request_id})
+
+
+@app.get("/api/sinposmart/remote-update")
+def sinposmart_remote_update():
+    """Deliver only the value-duty GUI command through the SinpoSmart token."""
+
+    if not credential_sync_authorized():
+        abort(403)
+    worker_id = str(request.args.get("worker_id") or "sinposmart-duty-gui").strip()
+    package_version = str(request.args.get("package_version") or "").strip()
+    with _public_pc_report_lock:
+        command, _delivery = _claim_remote_update_command_unlocked(
+            worker_id,
+            package_version,
+            allow_claim=True,
+            target="duty_gui",
+        )
+    return jsonify({"ok": True, "command": command})
+
+
+@app.post("/api/sinposmart/remote-update/<request_id>/status")
+def sinposmart_remote_update_status(request_id: str):
+    """Receive value-duty GUI update progress without sharing the Worker API token."""
+
+    if not credential_sync_authorized():
+        abort(403)
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        abort(400)
+    status = str(data.get("status") or "").strip()
+    if status not in REMOTE_UPDATE_STATUSES:
+        abort(400)
+    with _public_pc_report_lock:
+        command, outcome = _apply_remote_update_status_unlocked(
+            request_id,
+            data,
+            target="duty_gui",
+        )
     if outcome == "not_found":
         abort(404)
     if outcome in {"owner_conflict", "terminal_conflict", "transition_conflict"}:
@@ -2544,8 +2607,18 @@ def _upsert_worker_heartbeat_unlocked(data: Mapping[str, object], received_at: d
     return heartbeat
 
 
-def remote_update_command_file() -> Path:
-    return artifacts_dir / "public_pc" / "remote_update.json"
+REMOTE_UPDATE_TARGETS = {"ambulance_worker", "duty_gui"}
+
+
+def normalize_remote_update_target(value: object) -> str:
+    target = str(value or "").strip().lower()
+    return target if target in REMOTE_UPDATE_TARGETS else "ambulance_worker"
+
+
+def remote_update_command_file(target: object = "ambulance_worker") -> Path:
+    normalized_target = normalize_remote_update_target(target)
+    filename = "remote_update.json" if normalized_target == "ambulance_worker" else "sinposmart_remote_update.json"
+    return artifacts_dir / "public_pc" / filename
 
 
 def remote_update_csrf_token() -> str:
@@ -2583,8 +2656,8 @@ def remote_update_admin_token() -> str:
     return os.getenv("REMOTE_UPDATE_ADMIN_TOKEN", "").strip()
 
 
-def _read_remote_update_command_unlocked() -> dict:
-    path = remote_update_command_file()
+def _read_remote_update_command_unlocked(target: object = "ambulance_worker") -> dict:
+    path = remote_update_command_file(target)
     if not path.exists():
         return {}
     try:
@@ -2614,7 +2687,7 @@ def remote_update_command_is_stale(command: dict, now: datetime | None = None) -
     return ((now or datetime.now()) - updated_at).total_seconds() > remote_update_stale_seconds()
 
 
-def _expire_remote_update_command_unlocked(command: dict) -> dict:
+def _expire_remote_update_command_unlocked(command: dict, target: object = "ambulance_worker") -> dict:
     if not remote_update_command_is_stale(command):
         return command
     expired = {
@@ -2624,7 +2697,7 @@ def _expire_remote_update_command_unlocked(command: dict) -> dict:
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "completed_at": datetime.now().isoformat(timespec="seconds"),
     }
-    write_json_atomic(remote_update_command_file(), expired)
+    write_json_atomic(remote_update_command_file(target), expired)
     return expired
 
 
@@ -2633,8 +2706,13 @@ def _claim_remote_update_command_unlocked(
     package_version: str,
     *,
     allow_claim: bool,
+    target: object = "ambulance_worker",
 ) -> tuple[dict[str, object] | None, str]:
-    command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+    normalized_target = normalize_remote_update_target(target)
+    command = _expire_remote_update_command_unlocked(
+        _read_remote_update_command_unlocked(normalized_target),
+        normalized_target,
+    )
     if str(command.get("status") or "") not in REMOTE_UPDATE_ACTIVE_STATUSES:
         return None, "no_active_command"
     if not allow_claim:
@@ -2644,18 +2722,25 @@ def _claim_remote_update_command_unlocked(
         return None, "owned_by_other_worker"
     if not owner:
         command["worker_id"] = worker_id
+    command.setdefault("target", normalized_target)
     if package_version and not str(command.get("before_version") or "").strip():
         command["before_version"] = package_version
     command["last_seen_at"] = datetime.now().isoformat(timespec="seconds")
-    write_json_atomic(remote_update_command_file(), command)
+    write_json_atomic(remote_update_command_file(normalized_target), command)
     return command, "claimed"
 
 
 def _apply_remote_update_status_unlocked(
     request_id: str,
     data: Mapping[str, object],
+    *,
+    target: object = "ambulance_worker",
 ) -> tuple[dict[str, object] | None, str]:
-    command = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+    normalized_target = normalize_remote_update_target(target)
+    command = _expire_remote_update_command_unlocked(
+        _read_remote_update_command_unlocked(normalized_target),
+        normalized_target,
+    )
     if str(command.get("request_id") or "") != request_id:
         return None, "not_found"
     status = str(data.get("status") or "").strip()
@@ -2688,23 +2773,32 @@ def _apply_remote_update_status_unlocked(
         command["started_at"] = now
     if status in REMOTE_UPDATE_TERMINAL_STATUSES:
         command["completed_at"] = now
-    write_json_atomic(remote_update_command_file(), command)
+    write_json_atomic(remote_update_command_file(normalized_target), command)
     return command, "updated"
 
 
-def read_remote_update_command() -> dict:
+def read_remote_update_command(target: object = "ambulance_worker") -> dict:
+    normalized_target = normalize_remote_update_target(target)
     with _public_pc_report_lock:
-        return _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+        return _expire_remote_update_command_unlocked(
+            _read_remote_update_command_unlocked(normalized_target),
+            normalized_target,
+        )
 
 
-def create_remote_update_command() -> tuple[dict, bool]:
+def create_remote_update_command(target: object = "ambulance_worker") -> tuple[dict, bool]:
+    normalized_target = normalize_remote_update_target(target)
     with _public_pc_report_lock:
-        current = _expire_remote_update_command_unlocked(_read_remote_update_command_unlocked())
+        current = _expire_remote_update_command_unlocked(
+            _read_remote_update_command_unlocked(normalized_target),
+            normalized_target,
+        )
         if str(current.get("status") or "") in REMOTE_UPDATE_ACTIVE_STATUSES:
             return current, False
         now = datetime.now().isoformat(timespec="seconds")
         command = {
             "request_id": str(uuid4()),
+            "target": normalized_target,
             "status": "pending",
             "requested_at": now,
             "updated_at": now,
@@ -2713,12 +2807,12 @@ def create_remote_update_command() -> tuple[dict, bool]:
             "installed_version": "",
             "detail": "等待公務電腦接收更新命令。",
         }
-        write_json_atomic(remote_update_command_file(), command)
+        write_json_atomic(remote_update_command_file(normalized_target), command)
         return command, True
 
 
-def remote_update_admin_view() -> dict:
-    command = read_remote_update_command()
+def remote_update_admin_view(target: object = "ambulance_worker") -> dict:
+    command = read_remote_update_command(target)
     status = str(command.get("status") or "").strip()
     status_class_name = ""
     if status in {"completed", "up_to_date"}:
@@ -2919,6 +3013,10 @@ def upsert_public_pc_report(data: dict) -> dict:
         }
         reports = [item for item in current_reports if str(item.get("task_id") or "") != task_id]
         existing = next((item for item in current_reports if str(item.get("task_id") or "") == task_id), {})
+        record_folders = list(existing.get("record_folders") or [])
+        for folder_path in data.get("record_folders") or []:
+            if isinstance(folder_path, str) and folder_path.strip() and folder_path not in record_folders:
+                record_folders.append(folder_path)
         events = list(existing.get("events") or [])
         known_event_ids = {str(item.get("event_id") or "").strip() for item in events if isinstance(item, dict)}
         if event_id not in known_event_ids:
@@ -3035,6 +3133,7 @@ def upsert_public_pc_report(data: dict) -> dict:
             "last_action": event["action"],
             "last_status": event["status"],
             "last_detail": event["detail"],
+            "record_folders": record_folders,
             "events": events,
         }
         reports.insert(0, payload)
@@ -3505,6 +3604,7 @@ def report_public_pc_task_event(payload: dict, action: str, *, event_id: str = "
         "site_statuses": site_statuses,
         "completion": task_completion_snapshot(payload),
         "created_at": str(payload.get("created_at") or ""),
+        "record_folders": confirmed_record_folders(payload),
     }
     failure_evidence = _collect_public_pc_failure_evidence(task_id, site_statuses)
     if failure_evidence:
@@ -7253,6 +7353,11 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
 
 def public_pc_event_rows(report: dict) -> list[dict]:
     rows = []
+    folders = report.get("record_folders") or confirmed_record_folders(report)
+    if folders:
+        if public_pc_report_service_type(report) == "ems":
+            folders = folders[:1]
+        rows.append({"time": "", "action": "已建立的資料夾", "detail": "", "folder_paths": folders})
     for raw in report.get("events") or []:
         if not isinstance(raw, dict):
             continue

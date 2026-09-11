@@ -10,6 +10,42 @@ DEFAULT_EMS_RECORD_ROOT = Path(r"W:\救護硬碟\救護密錄器及行車紀錄�
 DEFAULT_DISASTER_RECORD_ROOT = Path(r"W:\搶救災害硬碟\救災行車紀錄器")
 DEFAULT_FIRECAM_RECORD_ROOT = Path(r"W:\搶救災害硬碟\fire cam")
 
+def confirmed_record_folders(payload: dict) -> list[str]:
+    """Read successful creation evidence; never infer existence from case fields."""
+    disaster = (payload.get("task") or {}).get("service_type") == "disaster"
+    paths: list[str] = []
+    roots = {
+        str(DEFAULT_EMS_RECORD_ROOT).replace("\\", "/"): "/volume1/nas/救護硬碟/救護密錄器及行車紀錄器",
+        str(DEFAULT_DISASTER_RECORD_ROOT).replace("\\", "/"): "/volume1/nas/搶救災害硬碟/救災行車紀錄器",
+        str(DEFAULT_FIRECAM_RECORD_ROOT).replace("\\", "/"): "/volume1/nas/搶救災害硬碟/fire cam",
+        "/data/disaster-records": "/volume1/nas/搶救災害硬碟/救災行車紀錄器",
+        "/data/firecam": "/volume1/nas/搶救災害硬碟/fire cam",
+    }
+    for event in payload.get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        detail = str(event.get("detail") or "")
+        candidates = []
+        if disaster and event.get("status") == "disaster_record_folder_ready":
+            parts = detail.split("：", 2)
+            if len(parts) == 3 and parts[1] in {"created", "reused"}:
+                candidates = [parts[2]]
+        elif not disaster and detail.startswith("record folders ready: "):
+            candidates = detail.removeprefix("record folders ready: ").split(" | ")[:1]
+        for candidate in candidates:
+            path = candidate.strip().replace("\\", "/")
+            # Truncated legacy reports cannot prove the full directory name.
+            if not path or path.endswith("…"):
+                continue
+            for root, nas_root in roots.items():
+                if path.startswith(root + "/"):
+                    path = nas_root + path[len(root):]
+                    break
+            if path not in paths:
+                paths.append(path)
+    return paths if disaster else paths[:1]
+
+
 REASON_SHORT_LABELS = {
     "商店(量販店)": "商店",
     "公共場所(機場、車站)": "公共場所",

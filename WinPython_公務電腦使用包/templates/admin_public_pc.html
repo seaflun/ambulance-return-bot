@@ -370,10 +370,39 @@
         </div>
         <form action="{{ url_for('admin_public_pc_remote_update') }}" method="post" onsubmit="return confirm('確定下達遠端更新？系統會等待勤務完成且電腦閒置後才在背景執行。');">
           <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
+          <input type="hidden" name="target" value="ambulance_worker">
           {% if service_filter_locked %}<input type="hidden" name="return_service" value="{{ service_filter }}">{% endif %}
           <input class="remote-update-secret" type="password" name="admin_token" autocomplete="current-password" placeholder="遠端更新管理密碼" required{% if remote_update.active %} disabled{% endif %}>
           <button type="submit"{% if remote_update.active %} disabled aria-disabled="true"{% endif %}>
             {% if remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
+          </button>
+        </form>
+      </section>
+      <section class="remote-update-card" aria-label="遠端更新值班台">
+        <div>
+          <div class="remote-update-title">
+            <h2>遠端更新值班台</h2>
+            <span class="status {{ duty_gui_remote_update.status_class }}">{{ duty_gui_remote_update.status_label }}</span>
+          </div>
+          <p class="remote-update-detail">
+            先在背景準備套件；值班台下次交接自動登出或按下「登出並更新」時才會套用並重啟。
+          </p>
+          {% if duty_gui_remote_update.detail %}
+            <p class="remote-update-detail">{{ duty_gui_remote_update.detail }}</p>
+          {% endif %}
+          <div class="remote-update-meta">
+            {% if duty_gui_remote_update.requested_at %}<span>下達：{{ duty_gui_remote_update.requested_at }}</span>{% endif %}
+            {% if duty_gui_remote_update.updated_at %}<span>更新：{{ duty_gui_remote_update.updated_at }}</span>{% endif %}
+            {% if duty_gui_remote_update.request_id %}<span>命令：{{ duty_gui_remote_update.request_id }}</span>{% endif %}
+          </div>
+        </div>
+        <form action="{{ url_for('admin_public_pc_remote_update') }}" method="post" onsubmit="return confirm('確定下達值班台遠端更新？值班台會先在背景準備，交接登出時才套用。');">
+          <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
+          <input type="hidden" name="target" value="duty_gui">
+          {% if service_filter_locked %}<input type="hidden" name="return_service" value="{{ service_filter }}">{% endif %}
+          <input class="remote-update-secret" type="password" name="admin_token" autocomplete="current-password" placeholder="遠端更新管理密碼" required{% if duty_gui_remote_update.active %} disabled{% endif %}>
+          <button type="submit"{% if duty_gui_remote_update.active %} disabled aria-disabled="true"{% endif %}>
+            {% if duty_gui_remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
           </button>
         </form>
       </section>
@@ -522,6 +551,9 @@
                     <time class="event-time">{{ event.time }}</time>
                     <div class="event-main">
                       <div class="event-action">{{ event.action }}</div>
+                      {% for folder_path in event.folder_paths or [] %}
+                        <div class="event-detail">{{ folder_path }}</div>
+                      {% endfor %}
                       {% if event.detail %}
                         <div class="event-detail">{{ event.detail }}</div>
                       {% endif %}

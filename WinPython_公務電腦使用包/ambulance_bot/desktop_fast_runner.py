@@ -539,6 +539,8 @@ class DesktopFastRunner:
             self._raise_if_cancelled(task_id)
             if folder_detail:
                 self._set_overall_status_owned(task_id, "desktop_fast_running", folder_detail)
+                if folder_detail.startswith("record folders ready: "):
+                    self._notify(task_id, "已建立的資料夾")
             cancelled = False
             parallel_limit = parallel_site_groups()
             print(f"[desktop-fast] task={task_id} parallel_site_groups={parallel_limit}", flush=True)

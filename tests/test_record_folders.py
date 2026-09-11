@@ -16,6 +16,30 @@ from ambulance_bot.record_folders import (
 
 
 class RecordFolderTests(unittest.TestCase):
+    def test_confirmed_folders_use_nas_locations_and_only_one_ems_parent(self):
+        payload = {"task": {"service_type": "ems"}, "events": [
+            {"detail": r"record folder warning: W:\missing"},
+            {"detail": r"record folders ready: W:\救護硬碟\救護密錄器及行車紀錄器\2026\9月\09110830-91 | W:\救護硬碟\救護密錄器及行車紀錄器\2026\9月\09110830-92"},
+        ]}
+        self.assertEqual(record_folders.confirmed_record_folders(payload), [
+            "/volume1/nas/救護硬碟/救護密錄器及行車紀錄器/2026/9月/09110830-91",
+        ])
+
+    def test_confirmed_disaster_folders_include_every_vehicle_and_person(self):
+        paths = ["/data/disaster-records/115年/A2/案件-11",
+                 "/data/disaster-records/115年/A2/案件-15",
+                 "/data/firecam/115年/A2/案件-甲",
+                 "/data/firecam/115年/A2/案件-乙"]
+        payload = {"task": {"service_type": "disaster"}, "events": [
+            {"status": "disaster_record_folder_ready", "detail": f"人車：reused：{path}"}
+            for path in paths + paths[:1]
+        ]}
+        self.assertEqual(record_folders.confirmed_record_folders(payload), [
+            path.replace("/data/disaster-records", "/volume1/nas/搶救災害硬碟/救災行車紀錄器")
+                .replace("/data/firecam", "/volume1/nas/搶救災害硬碟/fire cam") for path in paths
+        ])
+        self.assertEqual(record_folders.confirmed_record_folders({"task": payload["task"]}), [])
+
     def test_disaster_record_root_defaults_to_public_duty_w_drive(self):
         with patch.dict("os.environ", {"DISASTER_RECORD_ROOT": ""}, clear=False):
             self.assertEqual(
