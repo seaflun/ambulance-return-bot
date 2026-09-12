@@ -1078,6 +1078,7 @@ class DesktopFastRunner:
             profile_name=f"civilpower_profile_{profile_suffix}",
             tile_name="volunteer_assist",
             cancel_check=self._cancel_check(request.task_id),
+            progress=self._site_progress_callback(request.task_id, "volunteer_assist"),
         )
 
     def _run_per_vehicle_site(

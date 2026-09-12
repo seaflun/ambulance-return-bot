@@ -198,7 +198,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         wait = mock.Mock()
         row = mock.Mock()
 
-        with mock.patch("civilpower._open_work_log_form", return_value=wait), mock.patch(
+        with mock.patch("civilpower._wait_for_io_query_result_grid", return_value=True), mock.patch("civilpower._open_work_log_form", return_value=wait), mock.patch(
             "civilpower._set_if_present"
         ), mock.patch("civilpower._click_if_present"), mock.patch(
             "civilpower._matching_table_rows",
@@ -208,11 +208,11 @@ class CivilpowerPlanTests(unittest.TestCase):
 
         self.assertEqual(
             [
-                mock.call(driver, ["張贊鏡", "20260826103603012"]),
-                mock.call(driver, ["張贊鏡", "桃園市觀音區東大路147巷21號"]),
-                mock.call(driver, ["張贊鏡", "創傷", "1036"]),
-                mock.call(driver, ["張贊鏡", "救護出勤", "1036"]),
-                mock.call(driver, ["張贊鏡", "1036"]),
+                mock.call(driver, ["張贊鏡", "20260826103603012", "2026/08/26"]),
+                mock.call(driver, ["張贊鏡", "桃園市觀音區東大路147巷21號", "2026/08/26 10:36"]),
+                mock.call(driver, ["張贊鏡", "創傷", "2026/08/26 10:36"]),
+                mock.call(driver, ["張贊鏡", "救護出勤", "2026/08/26 10:36"]),
+                mock.call(driver, ["張贊鏡", "2026/08/26 10:36"]),
             ],
             matching_rows.call_args_list,
         )
@@ -251,7 +251,7 @@ class CivilpowerPlanTests(unittest.TestCase):
             raise AssertionError("等待中的查詢沒有重新檢查工作紀錄")
 
         wait.until.side_effect = wait_until
-        with mock.patch("civilpower._open_work_log_form", return_value=wait), mock.patch(
+        with mock.patch("civilpower._wait_for_io_query_result_grid", return_value=True), mock.patch("civilpower._open_work_log_form", return_value=wait), mock.patch(
             "civilpower._set_if_present"
         ), mock.patch("civilpower._click_if_present"), mock.patch(
             "civilpower._matching_table_rows",
@@ -1093,8 +1093,8 @@ class CivilpowerPlanTests(unittest.TestCase):
         self.assertEqual(
             [
                 mock.call(wait, dialog, ["20260826103603012"]),
-                mock.call(wait, dialog, ["桃園市觀音區東大路147巷21號"]),
-                mock.call(wait, dialog, ["創傷", "1036"]),
+                mock.call(wait, dialog, ["桃園市觀音區東大路147巷21號", "2026/08/26 10:36"]),
+                mock.call(wait, dialog, ["創傷", "2026/08/26 10:36"]),
             ],
             wait_for_row.call_args_list,
         )
@@ -1612,7 +1612,7 @@ class CivilpowerPlanTests(unittest.TestCase):
                         return result
                 raise AssertionError("等待中的民力查詢未找到資料")
 
-        with mock.patch("civilpower._open_io_work_log"), mock.patch(
+        with mock.patch("civilpower._wait_for_io_query_result_grid", return_value=True), mock.patch("civilpower._open_io_work_log"), mock.patch(
             "civilpower.WebDriverWait", return_value=PollingWait()
         ), mock.patch("civilpower._set_if_present"), mock.patch(
             "civilpower._select_option_containing_if_present"
@@ -1697,7 +1697,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         ), mock.patch("civilpower._set_if_present"), mock.patch(
             "civilpower._select_option_containing_if_present"
         ), mock.patch("civilpower._click_if_present"), mock.patch(
-            "civilpower._matching_table_rows", side_effect=[[], [], [row]]
+            "civilpower._matching_table_rows", return_value=[row]
         ):
             self.assertTrue(_find_io_record(driver, plan, OUT_STATUS))
 
@@ -1865,7 +1865,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         wait = mock.Mock()
         wait.until.side_effect = TimeoutException()
 
-        with mock.patch("civilpower._open_io_work_log"), mock.patch(
+        with mock.patch("civilpower._wait_for_io_query_result_grid", return_value=True), mock.patch("civilpower._open_io_work_log"), mock.patch(
             "civilpower.WebDriverWait", return_value=wait
         ), mock.patch("civilpower._set_if_present"), mock.patch(
             "civilpower._select_option_containing_if_present"
@@ -1905,7 +1905,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         driver = mock.Mock()
         row = mock.Mock()
 
-        with mock.patch("civilpower._open_io_work_log") as open_io_work_log, mock.patch(
+        with mock.patch("civilpower._wait_for_io_query_result_grid", return_value=True), mock.patch("civilpower._open_io_work_log") as open_io_work_log, mock.patch(
             "civilpower._set_if_present"
         ), mock.patch("civilpower._select_option_containing_if_present"), mock.patch(
             "civilpower._click_if_present"

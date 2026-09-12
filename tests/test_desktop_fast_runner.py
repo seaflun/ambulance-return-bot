@@ -19,6 +19,29 @@ from ambulance_bot.update_safety import ManualUpdateRequiredError
 
 
 class DesktopFastRunnerTests(unittest.TestCase):
+    def test_civilpower_reports_intermediate_progress_through_the_desktop_runner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            request = AmbulanceReturnRequest(
+                task_id="civilpower-progress", created_at=datetime.now(), raw_text="", volunteer_assist=True
+            )
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            store.create(request)
+            reports = []
+            runner = DesktopFastRunner(Path(tmp), store=store, event_callback=lambda payload, action: reports.append((payload, action)))
+            owner = runner._prepare_execution(request.task_id, request.task_id, "busy")
+            self.assertTrue(owner)
+
+            def run(*args, **kwargs):
+                if kwargs.get("progress"):
+                    kwargs["progress"]("案件代入")
+
+            try:
+                with patch.object(desktop_fast_runner_module, "run_civilpower_task", side_effect=run):
+                    runner._run_civilpower(request, "test")
+            finally:
+                runner._release_prepared_execution(request.task_id, owner, request.task_id)
+            self.assertTrue(any("案件代入" in payload["site_statuses"]["volunteer_assist"]["detail"] for payload, _ in reports))
+
     def test_progress_reports_group_transitions_with_the_exact_site_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp) / "tasks")

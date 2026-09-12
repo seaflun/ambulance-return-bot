@@ -53,6 +53,8 @@ DEFAULT_WAIT_SECONDS = 15
 IO_QUERY_SETTLE_SECONDS = 5
 WORK_LOG_FORM_INITIAL_WAIT_SECONDS = 10
 WORK_LOG_FORM_RETRY_WAIT_SECONDS = 5
+_DATE_PATTERN = re.compile(r"(?<!\d)\d{4}[/-]\d{1,2}[/-]\d{1,2}(?!\d)")
+_DATETIME_PATTERN = re.compile(r"(?<!\d)(\d{4})[/-](\d{1,2})[/-](\d{1,2})[ T]+(\d{1,2})[:：](\d{1,2})(?!\d)")
 WORK_LOG_LIST_SELECTORS = (
     "#txt_Date_S",
     "#txt_Date_E",
@@ -68,6 +70,10 @@ OUTPUT_DIR = Path(
     or Path(os.getenv("LOCALAPPDATA") or Path.home()) / "ambulance_return_bot" / "captcha"
 )
 ocr = ddddocr.DdddOcr(show_ad=False)
+
+
+class _AmbiguousSelectionError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +368,12 @@ def run_civilpower_task(
                 on_login_success=record_login_account,
             )
         mark_driver_operation_active(active_driver)
+
+        def persist_out_submission() -> None:
+            if login_account:
+                checkpoint["civilpower_login_account"] = login_account
+            _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+
         out_created = _ensure_io_record(
             active_driver,
             plan,
@@ -369,6 +381,7 @@ def run_civilpower_task(
             checkpoint,
             cancel_check=cancel_check,
             progress=report_stage,
+            before_save=persist_out_submission,
         )
         if login_account and out_created:
             checkpoint["civilpower_login_account"] = login_account
@@ -407,6 +420,7 @@ def run_civilpower_task(
             cancel_check=cancel_check,
             progress=report_stage,
             reconcile_inbound=reconcile_inbound,
+            before_save=lambda: _save_task_checkpoint(artifacts_dir, original_plan, checkpoint),
         )
         if saved_plan is not None:
             plan = saved_plan
@@ -543,6 +557,7 @@ def _ensure_io_record(
     cancel_check: Callable[[], None] | None,
     require_lookup_confirmation: bool = False,
     progress: Callable[[str], None] | None = None,
+    before_save: Callable[[], None] | None = None,
 ) -> bool:
     marker = "out" if status == OUT_STATUS else "in"
     lookup_kwargs = {"raise_on_timeout": True} if require_lookup_confirmation else {}
@@ -557,6 +572,7 @@ def _ensure_io_record(
         **lookup_kwargs,
     ):
         checkpoint[f"{marker}_verified"] = True
+        checkpoint[f"{marker}_save_state"] = "verified"
         return False
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_add"])
@@ -579,6 +595,9 @@ def _ensure_io_record(
     _wait_for_io_record_form_values(driver, wait, plan, status)
     _raise_if_cancelled(cancel_check)
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_save_verify"])
+    checkpoint[f"{marker}_save_state"] = "pending_verification"
+    if before_save is not None:
+        before_save()
     _click(wait, "#btn_IOWorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
@@ -592,6 +611,7 @@ def _ensure_io_record(
     ):
         raise RuntimeError(f"出入登記簿儲存後回查不到{status}／{plan.out_reason if status == OUT_STATUS else plan.in_reason}紀錄。")
     checkpoint[f"{marker}_verified"] = True
+    checkpoint[f"{marker}_save_state"] = "verified"
     return True
 
 
@@ -648,7 +668,7 @@ def _find_io_record_row(
         plan.home_unit,
         plan.serve_unit,
         plan.out_reason if status == OUT_STATUS else plan.in_reason,
-        time_text,
+        _datetime_token(date_text, time_text),
     ]
     query_result_confirmed = _wait_for_io_query_result_grid(
         driver,
@@ -656,9 +676,11 @@ def _find_io_record_row(
         previous_result_signature,
         previous_result_sentinel,
     )
+    if not query_result_confirmed:
+        if require_query_confirmation or raise_on_timeout:
+            raise RuntimeError("出入登記簿查詢結果未完成更新，為避免重複新增，請保持原登入帳號後重試。")
+        return None
     rows = _matching_table_rows(driver, tokens)
-    if not rows and require_query_confirmation and not query_result_confirmed:
-        raise RuntimeError("出入登記簿查詢結果未完成更新，為避免重複新增，請保持原登入帳號後重試。")
     if not rows and wait_for_match:
         try:
             rows = wait.until(lambda current: _matching_table_rows(current, tokens) or False)
@@ -701,6 +723,7 @@ def _wait_for_io_query_result_grid(
     previous_signature: str | None,
     previous_sentinel=None,
 ) -> bool:
+    # Existing rows are not evidence that the latest query has finished.
     if previous_signature is None and previous_sentinel is None:
         return False
 
@@ -713,8 +736,9 @@ def _wait_for_io_query_result_grid(
             return True
 
     def query_result_ready(current) -> bool:
-        if _matching_table_rows(current, tokens):
-            return True
+        execute_script = getattr(current, "execute_script", None)
+        if callable(execute_script) and execute_script("return Boolean(window.jQuery && window.jQuery.active);") is True:
+            return False
         if sentinel_replaced():
             return True
         current_signature = _io_result_grid_signature(current)
@@ -873,11 +897,13 @@ def _ensure_work_log(
     cancel_check: Callable[[], None] | None,
     progress: Callable[[str], None] | None = None,
     reconcile_inbound: Callable[[CivilpowerTaskPlan], None] | None = None,
+    before_save: Callable[[], None] | None = None,
 ) -> CivilpowerTaskPlan:
     _raise_if_cancelled(cancel_check)
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_query"])
-    if _find_work_log_record(driver, plan):
+    if _find_work_log_record(driver, _work_log_lookup_plan(plan, checkpoint)):
         checkpoint["work_log_verified"] = True
+        checkpoint["work_log_save_state"] = "verified"
         return plan
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_add"])
@@ -890,7 +916,7 @@ def _ensure_work_log(
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["case_import"])
     _import_work_log_case(driver, wait, plan)
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["case_verify"])
-    imported_plan = _assert_imported_work_log_values(driver, plan, allow_return_mismatch=True)
+    imported_plan = _assert_imported_work_log_values(driver, plan, allow_return_mismatch=True, checkpoint=checkpoint)
     if imported_plan.in_date != plan.in_date or imported_plan.in_time != plan.in_time:
         if reconcile_inbound is None:
             _assert_imported_work_log_return_matches(plan, imported_plan)
@@ -904,16 +930,21 @@ def _ensure_work_log(
             cancel_check=cancel_check,
             progress=progress,
             reconcile_inbound=None,
+            before_save=before_save,
         )
     _raise_if_cancelled(cancel_check)
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_save"])
+    checkpoint["work_log_save_state"] = "pending_verification"
+    if before_save is not None:
+        before_save()
     _click(wait, "#btn_WorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_verify"])
-    if not _find_work_log_record(driver, plan, wait_for_match=True):
+    if not _find_work_log_record(driver, _work_log_lookup_plan(plan, checkpoint), wait_for_match=True):
         raise RuntimeError("工作紀錄簿儲存後回查不到本次救護義消協勤紀錄。")
     checkpoint["work_log_verified"] = True
+    checkpoint["work_log_save_state"] = "verified"
     return plan
 
 
@@ -930,7 +961,7 @@ def _select_out_io_record_for_work_log(driver, wait: WebDriverWait, plan: Civilp
         driver,
         wait,
         dialog,
-        [plan.member_name, plan.home_unit, plan.out_reason, plan.out_time],
+        [plan.member_name, plan.home_unit, plan.serve_unit, plan.out_reason, _datetime_token(plan.out_date, plan.out_time)],
     )
     _confirm_dialog(driver, wait, dialog)
     if not _control_value(driver, "#hf_AddIOLogIDs"):
@@ -956,20 +987,24 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
     if plan.case_id:
         candidates.append([plan.case_id])
     if plan.case_address:
-        candidates.append([plan.case_address])
+        candidates.append([plan.case_address, _datetime_token(plan.out_date, plan.out_time)])
     if plan.case_reason:
-        candidates.append([plan.case_reason, plan.out_time])
+        candidates.append([plan.case_reason, _datetime_token(plan.out_date, plan.out_time)])
     last_error: RuntimeError | None = None
     for tokens in candidates:
         try:
             row = _wait_for_dialog_row(wait, dialog, tokens)
             break
+        except _AmbiguousSelectionError:
+            raise
         except RuntimeError as exc:
             last_error = exc
     else:
         if last_error is not None:
             raise last_error
         raise RuntimeError("案件代入缺少可比對的案件資料。")
+    if _case_identity_conflicts(row, plan.case_id):
+        raise RuntimeError("案件選取結果的案件編號與本次任務不同，已停止代入。")
     if _click_dialog_row_action(driver, row, "選取"):
         _wait_for_dialog_close(wait, dialog)
         return
@@ -982,21 +1017,24 @@ def _assert_imported_work_log_values(
     plan: CivilpowerTaskPlan,
     *,
     allow_return_mismatch: bool = False,
+    checkpoint: dict[str, object] | None = None,
 ) -> CivilpowerTaskPlan:
-    imported_plan = _read_imported_work_log_plan(driver, plan)
+    imported_plan = _read_imported_work_log_plan(driver, plan, checkpoint=checkpoint)
     if not allow_return_mismatch:
         _assert_imported_work_log_return_matches(plan, imported_plan)
     return imported_plan
 
 
-def _read_imported_work_log_plan(driver, plan: CivilpowerTaskPlan) -> CivilpowerTaskPlan:
+def _read_imported_work_log_plan(
+    driver, plan: CivilpowerTaskPlan, *, checkpoint: dict[str, object] | None = None
+) -> CivilpowerTaskPlan:
     actual_dispatch_date = _control_value(driver, "#txt_AddDisDate")
     if not _same_value(actual_dispatch_date, plan.out_date):
         raise RuntimeError(
             f"案件代入後欄位不符：#txt_AddDisDate 預期={plan.out_date} 實際={actual_dispatch_date or '空白'}"
         )
-    dispatch_time = normalize_hhmm(
-        _control_value(driver, "#txt_AddDisHour") + _control_value(driver, "#txt_AddDisMin")
+    dispatch_time = _time_from_parts(
+        _control_value(driver, "#txt_AddDisHour"), _control_value(driver, "#txt_AddDisMin")
     )
     if not _valid_hhmm(dispatch_time):
         raise RuntimeError("案件代入後未帶入有效案件派遣時間。")
@@ -1004,11 +1042,13 @@ def _read_imported_work_log_plan(driver, plan: CivilpowerTaskPlan) -> Civilpower
     if plan.duty_status_line not in status_text:
         raise RuntimeError(f"案件代入後未帶入第一站工作紀錄的 {plan.duty_status_line}。")
     imported_in_date = _normalized_civilpower_date(_control_value(driver, "#txt_AddBackDate"), "#txt_AddBackDate")
-    imported_in_time = normalize_hhmm(
-        _control_value(driver, "#txt_AddBackHour") + _control_value(driver, "#txt_AddBackMin")
+    imported_in_time = _time_from_parts(
+        _control_value(driver, "#txt_AddBackHour"), _control_value(driver, "#txt_AddBackMin")
     )
     if not _valid_hhmm(imported_in_time):
         raise RuntimeError("案件代入後未帶入有效案件返隊時間。")
+    if checkpoint is not None:
+        checkpoint["civilpower_dispatch_time"] = dispatch_time
     return replace(plan, in_date=imported_in_date, in_time=imported_in_time)
 
 
@@ -1039,19 +1079,24 @@ def _find_work_log_record(
     wait = _open_work_log_form(driver)
     _set_if_present(driver, wait, "#txt_Date_S", plan.out_date)
     _set_if_present(driver, wait, "#txt_Date_E", plan.in_date)
+    previous_signature = _io_result_grid_signature(driver)
+    previous_sentinel = _io_result_grid_sentinel(driver)
     _click_if_present(driver, wait, "#btn_Query")
+    if not _wait_for_io_query_result_grid(driver, [], previous_signature, previous_sentinel):
+        raise RuntimeError("工作紀錄簿查詢結果未完成更新，為避免重複新增，請稍後重試。")
+    case_datetime = _datetime_token(plan.out_date, plan.out_time)
     candidates: list[list[str]] = []
     if plan.case_id:
-        candidates.append([plan.member_name, plan.case_id])
+        candidates.append([plan.member_name, plan.case_id, plan.out_date])
     if plan.case_address:
-        candidates.append([plan.member_name, plan.case_address])
+        candidates.append([plan.member_name, plan.case_address, case_datetime])
     if plan.case_reason:
-        candidates.append([plan.member_name, plan.case_reason, plan.out_time])
-    candidates.append([plan.member_name, plan.out_reason, plan.out_time])
-    candidates.append([plan.member_name, plan.out_time])
+        candidates.append([plan.member_name, plan.case_reason, case_datetime])
+    candidates.append([plan.member_name, plan.out_reason, case_datetime])
+    candidates.append([plan.member_name, case_datetime])
     def find_record(current) -> bool:
         for tokens in candidates:
-            rows = _matching_table_rows(current, tokens)
+            rows = [row for row in _matching_table_rows(current, tokens) if not _case_identity_conflicts(row, plan.case_id)]
             if rows:
                 if len(rows) == 1:
                     return True
@@ -1065,6 +1110,18 @@ def _find_work_log_record(
         return bool(wait.until(find_record))
     except TimeoutException:
         return False
+
+
+def _work_log_lookup_plan(plan: CivilpowerTaskPlan, checkpoint: dict[str, object]) -> CivilpowerTaskPlan:
+    dispatch_time = _clean_text(checkpoint.get("civilpower_dispatch_time"))
+    return replace(plan, out_time=dispatch_time) if _valid_hhmm(dispatch_time) else plan
+
+
+def _case_identity_conflicts(row, expected_case_id: str) -> bool:
+    if not re.fullmatch(r"\d{17}", expected_case_id):
+        return False
+    visible_ids = re.findall(r"(?<!\d)\d{17}(?!\d)", _clean_text(row.text))
+    return bool(visible_ids and expected_case_id not in visible_ids)
 
 
 def _open_selection_dialog(
@@ -1253,7 +1310,7 @@ def _wait_for_dialog_row(wait: WebDriverWait, dialog, required_tokens: list[str]
     def find_row(_current):
         rows = _matching_table_rows(dialog, required_tokens)
         if len(rows) > 1:
-            raise RuntimeError("選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
+            raise _AmbiguousSelectionError("選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
         return rows[0] if rows else False
 
     try:
@@ -1685,9 +1742,11 @@ def _same_value(actual: str, expected: str) -> bool:
     expected_date = _date_parts(expected)
     if actual_date is not None and expected_date is not None:
         return actual_date == expected_date
-    clean_actual = re.sub(r"\D", "", str(actual or ""))
-    clean_expected = re.sub(r"\D", "", str(expected or ""))
-    return clean_actual == clean_expected if clean_expected else _clean_text(actual) == _clean_text(expected)
+    clean_actual = _clean_text(actual)
+    clean_expected = _clean_text(expected)
+    if clean_actual.isdigit() and clean_expected.isdigit():
+        return int(clean_actual) == int(clean_expected)
+    return clean_actual == clean_expected
 
 
 def _same_minute(actual: str, expected: str) -> bool:
@@ -1723,10 +1782,32 @@ def _token_matches(text: str, token: str) -> bool:
     expected = _clean_text(token)
     if not expected:
         return True
-    if expected in actual:
-        return True
-    expected_digits = re.sub(r"\D", "", expected)
-    return bool(expected_digits and expected_digits in re.sub(r"\D", "", actual))
+    expected_datetime = _DATETIME_PATTERN.fullmatch(expected)
+    if expected_datetime:
+        parts = tuple(map(int, expected_datetime.groups()))
+        return any(tuple(map(int, match.groups())) == parts for match in _DATETIME_PATTERN.finditer(actual))
+    expected_date = _date_parts(expected)
+    if expected_date:
+        return any(_date_parts(match.group()) == expected_date for match in _DATE_PATTERN.finditer(actual))
+    if _valid_hhmm(expected):
+        times = re.findall(r"(?<![\d:/])([01]?\d|2[0-3])[:：]([0-5]?\d)(?!\d)", actual)
+        return any(_time_from_parts(hour, minute) == expected for hour, minute in times) or expected in actual.split()
+    if expected.isdigit():
+        return re.search(r"(?<!\d)" + re.escape(expected) + r"(?!\d)", actual) is not None
+    return expected in actual
+
+
+def _datetime_token(date_text: str, hhmm: str) -> str:
+    return f"{date_text} {hhmm[:2]}:{hhmm[2:]}"
+
+
+def _time_from_parts(hour: str, minute: str) -> str:
+    hour, minute = _clean_text(hour), _clean_text(minute)
+    if not re.fullmatch(r"\d{1,2}", hour) or not re.fullmatch(r"\d{1,2}", minute):
+        return ""
+    if int(hour) > 23 or int(minute) > 59:
+        return ""
+    return f"{int(hour):02d}{int(minute):02d}"
 
 
 def _valid_hhmm(value: str) -> bool:
