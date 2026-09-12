@@ -7234,8 +7234,23 @@ def event_detail_text(event: dict) -> str:
     return detail[:80] or status_label(status)
 
 
+def public_pc_task_action_event(action: str) -> dict:
+    if action in {"建立任務", "建立救災任務"}:
+        return {"status": "created", "detail": "救災任務已建立。" if action == "建立救災任務" else "任務已建立。"}
+    if re.fullmatch(r"按下.+站登打", action):
+        return {"status": "task_run_requested", "detail": "已送出登打啟動要求。"}
+    return {}
+
+
 def public_pc_event_for_action(payload: dict, action: str) -> dict:
     events = payload.get("events") if isinstance(payload.get("events"), list) else []
+    action_event = public_pc_task_action_event(action)
+    if action_event:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        if action_event["status"] == "created":
+            created = next((item for item in events if isinstance(item, dict) and item.get("status") == "created"), {})
+            timestamp = str(created.get("time") or payload.get("created_at") or timestamp)
+        return {**action_event, "time": timestamp}
     event = dict(events[-1]) if events else {}
     site_key = event_site_key({"action": action})
     if site_key in SITE_STAGE_GROUPS:
@@ -7375,10 +7390,12 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
 def public_pc_event_rows(report: dict) -> list[dict]:
     rows = []
     folders = report.get("record_folders") or confirmed_record_folders(report)
+    folder_row = None
+    folder_row_added = False
     if folders:
         if public_pc_report_service_type(report) == "ems":
             folders = folders[:1]
-        rows.append({"time": "", "action": "已建立的資料夾", "detail": "", "folder_paths": folders})
+        folder_row = {"time": "", "action": "已建立的資料夾", "detail": "", "folder_paths": folders}
     for raw in report.get("events") or []:
         if not isinstance(raw, dict):
             continue
@@ -7386,6 +7403,19 @@ def public_pc_event_rows(report: dict) -> list[dict]:
         action = str(event.get("action") or "更新")
         status = str(event.get("status") or "")
         detail = str(event.get("detail") or "")
+        action_event = public_pc_task_action_event(action)
+        if action_event:
+            # Older reports borrowed the previous folder/confirmation event.
+            status, detail = action_event["status"], action_event["detail"]
+        elif folder_row is not None and status_class(status) != "failed" and (
+            action == "已建立的資料夾" or status == "disaster_record_folder_ready"
+            or detail.startswith("record folders ready: ")
+        ):
+            if not folder_row_added:
+                folder_row["time"] = str(event.get("time") or "")
+                rows.append(folder_row)
+                folder_row_added = True
+            continue
         # Classify history from the event itself, never from the site's latest state.
         site_key = event_site_key({"action": action})
         if site_key not in SITE_STAGE_GROUPS:
@@ -7421,6 +7451,8 @@ def public_pc_event_rows(report: dict) -> list[dict]:
         event["status"] = status
         event["detail"] = public_pc_event_display_detail(status, detail, action=action)
         rows.append(event)
+    if folder_row is not None and not folder_row_added:
+        rows.insert(0, folder_row)
     return rows
 
 

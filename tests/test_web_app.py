@@ -7065,6 +7065,85 @@ class WebAppTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
 
+    def test_task_action_reports_do_not_reuse_previous_folder_or_confirmation_event(self):
+        created_at = "2026-09-12T14:47:35"
+        previous_events = [
+            {"status": "disaster_record_folder_ready", "detail": r"新坡15：created：W:\records\case-15"},
+            {"status": "ems_case_closed_confirmed", "detail": "已確認救護案件結案"},
+            {"status": "consumables_failed", "detail": "舊的失敗", "failure_reason": "舊診斷"},
+        ]
+        now = datetime(2026, 9, 13, 0, 12)
+        for previous in previous_events:
+            payload = {"created_at": created_at, "events": [
+                {"time": created_at, "status": "created", "detail": "任務已建立。"},
+                {"time": "2026-09-12T14:47:36", **previous},
+            ]}
+            before = json.dumps(payload)
+            for action in ("建立任務", "建立救災任務", "按下二站登打", "按下四站登打"):
+                with self.subTest(previous=previous["status"], action=action), \
+                        mock.patch.object(app_module, "datetime") as clock:
+                    clock.now.return_value = now
+                    event = app_module.public_pc_event_for_action(payload, action)
+                    self.assertEqual("created" if action.startswith("建立") else "task_run_requested", event["status"])
+                    self.assertEqual(created_at if action.startswith("建立") else now.isoformat(timespec="seconds"), event["time"])
+                    self.assertNotEqual(previous["detail"], event["detail"])
+                    self.assertNotIn("failure_reason", event)
+            self.assertEqual(before, json.dumps(payload))
+
+    def test_complete_events_render_legacy_actions_and_folder_summary_once(self):
+        for service in ("ems", "disaster"):
+            with self.subTest(service=service):
+                raw_path = (r"W:\救護硬碟\救護密錄器及行車紀錄器\2026\9月\09122226-95"
+                            if service == "ems" else r"W:\搶救災害硬碟\救災行車紀錄器\115年\支援他轄\case-15")
+                folder_detail = "record folders ready: " + raw_path if service == "ems" else "新坡15：created：" + raw_path
+                inherited = {"status": "ems_case_closed_confirmed", "detail": "已確認救護案件結案"} if service == "ems" else {
+                    "status": "disaster_record_folder_ready", "detail": folder_detail,
+                }
+                events = [
+                    {"time": "2026-09-13T00:11:34", "action": "建立任務" if service == "ems" else "建立救災任務",
+                     **({"status": "created", "detail": "任務已建立。"} if service == "ems" else inherited)},
+                    *([{"time": "2026-09-13T00:11:37", "action": "確認救護案件已結案", **inherited}] if service == "ems" else []),
+                    {"time": "2026-09-13T00:11:37", "action": "按下四站登打" if service == "ems" else "按下二站登打", **inherited},
+                    {"time": "2026-09-13T00:11:47", "action": "登打開始", "status": "desktop_fast_running", "detail": "本機快速執行已啟動。"},
+                    *([{"time": "2026-09-13T00:11:49", "action": "已建立的資料夾",
+                        "status": "desktop_fast_running", "detail": folder_detail}] if service == "ems" else []),
+                ]
+                task = {"task_id": f"legacy-folders-{service}", "service_type": service}
+                folders = app_module.confirmed_record_folders({"task": task, "events": events})
+                if service == "disaster":
+                    folders += [folders[0].removesuffix("15") + "11", "/volume1/nas/搶救災害硬碟/fire cam/115年/case-甲"]
+                report = {"task_id": task["task_id"], "task": task, "events": events, "record_folders": folders, "site_statuses": {}}
+                before = json.dumps(report)
+                rows = app_module.public_pc_event_rows(report)
+                folder_rows = [row for row in rows if row["action"] == "已建立的資料夾"]
+                self.assertEqual(1, len(folder_rows))
+                self.assertEqual(folders, folder_rows[0]["folder_paths"])
+                self.assertEqual(1, sum(row["action"].startswith("按下") for row in rows))
+                self.assertEqual(before, json.dumps(report))
+                if service == "ems":
+                    self.assertEqual("2026-09-13T00:11:49", folder_rows[0]["time"])
+                    self.assertEqual(1, sum(row["detail"] == "已確認救護案件結案" for row in rows))
+                with mock.patch.object(app_module, "public_pc_reports", return_value=[report]):
+                    page = self.client.get(f"/admin/{service}").get_data(as_text=True)
+                self.assertEqual(1, page.count('class="event-action">已建立的資料夾</div>'))
+                for folder in folders:
+                    self.assertEqual(1, page.count(folder))
+                self.assertNotIn(raw_path, page)
+                self.assertNotIn("record folders ready:", page)
+                self.assertNotIn("新坡15：created：", page)
+
+    def test_folder_summary_keeps_failure_events_and_legacy_success_evidence(self):
+        success = {"time": "2026-09-13T00:11:49", "action": "已建立的資料夾", "status": "desktop_fast_running",
+                   "detail": r"record folders ready: W:\救護硬碟\救護密錄器及行車紀錄器\2026\9月\09122226-95"}
+        failed = {"time": "2026-09-13T00:12:00", "action": "資料夾建立失敗", "status": "record_folder_failed", "detail": "無法連線 NAS"}
+        report = {"task": {"service_type": "ems"}, "events": [success, dict(success), failed]}
+        rows = app_module.public_pc_event_rows(report)
+        self.assertEqual(2, len(rows))
+        self.assertEqual("已建立的資料夾", rows[0]["action"])
+        self.assertEqual(["/volume1/nas/救護硬碟/救護密錄器及行車紀錄器/2026/9月/09122226-95"], rows[0]["folder_paths"])
+        self.assertEqual("record_folder_failed", rows[1]["status"])
+        self.assertTrue(rows[1]["detail"])
+
     def test_created_folder_paths_survive_reporting_and_later_updates(self):
         for service in ("ems", "disaster"):
             with self.subTest(service=service):
