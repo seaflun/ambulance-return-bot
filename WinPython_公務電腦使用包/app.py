@@ -1765,6 +1765,7 @@ def worker_task_status(task_id: str):
             detail=detail or task_progress_summary(payload),
             event_id=f"retry-status:{status_event_id}" if status_event_id else "",
             worker_id=worker_id,
+            site_result=site_result,
         )
     except WorkerClaimConflictError as exc:
         return jsonify({"ok": False, "error": exc.code, "detail": exc.detail}), 409
@@ -5999,6 +6000,7 @@ def sync_public_pc_report_retry_task(
     detail: str,
     event_id: str = "",
     worker_id: str = "",
+    site_result: SiteAutomationResult | None = None,
 ) -> None:
     if not public_pc_report_retry_task(payload):
         return
@@ -6018,8 +6020,9 @@ def sync_public_pc_report_retry_task(
             "worker_id": worker_id or str(report.get("worker_id") or ""),
             "package_version": str(report.get("package_version") or ""),
             "action": action,
-            "status": effective_task_status(dict(payload)),
+            "status": site_result.status if site_result is not None else effective_task_status(dict(payload)),
             "detail": detail,
+            **{field: str(getattr(site_result, field, "") or "") for field in DIAGNOSTIC_FIELDS},
             "overall_status": str(payload.get("overall_status") or ""),
             "site_statuses": dict(payload.get("site_statuses") or {}),
             "created_at": str(report.get("created_at") or ""),
@@ -7272,6 +7275,41 @@ def public_pc_event_for_action(payload: dict, action: str) -> dict:
     return event
 
 
+def public_pc_report_display_events(report: dict) -> list[dict]:
+    events = [dict(event) for event in report.get("events") or [] if isinstance(event, dict)]
+    candidates = [event for event in events if str(event.get("event_id") or "").startswith("retry-status:")
+                  and event.get("status") == "failed" and event.get("failure_sites") == {}
+                  and not any(event.get(field) for field in DIAGNOSTIC_FIELDS)]
+    task_id = str(report.get("task_id") or "").strip()
+    if not candidates or not task_id:
+        return events
+    try:
+        payload = store.get(task_id)
+    except (OSError, ValueError):
+        return events
+    if not isinstance(payload, Mapping) or not public_pc_report_retry_task(payload):
+        return events
+    for event in candidates:
+        site_key = event_site_key({"action": event.get("action")})
+        if site_key not in VALID_SITE_KEYS or event.get("action") != f"公務電腦回報{site_display_name(site_key)}":
+            continue
+        event_time = _public_pc_event_time(event)
+        if event_time == datetime.min:
+            continue
+        # Legacy retry events lost their single-site status. Only restore a success
+        # with one contemporaneous original site event and no recorded failure snapshot.
+        sources = [source for source in payload.get("events") or [] if isinstance(source, dict)
+                   and str(source.get("status") or "").startswith(site_key + "_")
+                   and 0 <= (event_time - _public_pc_event_time(source)).total_seconds() <= 2]
+        if sources:
+            latest_time = max(_public_pc_event_time(source) for source in sources)
+            sources = [source for source in sources if _public_pc_event_time(source) == latest_time]
+        if len(sources) != 1 or not site_is_complete(sources[0].get("status")):
+            continue
+        event.update(status=sources[0]["status"], detail=str(sources[0].get("detail") or ""))
+    return events
+
+
 def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
     """Read failure attempts independently of the site's current success state."""
     site = dict((report.get("site_statuses") or {}).get(site_key) or {})
@@ -7279,7 +7317,7 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
     seen: set[tuple[str, str]] = set()
     seen_ids: set[str] = set()
     started_since_failure = False
-    events = [event for event in report.get("events") or [] if isinstance(event, dict)]
+    events = public_pc_report_display_events(report)
     events.sort(key=_public_pc_event_time)
 
     def add(source: dict, timestamp: str, *, legacy: bool = False) -> None:
@@ -7396,7 +7434,7 @@ def public_pc_event_rows(report: dict) -> list[dict]:
         if public_pc_report_service_type(report) == "ems":
             folders = folders[:1]
         folder_row = {"time": "", "action": "已建立的資料夾", "detail": "", "folder_paths": folders}
-    for raw in report.get("events") or []:
+    for raw in public_pc_report_display_events(report):
         if not isinstance(raw, dict):
             continue
         event = dict(raw)

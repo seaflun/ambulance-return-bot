@@ -53,8 +53,8 @@ DEFAULT_WAIT_SECONDS = 15
 IO_QUERY_SETTLE_SECONDS = 5
 WORK_LOG_FORM_INITIAL_WAIT_SECONDS = 10
 WORK_LOG_FORM_RETRY_WAIT_SECONDS = 5
-_DATE_PATTERN = re.compile(r"(?<!\d)\d{4}[/-]\d{1,2}[/-]\d{1,2}(?!\d)")
-_DATETIME_PATTERN = re.compile(r"(?<!\d)(\d{4})[/-](\d{1,2})[/-](\d{1,2})[ T]+(\d{1,2})[:：](\d{1,2})(?!\d)")
+_DATE_PATTERN = re.compile(r"(?<!\d)\d{1,4}[/-]\d{1,2}[/-]\d{1,2}(?!\d)")
+_DATETIME_PATTERN = re.compile(r"(?<!\d)(\d{1,4})[/-](\d{1,2})[/-](\d{1,2})[ T]+(\d{1,2})[:：](\d{1,2})(?!\d)")
 WORK_LOG_LIST_SELECTORS = (
     "#txt_Date_S",
     "#txt_Date_E",
@@ -73,6 +73,10 @@ ocr = ddddocr.DdddOcr(show_ad=False)
 
 
 class _AmbiguousSelectionError(RuntimeError):
+    pass
+
+
+class _IncompleteQueryError(RuntimeError):
     pass
 
 
@@ -680,10 +684,10 @@ def _find_io_record_row(
         if require_query_confirmation or raise_on_timeout:
             raise RuntimeError("出入登記簿查詢結果未完成更新，為避免重複新增，請保持原登入帳號後重試。")
         return None
-    rows = _matching_table_rows(driver, tokens)
+    rows = _find_paginated_table_rows(driver, wait, tokens)
     if not rows and wait_for_match:
         try:
-            rows = wait.until(lambda current: _matching_table_rows(current, tokens) or False)
+            rows = wait.until(lambda current: _find_paginated_table_rows(current, wait, tokens) or False)
         except TimeoutException:
             if raise_on_timeout:
                 raise RuntimeError(f"出入登記簿查詢逾時，無法確認{status}紀錄；請保持原登入帳號後重試。")
@@ -995,7 +999,7 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
         try:
             row = _wait_for_dialog_row(wait, dialog, tokens)
             break
-        except _AmbiguousSelectionError:
+        except (_AmbiguousSelectionError, _IncompleteQueryError):
             raise
         except RuntimeError as exc:
             last_error = exc
@@ -1096,7 +1100,9 @@ def _find_work_log_record(
     candidates.append([plan.member_name, case_datetime])
     def find_record(current) -> bool:
         for tokens in candidates:
-            rows = [row for row in _matching_table_rows(current, tokens) if not _case_identity_conflicts(row, plan.case_id)]
+            rows = _find_paginated_table_rows(
+                current, wait, tokens, row_filter=lambda row: not _case_identity_conflicts(row, plan.case_id)
+            )
             if rows:
                 if len(rows) == 1:
                     return True
@@ -1287,7 +1293,7 @@ def _wait_for_io_person_dialog_row(driver, wait: WebDriverWait, tokens: list[str
         if not dialogs:
             return False
         dialog = dialogs[-1]
-        rows = _matching_table_rows(dialog, tokens)
+        rows = _find_paginated_table_rows(dialog, wait, tokens)
         if len(rows) > 1:
             raise RuntimeError("人員選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(tokens))
         if not rows:
@@ -1308,7 +1314,7 @@ def _select_dialog_row(driver, wait: WebDriverWait, dialog, required_tokens: lis
 
 def _wait_for_dialog_row(wait: WebDriverWait, dialog, required_tokens: list[str]):
     def find_row(_current):
-        rows = _matching_table_rows(dialog, required_tokens)
+        rows = _find_paginated_table_rows(dialog, wait, required_tokens)
         if len(rows) > 1:
             raise _AmbiguousSelectionError("選取視窗找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
         return rows[0] if rows else False
@@ -1479,6 +1485,87 @@ def _visible_save_success_dialog(driver):
         except Exception:
             continue
     return None
+
+
+def _pagination_links(root, direction: str) -> list[object]:
+    finder = getattr(root, "find_elements", None)
+    if not callable(finder):
+        return []
+    links = finder(By.CSS_SELECTOR, f".pagination li:not(.disabled) a[rel='{direction}']")
+    return [link for link in links if link.is_displayed()] if isinstance(links, (list, tuple)) else []
+
+
+def _pagination_signature(root) -> tuple:
+    pages = root.find_elements(By.CSS_SELECTOR, ".pagination .active")
+    return tuple(row.text for row in _table_rows(root)), tuple(page.text for page in pages)
+
+
+def _change_result_page(root, wait: WebDriverWait, direction: str) -> None:
+    links = _pagination_links(root, direction)
+    if len(links) != 1:
+        raise _IncompleteQueryError("民力查詢翻頁按鈕無法唯一定位，已停止避免漏查或重複新增。")
+    previous = _pagination_signature(root)
+    links[0].click()
+
+    def ready(driver):
+        try:
+            if driver.execute_script("return Boolean(window.jQuery && window.jQuery.active);") is True:
+                return False
+            return _pagination_signature(root) != previous
+        except (NoSuchElementException, StaleElementReferenceException):
+            return False
+
+    try:
+        wait.until(ready)
+    except TimeoutException as exc:
+        raise _IncompleteQueryError("民力查詢翻頁後資料未完成更新，已停止避免漏查或重複新增。") from exc
+
+
+def _find_paginated_table_rows(
+    root, wait: WebDriverWait, required_tokens: list[str], *, row_filter=None
+) -> list[object]:
+    def matching_rows():
+        rows = _matching_table_rows(root, required_tokens)
+        return [row for row in rows if row_filter(row)] if row_filter is not None else rows
+
+    rows = matching_rows()
+    if not _pagination_links(root, "next"):
+        return rows
+    matched_count = len(rows)
+    matched_page = 0 if rows else None
+    page = 0
+    signatures = [_pagination_signature(root)]
+    seen = {signatures[0]}
+    while _pagination_links(root, "next"):
+        if page >= 99:
+            raise _IncompleteQueryError("民力查詢超過 100 頁，請縮小日期範圍後重試；尚未確認紀錄不存在。")
+        _change_result_page(root, wait, "next")
+        page += 1
+        signature = _pagination_signature(root)
+        if signature in seen:
+            raise _IncompleteQueryError("民力查詢翻頁重複回到已讀頁面，已停止避免漏查。")
+        seen.add(signature)
+        signatures.append(signature)
+        rows = matching_rows()
+        if rows:
+            matched_count += len(rows)
+            matched_page = page
+        if matched_count > 1:
+            raise _AmbiguousSelectionError("民力查詢找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
+    # Selenium rows from earlier pages are stale. Return to the match and acquire it again.
+    # A miss returns to the starting page so a different lookup criterion can scan all pages.
+    target_page = matched_page if matched_page is not None else 0
+    while page > target_page:
+        _change_result_page(root, wait, "prev")
+        page -= 1
+        if _pagination_signature(root) != signatures[page]:
+            raise _IncompleteQueryError("民力查詢翻頁期間資料已變動，請重新查詢；尚未確認紀錄不存在。")
+    if not matched_count:
+        return []
+    rows = matching_rows()
+    if len(rows) != 1:
+        raise _IncompleteQueryError("民力查詢返回符合頁面後資料已變動，請重新查詢；尚未確認紀錄不存在。")
+    return rows
 
 
 def _matching_table_rows(driver, required_tokens: list[str]) -> list[object]:
@@ -1759,14 +1846,28 @@ def _same_minute(actual: str, expected: str) -> bool:
 
 
 def _date_parts(value: object) -> tuple[int, int, int] | None:
-    match = re.fullmatch(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", _clean_text(value))
+    match = re.fullmatch(r"(\d{1,4})\D+(\d{1,2})\D+(\d{1,2})", _clean_text(value))
     if match is None:
         return None
+    year, month, day = map(int, match.groups())
+    if year == 0:
+        return None
+    # List rows use ROC years; query controls and imported fields use Gregorian years.
+    if len(match.group(1)) < 4:
+        year += 1911
     try:
-        parsed = datetime(*map(int, match.groups()))
+        parsed = datetime(year, month, day)
     except ValueError:
         return None
     return parsed.year, parsed.month, parsed.day
+
+
+def _datetime_parts(match) -> tuple[int, int, int, int, int] | None:
+    parts = _date_parts("/".join(match.groups()[:3]))
+    hour, minute = map(int, match.groups()[3:])
+    if parts is None or not (0 <= hour < 24 and 0 <= minute < 60):
+        return None
+    return (*parts, hour, minute)
 
 
 def _normalized_civilpower_date(value: object, selector: str) -> str:
@@ -1784,8 +1885,10 @@ def _token_matches(text: str, token: str) -> bool:
         return True
     expected_datetime = _DATETIME_PATTERN.fullmatch(expected)
     if expected_datetime:
-        parts = tuple(map(int, expected_datetime.groups()))
-        return any(tuple(map(int, match.groups())) == parts for match in _DATETIME_PATTERN.finditer(actual))
+        parts = _datetime_parts(expected_datetime)
+        return parts is not None and any(
+            _datetime_parts(match) == parts for match in _DATETIME_PATTERN.finditer(actual)
+        )
     expected_date = _date_parts(expected)
     if expected_date:
         return any(_date_parts(match.group()) == expected_date for match in _DATE_PATTERN.finditer(actual))

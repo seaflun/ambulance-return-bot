@@ -10425,6 +10425,75 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.headers["Location"], "/admin/ems")
         self.assertEqual(report_only_store.get(task_id)["worker_queue"]["run_site_key"], "consumables")
 
+    def test_retry_site_event_keeps_its_result_when_another_site_failed(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        os.environ["WORKER_TOKEN"] = "test-token"
+        worker_headers = {"X-Worker-Token": "test-token"}
+        response = self.client.post("/tasks", data=self.valid_task_data(case_id="case-retry-site-status"))
+        task_id = response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        for site_key, site in payload["site_statuses"].items():
+            site.update(status=f"{site_key}_saved", detail="前次完成")
+        for site_key in ("consumables", "disinfection"):
+            payload["site_statuses"][site_key].update(status=f"{site_key}_failed", detail="前次失敗")
+        payload["overall_status"] = "desktop_fast_completed_with_errors"
+        payload["task_source"] = app_module.PUBLIC_PC_REPORT_RETRY_SOURCE
+        self.store.save_payload(task_id, payload)
+        app_module.upsert_public_pc_report({
+            "task_id": task_id, "task": payload["task"], "site_statuses": payload["site_statuses"],
+            "status": "failed", "overall_status": "desktop_fast_completed_with_errors",
+        })
+        response = self.client.post(f"/tasks/{task_id}/sites/consumables/run", base_url="http://100.114.126.58:8080")
+        self.assertEqual(302, response.status_code)
+        claimed = self.client.get("/worker/next-task?worker_id=test-worker", headers=worker_headers).get_json()["payload"]
+        for status, detail in (("consumables_running", "填寫耗材品項"),
+                               ("consumables_failed", "耗材儲存失敗"),
+                               ("consumables_saved", "已填入耗材 6 筆、按下儲存並確認。")):
+            with self.subTest(status=status):
+                response = self.client.post(f"/worker/tasks/{task_id}/status", headers=worker_headers, json={
+                    "status": status, "detail": detail, "site_key": "consumables", "site_name": "一站通耗材",
+                    "worker_id": "test-worker", "claim_id": claimed["worker_queue"]["claim_id"],
+                    "status_event_id": status,
+                })
+                self.assertEqual(200, response.status_code)
+                report = app_module.public_pc_report_for_task(task_id)
+                event = next(e for e in report["events"] if e["event_id"] == "retry-status:" + status)
+                self.assertEqual(status, event["status"])
+                self.assertEqual("disinfection_failed", report["site_statuses"]["disinfection"]["status"])
+                if status == "consumables_saved":
+                    self.assertEqual(detail, event["detail"])
+                    self.assertEqual("failed", app_module.public_pc_report_result(report))
+
+    def test_legacy_retry_event_display_uses_unique_original_site_evidence(self):
+        source = {"time": "2026-09-13T06:34:10", "status": "consumables_saved", "detail": "已儲存耗材並回查確認。"}
+        event = {"event_id": "retry-status:legacy-success", "time": "2026-09-13T06:34:11",
+                 "action": "公務電腦回報一站通耗材", "status": "failed", "failure_sites": {},
+                 "detail": "填寫後的儲存動作未完成或未確認成功。"}
+        report = {"task_id": "legacy-retry", "events": [event], "site_statuses": {}}
+        original = json.dumps(report)
+        progress = dict(source, time="2026-09-13T06:34:09", status="consumables_running", detail="回查耗材紀錄")
+        payload = {"task_source": app_module.PUBLIC_PC_REPORT_RETRY_SOURCE, "events": [progress, source]}
+        with mock.patch.object(self.store, "get", return_value=payload):
+            rows = app_module.public_pc_event_rows(report)
+            failures = app_module.public_pc_site_failure_history(report, "consumables")
+        self.assertEqual("consumables_saved", rows[0]["status"])
+        self.assertEqual(source["detail"], rows[0]["detail"])
+        self.assertEqual([], failures)
+        self.assertEqual(original, json.dumps(report))
+
+        for sources, failures in (([], {}), ([source, dict(source, status="consumables_running")], {}),
+                                  ([dict(source, time="2026-09-12T06:34:10")], {}),
+                                  ([source], {"consumables": {"status": "consumables_failed", "detail": "當次確實失敗"}})):
+            with self.subTest(sources=sources, failures=failures), mock.patch.object(self.store, "get", return_value={
+                "task_source": app_module.PUBLIC_PC_REPORT_RETRY_SOURCE, "events": sources,
+            }):
+                candidate = dict(report, events=[dict(event, failure_sites=failures)])
+                self.assertEqual("failed", app_module.public_pc_event_rows(candidate)[0]["status"])
+
+        for error in (FileNotFoundError("missing"), OSError("unreadable"), ValueError("invalid JSON")):
+            with self.subTest(error=error), mock.patch.object(self.store, "get", side_effect=error):
+                self.assertEqual("failed", app_module.public_pc_event_rows(report)[0]["status"])
+
     def test_nas_ems_admin_retry_preserves_public_pc_origin_and_syncs_completion(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         os.environ["WORKER_TOKEN"] = "test-token"

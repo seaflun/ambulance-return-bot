@@ -96,6 +96,34 @@ class CivilpowerSafetyTests(unittest.TestCase):
         with self.query_context(rows):
             self.assertFalse(civilpower._find_io_record(object(), self.plan, civilpower.OUT_STATUS))
 
+    def test_existing_roc_io_record_prevents_another_add(self):
+        row = SimpleNamespace(text="115/08/19 12:32 新坡分隊 大園救護分隊 測試義消 救護出勤")
+        checkpoint = {}
+        with self.query_context([row]), mock.patch("civilpower._click") as click:
+            created = civilpower._ensure_io_record(
+                object(), self.plan, civilpower.OUT_STATUS, checkpoint, cancel_check=None
+            )
+        self.assertFalse(created)
+        self.assertTrue(checkpoint["out_verified"])
+        click.assert_not_called()
+
+    def test_work_log_recheck_accepts_roc_datetime_without_gregorian_text(self):
+        row = SimpleNamespace(text=f"測試義消 {self.plan.case_address} 115/8/19 12:32")
+        with self.query_context([row]):
+            self.assertTrue(civilpower._find_work_log_record(object(), self.plan))
+
+    def test_roc_date_matching_preserves_full_date_and_time_validation(self):
+        for actual in ("115/8/19 12:32", "2026-08-19T12:32"):
+            self.assertTrue(civilpower._token_matches(actual, "2026/08/19 12:32"))
+        for actual in ("114/08/19 12:32", "115/08/19 12:33",
+                       "115/08/19 07:00 115/08/18 12:32", "2115/08/19 12:32",
+                       "115/02/30 12:32", "000/08/19 12:32"):
+            self.assertFalse(civilpower._token_matches(actual, "2026/08/19 12:32"))
+        self.assertTrue(civilpower._same_value("115/08/19", "2026-08-19"))
+        self.assertTrue(civilpower._same_value("2026.08.19", "2026-08-19"))
+        self.assertFalse(civilpower._token_matches("1115/08/19", "2026/08/19"))
+        self.assertIsNone(civilpower._date_parts("000/08/19"))
+
     def test_existing_row_cannot_confirm_an_unchanged_query_grid(self):
         from selenium.common.exceptions import TimeoutException
 
