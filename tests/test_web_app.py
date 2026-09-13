@@ -9364,6 +9364,7 @@ class WebAppTests(unittest.TestCase):
         selected_body = html.unescape(selected_page.get_data(as_text=True))
         selected_card = selected_body[selected_body.index("<h3>耗材</h3>") : selected_body.index("<h3>消毒</h3>")]
         self.assertIn("已選擇查找車輛：新坡91", selected_card)
+        self.assertIn("保留新坡92重新查找", selected_card)
         self.assertIn(f"/tasks/{task_id}/sites/consumables/run", selected_card)
         self.assertIn("單獨登打", selected_card)
         self.assertNotIn("四站登打啟動", selected_body)
@@ -9404,6 +9405,46 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(selected_site_retry.status_code, 302)
         queued = self.store.get(task_id)
         self.assertEqual(queued["worker_queue"]["run_site_key"], "consumables")
+
+    def test_original_vehicle_retry_is_offered_and_only_queues_the_affected_site(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        response = self.client.post("/tasks", data=self.valid_task_data(vehicle="新坡93"))
+        task_id = response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "consumables", "一站通耗材", "consumables_vehicle_candidate_available", "同案件不同車輛",
+                vehicle_candidates=({"vehicle": "新坡95"},), reconciliation_vehicle_key="新坡93",
+            ),
+        )
+        page = self.client.get(f"/tasks/{task_id}", base_url="http://100.114.126.58:8080")
+        body = html.unescape(page.get_data(as_text=True))
+        self.assertIn("保留新坡93重新查找", body)
+        self.assertIn("確認使用新坡95", body)
+        self.assertIn("另一台出勤車", body)
+        self.assertNotIn(f"/tasks/{task_id}/sites/consumables/run", body)
+
+        action = f"/tasks/{task_id}/sites/consumables/vehicle-candidate"
+        data = {"vehicle_key": "新坡93", "candidate_vehicle": "新坡93", "candidate_token": "wrong"}
+        self.assertEqual(self.client.post(action, data=data).status_code, 403)
+        data["candidate_token"] = app_module.site_vehicle_candidate_token(task_id, "consumables", "新坡93", "新坡93")
+        self.assertEqual(self.client.post(action, data=data).status_code, 302)
+        page = self.client.get(f"/tasks/{task_id}", base_url="http://100.114.126.58:8080")
+        body = html.unescape(page.get_data(as_text=True))
+        self.assertIn("已選擇查找車輛：新坡93", body)
+        self.assertIn(f"/tasks/{task_id}/sites/consumables/run", body)
+        self.assertEqual(self.client.post(f"/tasks/{task_id}/run").status_code, 409)
+        self.assertEqual(self.client.post(f"/tasks/{task_id}/sites/disinfection/run").status_code, 409)
+        response = self.client.post(f"/tasks/{task_id}/sites/consumables/run", base_url="http://100.114.126.58:8080")
+        self.assertEqual(response.status_code, 302)
+        queued = self.store.get(task_id)
+        self.assertEqual(queued["task"]["vehicle"], "新坡93")
+        self.assertEqual(queued["worker_queue"]["run_site_key"], "consumables")
+        self.store.claim_task_for_worker(task_id, "test-worker")
+        claimed = self.store.get(task_id)
+        self.assertEqual(self.client.post(action, data=data).status_code, 409)
+        self.assertEqual(self.store.get(task_id), claimed)
 
     def test_manual_complete_rejects_site_that_is_not_waiting_for_confirmation(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"

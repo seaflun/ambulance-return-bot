@@ -24,6 +24,51 @@ from ambulance_bot.vehicle_reconciliation import (
 
 
 class JsonTaskStoreTests(unittest.TestCase):
+    def test_original_vehicle_can_be_confirmed_without_being_a_website_candidate(self):
+        for site_key in ("consumables", "disinfection"):
+            with self.subTest(site_key=site_key), tempfile.TemporaryDirectory() as tmp:
+                store = JsonTaskStore(Path(tmp))
+                request = AmbulanceReturnRequest(
+                    task_id="original-vehicle-retry", created_at=datetime.now(), raw_text="", vehicle="新坡93"
+                )
+                store.create(request)
+                store.update_site_result(
+                    request.task_id,
+                    SiteAutomationResult(
+                        site_key, site_key, f"{site_key}_vehicle_candidate_available", "同案件不同車輛",
+                        vehicle_candidates=({"vehicle": "新坡95"},), reconciliation_vehicle_key="新坡93",
+                    ),
+                )
+                with self.assertRaises(SiteCompletionConflictError):
+                    store.select_site_vehicle_candidate(request.task_id, site_key, "新坡93", "新坡91")
+                selected = store.select_site_vehicle_candidate(request.task_id, site_key, "新坡93", "新坡93")
+                site = selected["site_statuses"][site_key]
+                target = site["vehicle_reconciliation"]["targets"]["新坡93"]
+                self.assertEqual(selected["task"]["vehicle"], "新坡93")
+                self.assertEqual(target["candidates"][0]["vehicle"], "新坡95")
+                self.assertEqual(selected_lookup_vehicle(site, "新坡93"), "新坡93")
+                self.assertTrue(site_vehicle_reconciliation_ready_to_retry(site))
+                self.assertTrue(vehicle_reconciliation_run_block_detail(selected))
+                self.assertEqual(vehicle_reconciliation_run_block_detail(selected, site_key), "")
+
+    def test_selected_alternate_can_be_changed_back_to_original_before_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            store.create(AmbulanceReturnRequest(
+                task_id="restore-original", created_at=datetime.now(), raw_text="", vehicle="新坡93"
+            ))
+            store.update_site_result(
+                "restore-original",
+                SiteAutomationResult(
+                    "consumables", "耗材", "consumables_vehicle_candidate_available", "同案件不同車輛",
+                    vehicle_candidates=({"vehicle": "新坡95"},), reconciliation_vehicle_key="新坡93",
+                ),
+            )
+            store.select_site_vehicle_candidate("restore-original", "consumables", "新坡93", "新坡95")
+            selected = store.select_site_vehicle_candidate("restore-original", "consumables", "新坡93", "新坡93")
+            self.assertEqual(selected_lookup_vehicle(selected["site_statuses"]["consumables"], "新坡93"), "新坡93")
+            self.assertEqual(selected["events"][-1]["selected_vehicle"], "新坡93")
+
     def test_candidate_choices_deduplicate_patients_and_require_every_vehicle_to_be_selected(self):
         candidates = normalize_vehicle_candidates(
             [

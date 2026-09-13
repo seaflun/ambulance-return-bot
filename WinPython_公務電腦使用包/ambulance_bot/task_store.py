@@ -678,9 +678,10 @@ class JsonTaskStore:
             if target is None:
                 raise SiteCompletionConflictError("找不到可確認的同案件車輛候選資料。")
             candidates = normalize_vehicle_candidates(target.get("candidates"))
-            if normalized_candidate_vehicle not in {
+            allowed_vehicles = {normalized_vehicle_key} | {
                 str(candidate.get("vehicle") or "") for candidate in candidates
-            }:
+            }
+            if normalized_candidate_vehicle not in allowed_vehicles:
                 raise SiteCompletionConflictError("候選車輛已變更，請重新查找後再確認。")
             target["state"] = "selected"
             target["selected_vehicle"] = normalized_candidate_vehicle

@@ -1284,6 +1284,8 @@ def _aggregate_vehicle_site_status(site_key: str, vehicle_requests: list, result
         str(dict(results.get(_vehicle_result_key(vehicle_request, index)) or {}).get("status") or "")
         for index, vehicle_request in enumerate(vehicle_requests, start=1)
     ]
+    if any("vehicle_candidate" in status for status in statuses):
+        return f"{site_key}_vehicle_candidate_available"
     if any("waiting_confirmation" in status for status in statuses):
         return f"{site_key}_waiting_confirmation"
     if not statuses or any(not status for status in statuses):

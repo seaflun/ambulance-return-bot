@@ -200,6 +200,7 @@
     .task-card.waiting::before { background: var(--waiting); }
     .card-head {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
@@ -459,20 +460,33 @@
         {% elif row.state == 'resolved' %}
           <div class="vehicle-reconciliation__selected">已完成查找車輛：{{ row.selected_vehicle }}</div>
         {% else %}
+          <div class="vehicle-reconciliation__copy">原車紀錄可能尚未同步；查到另一台出勤車不代表原車填錯。可保留原車重新查找，只有確認車號有誤時才改選候選車輛。</div>
+        {% endif %}
+        {% if row.state in ['available', 'selected'] %}
           <div class="vehicle-reconciliation__choices">
-            {% for candidate in row.candidates %}
+            {% if row.state == 'available' or row.selected_vehicle != row.original_vehicle %}
               <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/vehicle-candidate">
                 <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
-                <input type="hidden" name="candidate_vehicle" value="{{ candidate.vehicle }}">
-                <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task_id, site_key, row.vehicle_key, candidate.vehicle) }}">
-                <button class="secondary" type="submit">確認使用{{ candidate.vehicle }}</button>
+                <input type="hidden" name="candidate_vehicle" value="{{ row.vehicle_key }}">
+                <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task_id, site_key, row.vehicle_key, row.vehicle_key) }}">
+                <button class="secondary" type="submit" {% if task_active %}disabled{% endif %}>保留{{ row.original_vehicle }}重新查找</button>
               </form>
-              {% if candidate.source %}<span class="label">來源：{{ candidate.source }}</span>{% endif %}
-            {% endfor %}
+            {% endif %}
+            {% if row.state == 'available' %}
+              {% for candidate in row.candidates %}
+                <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/vehicle-candidate">
+                  <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
+                  <input type="hidden" name="candidate_vehicle" value="{{ candidate.vehicle }}">
+                  <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task_id, site_key, row.vehicle_key, candidate.vehicle) }}">
+                  <button class="secondary" type="submit" {% if task_active %}disabled{% endif %}>確認使用{{ candidate.vehicle }}</button>
+                </form>
+                {% if candidate.source %}<span class="label">來源：{{ candidate.source }}</span>{% endif %}
+              {% endfor %}
+            {% endif %}
           </div>
         {% endif %}
       {% endfor %}
-      <div class="vehicle-reconciliation__copy">原始案件車輛不變；替代查找車輛只套用於耗材、消毒查找並保留稽核關聯。</div>
+      <div class="vehicle-reconciliation__copy">選擇後按此站「單獨登打」重試。原始案件車輛不變；本次選擇只套用於此站查找與登打。原車仍查不到時會停止，不會自動改用其他車輛。</div>
     </section>
   {% endif %}
 {%- endmacro %}

@@ -594,7 +594,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "civilpower_io_form_timeout": "民力出入登記的服勤單位或人員連動未在期限內完成。",
         "stale_element": "網頁正在重新整理，程式持有的舊頁面元件已失效。",
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
-        "vehicle_candidate": "已確認同一案件存在不同出勤車輛的官方紀錄，需由使用者選擇本次查找車輛。",
+        "vehicle_candidate": "同案查到其他車輛，原車紀錄可能尚未同步；這不代表原車填錯，需由使用者選擇本次查找車輛。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
         "save": "填寫後的儲存動作未完成或未確認成功。",
         "query": "查詢案件時沒有取得可用結果。",
@@ -624,7 +624,7 @@ def _next_action_for(site_key: str, category: str) -> str:
     if category == "multi_patient_consumables":
         return "依患者序號查看成功與失敗頁面；修正一站通資料後可單獨重跑耗材。"
     if category == "vehicle_candidate":
-        return "確認卡片上的候選車輛後，只以「單獨登打」重試此站；原案件車號不會被修改。"
+        return "可選擇保留原車重新查找；只有確認車號有誤時才改選候選車輛，再以「單獨登打」重試此站。"
     if category == "civilpower_io_verify":
         return "等待民力出入登記簿清單刷新後確認剛儲存的紀錄；若仍找不到，再確認人員、日期、狀態與時間。"
     if category == "civilpower_io_form_timeout":

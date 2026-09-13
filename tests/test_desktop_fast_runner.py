@@ -16,9 +16,51 @@ from ambulance_bot.models import AmbulanceReturnRequest, FuelRecord, VehicleEntr
 from ambulance_bot.task_cancellation import request_task_cancellation, task_cancellation_marker_path
 from ambulance_bot.task_store import JsonTaskStore, task_completion_snapshot
 from ambulance_bot.update_safety import ManualUpdateRequiredError
+from ambulance_bot.vehicle_reconciliation import VehicleCandidateLookupError
 
 
 class DesktopFastRunnerTests(unittest.TestCase):
+    def test_original_consumables_retry_waits_for_93_and_preserves_completed_95(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = request_from_form({
+                "two_vehicle": "1", "vehicle": "新坡93", "vehicle_2": "新坡95", "consumables": "口罩=2",
+            })
+            store.create(request)
+            result_type = desktop_fast_runner_module.SiteAutomationResult
+            store.update_site_result(
+                request.task_id, result_type("consumables", "耗材", "consumables_saved", "95 已完成"),
+                vehicle_key="新坡95", vehicle_label="新坡95",
+            )
+            store.update_site_result(
+                request.task_id,
+                result_type(
+                    "consumables", "耗材", "consumables_vehicle_candidate_available", "同案件不同車輛",
+                    vehicle_candidates=({"vehicle": "新坡95"},), reconciliation_vehicle_key="新坡93",
+                ),
+                vehicle_key="新坡93", vehicle_label="新坡93",
+            )
+            completed_95 = store.get(request.task_id)["site_statuses"]["consumables"]["vehicle_results"]["新坡95"]
+            runner = DesktopFastRunner(Path(tmp), store=store)
+            for available in (False, True):
+                with self.subTest(original_vehicle_available=available):
+                    store.select_site_vehicle_candidate(request.task_id, "consumables", "新坡93", "新坡93")
+                    with patch.object(desktop_fast_runner_module, "login_acs_and_get_driver", return_value=object()), patch.object(
+                        desktop_fast_runner_module, "save_consumables_record_enabled", return_value=True
+                    ), patch.object(
+                        desktop_fast_runner_module, "open_consumable_record_for_task", return_value="93 已完成",
+                        side_effect=None if available else VehicleCandidateLookupError("consumables", "新坡93", [{"vehicle": "新坡95"}]),
+                    ) as lookup:
+                        runner.start_site(request.task_id, "consumables")
+                        self.assertTrue(runner.wait_for_idle())
+                    lookup.assert_called_once()
+                    self.assertEqual(lookup.call_args.args[1].vehicle, "新坡93")
+                    site = store.get(request.task_id)["site_statuses"]["consumables"]
+                    self.assertEqual(site["vehicle_results"]["新坡95"], completed_95)
+                    target = site["vehicle_reconciliation"]["targets"]["新坡93"]
+                    self.assertEqual(target["state"], "resolved" if available else "available")
+                    self.assertEqual(site["status"], "consumables_saved" if available else "consumables_vehicle_candidate_available")
+
     def test_civilpower_reports_intermediate_progress_through_the_desktop_runner(self):
         with tempfile.TemporaryDirectory() as tmp:
             request = AmbulanceReturnRequest(

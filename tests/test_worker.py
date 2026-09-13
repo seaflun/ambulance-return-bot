@@ -3080,6 +3080,29 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result.status, "consumables_saved")
         self.assertEqual(posts[-1]["reconciliation_vehicle_key"], "新坡92")
 
+    def test_run_consumables_retries_original_vehicle_and_skips_saved_other_vehicle(self):
+        task = self._two_vehicle_task()
+        reconciliation = {"targets": {"新坡93": {
+            "original_vehicle": "新坡93", "state": "selected", "selected_vehicle": "新坡93",
+            "candidates": [{"vehicle": "新坡92"}],
+        }}}
+        posts = []
+        with mock.patch.object(worker_module, "login_acs_and_get_driver", return_value=object()), mock.patch.object(
+            worker_module, "open_consumable_record_for_task", return_value="saved"
+        ) as lookup, mock.patch.object(worker_module, "save_consumables_record_enabled", return_value=True), mock.patch.object(
+            worker_module, "post_status", side_effect=lambda *_args, **kwargs: posts.append(kwargs)
+        ):
+            result = worker_module.run_consumables_worker_task(
+                "http://nas", "worker-a", task, Path("artifacts"), update_overall=False,
+                vehicle_results={"新坡92": {"status": "consumables_saved", "detail": "already done"}},
+                vehicle_reconciliation=reconciliation,
+            )
+        lookup.assert_called_once()
+        self.assertEqual(lookup.call_args.args[1].vehicle, "新坡93")
+        self.assertEqual(result.status, "consumables_saved")
+        self.assertTrue(any(p.get("vehicle_key") == "新坡93" and p.get("reconciliation_vehicle_key") == "新坡93" for p in posts))
+        self.assertFalse(any(p.get("vehicle_key") == "新坡92" for p in posts))
+
     def test_run_consumables_reports_detected_candidate_to_nas(self):
         task = {
             "task_id": "task-detected-candidate",

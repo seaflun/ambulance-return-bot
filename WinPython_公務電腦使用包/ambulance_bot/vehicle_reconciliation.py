@@ -134,7 +134,7 @@ def vehicle_reconciliation_run_block_detail(payload: object, run_site_key: str =
     if not targets:
         return "任務有同案件不同車輛待處理；請先在對應卡片確認車輛，且僅能重試該站。"
     if any(str(target.get("state") or "") != "selected" for target in targets.values()):
-        return "請先確認同案件的候選車輛，再以「單獨登打」重試此站。"
+        return "請先選擇保留原車重新查找或確認同案件的候選車輛，再以「單獨登打」重試此站。"
     return ""
 
 
