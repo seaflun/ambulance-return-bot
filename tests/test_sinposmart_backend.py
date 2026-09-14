@@ -1251,6 +1251,31 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(titles, {"當日整日勤務", "隔日整日勤務"})
         self.assertTrue(all("snapshot" not in event for event in view["background_updates"]))
 
+    def test_login_method_labels_preserve_unknown_history_and_each_attempt(self):
+        events = [
+            normalize_sinposmart_event({
+                "event_id": f"login-{index}", "record_type": "login", "actor_no": "10",
+                "occurred_at": "2026-09-14T12:00:00", "status": "ok",
+                "snapshot": {"login_method": method} if method is not None else {},
+            })
+            for index, method in enumerate(("automatic", "manual", None, "invalid"))
+        ]
+        cards = build_sinposmart_admin_view(events)["login_events"]
+        by_id = {card["event_id"]: card for card in cards}
+        self.assertEqual(len(cards), 4)
+        self.assertEqual(by_id["login-0"]["login_method_label"], "自動登入")
+        self.assertEqual(by_id["login-1"]["login_method_label"], "手動登入")
+        self.assertEqual(by_id["login-2"]["login_method_label"], "方式未記錄")
+        self.assertEqual(by_id["login-3"]["login_method_label"], "方式未記錄")
+        self.assertNotIn("login_method", events[2]["snapshot"])
+        failed = normalize_sinposmart_event({
+            "event_id": "failed-auto", "record_type": "login_failed", "status": "failed",
+            "snapshot": {"login_method": "automatic"},
+        })
+        card = build_sinposmart_admin_view([failed])["login_events"][0]
+        self.assertEqual(card["login_method_label"], "自動登入")
+        self.assertEqual(card["status_label"], "登入失敗")
+
     def test_admin_view_login_section_keeps_logout_event_status(self):
         events = [
             normalize_sinposmart_event(

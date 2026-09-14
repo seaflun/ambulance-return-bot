@@ -1035,6 +1035,13 @@ def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[s
     if sinposmart_person_label_score(preferred_person) > sinposmart_person_label_score(current_person):
         current_person = preferred_person
     card = sinposmart_admin_event(event, label, current_person)
+    if record_type in {"login", "login_failed"}:
+        snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+        method = str(snapshot.get("login_method") or "")
+        card["login_method_label"] = {
+            "automatic": "自動登入",
+            "manual": "手動登入",
+        }.get(method, "方式未記錄")
     if record_type == "error":
         card["record_label"] = label
     occurred_at = sinposmart_event_time(event)

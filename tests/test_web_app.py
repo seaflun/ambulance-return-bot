@@ -5485,6 +5485,21 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("pending_write_automation", body)
         self.assertNotIn("加入佇列", body)
 
+    def test_sinposmart_admin_displays_reported_login_method_and_unknown_history(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        for index, method in enumerate(("automatic", "manual", None)):
+            response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                "event_id": f"login-method-{index}", "fire_day": fire_day,
+                "occurred_at": f"{fire_day}T12:00:00", "record_type": "login", "status": "ok",
+                "actor_no": "10", "snapshot": {"login_method": method} if method else {},
+            })
+            self.assertEqual(response.status_code, 200)
+        body = self.client.get(f"/admin/sinposmart?fire_day={fire_day}").get_data(as_text=True)
+        self.assertIn('class="status login-method">自動登入</span>', body)
+        self.assertIn('class="status login-method">手動登入</span>', body)
+        self.assertIn('class="status login-method">方式未記錄</span>', body)
+
     def test_sinposmart_admin_login_section_can_show_logout(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}

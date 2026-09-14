@@ -496,7 +496,7 @@
       <details class="section" aria-label="登入狀態">
         <summary class="section-head">
           <h2 class="section-title">登入狀態</h2>
-          <div class="section-note">每次登入、登入失效與登出都會保留紀錄</div>
+          <div class="section-note">區分自動與手動登入；舊紀錄未提供登入方式時顯示「方式未記錄」</div>
         </summary>
         <div class="event-list">
         {% for event in admin_view.login_events or [] %}
@@ -513,6 +513,9 @@
                 {% endif %}
               </div>
               <div class="event-badges">
+                {% if event.login_method_label %}
+                  <span class="status login-method">{{ event.login_method_label }}</span>
+                {% endif %}
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
               </div>
             </div>
