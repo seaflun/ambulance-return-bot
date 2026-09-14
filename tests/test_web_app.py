@@ -10523,6 +10523,121 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.headers["Location"], "/admin/ems")
         self.assertEqual(report_only_store.get(task_id)["worker_queue"]["run_site_key"], "consumables")
 
+    def prepare_admin_vehicle_candidate_report(self, *, report_only=True):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        response = self.client.post("/tasks", data=self.valid_task_data(vehicle="新坡93"))
+        task_id = response.headers["Location"].rstrip("/").split("/")[-1]
+        payload = self.store.get(task_id)
+        for site_key, site in payload["site_statuses"].items():
+            site.update(status=f"{site_key}_saved", detail="前次完成")
+        payload["overall_status"] = "desktop_fast_completed_with_errors"
+        self.store.save_payload(task_id, payload)
+        self.store.update_site_result(
+            task_id,
+            app_module.SiteAutomationResult(
+                "consumables", "一站通耗材", "consumables_vehicle_candidate_available", "同案件只找到另一台出勤車",
+                vehicle_candidates=({"vehicle": "新坡95"},), reconciliation_vehicle_key="新坡93",
+            ),
+        )
+        payload = self.store.get(task_id)
+        app_module.upsert_public_pc_report({
+            "event_id": "evt-admin-vehicle-candidate", "task_id": task_id,
+            "title": "待選車輛遠端重試測試", "operator": "原操作人員", "worker_id": "original-worker",
+            "task": payload["task"], "site_statuses": payload["site_statuses"],
+            "status": payload["overall_status"], "overall_status": payload["overall_status"],
+        })
+        if report_only:
+            app_module.store = JsonTaskStore(Path(self.tmp.name) / "report-only-candidate-tasks")
+            app_module.runner = TaskRunner(Path(self.tmp.name), store=app_module.store)
+            app_module.desktop_runner = FakeDesktopRunner(app_module.store)
+        return task_id, payload
+
+    def test_nas_ems_admin_original_vehicle_choice_materializes_report_and_retries_only_consumables(self):
+        task_id, original = self.prepare_admin_vehicle_candidate_report()
+        base_url = "http://100.114.126.58:8080"
+        action = f"/tasks/{task_id}/sites/consumables/vehicle-candidate"
+        run_action = f"/tasks/{task_id}/sites/consumables/run"
+        body = html.unescape(self.client.get("/admin/ems", base_url=base_url).get_data(as_text=True))
+        self.assertIn(f'action="{action}"', body)
+        self.assertIn("保留新坡93重新查找", body)
+        self.assertIn("確認使用新坡95", body)
+        self.assertNotIn(f'action="{run_action}"', body)
+        data = {
+            "vehicle_key": "新坡93", "candidate_vehicle": "新坡93",
+            "candidate_token": "wrong", "return_service": "ems",
+        }
+        self.assertEqual(403, self.client.post(action, data=data, base_url=base_url).status_code)
+        with self.assertRaises(FileNotFoundError):
+            app_module.store.get(task_id)
+        data["candidate_token"] = app_module.site_vehicle_candidate_token(task_id, "consumables", "新坡93", "新坡93")
+        response = self.client.post(action, data=data, base_url=base_url)
+        self.assertEqual(302, response.status_code)
+        self.assertEqual("/admin/ems", response.headers["Location"])
+        report = app_module.public_pc_report_for_task(task_id)
+        self.assertEqual("原操作人員", report["operator"])
+        self.assertEqual("original-worker", report["worker_id"])
+        target = report["site_statuses"]["consumables"]["vehicle_reconciliation"]["targets"]["新坡93"]
+        self.assertEqual("selected", target["state"])
+        self.assertEqual("新坡93", target["selected_vehicle"])
+        body = html.unescape(self.client.get("/admin/ems", base_url=base_url).get_data(as_text=True))
+        self.assertIn("已選擇查找車輛：新坡93", body)
+        self.assertIn(f'action="{run_action}"', body)
+        self.assertEqual(409, self.client.post(f"/tasks/{task_id}/run", base_url=base_url).status_code)
+        self.assertEqual(409, self.client.post(f"/tasks/{task_id}/sites/disinfection/run", base_url=base_url).status_code)
+        response = self.client.post(run_action, data={"return_service": "ems"}, base_url=base_url)
+        self.assertEqual("/admin/ems", response.headers["Location"])
+        queued = app_module.store.get(task_id)
+        self.assertEqual("consumables", queued["worker_queue"]["run_site_key"])
+        self.assertEqual("新坡93", queued["task"]["vehicle"])
+        self.assertEqual(app_module.PUBLIC_PC_REPORT_RETRY_SOURCE, queued["task_source"])
+        self.assertEqual(409, self.client.post(action, data=data, base_url=base_url).status_code)
+        with self.assertRaises(app_module.TaskActiveError):
+            app_module.store.select_site_vehicle_candidate(task_id, "consumables", "新坡93", "新坡95")
+        self.assertEqual(queued, app_module.store.get(task_id))
+        body = html.unescape(self.client.get("/admin/ems", base_url=base_url).get_data(as_text=True))
+        self.assertNotIn(f'action="{run_action}"', body)
+        headers = {"X-Worker-Token": os.environ["WORKER_TOKEN"]}
+        claimed = self.client.get("/worker/next-task?worker_id=test-worker", headers=headers).get_json()["payload"]
+        self.assertEqual("新坡93", claimed["site_statuses"]["consumables"]["vehicle_reconciliation"]["targets"]["新坡93"]["selected_vehicle"])
+        response = self.client.post(f"/worker/tasks/{task_id}/status", headers=headers, json={
+            "status": "consumables_saved", "detail": "原車案件恢復後儲存成功",
+            "site_key": "consumables", "site_name": "一站通耗材", "vehicle_key": "新坡93",
+            "worker_id": "test-worker", "claim_id": claimed["worker_queue"]["claim_id"],
+        })
+        self.assertEqual(200, response.status_code)
+        report = app_module.public_pc_report_for_task(task_id)
+        self.assertEqual("success", app_module.public_pc_report_result(report))
+        for site_key, site in original["site_statuses"].items():
+            if site_key != "consumables":
+                self.assertEqual(site, report["site_statuses"][site_key])
+
+    def test_nas_ems_admin_candidate_choice_syncs_existing_task_and_waits_for_all_vehicles(self):
+        task_id, _ = self.prepare_admin_vehicle_candidate_report(report_only=False)
+        self.store.update_site_result(task_id, app_module.SiteAutomationResult(
+            "consumables", "一站通耗材", "consumables_vehicle_candidate_available", "第二台車待確認",
+            vehicle_candidates=({"vehicle": "新坡96"},), reconciliation_vehicle_key="新坡92",
+        ))
+        base_url = "http://100.114.126.58:8080"
+        action = f"/tasks/{task_id}/sites/consumables/vehicle-candidate"
+        run_action = f"/tasks/{task_id}/sites/consumables/run"
+        for vehicle_key, candidate_vehicle in (("新坡93", "新坡95"), ("新坡92", "新坡92")):
+            response = self.client.post(action, base_url=base_url, data={
+                "vehicle_key": vehicle_key, "candidate_vehicle": candidate_vehicle, "return_service": "ems",
+                "candidate_token": app_module.site_vehicle_candidate_token(task_id, "consumables", vehicle_key, candidate_vehicle),
+            })
+            self.assertEqual(302, response.status_code)
+            self.assertEqual("/admin/ems", response.headers["Location"])
+            body = html.unescape(self.client.get("/admin/ems", base_url=base_url).get_data(as_text=True))
+            self.assertIn(f"已選擇查找車輛：{candidate_vehicle}", body)
+            if vehicle_key == "新坡93":
+                self.assertNotIn(f'action="{run_action}"', body)
+                self.assertEqual(409, self.client.post(run_action, base_url=base_url).status_code)
+        self.assertIn(f'action="{run_action}"', body)
+        self.assertEqual("新坡93", self.store.get(task_id)["task"]["vehicle"])
+        self.assertEqual(302, self.client.post(run_action, data={"return_service": "ems"}, base_url=base_url).status_code)
+        self.assertEqual("consumables", self.store.get(task_id)["worker_queue"]["run_site_key"])
+
     def test_retry_site_event_keeps_its_result_when_another_site_failed(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         os.environ["WORKER_TOKEN"] = "test-token"

@@ -409,6 +409,24 @@
   font-size: .78rem;
 }
 
+.site-vehicle-choices {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--separator);
+  font-size: .76rem;
+  overflow-wrap: anywhere;
+}
+
+.site-vehicle-choices .site-retry-form { margin-top: 0; }
+
+.site-vehicle-choices button {
+  width: 100%;
+  padding: 7px 10px;
+  white-space: normal;
+}
+
 .site-diagnostic {
   display: grid;
   gap: 4px;

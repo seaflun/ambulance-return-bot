@@ -461,15 +461,48 @@
               </section>
             {% endif %}
 
+            {% set task_active = task.task_id in active_task_ids %}
+            {% set retry_return_service = service_filter if service_filter in ['ems', 'disaster'] else 'public_pc' %}
             <div class="site-grid">
               {% for site_key, title in task_site_display_pairs(task) %}
                 {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
                 <div class="site">
                   <div class="site-name">{{ title }}</div>
                   <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
+                  {% for row in site_vehicle_candidate_rows(site) if row.state in ['available', 'selected'] %}
+                    <section class="site-vehicle-choices" aria-label="{{ row.original_vehicle }}查找車輛">
+                      <div>系統車輛：{{ row.original_vehicle }}</div>
+                      {% if row.state == 'selected' %}
+                        <div>已選擇查找車輛：{{ row.selected_vehicle }}</div>
+                      {% else %}
+                        <div>原車紀錄可能尚未同步；查到另一台出勤車不代表原車填錯。</div>
+                      {% endif %}
+                      {% if row.state == 'available' or row.selected_vehicle != row.original_vehicle %}
+                        <form class="site-retry-form" method="post" action="{{ url_for('select_site_vehicle_candidate', task_id=task.task_id, site_key=site_key) }}">
+                          <input type="hidden" name="return_service" value="{{ retry_return_service }}">
+                          <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
+                          <input type="hidden" name="candidate_vehicle" value="{{ row.vehicle_key }}">
+                          <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task.task_id, site_key, row.vehicle_key, row.vehicle_key) }}">
+                          <button class="secondary" type="submit" {% if task_active %}disabled{% endif %}>保留{{ row.original_vehicle }}重新查找</button>
+                        </form>
+                      {% endif %}
+                      {% if row.state == 'available' %}
+                        {% for candidate in row.candidates %}
+                          <form class="site-retry-form" method="post" action="{{ url_for('select_site_vehicle_candidate', task_id=task.task_id, site_key=site_key) }}">
+                            <input type="hidden" name="return_service" value="{{ retry_return_service }}">
+                            <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
+                            <input type="hidden" name="candidate_vehicle" value="{{ candidate.vehicle }}">
+                            <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task.task_id, site_key, row.vehicle_key, candidate.vehicle) }}">
+                            <button class="secondary" type="submit" {% if task_active %}disabled{% endif %}>確認使用{{ candidate.vehicle }}</button>
+                          </form>
+                        {% endfor %}
+                      {% endif %}
+                      <div>{% if task_active %}已排入佇列或執行中，請等待完成。{% else %}確認此站所有待選車輛後，按「重新送出{{ title }}」。本次選擇僅套用此站，原始案件車輛不變。{% endif %}</div>
+                    </section>
+                  {% endfor %}
                   {% if site_key in (retry_sites_by_task.get(task.task_id, []) or []) %}
                     <form class="site-retry-form" method="post" action="{{ url_for('run_task_site', task_id=task.task_id, site_key=site_key) }}" onsubmit="return confirm('確定重新送出{{ title }}？');">
-                      <input type="hidden" name="return_service" value="{{ service_filter }}">
+                      <input type="hidden" name="return_service" value="{{ retry_return_service }}">
                       <button type="submit">重新送出{{ title }}</button>
                     </form>
                   {% endif %}

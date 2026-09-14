@@ -863,6 +863,15 @@ def select_site_vehicle_candidate(task_id: str, site_key: str):
     if not hmac.compare_digest(supplied_token, expected_token):
         abort(403)
     try:
+        payload = store.get(task_id)
+    except FileNotFoundError:
+        payload = materialize_public_pc_report_task(task_id)
+        if payload is None:
+            abort(404)
+    payload = refresh_stale_running_task(payload)
+    if task_payload_is_active(payload):
+        return "任務已排入佇列或正在執行中，無法變更查找車輛。", 409
+    try:
         payload = store.select_site_vehicle_candidate(
             task_id,
             site_key,
@@ -875,11 +884,20 @@ def select_site_vehicle_candidate(task_id: str, site_key: str):
         return str(exc), 409
     except (FileNotFoundError, KeyError):
         abort(404)
+    return_service = str(request.form.get("return_service") or "").strip().lower()
+    if return_service in {"ems", "disaster", "public_pc"}:
+        payload = mark_public_pc_report_retry_task(task_id, payload)
+    action = f"確認{site_display_name(site_key)}查找車輛：{candidate_vehicle}"
     report_public_pc_task_event(
         payload,
-        f"確認{site_display_name(site_key)}查找車輛：{candidate_vehicle}",
+        action,
     )
-    return redirect(url_for("task_detail", task_id=task_id))
+    sync_public_pc_report_retry_task(
+        payload,
+        action=action,
+        detail=f"系統車輛：{vehicle_key}；已選擇查找車輛：{candidate_vehicle}，請重新送出此站。",
+    )
+    return task_site_run_redirect(task_id)
 
 
 @app.post("/tasks/<task_id>/sites/<site_key>/complete")
@@ -1302,10 +1320,19 @@ def render_admin_public_pc(*, locked_service: str = ""):
         else [item for item in service_reports if public_pc_report_result(item) == result_filter]
     )
     retry_sites_by_task = {}
+    active_task_ids = set()
     for item in visible_reports:
         task = item.get("task") if isinstance(item.get("task"), dict) else {}
         task_id = str(task.get("task_id") or item.get("task_id") or "").strip()
         if task_id:
+            try:
+                retry_payload = store.get(task_id)
+            except FileNotFoundError:
+                retry_payload = item
+            if task_payload_is_active(retry_payload):
+                active_task_ids.add(task_id)
+                retry_sites_by_task[task_id] = []
+                continue
             retry_sites = admin_retryable_site_keys(item)
             if retry_sites is not None:
                 retry_sites_by_task[task_id] = retry_sites
@@ -1329,6 +1356,7 @@ def render_admin_public_pc(*, locked_service: str = ""):
         remote_update_enabled=remote_update_enabled,
         remote_update_csrf_token=csrf_token if remote_update_enabled else "",
         retry_sites_by_task=retry_sites_by_task,
+        active_task_ids=active_task_ids,
     )
 
 
@@ -6067,7 +6095,11 @@ def admin_retryable_site_keys(item: Mapping[str, object]) -> list[str] | None:
         site_pairs = task_site_display_pairs(task, site_statuses)
     except (KeyError, TypeError, ValueError):
         return []
-    return [site_key for site_key, _ in site_pairs if site_can_run_individually(site_statuses, site_key)]
+    return [
+        site_key for site_key, _ in site_pairs
+        if site_can_run_individually(site_statuses, site_key)
+        and not vehicle_reconciliation_run_block_detail(item, site_key)
+    ]
 
 
 def site_action_button_label(status: str, site_key: str) -> str:

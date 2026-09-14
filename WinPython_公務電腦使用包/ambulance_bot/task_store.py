@@ -666,7 +666,7 @@ class JsonTaskStore:
 
         with self._lock:
             payload = self.get(task_id)
-            if task_payload_is_active_for_edit(payload):
+            if worker_queue_state(payload).get("status") == "queued" or task_payload_is_active_for_edit(payload):
                 raise TaskActiveError(task_id)
             site = payload.get("site_statuses", {}).get(site_key)
             if not isinstance(site, dict):
