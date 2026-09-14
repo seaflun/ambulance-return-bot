@@ -1708,22 +1708,67 @@ def _case_date_key(value: object) -> str:
     return ""
 
 
-def _work_log_summary_with_return_time(summary: str, return_line: str) -> str:
-    if not return_line:
-        return summary
-    lines = str(summary or "").splitlines()
-    for index, line in enumerate(lines):
-        if not line.strip().startswith("返隊時間:"):
+def _valid_work_log_return_time(value: str) -> bool:
+    for date_format in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+        try:
+            return datetime.strptime(value.strip(), date_format).year >= 1911
+        except ValueError:
             continue
-        if line.split(":", 1)[1].strip():
-            return "\n".join(lines)
-        lines[index] = return_line
-        return "\n".join(lines)
-    if len(lines) >= 2:
-        lines.insert(2, return_line)
-    else:
-        lines.append(return_line)
-    return "\n".join(lines)
+    return False
+
+
+def _work_log_summary_with_return_time(summary: str, return_line: str) -> str:
+    summary = str(summary or "")
+    pattern = r"(?m)^([ \t]*返隊時間[ \t]*[:：][ \t]*)([^\r\n]*)"
+    matches = list(re.finditer(pattern, summary))
+    if len(matches) > 1:
+        raise ValueError("工作概述有多筆返隊時間，無法確認要修正哪一筆。")
+    if matches and _valid_work_log_return_time(matches[0].group(2)):
+        return summary
+    replacement = re.fullmatch(pattern, str(return_line or ""))
+    if not replacement or not _valid_work_log_return_time(replacement.group(2)):
+        raise ValueError("工作概述返隊時間無效，且任務沒有有效返隊時間可供修正。")
+    if matches:
+        match = matches[0]
+        return summary[:match.start(2)] + replacement.group(2) + summary[match.end(2):]
+    newline = "\r\n" if "\r\n" in summary else "\n"
+    lines = summary.splitlines(keepends=True)
+    index = min(2, len(lines))
+    if index and not lines[index - 1].endswith(("\r", "\n")):
+        lines[index - 1] += newline
+    lines.insert(index, return_line + (newline if index < len(lines) else ""))
+    return "".join(lines)
+
+
+def _fill_duty_work_log_return_time(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> bool:
+    read_summary = """
+        const el = document.getElementById('_areDescription');
+        return el ? String(el.value || '') : null;
+    """
+    summary = driver.execute_script(read_summary)
+    if summary is None:
+        return False
+    try:
+        corrected = _work_log_summary_with_return_time(summary, request.return_time_description_line)
+    except ValueError:
+        return False
+    if corrected == summary:
+        return True
+    written = driver.execute_script(
+        """
+        const el = document.getElementById('_areDescription');
+        const original = arguments[0];
+        const corrected = arguments[1];
+        if (!el || el.disabled || el.readOnly || el.value !== original) return false;
+        el.value = corrected;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return el.value === corrected;
+        """,
+        summary,
+        corrected,
+    )
+    return bool(written) and driver.execute_script(read_summary) == corrected
 
 
 def _work_log_summary_with_disaster_reason(summary: str, reason: str) -> str:
@@ -1920,7 +1965,6 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
 
     final_values = {
         "status": status_text,
-        "return_line": request.return_time_description_line,
     }
     missing = driver.execute_script(
         """
@@ -1940,28 +1984,6 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
           el.dispatchEvent(new Event('change', { bubbles: true }));
           return true;
         }
-        function patchReturnLine(value) {
-          if (!value) return true;
-          const el = document.getElementById('_areDescription');
-          if (!writable(el)) return false;
-          const current = String(el.value || '');
-          const lines = current ? current.split(/\\r?\\n/) : [];
-          const index = lines.findIndex(line => line.trim().startsWith('返隊時間:'));
-          if (index >= 0) {
-            const existing = String(lines[index] || '');
-            const afterColon = existing.replace(/^\\s*返隊時間:\\s*/, '').trim();
-            if (afterColon) return true;
-            lines[index] = value;
-          } else if (lines.length >= 2) {
-            lines.splice(2, 0, value);
-          } else {
-            lines.push(value);
-          }
-          el.value = lines.join('\\n');
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
-        }
         function controlsNear(labelText) {
           const normalizedLabel = labelText.replace(/\\s+/g, '');
           const controlsOf = root => Array.from(root.querySelectorAll('input, textarea, select')).filter(writable);
@@ -1975,7 +1997,6 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
           return [];
         }
         const missing = [];
-        if (!patchReturnLine(values.return_line)) missing.push('工作概述返隊時間');
         const controls = controlsNear('處理情形').filter(el => el.tagName === 'TEXTAREA');
         const ok = setValue(document.getElementById('_areStatus'), values.status) || controls.some(el => setValue(el, values.status));
         if (!ok) missing.push('處理情形');
@@ -1984,6 +2005,8 @@ def _fill_duty_work_log_values(driver: webdriver.Chrome, request: AmbulanceRetur
         final_values,
     )
     all_missing = list(item_missing or []) + list(reason_missing or []) + list(missing or [])
+    if not _fill_duty_work_log_return_time(driver, request):
+        all_missing.append("工作概述返隊時間")
     return [str(item) for item in all_missing]
 
 

@@ -1027,16 +1027,18 @@ class SeleniumLocalTests(unittest.TestCase):
                 self.alert = Alert()
                 self.switch_to = SimpleNamespace(alert=self.alert)
                 self.scripts = []
+                self.summary = "119案件\n災害搶救\n地點：桃園市觀音區"
 
             def execute_script(self, script, *args):
                 self.scripts.append((script, args))
-                if "return String(el.value || '')" in script:
-                    return "119案件\n災害搶救\n地點：桃園市觀音區"
+                if "return String(el.value || '')" in script or "return el ? String(el.value || '')" in script:
+                    return self.summary
                 if "return selected ? [] : ['勤務項目'];" in script:
                     return []
                 if "const select = document.getElementById('_selList');" in script:
                     return True
                 if "el.value = value;" in script:
+                    self.summary = args[0]
                     return True
                 if "return missing;" in script:
                     return []
@@ -1100,16 +1102,18 @@ class SeleniumLocalTests(unittest.TestCase):
                 self.alert = Alert()
                 self.switch_to = SimpleNamespace(alert=self.alert)
                 self.scripts = []
+                self.summary = "119案件\n救護\n地點：桃園市觀音區"
 
             def execute_script(self, script, *args):
                 self.scripts.append((script, args))
-                if "return String(el.value || '')" in script:
-                    return "119案件\n救護\n地點：桃園市觀音區"
+                if "return String(el.value || '')" in script or "return el ? String(el.value || '')" in script:
+                    return self.summary
                 if "return selected ? [] : ['勤務項目'];" in script:
                     return []
                 if "return missing;" in script:
                     return []
                 if "el.value = value;" in script:
+                    self.summary = args[0]
                     return True
                 return True
 
