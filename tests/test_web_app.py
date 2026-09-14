@@ -5999,6 +5999,48 @@ class WebAppTests(unittest.TestCase):
         self.assertIsNone(response.get_json()["command"])
         self.assertEqual(app_module.read_remote_update_command()["status"], "timed_out")
 
+    def test_duty_gui_waiting_command_uses_heartbeat_but_install_deadline_does_not(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sinposmart-token"
+        old = (datetime.now() - timedelta(hours=9)).isoformat(timespec="seconds")
+        fresh = datetime.now().isoformat(timespec="seconds")
+        for status in ("staged", "waiting_handoff", "waiting_busy", "waiting_idle", "preparing", "applying", "updating"):
+            for heartbeat in (old, fresh):
+                with self.subTest(status=status, heartbeat=heartbeat):
+                    command = {"request_id": "heartbeat-test", "target": "duty_gui", "worker_id": "PC-01",
+                               "status": status, "requested_at": old, "updated_at": old, "last_seen_at": heartbeat}
+                    app_module.write_json_atomic(app_module.remote_update_command_file("duty_gui"), command)
+                    self.client.get("/api/sinposmart/remote-update?worker_id=PC-01",
+                                    headers={"X-Credential-Sync-Token": "sinposmart-token"})
+                    saved = app_module.read_remote_update_command("duty_gui")
+                    waiting = status in {"staged", "waiting_handoff", "waiting_busy", "waiting_idle"}
+                    self.assertEqual(saved["status"], status if waiting and heartbeat == fresh else "timed_out")
+
+    def test_duty_gui_expired_command_accepts_only_owned_install_proof(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sinposmart-token"
+        headers = {"X-Credential-Sync-Token": "sinposmart-token"}
+        old = (datetime.now() - timedelta(hours=9)).isoformat(timespec="seconds")
+        command = {"request_id": "late-install", "target": "duty_gui", "worker_id": "PC-01",
+                   "status": "applying", "updated_at": old, "last_seen_at": old}
+        app_module.write_json_atomic(app_module.remote_update_command_file("duty_gui"), command)
+        expired = self.client.get("/api/sinposmart/remote-update?worker_id=PC-01", headers=headers).get_json()["command"]
+        self.assertIsNotNone(expired)
+        self.assertEqual(expired["status"], "timed_out")
+        self.assertIsNone(self.client.get("/api/sinposmart/remote-update?worker_id=PC-02", headers=headers).get_json()["command"])
+        endpoint = "/api/sinposmart/remote-update/late-install/status"
+        proof = {"worker_id": "PC-01", "status": "completed", "installed_version": "2026.09.14.0900", "exit_code": 0}
+        for change in ({"worker_id": "PC-02"}, {"installed_version": ""}, {"exit_code": 1}, {"status": "preparing"}):
+            with self.subTest(change=change):
+                self.assertEqual(self.client.post(endpoint, headers=headers, json={**proof, **change}).status_code, 409)
+        accepted = self.client.post(endpoint, headers=headers, json=proof)
+        self.assertEqual(accepted.status_code, 200)
+        saved = accepted.get_json()["command"]
+        self.assertEqual(saved["status"], "completed")
+        self.assertEqual(saved["timed_out_at"], expired["completed_at"])
+        self.assertEqual(saved["installed_version"], proof["installed_version"])
+        self.assertEqual(self.client.post(endpoint, headers=headers, json=proof).status_code, 200)
+        app_module.create_remote_update_command("duty_gui")
+        self.assertEqual(self.client.post(endpoint, headers=headers, json=proof).status_code, 404)
+
     def test_duty_gui_remote_update_uses_separate_command_and_credential_token(self):
         os.environ["WORKER_TOKEN"] = "worker-token"
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sinposmart-token"

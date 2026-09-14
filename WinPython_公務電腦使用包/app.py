@@ -2706,6 +2706,13 @@ def remote_update_command_is_stale(command: dict, now: datetime | None = None) -
         updated_at = datetime.fromisoformat(timestamp)
     except ValueError:
         return False
+    if command.get("target") == "duty_gui" and command.get("status") in {
+        "staged", "waiting_handoff", "waiting_busy", "waiting_idle",
+    }:
+        try:
+            updated_at = max(updated_at, datetime.fromisoformat(str(command.get("last_seen_at") or "")))
+        except (ValueError, TypeError):
+            pass
     return ((now or datetime.now()) - updated_at).total_seconds() > remote_update_stale_seconds()
 
 
@@ -2736,6 +2743,15 @@ def _claim_remote_update_command_unlocked(
         normalized_target,
     )
     if str(command.get("status") or "") not in REMOTE_UPDATE_ACTIVE_STATUSES:
+        # Deliver an expired command only to its owner for local install-result reconciliation.
+        if (
+            normalized_target == "duty_gui"
+            and command.get("status") == "timed_out"
+            and allow_claim
+            and worker_id
+            and command.get("worker_id") == worker_id
+        ):
+            return command, "reconcile_terminal"
         return None, "no_active_command"
     if not allow_claim:
         return None, "unverified_route"
@@ -2782,8 +2798,17 @@ def _apply_remote_update_status_unlocked(
     if current_status in REMOTE_UPDATE_TERMINAL_STATUSES:
         if status == current_status:
             return command, "idempotent"
-        return command, "terminal_conflict"
-    if status not in REMOTE_UPDATE_TRANSITIONS.get(current_status, set()):
+        if not (
+            normalized_target == "duty_gui"
+            and current_status == "timed_out"
+            and owner and supplied_worker_id == owner
+            and status in {"completed", "up_to_date"}
+            and str(data.get("installed_version") or "").strip()
+            and type(data.get("exit_code")) is int and data["exit_code"] == 0
+        ):
+            return command, "terminal_conflict"
+        command["timed_out_at"] = command.get("completed_at") or command.get("updated_at")
+    elif status not in REMOTE_UPDATE_TRANSITIONS.get(current_status, set()):
         return command, "transition_conflict"
     now = datetime.now().isoformat(timespec="seconds")
     command["status"] = status
