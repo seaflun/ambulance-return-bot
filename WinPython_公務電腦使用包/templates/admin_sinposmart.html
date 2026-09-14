@@ -172,6 +172,7 @@
     .credential-sync-name { font-weight: 800; overflow-wrap: anywhere; }
     .credential-sync-login { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .event-head { display: grid; grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; align-items: start; }
+    .login-card .event-head { align-items: center; }
     .event-time { color: var(--muted); font-size: var(--text-sm); }
     .event-title { font-weight: 800; overflow-wrap: anywhere; }
     .event-meta { margin-top: 4px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
@@ -220,6 +221,10 @@
         margin-top: 4px;
       }
       .event-head { grid-template-columns: 1fr; gap: 4px; }
+      .login-card .event-head { grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; }
+      .login-card .event-time { grid-column: 1 / -1; }
+      .login-card .login-person { grid-column: 1; }
+      .login-card .event-badges { grid-column: 2; grid-row: 2; max-width: 150px; }
       .event-step { grid-template-columns: 1fr; gap: 4px; align-items: start; }
       .credential-sync-row { grid-template-columns: 1fr; gap: 4px; align-items: start; }
       .remote-update-card { grid-template-columns: 1fr; }
@@ -496,20 +501,17 @@
       <details class="section" aria-label="登入狀態">
         <summary class="section-head">
           <h2 class="section-title">登入狀態</h2>
-          <div class="section-note">區分自動與手動登入；舊紀錄未提供登入方式時顯示「方式未記錄」</div>
+          <div class="section-note">右側標籤顯示操作方式與結果</div>
         </summary>
         <div class="event-list">
         {% for event in admin_view.login_events or [] %}
-          <article class="event-card">
+          <article class="event-card login-card">
             <div class="event-head">
               <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
-              <div>
+              <div class="login-person">
                 <h3 class="event-title">{{ event.person_label }}</h3>
-                <div class="event-meta">
-                  {{ event.record_label }}{% if event.trigger_label and event.trigger_label != '未標示' %} · {{ event.trigger_label }}{% endif %}
-                </div>
-                {% if event.content %}
-                  <div class="event-detail">{{ event.content }}</div>
+                {% if event.login_detail %}
+                  <div class="event-detail">{{ event.login_detail }}</div>
                 {% endif %}
               </div>
               <div class="event-badges">
@@ -519,17 +521,6 @@
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
               </div>
             </div>
-            {% if event.steps %}
-              <div class="event-steps">
-                {% for step in event.steps %}
-                  <div class="event-step">
-                    <div class="event-step-name">{{ step.label }}</div>
-                    <time>{{ step.occurred_at or '未記錄' }}</time>
-                    <span class="status {{ step.status_class }}">{{ step.status_label }}</span>
-                  </div>
-                {% endfor %}
-              </div>
-            {% endif %}
           </article>
         {% else %}
           <section class="empty">目前沒有登入紀錄。</section>

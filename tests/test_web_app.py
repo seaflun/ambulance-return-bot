@@ -5485,20 +5485,37 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("pending_write_automation", body)
         self.assertNotIn("加入佇列", body)
 
-    def test_sinposmart_admin_displays_reported_login_method_and_unknown_history(self):
+    def test_sinposmart_admin_compacts_login_and_logout_badges(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()
-        for index, method in enumerate(("automatic", "manual", None)):
+        cases = [
+            ("login", "login", {"login_method": "automatic"}, "ok", ""),
+            ("login_failed", "login", {"login_method": "manual"}, "failed", "驗證服務暫時無回應"),
+            ("login", "login", {}, "ok", ""),
+            ("logout", "logout", {"logout_method": "automatic"}, "ok", ""),
+            ("logout", "logout", {"logout_method": "manual"}, "ok", ""),
+            ("logout", "update", {}, "ok", ""),
+            ("logout", "logout", {}, "ok", ""),
+            ("logout", "logout", {"logout_method": "system"}, "ok", ""),
+        ]
+        for index, (record_type, trigger, snapshot, status, error) in enumerate(cases):
             response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
                 "event_id": f"login-method-{index}", "fire_day": fire_day,
-                "occurred_at": f"{fire_day}T12:00:00", "record_type": "login", "status": "ok",
-                "actor_no": "10", "snapshot": {"login_method": method} if method else {},
+                "occurred_at": f"{fire_day}T12:00:{index:02d}", "record_type": record_type,
+                "trigger_type": trigger, "status": status, "error": error,
+                "content": "更新前登出" if trigger == "update" else "",
+                "actor_no": "10", "snapshot": snapshot,
             })
             self.assertEqual(response.status_code, 200)
         body = self.client.get(f"/admin/sinposmart?fire_day={fire_day}").get_data(as_text=True)
-        self.assertIn('class="status login-method">自動登入</span>', body)
-        self.assertIn('class="status login-method">手動登入</span>', body)
-        self.assertIn('class="status login-method">方式未記錄</span>', body)
+        section = body.split('aria-label="登入狀態"', 1)[1].split('</details>', 1)[0]
+        for label in ("自動登入", "手動登入", "方式未記錄", "登入成功", "登入失敗", "自動登出", "手動登出", "更新前登出", "系統登出", "登出"):
+            self.assertIn(f'>{label}</span>', section)
+        for repeated in ('class="event-meta"', 'class="event-steps"', "登入時間", "登出時間", "登入 · 登入", "登出 · 更新"):
+            self.assertNotIn(repeated, section)
+        self.assertEqual(section.count('class="event-time"'), len(cases))
+        self.assertEqual(section.count("更新前登出"), 1)
+        self.assertIn("驗證服務暫時無回應", section)
 
     def test_sinposmart_admin_login_section_can_show_logout(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
@@ -5577,7 +5594,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertIn("\u0038\u756a \u968a\u54e1 \u66fe\u5f65\u7db8", body)
         self.assertIn("\u66f4\u65b0\u524d\u767b\u51fa", body)
-        self.assertIn("\u767b\u51fa \u00b7 \u66f4\u65b0", body)
+        self.assertNotIn("\u767b\u51fa \u00b7 \u66f4\u65b0", body)
         self.assertNotIn("\u91cd\u8907 2 \u6b21", body)
 
     def test_sinposmart_admin_shows_login_logout_times_and_sinposmart_version(self):
@@ -5619,8 +5636,8 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("SinpoSmart 公務電腦", body)
             self.assertIn("2026.06.19.0730", body)
             self.assertNotIn("救護 worker", body)
-            self.assertIn("登入時間", body)
-            self.assertIn("登出時間", body)
+            self.assertNotIn("登入時間", body)
+            self.assertNotIn("登出時間", body)
             self.assertIn("16:30:40", body)
             self.assertIn("18:05:12", body)
         finally:

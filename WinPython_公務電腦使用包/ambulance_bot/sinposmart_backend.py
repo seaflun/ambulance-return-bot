@@ -1042,6 +1042,17 @@ def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[s
             "automatic": "自動登入",
             "manual": "手動登入",
         }.get(method, "方式未記錄")
+    if record_type == "logout":
+        snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+        trigger = str(event.get("trigger_type") or "")
+        method = "update" if trigger == "update" else str(snapshot.get("logout_method") or trigger)
+        card["status_label"] = {
+            "automatic": "自動登出",
+            "manual": "手動登出",
+            "system": "系統登出",
+            "update": "更新前登出",
+        }.get(method, "登出")
+    card["login_detail"] = card["error"] or (card["content"] if card["status_class"] == "failed" else "")
     if record_type == "error":
         card["record_label"] = label
     occurred_at = sinposmart_event_time(event)
