@@ -7515,6 +7515,13 @@ def public_pc_event_rows(report: dict) -> list[dict]:
         site_key = event_site_key({"action": action})
         if site_key not in SITE_STAGE_GROUPS:
             site_key = next((key for key in SITE_STAGE_GROUPS if status.startswith(key + "_")), "")
+        failure_site_statuses = None
+        if site_key and status_class(status) == "failed":
+            failure_sites = event.get("failure_sites")
+            failure_site = failure_sites.get(site_key) if isinstance(failure_sites, Mapping) else None
+            if isinstance(failure_site, Mapping):
+                detail = str(failure_site.get("detail") or detail)
+                failure_site_statuses = {site_key: failure_site}
         if site_key:
             groups = SITE_STAGE_GROUPS[site_key]
             if status == "desktop_fast_completed" and ("結果" in action or "成功" in action):
@@ -7544,7 +7551,12 @@ def public_pc_event_rows(report: dict) -> list[dict]:
         elif re.fullmatch(r".+站登打成功", action) and status == "desktop_fast_completed":
             detail = "所有有效站別皆已完成。"
         event["status"] = status
-        event["detail"] = public_pc_event_display_detail(status, detail, action=action)
+        event["detail"] = public_pc_event_display_detail(
+            status,
+            detail,
+            failure_site_statuses,
+            action=action,
+        )
         rows.append(event)
     if folder_row is not None and not folder_row_added:
         rows.insert(0, folder_row)

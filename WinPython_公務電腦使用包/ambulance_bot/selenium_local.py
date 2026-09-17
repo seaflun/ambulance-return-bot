@@ -3849,12 +3849,27 @@ def _click_save_control_in_current_frame(
 
 
 def _select_vehicle_record(driver: webdriver.Chrome, vehicle_label: str) -> None:
-    buttons = driver.find_elements(
+    vehicle_button_locator = (
         By.XPATH,
         f"//tr[.//td[contains(normalize-space(), '{vehicle_label}')]]//button[contains(normalize-space(), '\u767b\u6253')]",
     )
+    buttons = driver.find_elements(*vehicle_button_locator)
     if buttons:
-        buttons[0].click()
+        def click_vehicle_record_when_ready(current):
+            try:
+                current_buttons = current.find_elements(*vehicle_button_locator)
+                if not current_buttons:
+                    return False
+                current_buttons[0].click()
+                return True
+            except (ElementClickInterceptedException, StaleElementReferenceException):
+                # PPE can show an enabled edit button underneath its loading overlay.
+                return False
+
+        WebDriverWait(driver, 20).until(
+            click_vehicle_record_when_ready,
+            f"車輛 {vehicle_label} 登打按鈕仍被載入畫面遮擋或尚未就緒，請稍後重試。",
+        )
         time.sleep(2)
         return
 

@@ -262,6 +262,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         "civilpower_io_query",
         "civilpower_work_log_verify",
         "stale_element",
+        "element_intercepted",
         "vehicle_not_found",
         "element_missing",
         "case_not_found",
@@ -351,6 +352,12 @@ def _diagnostic_category(
         return "web_page_timeout"
     if "stale element reference" in text or "staleelementreferenceexception" in text:
         return "stale_element"
+    if (
+        "element click intercepted" in text
+        or "elementclickinterceptedexception" in text
+        or "登打按鈕仍被載入畫面遮擋" in raw_detail
+    ):
+        return "element_intercepted"
     if _is_invalid_argument_oserror(exception, text):
         return "chrome_session"
     if (
@@ -526,6 +533,10 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return _field_stage(site_key, detail)
     if category == "stale_element":
         return _field_stage(site_key, detail)
+    if category == "element_intercepted":
+        if site_key in {"vehicle_mileage", "fuel_record"}:
+            return "選取車輛"
+        return _field_stage(site_key, detail)
     if category == "waiting_confirmation":
         return SITE_STATUS_STAGE.get(status) or "儲存"
     return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "執行流程")
@@ -593,6 +604,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "civilpower_io_verify": "民力出入登記簿已送出，但查詢清單尚未出現可驗證的紀錄。",
         "civilpower_io_form_timeout": "民力出入登記的服勤單位或人員連動未在期限內完成。",
         "stale_element": "網頁正在重新整理，程式持有的舊頁面元件已失效。",
+        "element_intercepted": "頁面載入遮罩或其他元素擋住了要按下的控制項，這次操作未完成。",
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
         "vehicle_candidate": "同案查到其他車輛，原車紀錄可能尚未同步；這不代表原車填錯，需由使用者選擇本次查找車輛。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
@@ -637,6 +649,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "保持原登入帳號查詢工作紀錄簿；確認已儲存後再重試，避免重複新增。"
     if category == "stale_element":
         return f"重新整理{site_name}頁面後單獨重跑；若持續發生，保留截圖與失敗時間回報。"
+    if category == "element_intercepted":
+        return f"等待{site_name}頁面載入完成後再單獨重跑；若持續發生，保留截圖回報頁面遮罩。"
     if category == "login":
         return f"到公務電腦完成{site_name}登入或驗證碼，再回任務頁按「單獨登打」重試。"
     if category == "case_not_found":

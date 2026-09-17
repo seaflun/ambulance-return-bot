@@ -667,12 +667,12 @@ def _collect_consumable_candidates(
     driver: webdriver.Chrome,
     request: AmbulanceReturnRequest,
 ) -> list[dict[str, str]]:
+    _reset_consumable_page_to_first(driver)
     candidates = _stable_consumable_candidates(driver)
     if not candidates:
         return []
     collected: list[dict[str, str]] = []
     seen_hrefs: set[str] = set()
-    matched_case_page = False
     for _ in range(200):
         for item in candidates:
             href = str(item.get("href") or "")
@@ -688,9 +688,7 @@ def _collect_consumable_candidates(
             for item in candidates
         )
         if page_has_case_match:
-            matched_case_page = True
-        elif matched_case_page:
-            break
+            return collected
         if _consumable_page_is_older_than_case(request.case_id, candidates):
             break
         previous_signature = _consumable_candidates_signature(candidates)
@@ -702,6 +700,24 @@ def _collect_consumable_candidates(
         if not candidates:
             break
     return collected
+
+
+def _reset_consumable_page_to_first(driver: webdriver.Chrome) -> None:
+    previous_signature = _consumable_candidates_signature(_read_consumable_candidates(driver))
+    state = driver.execute_script(
+        """
+        const first = document.querySelector('#result-datatable_first, a.paginate_button.first');
+        if (!first || first.classList.contains('disabled') || first.getAttribute('aria-disabled') === 'true') {
+          return {changed: false};
+        }
+        first.click();
+        return {changed: true};
+        """
+    )
+    if not isinstance(state, dict) or not state.get("changed"):
+        return
+    if not _wait_for_consumable_page_change(driver, previous_signature):
+        raise RuntimeError("耗材列表返回第1頁逾時，停止辨識。")
 
 
 def _consumable_candidates_signature(candidates: list[dict[str, str]]) -> tuple[tuple[str, str, str], ...]:

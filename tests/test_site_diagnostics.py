@@ -225,6 +225,51 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("舊紀錄", payload["failure_reason"])
         self.assertIn("無法確定", payload["failure_reason"])
 
+    def test_mileage_intercepted_edit_button_is_reported_as_page_overlay(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage",
+            "vehicle_mileage_failed",
+            (
+                "車輛里程操作失敗：Message: element click intercepted: "
+                "Element <button class=\"k-grid-edit\"> is not clickable at point (855, 294)."
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "element_intercepted")
+        self.assertEqual(payload["failure_stage"], "選取車輛")
+        self.assertIn("遮", payload["failure_reason"])
+        self.assertNotIn("未能歸類", payload["failure_reason"])
+
+    def test_merge_replaces_unknown_diagnosis_for_intercepted_vehicle_button(self):
+        merged = merge_diagnostic_fields(
+            {
+                "key": "vehicle_mileage",
+                "status": "vehicle_mileage_failed",
+                "detail": (
+                    "車輛里程操作失敗：Message: element click intercepted: "
+                    "Element <button class=\"k-grid-edit\"> is not clickable."
+                ),
+                "failure_stage": "開啟車輛里程",
+                "failure_reason": "程式回報失敗，但未能歸類到明確原因。",
+                "next_action": "查看公務電腦里程畫面與執行紀錄，修正後再重試。",
+                "exception_type": "unknown",
+            }
+        )
+
+        self.assertEqual(merged["exception_type"], "element_intercepted")
+        self.assertEqual(merged["failure_stage"], "選取車輛")
+        self.assertIn("遮", merged["failure_reason"])
+
+    def test_mileage_overlay_wait_timeout_keeps_the_intercepted_diagnosis(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage",
+            "vehicle_mileage_failed",
+            "車輛 EPE-6126 登打按鈕仍被載入畫面遮擋或尚未就緒，請稍後重試。",
+        )
+
+        self.assertEqual(payload["exception_type"], "element_intercepted")
+        self.assertEqual(payload["failure_stage"], "選取車輛")
+
     def test_stale_element_with_chrome_session_info_is_not_a_chrome_start_failure(self):
         payload = diagnostic_payload(
             "volunteer_assist",

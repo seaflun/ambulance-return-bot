@@ -859,6 +859,71 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(hrefs, [page_two[0]["href"]])
 
+    def test_consumable_detail_search_resets_to_first_page_and_stops_after_match(self):
+        page_one = [
+            {
+                "href": "/ACS/ACS15002?emmTemsisid=2026071308031900101",
+                "sid": "2026071308031900101",
+                "text": "2026/07/13 08:05:05 桃園市觀音區案件",
+            }
+        ]
+        page_two = [
+            {
+                "href": "/ACS/ACS15002?emmTemsisid=2026071310100399999901",
+                "sid": "2026071310100399999901",
+                "text": "2026/07/13 08:05:05 其他案件",
+            }
+        ]
+
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                self.driver = driver
+
+            def until(self, predicate):
+                return predicate(self.driver)
+
+        class FakeDriver:
+            current_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS15001"
+
+            def __init__(self):
+                self.page = 1
+                self.first_clicks = 0
+                self.next_clicks = 0
+
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                if "#result-datatable_first" in script:
+                    self.first_clicks += 1
+                    self.page = 0
+                    return {"changed": True}
+                if "result-datatable_next" in script:
+                    self.next_clicks += 1
+                    return False
+                if "a.btn_t02" in script:
+                    return page_one if self.page == 0 else page_two
+                return []
+
+        request = AmbulanceReturnRequest(
+            task_id="task-first-page-priority",
+            created_at=datetime.now(),
+            raw_text="",
+            case_id="20260713080319001",
+            case_time="0805",
+            vehicle="",
+            case_address="桃園市觀音區案件",
+            case_reason="急病",
+        )
+        driver = FakeDriver()
+
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            hrefs = _find_consumable_detail_hrefs(driver, request)
+
+        self.assertEqual(hrefs, [page_one[0]["href"]])
+        self.assertEqual(driver.first_clicks, 1)
+        self.assertEqual(driver.next_clicks, 0)
+
     def test_consumable_next_page_click_stops_at_disabled_control(self):
         class FakeDriver:
             def execute_script(self, script):

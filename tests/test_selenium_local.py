@@ -3566,6 +3566,36 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIn("scrollIntoView", driver.script)
         self.assertIn("scrollTop", driver.script)
 
+    def test_select_vehicle_record_retries_when_edit_button_is_obscured(self):
+        class Button:
+            def __init__(self):
+                self.click_count = 0
+
+            def click(self):
+                self.click_count += 1
+                if self.click_count == 1:
+                    raise selenium_local_module.ElementClickInterceptedException(
+                        "Other element: jquery-spinner"
+                    )
+
+        class FakeDriver:
+            def __init__(self):
+                self.button = Button()
+
+            def find_elements(self, *_args):
+                return [self.button]
+
+        driver = FakeDriver()
+        real_wait = selenium_local_module.WebDriverWait
+        with patch.object(
+            selenium_local_module,
+            "WebDriverWait",
+            side_effect=lambda current, _timeout: real_wait(current, 0.05, poll_frequency=0.001),
+        ), patch.object(selenium_local_module.time, "sleep"):
+            _select_vehicle_record(driver, "EPE-6126")
+
+        self.assertEqual(2, driver.button.click_count)
+
     def test_select_vehicle_record_retries_after_server_paging(self):
         class FakeDriver:
             def __init__(self):

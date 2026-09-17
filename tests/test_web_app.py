@@ -7383,6 +7383,40 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual("登入與案件", row["stage_group"])
         self.assertIn("失敗", row["action"])
 
+    def test_failed_event_row_uses_its_failure_site_snapshot_for_diagnosis(self):
+        raw_detail = (
+            "登入帳號：test。車輛里程操作失敗：Message: element click intercepted: "
+            "Element <button class=\"k-grid-edit\">...</button> is not clickable at point (855, 294)."
+        )
+        report = {
+            "site_statuses": {"vehicle_mileage": {"status": "vehicle_mileage_saved"}},
+            "events": [{
+                "time": "2026-09-17T12:47:32+08:00",
+                "action": "車輛里程 結果",
+                "status": "vehicle_mileage_failed",
+                "detail": "程式回報失敗，但未能歸類到明確原因。",
+                "failure_stage": "開啟車輛里程",
+                "failure_reason": "程式回報失敗，但未能歸類到明確原因。",
+                "next_action": "請查看錯誤紀錄。",
+                "exception_type": "unknown",
+                "failure_sites": {"vehicle_mileage": {
+                    "key": "vehicle_mileage",
+                    "status": "vehicle_mileage_failed",
+                    "detail": raw_detail,
+                    "failure_stage": "開啟車輛里程",
+                    "failure_reason": "程式回報失敗，但未能歸類到明確原因。",
+                    "next_action": "請查看錯誤紀錄。",
+                    "exception_type": "unknown",
+                }},
+            }],
+        }
+        before = json.dumps(report, ensure_ascii=False)
+
+        row = app_module.public_pc_event_rows(report)[0]
+
+        self.assertIn("頁面載入遮罩", row["detail"])
+        self.assertEqual(before, json.dumps(report, ensure_ascii=False))
+
     def test_site_result_report_delivers_correct_event_through_real_report_pipeline(self):
         payload = {
             "task": {"task_id": "last-site-report", "vehicle": "新坡91"},
