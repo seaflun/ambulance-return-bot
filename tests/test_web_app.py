@@ -10336,6 +10336,66 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(app_module.desktop_runner.started, [])
 
+    def test_active_run_does_not_cancel_queued_worker_site_after_another_site_failed(self):
+        for run_path in ("/run", "/sites/disinfection/run"):
+            with self.subTest(run_path=run_path):
+                create_response = self.client.post("/tasks", data=self.valid_task_data())
+                task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+                self.store.update_site_result(
+                    task_id,
+                    app_module.SiteAutomationResult(
+                        "disinfection",
+                        "緊急救護消毒",
+                        "disinfection_failed",
+                        "前次執行失敗",
+                    ),
+                )
+                self.store.queue_for_worker(task_id, run_site_key="consumables")
+
+                response = self.client.post(
+                    f"/tasks/{task_id}{run_path}",
+                    base_url="http://100.114.126.58:8080",
+                    follow_redirects=False,
+                )
+
+                self.assertEqual(response.status_code, 302)
+                current = self.store.get(task_id)
+                self.assertEqual(current["worker_queue"]["status"], "queued")
+                self.assertEqual(current["worker_queue"]["run_site_key"], "consumables")
+                self.assertEqual(current["overall_status"], "queued_for_worker")
+
+    def test_active_run_does_not_cancel_claimed_worker_site_after_another_site_failed(self):
+        for index, run_path in enumerate(("/run", "/sites/disinfection/run")):
+            with self.subTest(run_path=run_path):
+                create_response = self.client.post(
+                    "/tasks",
+                    data=self.valid_task_data(case_id=f"case-active-claimed-{index}"),
+                )
+                task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+                self.store.update_site_result(
+                    task_id,
+                    app_module.SiteAutomationResult(
+                        "disinfection",
+                        "緊急救護消毒",
+                        "disinfection_failed",
+                        "前次執行失敗",
+                    ),
+                )
+                self.store.queue_for_worker(task_id, run_site_key="consumables")
+                self.store.claim_task_for_worker(task_id, "worker-a")
+
+                response = self.client.post(
+                    f"/tasks/{task_id}{run_path}",
+                    base_url="http://100.114.126.58:8080",
+                    follow_redirects=False,
+                )
+
+                self.assertEqual(response.status_code, 302)
+                current = self.store.get(task_id)
+                self.assertEqual(current["worker_queue"]["status"], "claimed")
+                self.assertEqual(current["worker_queue"]["run_site_key"], "consumables")
+                self.assertEqual(current["overall_status"], "claimed_by_worker")
+
     def test_localhost_run_expires_stale_running_task_before_starting_new_runner(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         create_response = self.client.post("/tasks", data=self.valid_task_data())

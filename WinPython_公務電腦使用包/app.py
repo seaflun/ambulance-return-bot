@@ -756,7 +756,7 @@ def run_task(task_id: str):
     if task_payload_is_active(payload):
         store.set_overall_status(
             task_id,
-            effective_task_status(payload),
+            active_task_status(payload),
             "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
         )
         return redirect(url_for("task_detail", task_id=task_id))
@@ -810,7 +810,7 @@ def run_task_site(task_id: str, site_key: str):
     if task_payload_is_active(payload):
         store.set_overall_status(
             task_id,
-            effective_task_status(payload),
+            active_task_status(payload),
             "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
         )
         return task_site_run_redirect(task_id)
@@ -6322,6 +6322,15 @@ def effective_task_status(payload: dict) -> str:
     if snapshot["all_complete"]:
         return "desktop_fast_completed"
     return str(payload.get("overall_status") or "")
+
+
+def active_task_status(payload: dict) -> str:
+    queue_state = worker_queue_state(payload)
+    if queue_state.get("status") == "queued":
+        return "queued_for_worker"
+    if worker_claim_lease_is_active(payload):
+        return "claimed_by_worker"
+    return effective_task_status(payload)
 
 
 def task_payload_is_active(payload: dict) -> bool:
