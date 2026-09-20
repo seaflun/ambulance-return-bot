@@ -260,6 +260,45 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(merged["failure_stage"], "選取車輛")
         self.assertIn("遮", merged["failure_reason"])
 
+    def test_multi_vehicle_mileage_overlap_is_not_misclassified_as_save(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage",
+            "vehicle_mileage_failed",
+            (
+                "新坡11: 車輛里程操作失敗：Message: 案件與既有用車時間重疊，停止補登。 | "
+                "新坡15: 已填寫車輛里程、按下儲存並按下確認：目前的里程數：24751 "
+                "更新後里程數：24757 是否更新？"
+            ),
+        )
+
+        self.assertEqual(payload["exception_type"], "mileage_overlap")
+        self.assertEqual(payload["failure_stage"], "填寫返隊時間與里程")
+        self.assertIn("時間重疊", payload["failure_reason"])
+        self.assertNotIn("儲存動作", payload["failure_reason"])
+        self.assertIn("勿直接覆寫", payload["next_action"])
+
+    def test_merge_replaces_legacy_save_diagnosis_for_mileage_overlap(self):
+        merged = merge_diagnostic_fields(
+            {
+                "key": "vehicle_mileage",
+                "status": "vehicle_mileage_failed",
+                "detail": (
+                    "新坡11: 車輛里程操作失敗：Message: 案件與既有用車時間重疊，停止補登。 | "
+                    "新坡15: 已填寫車輛里程、按下儲存並按下確認：目前的里程數：24751 "
+                    "更新後里程數：24757 是否更新？"
+                ),
+                "failure_stage": "儲存",
+                "failure_reason": "填寫後的儲存動作未完成或未確認成功。",
+                "next_action": "檢查里程頁面是否有彈窗、錯誤訊息或未按到儲存；必要時手動儲存。",
+                "exception_type": "save",
+            }
+        )
+
+        self.assertEqual(merged["exception_type"], "mileage_overlap")
+        self.assertEqual(merged["failure_stage"], "填寫返隊時間與里程")
+        self.assertIn("時間重疊", merged["failure_reason"])
+        self.assertIn("勿直接覆寫", merged["next_action"])
+
     def test_mileage_overlay_wait_timeout_keeps_the_intercepted_diagnosis(self):
         payload = diagnostic_payload(
             "vehicle_mileage",

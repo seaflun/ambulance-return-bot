@@ -264,6 +264,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         "stale_element",
         "element_intercepted",
         "vehicle_not_found",
+        "mileage_overlap",
         "element_missing",
         "case_not_found",
     }
@@ -427,6 +428,8 @@ def _diagnostic_category(
         return "case_not_found"
     if "missing disinfection detail" in text or "無法開啟消毒紀錄" in analysis_detail:
         return "case_detail"
+    if site_key == "vehicle_mileage" and "既有用車時間重疊" in analysis_detail:
+        return "mileage_overlap"
     if "captcha" in text or "驗證碼" in analysis_detail or "sso" in text or "login" in text or "登入" in analysis_detail or "帳密" in analysis_detail:
         return "login"
     if "query failed" in text or "查詢" in analysis_detail:
@@ -510,6 +513,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
             return "選取患者頁"
         if site_key == "fuel_record":
             return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "開啟登打油耗")
+        return "填寫返隊時間與里程"
+    if category == "mileage_overlap":
         return "填寫返隊時間與里程"
     if category == "fuel_period":
         return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "開啟登打油耗")
@@ -608,6 +613,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
         "vehicle_candidate": "同案查到其他車輛，原車紀錄可能尚未同步；這不代表原車填錯，需由使用者選擇本次查找車輛。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
+        "mileage_overlap": "同一車輛已有用車紀錄與本案件時間重疊，程式已停止補登，避免覆蓋既有資料。",
         "save": "填寫後的儲存動作未完成或未確認成功。",
         "query": "查詢案件時沒有取得可用結果。",
         "element_missing": "頁面按鈕或欄位與程式預期不同。",
@@ -663,6 +669,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         if site_key == "consumables":
             return "確認案件已結案且患者頁含任務車輛後，再單獨重跑耗材。"
         return "確認任務車號與系統車輛名稱一致，必要時到救護各項設定修正後重試。"
+    if category == "mileage_overlap":
+        return "先核對 PPE 中該車輛的既有用車時間、案件時間與車號；若為重複案件保留既有紀錄，若資料有誤再修正後單獨重跑里程，勿直接覆寫重疊紀錄。"
     if category == "civilpower_case_verify":
         return "確認案件代入後的派遣／返隊時間與第一站工作狀態，再單獨重跑民力系統。"
     if category == "fuel_period":
