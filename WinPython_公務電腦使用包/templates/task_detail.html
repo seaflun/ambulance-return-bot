@@ -492,7 +492,7 @@
 {%- endmacro %}
 {% macro task_card_head(task_id, site_key, site, title, stage_label, task_active, completion) -%}
   {% set candidate_ready = site_vehicle_reconciliation_ready_to_retry(site) %}
-  {% set can_run = (show_task_entry_controls() or status_class(site.status) == 'failed' or candidate_ready) and (not task_has_vehicle_reconciliation(payload) or candidate_ready) %}
+  {% set can_run = (show_task_entry_controls() or status_class(site.status) == 'failed' or site_waits_for_confirmation(site.status) or candidate_ready) and (not task_has_vehicle_reconciliation(payload) or candidate_ready) %}
   <div class="card-head">
     <div class="card-title">
       {% if stage_label %}<span class="card-stage-label">{{ stage_label }}</span>{% endif %}
@@ -519,7 +519,7 @@
       {% set task_active = task_payload_is_active(payload) %}
       {% set task_edit_locked = task_edit_is_locked(payload) %}
       {% set completion = task_completion_snapshot(payload) %}
-      {% set can_retry_failed_sites = show_task_entry_controls() or task_has_failed_site(payload.site_statuses) %}
+      {% set can_retry_incomplete_sites = show_task_entry_controls() or task_has_failed_site(payload.site_statuses) or task_has_waiting_confirmation(payload.site_statuses) %}
       {% set edit_impact = payload.pending_edit_impact or {} %}
       {% set ems_case_closed_confirmed = payload.ems_case_closed_confirmed %}
       {% if completion.all_complete %}
@@ -542,7 +542,7 @@
             <strong>是否已結案?</strong>
             <button type="submit">是</button>
           </form>
-        {% elif can_retry_failed_sites and not task_active and not completion.all_complete and not task_has_waiting_confirmation(payload.site_statuses) and not task_has_vehicle_reconciliation(payload) %}
+        {% elif can_retry_incomplete_sites and not task_active and not completion.all_complete and not task_has_vehicle_reconciliation(payload) %}
           <form method="post" action="/tasks/{{ payload.task.task_id }}/run">
             <button type="submit">{{ task_run_button_label(payload) }}</button>
           </form>

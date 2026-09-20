@@ -115,9 +115,16 @@ class CivilpowerSafetyTests(unittest.TestCase):
     def test_roc_date_matching_preserves_full_date_and_time_validation(self):
         for actual in ("115/8/19 12:32", "2026-08-19T12:32"):
             self.assertTrue(civilpower._token_matches(actual, "2026/08/19 12:32"))
+        for actual, expected in (
+            ("2026/08/19 下午 12:32:45", "2026/08/19 12:32"),
+            ("2026/08/19 下午 1:32:45", "2026/08/19 13:32"),
+            ("2026/08/19 上午 12:32:45", "2026/08/19 00:32"),
+        ):
+            self.assertTrue(civilpower._token_matches(actual, expected))
         for actual in ("114/08/19 12:32", "115/08/19 12:33",
                        "115/08/19 07:00 115/08/18 12:32", "2115/08/19 12:32",
-                       "115/02/30 12:32", "000/08/19 12:32"):
+                       "115/02/30 12:32", "000/08/19 12:32",
+                       "2026/08/19 下午 13:32:45", "2026/08/19 上午 13:32:45"):
             self.assertFalse(civilpower._token_matches(actual, "2026/08/19 12:32"))
         self.assertTrue(civilpower._same_value("115/08/19", "2026-08-19"))
         self.assertTrue(civilpower._same_value("2026.08.19", "2026-08-19"))

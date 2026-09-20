@@ -94,6 +94,15 @@ class CivilpowerPaginationTests(unittest.TestCase):
         self.assertIs(row, self.row)
         self.assertEqual(browser.page, 1)
 
+    def test_dialog_matches_localized_afternoon_case_time(self):
+        row = SimpleNamespace(text="急病 2026/09/19 下午 12:08:22 桃園市中壢區山大路655巷16號")
+        browser = PagedResults([[row]])
+        with self.query_context(browser):
+            matched = civilpower._wait_for_dialog_row(
+                ImmediateWait(browser), browser, ["急病", "2026/09/19 12:08"]
+            )
+        self.assertIs(matched, row)
+
     def test_duplicate_match_across_pages_stops_selection(self):
         browser = PagedResults([[self.row], [self.row]])
         with self.query_context(browser):

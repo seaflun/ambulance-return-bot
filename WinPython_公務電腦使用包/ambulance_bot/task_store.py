@@ -740,11 +740,6 @@ class JsonTaskStore:
     def queue_for_worker(self, task_id: str, run_site_key: str = "") -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)
-            if task_has_waiting_confirmation(payload):
-                raise WorkerClaimConflictError(
-                    "manual_confirmation_required",
-                    "任務尚有待人工確認的站別，請先到官方網頁核對並按「已確認」。",
-                )
             reconciliation_detail = vehicle_reconciliation_run_block_detail(payload, run_site_key)
             if reconciliation_detail:
                 raise WorkerClaimConflictError(
@@ -794,8 +789,6 @@ class JsonTaskStore:
             for path in paths:
                 payload = self._read_payload_or_quarantine(path)
                 if payload is None:
-                    continue
-                if task_has_waiting_confirmation(payload):
                     continue
                 queue_state = worker_queue_state(payload)
                 if vehicle_reconciliation_run_block_detail(
@@ -866,11 +859,6 @@ class JsonTaskStore:
         normalized_worker_id = str(worker_id or "").strip() or "public-duty-pc"
         with self._lock:
             payload = self.get(task_id)
-            if task_has_waiting_confirmation(payload):
-                raise WorkerClaimConflictError(
-                    "manual_confirmation_required",
-                    "任務尚有待人工確認的站別，請先到官方網頁核對並按「已確認」。",
-                )
             queue_state = worker_queue_state(payload)
             reconciliation_detail = vehicle_reconciliation_run_block_detail(
                 payload,

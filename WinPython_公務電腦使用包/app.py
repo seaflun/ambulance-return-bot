@@ -760,8 +760,6 @@ def run_task(task_id: str):
             "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
         )
         return redirect(url_for("task_detail", task_id=task_id))
-    if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
-        return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
     reconciliation_detail = vehicle_reconciliation_run_block_detail(payload)
     if reconciliation_detail:
         return reconciliation_detail, 409
@@ -814,8 +812,6 @@ def run_task_site(task_id: str, site_key: str):
             "已有登打流程執行中，請等待完成，或先按「中止登打」再重試。",
         )
         return task_site_run_redirect(task_id)
-    if task_has_waiting_confirmation(dict(payload.get("site_statuses") or {})):
-        return "任務尚有待人工確認的資料，請先到官方網頁核對後按「已確認」。", 409
     reconciliation_detail = vehicle_reconciliation_run_block_detail(payload, site_key)
     if reconciliation_detail:
         return reconciliation_detail, 409
@@ -5712,6 +5708,8 @@ def site_can_run_individually(site_statuses: dict, site_key: str) -> bool:
             return False
         if "vehicle_candidate_selected" in current_status:
             return True
+        if site_waits_for_confirmation(current_status):
+            return True
         if current_status.endswith("_needs_update"):
             return True
         return current_class == "failed" or (blocked and current_class != "complete")
@@ -6089,8 +6087,6 @@ def admin_retryable_site_keys(item: Mapping[str, object]) -> list[str] | None:
     if not task_id:
         return None
     site_statuses = item.get("site_statuses") if isinstance(item.get("site_statuses"), dict) else {}
-    if task_has_waiting_confirmation(site_statuses):
-        return []
     try:
         site_pairs = task_site_display_pairs(task, site_statuses)
     except (KeyError, TypeError, ValueError):

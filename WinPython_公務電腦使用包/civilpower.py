@@ -54,7 +54,7 @@ IO_QUERY_SETTLE_SECONDS = 5
 WORK_LOG_FORM_INITIAL_WAIT_SECONDS = 10
 WORK_LOG_FORM_RETRY_WAIT_SECONDS = 5
 _DATE_PATTERN = re.compile(r"(?<!\d)\d{1,4}[/-]\d{1,2}[/-]\d{1,2}(?!\d)")
-_DATETIME_PATTERN = re.compile(r"(?<!\d)(\d{1,4})[/-](\d{1,2})[/-](\d{1,2})[ T]+(\d{1,2})[:：](\d{1,2})(?!\d)")
+_DATETIME_PATTERN = re.compile(r"(?<!\d)(\d{1,4})[/-](\d{1,2})[/-](\d{1,2})[ T]+(?:(上午|下午)[ T]*)?(\d{1,2})[:：](\d{1,2})(?!\d)")
 WORK_LOG_LIST_SELECTORS = (
     "#txt_Date_S",
     "#txt_Date_E",
@@ -1864,7 +1864,15 @@ def _date_parts(value: object) -> tuple[int, int, int] | None:
 
 def _datetime_parts(match) -> tuple[int, int, int, int, int] | None:
     parts = _date_parts("/".join(match.groups()[:3]))
-    hour, minute = map(int, match.groups()[3:])
+    meridiem = match.group(4) or ""
+    hour, minute = map(int, match.groups()[4:])
+    if meridiem:
+        if not 1 <= hour <= 12:
+            return None
+        if meridiem == "上午":
+            hour = 0 if hour == 12 else hour
+        else:
+            hour = 12 if hour == 12 else hour + 12
     if parts is None or not (0 <= hour < 24 and 0 <= minute < 60):
         return None
     return (*parts, hour, minute)

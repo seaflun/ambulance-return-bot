@@ -1433,7 +1433,7 @@ class JsonTaskStoreTests(unittest.TestCase):
 
                 self.assertEqual(claimed["worker_queue"]["status"], "claimed")
 
-    def test_waiting_confirmation_blocks_queue_and_manual_claim_for_every_site(self):
+    def test_waiting_confirmation_can_queue_and_manual_claim_for_every_site(self):
         waiting_statuses = (
             ("duty_work_log", "duty_work_log_waiting_confirmation"),
             ("vehicle_mileage", "vehicle_mileage_waiting_confirmation"),
@@ -1454,16 +1454,19 @@ class JsonTaskStoreTests(unittest.TestCase):
                     payload["site_statuses"][site_key]["status"] = status
                     store.save_payload(request.task_id, payload)
 
-                    with self.assertRaises(WorkerClaimConflictError) as raised:
-                        if action == "queue":
-                            store.queue_for_worker(request.task_id)
-                        else:
-                            store.claim_task_for_worker(request.task_id, "worker-a")
+                    if action == "queue":
+                        queued = store.queue_for_worker(request.task_id)
+                        self.assertEqual(queued["worker_queue"]["status"], "queued")
+                    else:
+                        claimed = store.claim_task_for_worker(request.task_id, "worker-a")
+                        self.assertEqual(claimed["worker_queue"]["status"], "claimed")
 
-                    self.assertEqual(raised.exception.code, "manual_confirmation_required")
-                    self.assertEqual(store.get(request.task_id)["worker_queue"]["status"], "idle")
+                    self.assertEqual(
+                        store.get(request.task_id)["worker_queue"]["status"],
+                        "queued" if action == "queue" else "claimed",
+                    )
 
-    def test_auto_claim_skips_legacy_waiting_confirmation_for_every_site(self):
+    def test_auto_claim_includes_legacy_waiting_confirmation_for_every_site(self):
         waiting_statuses = (
             ("duty_work_log", "duty_work_log_waiting_confirmation"),
             ("vehicle_mileage", "vehicle_mileage_waiting_confirmation"),
@@ -1497,8 +1500,8 @@ class JsonTaskStoreTests(unittest.TestCase):
 
                 self.assertIsNotNone(claimed)
                 assert claimed is not None
-                self.assertEqual(claimed["task"]["task_id"], runnable_request.task_id)
-                self.assertEqual(store.get(waiting_request.task_id)["worker_queue"]["status"], "queued")
+                self.assertEqual(claimed["task"]["task_id"], waiting_request.task_id)
+                self.assertEqual(store.get(waiting_request.task_id)["worker_queue"]["status"], "claimed")
 
     def test_manual_confirmation_allows_queueing_remaining_work(self):
         with tempfile.TemporaryDirectory() as tmp:

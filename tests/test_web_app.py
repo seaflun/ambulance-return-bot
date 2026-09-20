@@ -9305,7 +9305,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn(">四站登打啟動<", body)
         self.assertIn('aria-label="四站階段檢查"', body)
 
-    def test_waiting_confirmation_shows_manual_confirmation_without_blind_retry(self):
+    def test_waiting_confirmation_shows_manual_confirmation_and_retry(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
@@ -9331,7 +9331,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("已在官方頁確認完成", mileage_card)
         confirmation_token = app_module.site_manual_complete_token(task_id, "vehicle_mileage")
         self.assertIn(f'value="{confirmation_token}"', mileage_card)
-        self.assertNotIn(f"/tasks/{task_id}/sites/vehicle_mileage/run", mileage_card)
+        self.assertIn(f"/tasks/{task_id}/sites/vehicle_mileage/run", mileage_card)
         self.assertNotIn("四站登打啟動", body)
         self.assertNotIn(f'href="/tasks/{task_id}/edit"', body)
 
@@ -9358,12 +9358,12 @@ class WebAppTests(unittest.TestCase):
             "completed_by_user",
         )
 
-    def test_waiting_confirmation_rejects_direct_full_and_single_site_restart(self):
+    def test_waiting_confirmation_allows_direct_full_and_single_site_restart(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
         create_response = self.client.post("/tasks", data=self.valid_task_data())
-        task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        full_task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         self.store.update_site_result(
-            task_id,
+            full_task_id,
             app_module.SiteAutomationResult(
                 "vehicle_mileage",
                 "車輛里程",
@@ -9372,16 +9372,28 @@ class WebAppTests(unittest.TestCase):
             ),
         )
 
-        full_response = self.client.post(f"/tasks/{task_id}/run", follow_redirects=False)
+        full_response = self.client.post(f"/tasks/{full_task_id}/run", follow_redirects=False)
+
+        create_response = self.client.post("/tasks", data=self.valid_task_data(case_id="waiting-site-retry"))
+        single_task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
+        self.store.update_site_result(
+            single_task_id,
+            app_module.SiteAutomationResult(
+                "vehicle_mileage",
+                "車輛里程",
+                "vehicle_mileage_waiting_confirmation",
+                "已按儲存，但未偵測到成功回應。",
+            ),
+        )
         site_response = self.client.post(
-            f"/tasks/{task_id}/sites/vehicle_mileage/run",
+            f"/tasks/{single_task_id}/sites/vehicle_mileage/run",
             follow_redirects=False,
         )
 
-        self.assertEqual(full_response.status_code, 409)
-        self.assertEqual(site_response.status_code, 409)
-        self.assertEqual(app_module.desktop_runner.started, [])
-        self.assertEqual(app_module.desktop_runner.started_sites, [])
+        self.assertEqual(full_response.status_code, 302)
+        self.assertEqual(site_response.status_code, 302)
+        self.assertEqual(app_module.desktop_runner.started, [full_task_id])
+        self.assertEqual(app_module.desktop_runner.started_sites, [(single_task_id, "vehicle_mileage")])
 
     def test_candidate_vehicle_confirmation_preserves_task_vehicle_and_only_allows_its_single_site_run(self):
         worker_token = "0123456789abcdef0123456789abcdef"
@@ -10585,6 +10597,84 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["Location"], "/admin/ems")
         self.assertEqual(self.store.get(task_id)["worker_queue"]["run_site_key"], "consumables")
+
+    def test_nas_ems_and_disaster_admin_expose_waiting_confirmation_retry(self):
+        os.environ["DESKTOP_FAST_MODE"] = "auto"
+        cases = (
+            ("ems", "/admin/ems", "ems"),
+            ("disaster", "/admin/disaster", "disaster"),
+        )
+        for service_type, admin_path, return_service in cases:
+            with self.subTest(service_type=service_type):
+                if service_type == "ems":
+                    task_request = app_module.request_from_form(
+                        self.valid_task_data(case_id=f"{service_type}-waiting-admin")
+                    )
+                    site_key = "consumables"
+                else:
+                    task_request = AmbulanceReturnRequest(
+                        task_id=f"{service_type}-waiting-admin",
+                        created_at=datetime.now(),
+                        raw_text="",
+                        service_type="disaster",
+                        vehicle="新坡11",
+                        driver="司機甲",
+                        mileage="100",
+                        case_id="disaster-waiting-admin",
+                        case_date="2026-08-01",
+                        case_time="1200",
+                        return_date="2026-08-01",
+                        return_time="1300",
+                        case_address="桃園市觀音區",
+                        case_reason="一般(集合)住宅",
+                        summary_type="火災",
+                        commander="指揮官甲",
+                        action_note="現場處置",
+                        recorder_category="轄內A3",
+                    )
+                    site_key = "vehicle_mileage"
+                payload = self.store.create(task_request)
+                self.store.update_site_result(
+                    task_request.task_id,
+                    app_module.SiteAutomationResult(
+                        site_key,
+                        "待確認站別",
+                        f"{site_key}_waiting_confirmation",
+                        "已儲存但回應未確認",
+                    ),
+                )
+                payload = self.store.get(task_request.task_id)
+                app_module.upsert_public_pc_report(
+                    {
+                        "event_id": f"evt-{service_type}-waiting-admin-retry",
+                        "task_id": task_request.task_id,
+                        "title": f"{service_type} 待確認重送測試",
+                        "task": payload["task"],
+                        "status": "manual_confirmation_required",
+                        "overall_status": "manual_confirmation_required",
+                        "site_statuses": payload["site_statuses"],
+                    }
+                )
+
+                page = self.client.get(admin_path, base_url="http://100.114.126.58:8080")
+                body = html.unescape(page.get_data(as_text=True))
+
+                self.assertIn(
+                    f'action="/tasks/{task_request.task_id}/sites/{site_key}/run"',
+                    body,
+                )
+                self.assertIn(f'name="return_service" value="{return_service}"', body)
+
+                response = self.client.post(
+                    f"/tasks/{task_request.task_id}/sites/{site_key}/run",
+                    base_url="http://100.114.126.58:8080",
+                    data={"return_service": return_service},
+                    follow_redirects=False,
+                )
+
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.headers["Location"], admin_path)
+                self.assertEqual(self.store.get(task_request.task_id)["worker_queue"]["run_site_key"], site_key)
 
     def test_nas_ems_admin_materializes_report_only_task_for_retry(self):
         os.environ["DESKTOP_FAST_MODE"] = "auto"
