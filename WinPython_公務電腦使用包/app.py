@@ -1959,6 +1959,26 @@ def worker_cases():
     return jsonify({"ok": True, "case_count": len(cases), "payload": payload})
 
 
+@app.get("/api/sinposmart/civilpower-roster")
+def sinposmart_civilpower_roster():
+    """Read-only attendance picker data; execution remains on the duty PC."""
+    if not credential_sync_receiver_enabled():
+        abort(404)
+    if not credential_sync_authorized():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    roster = read_civilpower_roster()
+    members = [
+        {key: member.get(key, "") for key in ("member_id", "name", "unit", "title")}
+        for member in roster.get("members", [])
+    ]
+    return jsonify({
+        "ok": True,
+        "members": members,
+        "last_success_at": roster.get("last_success_at", ""),
+        "frequent_member_ids": load_frequent_member_ids(artifacts_dir),
+    })
+
+
 @app.get("/worker/civilpower-roster")
 def worker_civilpower_roster_snapshot():
     if not worker_authorized():

@@ -59,6 +59,22 @@ class FakeDesktopRunner:
 
 
 class WebAppTests(unittest.TestCase):
+    def test_sinposmart_civilpower_roster_is_read_only_and_requires_sync_authorization(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "test-duty-roster"
+        self.assertEqual(self.client.get("/api/sinposmart/civilpower-roster").status_code, 403)
+        roster = {"members": [{"member_id": "m1", "name": "測試義消", "unit": "大園救護分隊",
+                               "title": "隊員", "password": "must-not-leak"}],
+                  "last_success_at": "2026-09-23T09:00:00"}
+        with mock.patch.object(app_module, "read_civilpower_roster", return_value=roster), \
+                mock.patch.object(app_module, "load_frequent_member_ids", return_value=["m1"]):
+            response = self.client.get("/api/sinposmart/civilpower-roster",
+                                       headers={"X-Credential-Sync-Token": "test-duty-roster"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["frequent_member_ids"], ["m1"])
+        self.assertEqual(response.json["members"][0]["member_id"], "m1")
+        self.assertNotIn("password", response.json["members"][0])
+        self.assertEqual(self.client.post("/api/sinposmart/civilpower-roster").status_code, 405)
+
     def setUp(self):
         os.environ["OPEN_LOCAL_BROWSER_ON_RUN"] = "false"
         os.environ["USE_LOCAL_SELENIUM"] = "false"
@@ -4587,6 +4603,15 @@ class WebAppTests(unittest.TestCase):
         )
 
     def test_legacy_report_reconcile_recovers_success_events_after_overwrite(self):
+        # Keep this historical recovery fixture within the 14-day retention window.
+        class FixtureClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 8, 27, 12, tzinfo=tz)
+
+        clock_patch = mock.patch.object(app_module, "datetime", FixtureClock)
+        clock_patch.start()
+        self.addCleanup(clock_patch.stop)
         create_response = self.client.post(
             "/tasks",
             data=self.valid_task_data(
