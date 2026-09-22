@@ -131,6 +131,29 @@ class ModelParsingTests(unittest.TestCase):
         self.assertEqual(["1300", "1310"], [item.return_time for item in request.vehicle_entries])
         self.assertEqual(["duty_work_log", "vehicle_mileage"], request.active_site_keys())
 
+    def test_single_disaster_vehicle_request_uses_vehicle_return_time(self):
+        request = request_from_disaster_form(
+            MultiDict(
+                [
+                    ("case_date", "2026/07/22"),
+                    ("case_time", "1207"),
+                    ("return_date", "2026/07/23"),
+                    ("return_time", "1300"),
+                    ("vehicle", "新坡11"),
+                    ("driver", "甲"),
+                    ("mileage", "100"),
+                    ("vehicle_return_date", "2026/07/23"),
+                    ("vehicle_return_time", "1330"),
+                ]
+            )
+        )
+
+        [vehicle_request] = request.vehicle_requests()
+
+        self.assertEqual("1300", request.return_time)
+        self.assertEqual("1330", vehicle_request.return_time)
+        self.assertEqual("2026/07/23", vehicle_request.return_date)
+
     def test_ems_form_maps_case_type_to_duty_item_and_keeps_reason(self):
         request = request_from_form(
             {

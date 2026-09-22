@@ -1148,6 +1148,44 @@ class DesktopFastRunnerTests(unittest.TestCase):
             mileage_mock.assert_called_once()
             self.assertEqual(mileage_mock.call_args.kwargs["update_context"], context)
 
+    def test_single_disaster_vehicle_mileage_uses_vehicle_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp) / "tasks")
+            request = AmbulanceReturnRequest(
+                task_id="task-disaster-single-mileage",
+                created_at=datetime.now(),
+                raw_text="",
+                service_type="disaster",
+                vehicle="新坡11",
+                driver="甲",
+                mileage="100",
+                case_date="2026/07/22",
+                case_time="1207",
+                return_date="2026/07/23",
+                return_time="1300",
+                vehicle_entries=[
+                    VehicleEntry(
+                        vehicle="新坡11",
+                        driver="甲",
+                        mileage="100",
+                        return_date="2026/07/23",
+                        return_time="1330",
+                    )
+                ],
+            )
+            store.create(request)
+            runner = DesktopFastRunner(Path(tmp), store=store)
+
+            with patch(
+                "ambulance_bot.desktop_fast_runner.run_vehicle_mileage_task",
+                return_value=SimpleNamespace(ok=True, status="vehicle_mileage_saved", detail="mileage ok"),
+            ) as mileage_mock:
+                runner.start_site(request.task_id, "vehicle_mileage")
+                self.assertTrue(runner.wait_for_idle())
+
+            mileage_mock.assert_called_once()
+            self.assertEqual("1330", mileage_mock.call_args.args[0].return_time)
+
     def test_two_vehicle_site_rerun_skips_saved_vehicle_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonTaskStore(Path(tmp) / "tasks")

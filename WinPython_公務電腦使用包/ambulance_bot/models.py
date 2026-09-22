@@ -645,7 +645,7 @@ class AmbulanceReturnRequest:
 
     def vehicle_requests(self) -> list["AmbulanceReturnRequest"]:
         entries = self.effective_vehicle_entries()
-        if len(entries) == 1 and not self.two_vehicle:
+        if len(entries) == 1 and not self.two_vehicle and self.service_type != "disaster":
             return [self]
         requests: list[AmbulanceReturnRequest] = []
         for entry in entries:
