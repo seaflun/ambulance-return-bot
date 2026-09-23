@@ -358,6 +358,20 @@
                 {% if event.owner_actor_no %}｜目前處理番號：{{ event.owner_actor_no }}{% endif %}
               </div>
             {% endif %}
+            {% set cancellation = (unreturned_cancellations or {}).get(event.queue_id, {}) %}
+            {% if cancellation %}
+              <div class="event-detail">取消要求：{{ cancellation.requested_at }}｜{{ cancellation.requested_by }}
+                {% if cancellation.status == 'pending' %}｜等待值班台確認；目前執行中的作業完成前不會強制中斷。{% elif cancellation.status == 'cancelled' %}｜值班台已確認停止重查與補登。{% else %}｜該筆已完成或逾期，未取消既有結果。{% endif %}
+              </div>
+            {% elif event.is_active and event.queue_id and event.workstation and duty_gui_remote_update_enabled %}
+              <form action="{{ url_for('admin_sinposmart_cancel_unreturned') }}" method="post" onsubmit="return confirm('確定取消這筆待處理？值班台確認後會停止重查與補登，不會認定已返隊，也不會繼續登打。');">
+                <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
+                <input type="hidden" name="fire_day" value="{{ selected_fire_day }}">
+                <input type="hidden" name="queue_id" value="{{ event.queue_id }}">
+                <input type="password" name="admin_token" aria-label="取消待處理管理密碼" placeholder="管理密碼" autocomplete="off" required>
+                <button type="submit" class="button secondary">取消此筆待處理</button>
+              </form>
+            {% endif %}
             {% if event.actual_incoming_person %}
               <div class="event-detail">實際接班：{{ event.actual_incoming_person }}</div>
             {% endif %}

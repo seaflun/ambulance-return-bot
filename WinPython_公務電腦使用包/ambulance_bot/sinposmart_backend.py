@@ -255,13 +255,14 @@ def sinposmart_unreturned_return_status_label(value: str) -> str:
         "retrying": "重新確認中",
         "resolved": "已確認返隊",
         "expired": "逾 18 小時移除",
+        "cancelled": "人工取消（停止重查與補登）",
     }
     return labels.get(str(value or "").strip().lower(), "未返隊暫停")
 
 
 def sinposmart_unreturned_return_status_class(value: str) -> str:
     status = str(value or "").strip().lower()
-    if status == "resolved":
+    if status in {"resolved", "cancelled"}:
         return "complete"
     if status == "expired":
         return "failed"
@@ -270,6 +271,8 @@ def sinposmart_unreturned_return_status_class(value: str) -> str:
 
 def sinposmart_unreturned_return_trigger_label(event: dict[str, Any]) -> str:
     trigger_type = str(event.get("trigger_type") or "").strip().lower()
+    if trigger_type == "admin_cancel":
+        return "NAS 人工取消"
     if trigger_type == "manual":
         return "手動確認返隊"
     if trigger_type == "recovery":
@@ -585,6 +588,8 @@ def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str,
     card["status_class"] = sinposmart_unreturned_return_status_class(str(event.get("status") or ""))
     card["trigger_label"] = sinposmart_unreturned_return_trigger_label(event)
     card["item_title"] = sinposmart_action_display_title(event, target=event.get("target"))
+    card["queue_id"] = sanitize_scalar(snapshot.get("queue_id"), 80)
+    card["workstation"] = sanitize_scalar(snapshot.get("workstation"), 120)
     card["first_paused_at"] = sanitize_scalar(snapshot.get("first_paused_at"), 80)
     card["last_attempt_at"] = sanitize_scalar(snapshot.get("last_attempt_at"), 80)
     card["next_retry_at"] = sanitize_scalar(snapshot.get("next_retry_at"), 80)

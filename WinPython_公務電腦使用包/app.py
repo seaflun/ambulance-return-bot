@@ -1081,6 +1081,7 @@ def sinposmart_events():
     if not isinstance(data, dict):
         return jsonify({"ok": False, "error": "invalid_json"}), 400
     event = sinposmart_store().upsert_event(data)
+    settle_unreturned_cancellation(event)
     return jsonify({"ok": True, "ack_id": event["event_id"], "fire_day": event["fire_day"]})
 
 
@@ -1395,6 +1396,7 @@ def admin_sinposmart():
         selected_fire_day = str(selected_day.get("fire_day") or "")
     return render_template(
         "admin_sinposmart.html",
+        unreturned_cancellations=read_unreturned_cancellations(),
         days=days,
         selected_day=selected_day,
         selected_fire_day=selected_fire_day,
@@ -1406,6 +1408,66 @@ def admin_sinposmart():
         duty_gui_remote_update_enabled=duty_gui_remote_update_enabled,
         remote_update_csrf_token=csrf_token if duty_gui_remote_update_enabled else "",
     )
+
+
+def read_unreturned_cancellations() -> dict:
+    path = public_pc_report_file().with_name("sinposmart_unreturned_cancellations.json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("未返隊取消命令資料格式錯誤")
+    return data
+
+
+def write_unreturned_cancellations(commands: dict) -> None:
+    write_json_atomic(public_pc_report_file().with_name("sinposmart_unreturned_cancellations.json"), commands)
+
+
+def settle_unreturned_cancellation(event: dict) -> None:
+    if event.get("record_type") != "unreturned_return" or event.get("status") not in {"cancelled", "resolved", "expired"}:
+        return
+    snapshot = event.get("snapshot") or {}
+    queue_id = str(snapshot.get("queue_id") or "")
+    with _public_pc_report_lock:
+        commands = read_unreturned_cancellations()
+        command = commands.get(queue_id)
+        if not command or command.get("status") != "pending" or command.get("workstation") != snapshot.get("workstation"):
+            return
+        if event["status"] == "cancelled" and snapshot.get("cancellation_id") != command.get("request_id"):
+            return
+        command["status"] = "cancelled" if event["status"] == "cancelled" else "already_finished"
+        command["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        write_unreturned_cancellations(commands)
+
+
+@app.post("/admin/sinposmart/unreturned/cancel")
+def admin_sinposmart_cancel_unreturned():
+    _require_remote_update_admin_auth()
+    queue_id = str(request.form.get("queue_id") or "").strip()
+    fire_day = str(request.form.get("fire_day") or "").strip()
+    day = sinposmart_store().read_day(fire_day)
+    matches = [event for event in day.get("events", [])
+               if event.get("record_type") == "unreturned_return"
+               and (event.get("snapshot") or {}).get("queue_id") == queue_id]
+    if not matches:
+        abort(404)
+    latest = max(matches, key=lambda event: str(event.get("occurred_at") or ""))
+    workstation = str((latest.get("snapshot") or {}).get("workstation") or "").strip()
+    if latest.get("status") not in {"pending", "retrying"} or not workstation:
+        abort(409)
+    with _public_pc_report_lock:
+        commands = read_unreturned_cancellations()
+        if queue_id not in commands:
+            commands[queue_id] = {
+                "request_id": str(uuid4()), "queue_id": queue_id, "fire_day": fire_day,
+                "workstation": workstation, "status": "pending",
+                "requested_at": datetime.now().isoformat(timespec="seconds"),
+                "requested_by": "NAS 管理者", "reason": "人工取消待處理，停止重查與補登",
+            }
+            write_unreturned_cancellations(commands)
+    return redirect(url_for("admin_sinposmart", fire_day=fire_day))
 
 
 @app.post("/admin/sinposmart/remote-update")
@@ -1882,7 +1944,10 @@ def sinposmart_remote_update():
             allow_claim=True,
             target="duty_gui",
         )
-    return jsonify({"ok": True, "command": command})
+    with _public_pc_report_lock:
+        cancellations = [item for item in read_unreturned_cancellations().values()
+                         if item.get("status") == "pending" and item.get("workstation") == worker_id]
+    return jsonify({"ok": True, "command": command, "unreturned_cancellations": cancellations})
 
 
 @app.post("/api/sinposmart/remote-update/<request_id>/status")

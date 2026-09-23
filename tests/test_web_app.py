@@ -4820,6 +4820,40 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("已登打值班交接。", body)
         self.assertNotIn("secret", body)
 
+    def test_unreturned_cancel_requires_admin_and_matching_workstation_ack(self):
+        os.environ["WORKER_TOKEN"] = "test-worker-token"
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        day = datetime.now().date().isoformat()
+        event = {"event_id": "cancel-test-pending", "occurred_at": f"{day}T10:00:00",
+                 "record_type": "unreturned_return", "status": "pending",
+                 "snapshot": {"queue_id": "queue-cancel", "workstation": "test-pc"}}
+        self.assertEqual(self.client.post("/api/sinposmart/events", headers=headers, json=event).status_code, 200)
+        form = {"queue_id": "queue-cancel", "fire_day": day,
+                "csrf_token": app_module.remote_update_csrf_token(), "admin_token": "wrong"}
+        self.assertEqual(self.client.post("/admin/sinposmart/unreturned/cancel", data=form).status_code, 403)
+        form["admin_token"] = "test-admin-token"
+        self.assertEqual(self.client.post("/admin/sinposmart/unreturned/cancel", data=form).status_code, 302)
+        command = app_module.read_unreturned_cancellations()["queue-cancel"]
+        self.assertEqual(command["status"], "pending")
+        self.assertEqual(self.client.get("/api/sinposmart/remote-update?worker_id=test-pc").status_code, 403)
+        other = self.client.get("/api/sinposmart/remote-update?worker_id=other-pc", headers=headers).get_json()
+        self.assertEqual(other["unreturned_cancellations"], [])
+        received = self.client.get("/api/sinposmart/remote-update?worker_id=test-pc", headers=headers).get_json()
+        self.assertEqual(received["unreturned_cancellations"], [command])
+        self.assertEqual(self.client.post("/admin/sinposmart/unreturned/cancel", data=form).status_code, 302)
+        self.assertEqual(app_module.read_unreturned_cancellations()["queue-cancel"]["request_id"], command["request_id"])
+        event.update(event_id="cancel-test-ack", occurred_at=f"{day}T10:01:00", status="cancelled")
+        event["snapshot"]["cancellation_id"] = "wrong"
+        self.client.post("/api/sinposmart/events", headers=headers, json=event)
+        self.assertEqual(app_module.read_unreturned_cancellations()["queue-cancel"]["status"], "pending")
+        event["snapshot"]["cancellation_id"] = command["request_id"]
+        self.assertEqual(self.client.post("/api/sinposmart/events", headers=headers, json=event).status_code, 200)
+        self.assertEqual(app_module.read_unreturned_cancellations()["queue-cancel"]["status"], "cancelled")
+        body = self.client.get(f"/admin/sinposmart?fire_day={day}").data.decode("utf-8")
+        self.assertIn("人工取消", body)
+        self.assertEqual(self.client.post("/admin/sinposmart/unreturned/cancel", data=form).status_code, 409)
+
     def test_sinposmart_admin_shows_active_unreturned_return_card(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()
