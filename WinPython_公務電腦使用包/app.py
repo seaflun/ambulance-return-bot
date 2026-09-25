@@ -315,6 +315,11 @@ def index():
     return redirect(url_for("task_entry"))
 
 
+@app.get("/updates")
+def system_updates():
+    return render_template("system_updates.html")
+
+
 @app.get("/task-entry")
 def task_entry():
     return render_template("task_entry.html")

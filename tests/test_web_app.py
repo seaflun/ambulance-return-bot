@@ -2444,7 +2444,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("<h1>SinpoSmart</h1>", body)
         self.assertIn('href="/static/sinposmart-ui.css"', body)
         self.assertIn('class="portal-grid"', body)
-        self.assertEqual(5, body.count('class="choice-card portal-card'))
+        self.assertEqual(6, body.count('class="choice-card portal-card'))
+        self.assertIn("系統更新項目", body)
+        self.assertIn('href="/updates"', body)
         self.assertNotIn("<style>", body)
         self.assertNotIn("救護返隊小幫手", body)
         self.assertIn("值班後台", body)
@@ -2470,6 +2472,16 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("portal-card--ems", body)
         self.assertIn("portal-card--entry", body)
         self.assertIn("portal-card--vehicle", body)
+
+    def test_nas_updates_page_shows_major_release_items(self):
+        response = self.client.get("/updates", headers={"Host": "100.114.126.58:8080"})
+
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.data.decode("utf-8"))
+        self.assertIn("系統更新項目", body)
+        self.assertIn("車輛里程登打", body)
+        self.assertIn("加油紀錄登打", body)
+        self.assertIn("民力登打", body)
 
     def test_vehicle_settings_links_are_shown_on_nas_pages(self):
         response = self.client.get("/app", headers={"Host": "100.114.126.58:8080"})
