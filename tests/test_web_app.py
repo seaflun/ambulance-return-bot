@@ -1468,6 +1468,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn(".portal-card--ems {\n  --choice-color: var(--ems);", css)
             self.assertIn(".portal-card--entry {\n  --choice-color: var(--brand);", css)
             self.assertIn(".portal-card--vehicle {\n  --choice-color: #b46b00;", css)
+            self.assertIn(".portal-card--updates {\n  --choice-color: #984267;", css)
         finally:
             response.close()
 
@@ -2472,6 +2473,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("portal-card--ems", body)
         self.assertIn("portal-card--entry", body)
         self.assertIn("portal-card--vehicle", body)
+        self.assertIn('class="choice-card portal-card portal-card--updates" href="/updates"', body)
 
     def test_nas_updates_page_shows_major_release_items(self):
         response = self.client.get("/updates", headers={"Host": "100.114.126.58:8080"})
@@ -2482,6 +2484,13 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("車輛里程登打", body)
         self.assertIn("加油紀錄登打", body)
         self.assertIn("民力登打", body)
+        self.assertLess(body.index("2026 年 9 月"), body.index("2026 年 8 月"))
+        self.assertLess(body.index("2026 年 8 月"), body.index("2026 年 7 月"))
+        self.assertLess(body.index("2026 年 7 月"), body.index("2026 年 6 月"))
+        self.assertIn("grid-template-columns: 1fr;", body)
+        self.assertIn("width: 100%;", body)
+        self.assertIn("max-width: none;", body)
+        self.assertNotIn("grid-template-columns: repeat(2, minmax(0, 1fr));", body)
 
     def test_vehicle_settings_links_are_shown_on_nas_pages(self):
         response = self.client.get("/app", headers={"Host": "100.114.126.58:8080"})

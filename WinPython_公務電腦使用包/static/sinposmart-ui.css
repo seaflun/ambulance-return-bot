@@ -317,6 +317,12 @@ h1 {
   --choice-glow: rgba(180, 107, 0, .14);
 }
 
+.portal-card--updates {
+  --choice-color: #984267;
+  --choice-soft: #fff0f6;
+  --choice-glow: rgba(152, 66, 103, .14);
+}
+
 .choice-card:hover {
   border-color: color-mix(in srgb, var(--choice-color) 34%, white);
   box-shadow: var(--shadow-raised);

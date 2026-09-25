@@ -9,7 +9,10 @@
 <style>
   .update-timeline {
     display: grid;
-    max-width: 960px;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    width: 100%;
+    max-width: none;
     gap: 16px;
   }
 
@@ -23,9 +26,9 @@
 
   .update-card__heading {
     display: flex;
+    flex-direction: column;
     align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
     margin-bottom: 14px;
   }
 
@@ -68,15 +71,11 @@
     font-size: .86rem;
   }
 
-  @media (max-width: 620px) {
+  @media (max-width: 1000px) {
     .update-card {
       padding: 18px;
     }
 
-    .update-card__heading {
-      flex-direction: column;
-      gap: 8px;
-    }
   }
 </style>
 {% endblock %}
@@ -95,17 +94,32 @@
     <article class="update-card">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 6 月</p>
-          <h2 class="update-card__title">建立救護登打與公務電腦執行流程</h2>
+          <p class="update-card__period">2026 年 9 月</p>
+          <h2 class="update-card__title">補強案件歷程、民力查詢與重試可靠性</h2>
         </div>
-        <span class="update-card__versions">里程 2026.06.07.1827・加油 2026.06.25.1905</span>
+        <span class="update-card__versions">更新紀錄整理至 2026.09.23</span>
       </header>
       <ul class="update-card__items">
-        <li>建立 NAS 任務中心與公務電腦 Worker，讓行動端建立勤務並由公務電腦執行登打。</li>
-        <li>增加車輛里程登打、上次里程提示及儲存結果確認。</li>
-        <li>增加消毒與耗材登打，並支援二車出勤資料。</li>
-        <li>增加加油紀錄登打，可輸入日期、時間、油量與單價並計算總價。</li>
-        <li>增加救護車輛設定管理、案件欄位驗證及工作紀錄帶入。</li>
+        <li>增加歷史案件里程回補，依案件時間核對前後紀錄，並提供相符的里程提示。</li>
+        <li>改善民力日期與時間解析、案件比對、分頁查詢及單站重試保護。</li>
+        <li>改善多車里程時間判定、保留原車重新查找，以及耗材部分完成後的重試狀態。</li>
+        <li>整理後台事件與資料夾歷程，保留更新交接及 Worker 重試佇列狀態。</li>
+        <li>增加未返隊待處理取消與值班台確認流程，以及值班台專用唯讀民力名冊介面。</li>
+      </ul>
+    </article>
+
+    <article class="update-card">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 8 月</p>
+          <h2 class="update-card__title">增加民力登打與車輛資料同步</h2>
+        </div>
+        <span class="update-card__versions">民力 2026.08.19.0851・里程同步 2026.08.22.1017</span>
+      </header>
+      <ul class="update-card__items">
+        <li>增加民力系統站點，支援名冊查詢、出入登記及工作紀錄登打。</li>
+        <li>車輛設定集中由 NAS 同步，增加每日里程同步、手動刷新與里程合理性檢查。</li>
+        <li>改善案件查詢分頁、二車流程、拒載統計、任務狀態及歷程呈現。</li>
       </ul>
     </article>
 
@@ -128,32 +142,17 @@
     <article class="update-card">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 8 月</p>
-          <h2 class="update-card__title">增加民力登打與車輛資料同步</h2>
+          <p class="update-card__period">2026 年 6 月</p>
+          <h2 class="update-card__title">建立救護登打與公務電腦執行流程</h2>
         </div>
-        <span class="update-card__versions">民力 2026.08.19.0851・里程同步 2026.08.22.1017</span>
+        <span class="update-card__versions">里程 2026.06.07.1827・加油 2026.06.25.1905</span>
       </header>
       <ul class="update-card__items">
-        <li>增加民力系統站點，支援名冊查詢、出入登記及工作紀錄登打。</li>
-        <li>車輛設定集中由 NAS 同步，增加每日里程同步、手動刷新與里程合理性檢查。</li>
-        <li>改善案件查詢分頁、二車流程、拒載統計、任務狀態及歷程呈現。</li>
-      </ul>
-    </article>
-
-    <article class="update-card">
-      <header class="update-card__heading">
-        <div>
-          <p class="update-card__period">2026 年 9 月</p>
-          <h2 class="update-card__title">補強案件歷程、民力查詢與重試可靠性</h2>
-        </div>
-        <span class="update-card__versions">更新紀錄整理至 2026.09.23</span>
-      </header>
-      <ul class="update-card__items">
-        <li>增加歷史案件里程回補，依案件時間核對前後紀錄，並提供相符的里程提示。</li>
-        <li>改善民力日期與時間解析、案件比對、分頁查詢及單站重試保護。</li>
-        <li>改善多車里程時間判定、保留原車重新查找，以及耗材部分完成後的重試狀態。</li>
-        <li>整理後台事件與資料夾歷程，保留更新交接及 Worker 重試佇列狀態。</li>
-        <li>增加未返隊待處理取消與值班台確認流程，以及值班台專用唯讀民力名冊介面。</li>
+        <li>建立 NAS 任務中心與公務電腦 Worker，讓行動端建立勤務並由公務電腦執行登打。</li>
+        <li>增加車輛里程登打、上次里程提示及儲存結果確認。</li>
+        <li>增加消毒與耗材登打，並支援二車出勤資料。</li>
+        <li>增加加油紀錄登打，可輸入日期、時間、油量與單價並計算總價。</li>
+        <li>增加救護車輛設定管理、案件欄位驗證及工作紀錄帶入。</li>
       </ul>
     </article>
   </section>
