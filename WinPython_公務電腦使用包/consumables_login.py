@@ -4,6 +4,7 @@ import os
 import re
 import time
 from dataclasses import replace
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -881,8 +882,18 @@ def _consumable_candidate_date_matches(case_id: str, sid: str, text: str) -> boo
     case_date = _yyyymmdd_from_case_id(case_id)
     if not case_date:
         return True
-    candidate_date = _yyyymmdd_from_row_text(text) or _yyyymmdd_from_sid(sid)
-    return not candidate_date or candidate_date == case_date
+    row_date = _yyyymmdd_from_row_text(text)
+    sid_date = _yyyymmdd_from_sid(sid)
+    candidate_date = row_date or sid_date
+    if not candidate_date or candidate_date == case_date:
+        return True
+    if not row_date or sid_date != case_date:
+        return False
+    try:
+        next_case_date = (datetime.strptime(case_date, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+    except ValueError:
+        return False
+    return row_date == next_case_date
 
 
 def _yyyymmdd_from_case_id(case_id: str) -> str:

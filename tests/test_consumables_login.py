@@ -1576,6 +1576,54 @@ class ConsumablesLoginTests(unittest.TestCase):
         with patch("consumables_login.WebDriverWait", FakeWait), self.assertRaisesRegex(RuntimeError, "耗材列表找不到符合案件"):
             _find_consumable_detail_href(FakeDriver(), request)
 
+    def test_consumable_detail_matches_case_row_created_after_midnight(self):
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                self.driver = driver
+
+            def until(self, predicate):
+                return predicate(self.driver)
+
+        class FakeDriver:
+            def __init__(self, row_text):
+                self.candidate = {
+                    "href": "/ACS/ACS15002?emmTemsisid=2026092610100323580901",
+                    "sid": "2026092610100323580901",
+                    "text": row_text,
+                }
+
+            def find_elements(self, by, value):
+                return [object()]
+
+            def execute_script(self, script):
+                if "a.btn_t02" in script:
+                    return [self.candidate]
+                if "result-datatable_first" in script:
+                    return {"changed": False}
+                if "result-datatable_next" in script:
+                    return False
+                return []
+
+        request = AmbulanceReturnRequest(
+            task_id="task-midnight-rollover",
+            created_at=datetime(2026, 9, 26, 23, 58),
+            raw_text="",
+            case_id="20260926235809002",
+            case_time="2358",
+        )
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+            href = _find_consumable_detail_href(
+                FakeDriver("2026/09/27 00:00:26 新坡95"),
+                request,
+            )
+            with self.assertRaisesRegex(RuntimeError, "耗材列表找不到符合案件"):
+                _find_consumable_detail_href(
+                    FakeDriver("2026/09/28 00:00:26 新坡95"),
+                    request,
+                )
+
+        self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026092610100323580901")
+
     def test_consumable_detail_rejects_single_candidate_without_case_evidence(self):
         class FakeWait:
             def __init__(self, driver, timeout):
