@@ -2839,7 +2839,7 @@ def _add_vehicle_mileage_record(
     _report_progress(progress, "依案件時間查詢前後里程")
     history = _vehicle_mileage_history(driver, request, artifacts_dir, cancel_check)
     plan = _vehicle_mileage_backfill_plan(request, history)
-    month = request.service_case_date().strftime("%Y/%m")
+    month = plan["start_at"].strftime("%Y/%m")
     following = plan["following"]
     same_month = following is not None and following["month"] == month
     needs_following = following is not None and (
@@ -2897,18 +2897,29 @@ def _mileage_record_datetime(row: dict, prefix: str) -> datetime:
 
 
 def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[dict]) -> dict:
-    start = _mileage_record_datetime({"StartDay": request.service_case_date().strftime("%Y%m%d"),
-                                     "StartTime": request.case_time}, "Start")
+    requested_start = _mileage_record_datetime({"StartDay": request.service_case_date().strftime("%Y%m%d"),
+                                               "StartTime": request.case_time}, "Start")
     end = _mileage_record_datetime({"EndDay": request.service_return_date().strftime("%Y%m%d"),
                                    "EndTime": request.return_time}, "End")
-    if end < start:
+    if end < requested_start:
         raise WebDriverException("返隊時間早於案件時間。")
-    before, after, current = [], [], []
+    parsed_rows = []
+    overlaps_previous = []
     for row in rows:
         first, last = _mileage_record_datetime(row, "Start"), _mileage_record_datetime(row, "End")
         if last < first or not all(re.fullmatch(r"\d+", str(row.get(key, "")))
                                     for key in ("StartMileage", "EndMileage")):
             raise WebDriverException("里程歷史資料不完整，停止補登。")
+        parsed_rows.append((row, first, last))
+        if first < requested_start < last < end:
+            overlaps_previous.append((row, last))
+    if len(overlaps_previous) > 1:
+        raise WebDriverException("多筆前案與本案時間重疊，停止補登。")
+    start = overlaps_previous[0][1] if overlaps_previous else requested_start
+    if overlaps_previous and end <= start:
+        raise WebDriverException("前案返隊時間不早於本案返隊時間，停止補登。")
+    before, after, current = [], [], []
+    for row, first, last in parsed_rows:
         if first == start:
             current.append(row)
         elif last <= start:
@@ -2944,7 +2955,7 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
         or str(existing.get("DriverName") or "").strip() != request.driver.strip()
     ):
         raise WebDriverException("相同案件時間已有不同內容的里程紀錄，停止補登。")
-    return dict(start_mileage=first, end_mileage=last, previous=before[0],
+    return dict(start_at=start, start_mileage=first, end_mileage=last, previous=before[0],
                 following=following, existing=existing)
 
 
@@ -3045,7 +3056,7 @@ def _write_vehicle_mileage_backfill(
     targets = []
     if not following_only:
         targets.extend(row for row in (plan["previous"], plan["existing"])
-                       if row and row["month"] == request.service_case_date().strftime("%Y/%m"))
+                       if row and row["month"] == plan["start_at"].strftime("%Y/%m"))
     if include_following and plan["following"]:
         targets.append(plan["following"])
     result = driver.execute_script(
@@ -3064,7 +3075,7 @@ def _write_vehicle_mileage_backfill(
         raise WebDriverException("里程資料已變動或識別不唯一，停止修改。")
     if not following_only and plan["existing"] is None:
         _add_vehicle_mileage_row(driver)
-        values = _vehicle_mileage_values(request, plan["start_mileage"])
+        values = _vehicle_mileage_values(request, plan["start_mileage"], start_at=plan["start_at"])
         _fill_vehicle_grid_values(driver, values)
         _assert_vehicle_mileage_values_present(driver, values)
     if include_following and plan["following"]:
@@ -3091,12 +3102,11 @@ def _verify_vehicle_mileage_backfill(
     artifacts_dir: Path | None, include_following: bool,
 ) -> None:
     rows = _load_vehicle_mileage_month(driver, request, month, artifacts_dir)
-    if month == request.service_case_date().strftime("%Y/%m"):
-        if len(_vehicle_mileage_matching_row_indices(driver, request)) != 1:
+    if month == plan["start_at"].strftime("%Y/%m"):
+        if len(_vehicle_mileage_matching_row_indices(driver, request, start_at=plan["start_at"])) != 1:
             raise WebDriverException("儲存後查無唯一的本案里程紀錄。")
         matches = [row for row in rows if _mileage_record_datetime(row, "Start") ==
-                   _mileage_record_datetime({"StartDay": request.service_case_date().strftime("%Y%m%d"),
-                                             "StartTime": request.case_time}, "Start")]
+                   plan["start_at"]]
         if len(matches) != 1 or str(matches[0]["StartMileage"]) != plan["start_mileage"]:
             raise WebDriverException("儲存後本案開始里程不符。")
     if include_following and plan["following"]:
@@ -4057,11 +4067,15 @@ def _vehicle_mileage_previous_request(
     )
 
 
-def _vehicle_mileage_values(request: AmbulanceReturnRequest, start_mileage: str) -> dict[str, str]:
+def _vehicle_mileage_values(
+    request: AmbulanceReturnRequest, start_mileage: str, *, start_at: datetime | None = None,
+) -> dict[str, str]:
     end_mileage = _resolve_end_mileage(start_mileage, request.mileage)
+    start_day = start_at.strftime("%Y%m%d") if start_at else request.service_case_date().strftime("%Y%m%d")
+    start_time = start_at.strftime("%H%M") if start_at else request.case_time
     return {
-        "\u958b\u59cb\u65e5\u671f": request.service_case_date().strftime("%Y%m%d"),
-        "\u958b\u59cb\u6642\u9593": request.case_time,
+        "\u958b\u59cb\u65e5\u671f": start_day,
+        "\u958b\u59cb\u6642\u9593": start_time,
         "\u7d50\u675f\u65e5\u671f": request.service_return_date().strftime("%Y%m%d"),
         "\u7d50\u675f\u6642\u9593": request.return_time,
         "\u958b\u59cb\u91cc\u7a0b": start_mileage,
@@ -4075,11 +4089,14 @@ def _vehicle_mileage_values(request: AmbulanceReturnRequest, start_mileage: str)
 def _vehicle_mileage_matching_row_indices(
     driver: webdriver.Chrome,
     matched_request: AmbulanceReturnRequest,
+    *, start_at: datetime | None = None,
 ) -> list[int]:
     raw_mileage = str(matched_request.mileage or "").strip()
+    start_day = start_at.strftime("%Y%m%d") if start_at else matched_request.service_case_date().strftime("%Y%m%d")
+    start_time = start_at.strftime("%H%M") if start_at else normalize_hhmm_local(matched_request.case_time)
     expected = {
-        "StartDay": matched_request.service_case_date().strftime("%Y%m%d"),
-        "StartTime": normalize_hhmm_local(matched_request.case_time),
+        "StartDay": start_day,
+        "StartTime": start_time,
         "EndDay": matched_request.service_return_date().strftime("%Y%m%d"),
         "EndTime": normalize_hhmm_local(matched_request.return_time),
         "EndMileage": "" if raw_mileage.startswith("+") else raw_mileage,

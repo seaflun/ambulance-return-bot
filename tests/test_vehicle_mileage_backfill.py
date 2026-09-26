@@ -156,7 +156,7 @@ class MileageBackfillTests(unittest.TestCase):
     def test_invalid_neighbors_fail_before_writing(self):
         cases = [
             [record(2, "1200", "1300", 10000, 10050)],
-            [record(1, "0800", "1030", 9980, 10000)],
+            [record(1, "0800", "1100", 9980, 10000)],
             [record(1, "0800", "0900", 9980, 10030)],
             [record(1, "0800", "0900", 9980, 10000), record(2, "1200", "1300", 10000, 10010)],
             [record(1, "0800", "0900", 9980, 10000), record(2, "0800", "0900", 9980, 10000)],
@@ -164,6 +164,54 @@ class MileageBackfillTests(unittest.TestCase):
         for rows in cases:
             with self.subTest(rows=rows), self.assertRaises(runtime.WebDriverException):
                 self.run_entry(rows)
+
+    def test_overlap_after_previous_return_uses_previous_end_as_start(self):
+        request = self.request()
+        request.case_date = "2026/09/26"
+        request.case_time = "2029"
+        request.return_date = "2026/09/26"
+        request.return_time = "2151"
+        request.mileage = "2887"
+        previous = record(1, "1917", "2030", 2823, 2855)
+        previous.update(StartDay="20260926", EndDay="20260926")
+        plan = runtime._vehicle_mileage_backfill_plan(request, [previous])
+        expected_start = datetime(2026, 9, 26, 20, 30)
+        self.assertEqual(expected_start, plan["start_at"])
+        self.assertEqual(previous, plan["previous"])
+        values = runtime._vehicle_mileage_values(request, plan["start_mileage"], start_at=plan["start_at"])
+        self.assertEqual("20260926", values["開始日期"])
+        self.assertEqual("2030", values["開始時間"])
+        self.assertEqual("2887", values["結束里程"])
+        self.assertEqual("2029", request.case_time)
+        saved = record(2, "2030", "2151", 2855, 2887)
+        saved.update(StartDay="20260926", EndDay="20260926")
+        retry_plan = runtime._vehicle_mileage_backfill_plan(request, [previous, saved])
+        self.assertEqual(saved, retry_plan["existing"])
+
+    def test_clamped_start_can_roll_over_to_next_date_and_month(self):
+        request = self.request()
+        request.case_date = "2026/09/30"
+        request.case_time = "2359"
+        request.return_date = "2026/10/01"
+        request.return_time = "0030"
+        previous = record(1, "2300", "0005", 9980, 10000, "2026/09")
+        previous.update(StartDay="20260930", EndDay="20261001")
+        plan = runtime._vehicle_mileage_backfill_plan(request, [previous])
+        self.assertEqual(datetime(2026, 10, 1, 0, 5), plan["start_at"])
+        values = runtime._vehicle_mileage_values(request, plan["start_mileage"], start_at=plan["start_at"])
+        self.assertEqual("20261001", values["開始日期"])
+        self.assertEqual("0005", values["開始時間"])
+
+    def test_ambiguous_or_non_previous_overlap_still_fails_closed(self):
+        request = self.request()
+        overlaps = [
+            record(1, "0800", "1003", 9980, 10000),
+            record(2, "0900", "1005", 9980, 10010),
+        ]
+        starts_during_case = record(3, "1030", "1040", 10000, 10010)
+        for rows in (overlaps, [record(1, "0800", "0900", 9980, 10000), starts_during_case]):
+            with self.subTest(rows=rows), self.assertRaises(runtime.WebDriverException):
+                runtime._vehicle_mileage_backfill_plan(request, rows)
 
     def test_existing_complete_case_does_not_save_again(self):
         detail, writes, saves = self.run_entry([
@@ -321,6 +369,14 @@ class MileageGridScriptTests(unittest.TestCase):
         row = record(3, "1000", "1100", 10000, 10020)
         row.update(StartDay="2026/09/07", EndDay="2026/09/07")
         self.assertEqual([0], runtime._vehicle_mileage_matching_row_indices(ScriptDriver([row]), MileageBackfillTests().request()))
+
+    def test_matcher_can_find_case_using_clamped_mileage_start(self):
+        request = MileageBackfillTests().request()
+        row = record(3, "1005", "1100", 10000, 10020)
+        start_at = datetime(2026, 9, 7, 10, 5)
+        self.assertEqual([0], runtime._vehicle_mileage_matching_row_indices(
+            ScriptDriver([row]), request, start_at=start_at,
+        ))
 
     def test_readback_checks_both_mileages_and_preserved_following_fields(self):
         request = MileageBackfillTests().request()
