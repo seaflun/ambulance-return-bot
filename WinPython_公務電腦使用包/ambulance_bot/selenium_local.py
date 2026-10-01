@@ -3221,12 +3221,14 @@ def _prepare_disinfection_record(
     _assert_disinfection_not_login(driver, "query")
 
     _report_progress(progress, "開啟消毒紀錄")
-    if not _open_disinfection_detail_for_case(driver, request.case_time, request.vehicle):
+    case_at = _disinfection_case_at(request)
+    case_time = case_at.strftime("%H%M") if case_at else request.case_time
+    if not _open_disinfection_detail_for_case(driver, case_time, request.vehicle, case_at=case_at):
         rows = _disinfection_detail_rows(driver)
         candidates = _disinfection_vehicle_candidates(rows, request)
         if candidates:
             raise VehicleCandidateLookupError("disinfection", request.vehicle, candidates)
-        raise WebDriverException(f"missing disinfection detail for case time {request.case_time or 'empty'}")
+        raise WebDriverException(f"missing disinfection detail for case time {case_time or 'empty'}")
     _wait_for_disinfection_detail_ready(driver)
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
 
@@ -3364,13 +3366,28 @@ def _save_disinfection_progress_artifacts(driver: webdriver.Chrome, output_dir: 
         _save_artifacts(driver, output_dir, task_id, site_key)
 
 
+def _disinfection_case_at(request: AmbulanceReturnRequest) -> datetime | None:
+    """消毒紀錄使用案件受理時間；各梯次出動時間仍保留在 request.case_time。"""
+    case_id = str(request.case_id or "").strip()
+    if len(case_id) >= 14 and case_id.isdigit():
+        timestamp = f"{case_id[:8]}{case_id[14:20]}" if len(case_id) >= 20 else case_id[:14]
+        try:
+            return datetime.strptime(timestamp, "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+    return None
+
+
 def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
-    return request.service_case_date().strftime("%Y-%m-%d")
+    case_at = _disinfection_case_at(request) or request.service_case_date()
+    return case_at.strftime("%Y-%m-%d")
 
 
-def _open_disinfection_detail_for_case(driver: webdriver.Chrome, case_time: str, vehicle: str = "") -> bool:
+def _open_disinfection_detail_for_case(
+    driver: webdriver.Chrome, case_time: str, vehicle: str = "", *, case_at: datetime | None = None,
+) -> bool:
     rows = _disinfection_detail_rows(driver)
-    row_index = _select_disinfection_detail_row(rows, case_time, vehicle)
+    row_index = _select_disinfection_detail_row(rows, case_time, vehicle, case_at=case_at)
     if row_index is None:
         return False
     return _open_disinfection_detail_row(driver, row_index)
@@ -3409,7 +3426,9 @@ def _open_disinfection_detail_row(driver: webdriver.Chrome, row_index: int) -> b
     )
 
 
-def _select_disinfection_detail_row(rows: object, case_time: str, vehicle: str = "") -> int | None:
+def _select_disinfection_detail_row(
+    rows: object, case_time: str, vehicle: str = "", *, case_at: datetime | None = None,
+) -> int | None:
     if not isinstance(rows, list):
         return None
     digits = normalize_hhmm_local(case_time)
@@ -3419,6 +3438,8 @@ def _select_disinfection_detail_row(rows: object, case_time: str, vehicle: str =
         if not isinstance(row, dict):
             continue
         text = str(row.get("text") or "")
+        if case_at and not _disinfection_text_matches_case_at(text, case_at):
+            continue
         if variants and not any(variant in text for variant in variants):
             continue
         if vehicle and not _disinfection_text_matches_vehicle(text, vehicle):
@@ -3429,6 +3450,12 @@ def _select_disinfection_detail_row(rows: object, case_time: str, vehicle: str =
             row_index = fallback_index
         matches.append(row_index)
     return matches[0] if len(matches) == 1 else None
+
+
+def _disinfection_text_matches_case_at(text: str, case_at: datetime) -> bool:
+    timestamps = re.findall(r"\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}", text)
+    expected = case_at.strftime("%Y/%m/%d %H:%M:%S")
+    return any(" ".join(value.replace("-", "/").split()) == expected for value in timestamps)
 
 
 def _disinfection_text_matches_vehicle(text: str, vehicle: str) -> bool:
@@ -3445,13 +3472,16 @@ def _disinfection_vehicle_candidates(
 ) -> list[dict[str, str]]:
     if not request.vehicle or not isinstance(rows, list):
         return []
-    digits = normalize_hhmm_local(request.case_time)
+    case_at = _disinfection_case_at(request)
+    digits = case_at.strftime("%H%M") if case_at else normalize_hhmm_local(request.case_time)
     variants = [digits, f"{digits[:2]}:{digits[2:]}"] if len(digits) == 4 else []
     candidates: list[dict[str, str]] = []
     for fallback_index, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         text = str(row.get("text") or "")
+        if case_at and not _disinfection_text_matches_case_at(text, case_at):
+            continue
         if variants and not any(variant in text for variant in variants):
             continue
         for vehicle in vehicle_ppe_names():
@@ -3462,7 +3492,7 @@ def _disinfection_vehicle_candidates(
                 {
                     "vehicle": vehicle,
                     "source": "緊急救護消毒",
-                    "record_id": f"{request.service_case_date():%Y%m%d}{digits}:{row_index}",
+                    "record_id": f"{(case_at or request.service_case_date()):%Y%m%d}{digits}:{row_index}",
                     "case_id": str(request.case_id or ""),
                     "case_time": digits,
                 }

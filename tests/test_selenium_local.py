@@ -1873,6 +1873,114 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual(values["\u7d50\u675f\u91cc\u7a0b"], "142900")
         self.assertEqual(values["\u958b\u59cb\u6642\u9593"], "0830")
 
+    def test_disinfection_cross_day_case_uses_case_id_for_second_dispatch(self):
+        request = AmbulanceReturnRequest(
+            task_id="20261001010447-ade053",
+            created_at=datetime(2026, 10, 1, 1, 4, 47),
+            raw_text="",
+            vehicle="新坡92",
+            case_id="20260930225845015",
+            case_date="2026/09/30",
+            case_time="2356",
+            return_date="2026/10/01",
+            return_time="0101",
+        )
+
+        class FakeDriver:
+            switch_to = SimpleNamespace(default_content=lambda: None)
+            clicked = []
+
+            def get(self, _url):
+                pass
+
+            def execute_script(self, script, *args):
+                if "querySelectorAll('tr')" in script and "tr, index" in script:
+                    return [
+                        {"index": 1, "text": "2026/09/30 22:58:45 新坡95"},
+                        {"index": 2, "text": "2026/09/30 22:58:45 新坡92"},
+                        {"index": 3, "text": "2026/09/30 23:56:00 新坡92"},
+                        {"index": 4, "text": "2026/09/30 22:58:50 新坡92"},
+                    ]
+                self.clicked.append(args[0])
+                return True
+
+        driver = FakeDriver()
+        helpers = (
+            "_switch_to_disinfection_content_if_present",
+            "_wait_for_disinfection_query_fields",
+            "_wait_for_disinfection_query_completed",
+            "_save_disinfection_progress_artifacts",
+            "_assert_disinfection_not_login",
+            "_wait_for_disinfection_detail_ready",
+        )
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            for helper in helpers:
+                stack.enter_context(patch.object(selenium_local_module, helper))
+            query_date = stack.enter_context(patch.object(selenium_local_module, "_set_disinfection_query_date"))
+            stack.enter_context(patch.object(selenium_local_module, "_click_disinfection_query", return_value=True))
+            stack.enter_context(patch.object(selenium_local_module, "_save_disinfection_record_enabled", return_value=False))
+            stack.enter_context(patch.object(selenium_local_module, "_set_disinfection_item_statuses", return_value=8))
+            detail = selenium_local_module._prepare_disinfection_record(driver, request, Path("artifacts"))
+
+        query_date.assert_called_once_with(driver, "2026-09-30")
+        self.assertEqual(driver.clicked, [2])
+        self.assertIn("not saved", detail)
+        self.assertEqual(request.case_time, "2356")
+        self.assertEqual(request.return_time, "0101")
+
+    def test_second_dispatch_keeps_mileage_and_civilpower_service_times(self):
+        from civilpower import build_civilpower_task_plan
+
+        request = AmbulanceReturnRequest(
+            task_id="second-dispatch",
+            created_at=datetime(2026, 10, 1, 1, 4, 47),
+            raw_text="",
+            vehicle="新坡92",
+            case_id="20260930225845015",
+            case_date="2026/09/30",
+            case_time="2356",
+            return_date="2026/10/01",
+            return_time="0101",
+            mileage="25066",
+            volunteer_assist=True,
+            volunteer_assist_member_id="test-member",
+            volunteer_assist_member_name="測試義消",
+        )
+        values = _vehicle_mileage_values(request, "25052")
+        self.assertEqual(values["開始日期"], "20260930")
+        self.assertEqual(values["開始時間"], "2356")
+        self.assertEqual(values["結束日期"], "20261001")
+        self.assertEqual(values["結束時間"], "0101")
+        plan = build_civilpower_task_plan(request)
+        self.assertEqual((plan.out_date, plan.out_time), ("2026/09/30", "2356"))
+        self.assertEqual((plan.in_date, plan.in_time), ("2026/10/01", "0101"))
+        case = {"case_id": request.case_id, "case_time_hhmm": "2258"}
+        self.assertEqual(selenium_local_module._match_case_for_request([case], request), case)
+
+    def test_disinfection_query_date_uses_valid_case_id_date(self):
+        request = AmbulanceReturnRequest(
+            task_id="case-id-date",
+            created_at=datetime(2026, 10, 1),
+            raw_text="",
+            case_id="20260930225845015",
+            case_date="2026/10/01",
+        )
+        self.assertEqual(_disinfection_query_date(request), "2026-09-30")
+        request.case_id = "20261330225845015"
+        self.assertEqual(_disinfection_query_date(request), "2026-10-01")
+
+    def test_disinfection_case_id_match_rejects_duplicate_vehicle_records(self):
+        case_at = datetime(2026, 9, 30, 22, 58, 45)
+        rows = [
+            {"index": 1, "text": "2026/09/30 22:58:45 新坡92"},
+            {"index": 2, "text": "2026/09/30 22:58:45 新坡92"},
+        ]
+        self.assertIsNone(selenium_local_module._select_disinfection_detail_row(
+            rows, "2258", "新坡92", case_at=case_at,
+        ))
+
     def test_disinfection_query_date_uses_case_date(self):
         request = AmbulanceReturnRequest(
             task_id="task-1",
