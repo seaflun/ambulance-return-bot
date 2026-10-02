@@ -416,6 +416,8 @@ def sinposmart_tool_group_key(event: dict[str, Any], *, run_id: str | None = Non
     tool_label = sanitize_scalar(snapshot.get("tool_label"), 120) if snapshot else ""
     resolved_run_id = run_id if run_id is not None else sanitize_scalar(snapshot.get("run_id"), 120) if snapshot else ""
     title = str(event.get("item_title") or "")
+    if sanitize_scalar(snapshot.get("run_id"), 120):
+        return ("run_id", tool_name or tool_label or title, resolved_run_id)
     return (
         str(event.get("actor_no") or ""),
         sinposmart_person_label(event),
@@ -962,7 +964,10 @@ def sinposmart_admin_tool_event(
         status_label = str(waiting_state["status_label"])
     else:
         status_label = "失敗" if failed else "完成" if finished_event else "執行中"
-    card = sinposmart_admin_event(base_event, status_label)
+    card = sinposmart_admin_event(
+        base_event, status_label,
+        person_label=sinposmart_person_label(started_event) if started_event else None,
+    )
     if waiting_state:
         card["status_class"] = str(waiting_state["status_class"])
     card["item_title"] = sinposmart_tool_label(base_event)

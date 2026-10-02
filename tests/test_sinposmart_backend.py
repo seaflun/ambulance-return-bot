@@ -435,6 +435,26 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             )
         )
 
+    def test_tool_run_id_pairs_terminal_even_when_identity_changes(self):
+        for actor_no, display_name in (("", ""), ("11", "11番 測試乙")):
+            with self.subTest(actor_no=actor_no), tempfile.TemporaryDirectory() as tmp:
+                store = SinpoSmartBackendStore(Path(tmp))
+                for suffix, record_type, status, actor, name, at in (
+                    ("start", "tool_action_started", "started", "10", "10番 測試甲", "2026-10-01T09:00:00"),
+                    ("finish", "tool_action_finished", "failed", actor_no, display_name, "2026-10-01T09:00:30"),
+                ):
+                    store.upsert_event({
+                        "event_id": suffix, "occurred_at": at, "record_type": record_type,
+                        "status": status, "actor_no": actor, "display_name": name,
+                        "error": "測試失敗" if suffix == "finish" else "",
+                        "snapshot": {"tool_name": "duty_sheet", "run_id": "test-run"},
+                    }, now=datetime(2026, 10, 1, 9, 1))
+                cards = store.read_day("2026-10-01", now=datetime(2026, 10, 1, 9, 2))["admin_view"]["tool_events"]
+                self.assertEqual(len(cards), 1)
+                self.assertEqual(cards[0]["status_label"], "失敗")
+                self.assertEqual(cards[0]["person_label"], "10番 測試甲")
+                self.assertEqual(len(cards[0]["steps"]), 2)
+
     def test_store_keeps_same_tool_runs_separate_by_run_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = SinpoSmartBackendStore(Path(tmp))

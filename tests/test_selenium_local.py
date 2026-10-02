@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 import ambulance_bot.selenium_local as selenium_local_module
 from ambulance_bot.models import AmbulanceReturnRequest
@@ -434,7 +434,7 @@ class SeleniumLocalTests(unittest.TestCase):
 
         save.assert_not_called()
 
-    def test_click_only_save_helpers_treat_silent_submit_as_saved(self):
+    def test_click_only_save_helpers_require_readback_after_silent_submit(self):
         class FakeDriver:
             current_url = "https://ppe.tyfd.gov.tw/CarRecord/List"
             page_source = ""
@@ -457,21 +457,21 @@ class SeleniumLocalTests(unittest.TestCase):
             mileage = selenium_local_module._save_vehicle_mileage_form(driver)
             fuel = selenium_local_module._save_fuel_record_form(driver, request)
 
-        self.assertNotIn("waiting_confirmation", mileage)
-        self.assertNotIn("waiting_confirmation", fuel)
+        self.assertIn("waiting_confirmation", mileage)
+        self.assertIn("waiting_confirmation", fuel)
         self.assertIn("已填寫車輛里程", mileage)
-        self.assertIn("已填寫加油紀錄", fuel)
+        self.assertIn("加油已按儲存", fuel)
         self.assertEqual(
             selenium_local_module._confirmation_aware_status(
                 "vehicle_mileage", mileage, save_enabled=True, prefilled_status="vehicle_mileage_prefilled"
             ),
-            "vehicle_mileage_saved",
+            "vehicle_mileage_waiting_confirmation",
         )
         self.assertEqual(
             selenium_local_module._confirmation_aware_status(
                 "fuel_record", fuel, save_enabled=True, prefilled_status="fuel_record_prefilled"
             ),
-            "fuel_record_saved",
+            "fuel_record_waiting_confirmation",
         )
 
     def test_click_only_save_helpers_keep_unknown_nonempty_confirmation_waiting(self):
@@ -584,7 +584,7 @@ class SeleniumLocalTests(unittest.TestCase):
 
         self.assertIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, detail)
 
-    def test_disinfection_silent_submit_is_saved_when_no_error_is_reported(self):
+    def test_disinfection_silent_submit_without_persisted_items_remains_waiting(self):
         request = AmbulanceReturnRequest(
             task_id="silent-disinfection",
             created_at=datetime.now(),
@@ -603,6 +603,9 @@ class SeleniumLocalTests(unittest.TestCase):
 
             def get(self, _url):
                 pass
+
+            def execute_script(self, script, *args):
+                return False
 
         with patch.object(selenium_local_module, "_switch_to_disinfection_content_if_present"), patch.object(
             selenium_local_module, "_wait_for_disinfection_query_fields"
@@ -623,13 +626,13 @@ class SeleniumLocalTests(unittest.TestCase):
                 FakeDriver(), request, Path("artifacts")
             )
 
-        self.assertNotIn("waiting_confirmation", detail)
-        self.assertIn("saved", detail)
+        self.assertIn("waiting_confirmation", detail)
+        self.assertIn("回查", detail)
         self.assertEqual(
             selenium_local_module._confirmation_aware_status(
                 "disinfection", detail, save_enabled=True, prefilled_status="disinfection_prefilled"
             ),
-            "disinfection_saved",
+            "disinfection_waiting_confirmation",
         )
 
     def test_disinfection_unknown_nonempty_confirmation_remains_waiting(self):
@@ -651,6 +654,9 @@ class SeleniumLocalTests(unittest.TestCase):
 
             def get(self, _url):
                 pass
+
+            def execute_script(self, script, *args):
+                return False
 
         with patch.object(selenium_local_module, "_switch_to_disinfection_content_if_present"), patch.object(
             selenium_local_module, "_wait_for_disinfection_query_fields"
@@ -866,7 +872,7 @@ class SeleniumLocalTests(unittest.TestCase):
                     )
                 self.assertEqual(result.status, f"{site_key}_waiting_confirmation")
 
-    def test_duty_work_log_silent_submit_is_saved_when_click_succeeds(self):
+    def test_duty_work_log_silent_submit_waits_without_persisted_readback(self):
         request = AmbulanceReturnRequest(
             task_id="duty-waiting",
             created_at=datetime.now(),
@@ -897,12 +903,16 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module, "_save_artifacts"
         ), patch.object(selenium_local_module, "_save_duty_work_log_enabled", return_value=True), patch.object(
             selenium_local_module, "_click_duty_work_log_save", return_value={"ok": True}
+        ), patch.object(selenium_local_module, "_query_duty_work_logs", return_value=[]), patch.object(
+            selenium_local_module, "_duty_work_log_snapshot", return_value={}
+        ), patch.object(
+            selenium_local_module, "_verify_saved_duty_work_log", side_effect=RuntimeError("no persisted row")
         ), patch.object(selenium_local_module.time, "sleep"):
             result = selenium_local_module._prepare_duty_work_log_form(
                 FakeDriver(), request, Path("artifacts"), Path("summary.txt")
             )
 
-        self.assertEqual(result.status, "duty_work_log_saved")
+        self.assertEqual(result.status, "duty_work_log_waiting_confirmation")
         self.assertEqual(query_calls[0]["start_at"], datetime(2026, 7, 13, 8, 4))
 
     def test_case_query_date_range_accepts_a_specific_start_time(self):
@@ -948,6 +958,10 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module,
             "_click_duty_work_log_save",
             return_value={"ok": True, "alert": "權限狀態不明"},
+        ), patch.object(selenium_local_module, "_query_duty_work_logs", return_value=[]), patch.object(
+            selenium_local_module, "_duty_work_log_snapshot", return_value={}
+        ), patch.object(
+            selenium_local_module, "_verify_saved_duty_work_log", side_effect=RuntimeError("no persisted row")
         ), patch.object(selenium_local_module.time, "sleep"):
             result = selenium_local_module._prepare_duty_work_log_form(
                 FakeDriver(), request, Path("artifacts"), Path("summary.txt")
@@ -1580,13 +1594,15 @@ class SeleniumLocalTests(unittest.TestCase):
             else:
                 os.environ["SAVE_DISINFECTION_PROBE"] = previous_probe
 
-    def test_vehicle_mileage_message_reports_silent_save_without_false_warning(self):
-        source = Path(selenium_local_module.__file__).read_text(encoding="utf-8")
-
-        self.assertNotIn("\\u5617\\u8a66\\u78ba\\u8a8d", source)
-        self.assertIn("\\u6309\\u4e0b\\u78ba\\u8a8d", source)
-        self.assertIn("\\u7db2\\u7ad9\\u672a\\u56de\\u5831\\u932f\\u8aa4", source)
-        self.assertNotIn("\\u5c1a\\u672a\\u78ba\\u8a8d\\u4f3a\\u670d\\u5668\\u5df2\\u5132\\u5b58", source)
+    def test_vehicle_mileage_silent_save_requires_readback(self):
+        driver = Mock()
+        with patch.object(selenium_local_module, "_click_vehicle_mileage_save", return_value=True), patch.object(
+            selenium_local_module, "_accept_alert_if_present", return_value=""
+        ), patch.object(selenium_local_module, "_confirm_sweetalert_if_present", return_value=""), patch.object(
+            selenium_local_module, "_is_ppe_login_page", return_value=False
+        ):
+            detail = selenium_local_module._save_vehicle_mileage_form(driver)
+        self.assertIn(selenium_local_module.WAITING_CONFIRMATION_MARKER, detail)
 
     def test_vehicle_mileage_runs_even_without_fuel_record(self):
         request = AmbulanceReturnRequest(
@@ -1761,97 +1777,52 @@ class SeleniumLocalTests(unittest.TestCase):
         add_row.assert_not_called()
 
     def test_vehicle_mileage_unique_current_row_is_idempotent_before_update_or_add(self):
-        matcher = getattr(selenium_local_module, "_vehicle_mileage_matching_row_indices", None)
-        self.assertIsNotNone(matcher, "strict current mileage matcher is required")
-        request = AmbulanceReturnRequest(
-            task_id="mileage-existing",
-            created_at=datetime(2026, 7, 13, 8, 0),
-            raw_text="",
-            case_date="2026/07/13",
-            case_time="0805",
-            return_date="2026/07/13",
-            return_time="0910",
-            vehicle="新坡92",
-            driver="甲",
-            mileage="12345",
-            case_address="桃園市中壢區",
-        )
-
-        class FakeDriver:
-            def get(self, _url):
-                pass
-
+        from tests.test_vehicle_mileage_backfill import MileageBackfillTests, record
+        request = MileageBackfillTests().request()
+        rows = [record(1, "0800", "0900", 9980, 10000), record(2, "1000", "1100", 10000, 10020)]
         with patch.object(selenium_local_module, "_wait_for_ppe_vehicle_mileage_page", return_value=True), patch.object(
-            selenium_local_module,
-            "_click_text_if_present",
+            selenium_local_module, "_click_text_if_present"
         ), patch.object(selenium_local_module.time, "sleep"), patch.object(
-            selenium_local_module,
-            "vehicle_ppe_names",
-            return_value={"新坡92": "92牌"},
-        ), patch.object(selenium_local_module, "_select_vehicle_record"), patch.object(
-            selenium_local_module,
-            "_vehicle_mileage_matching_row_indices",
-            return_value=[1],
-        ), patch.object(selenium_local_module, "_find_vehicle_mileage_row_index") as find_previous, patch.object(
-            selenium_local_module,
-            "_fill_vehicle_grid_values",
-        ) as fill, patch.object(selenium_local_module, "_add_vehicle_mileage_record") as add, patch.object(
-            selenium_local_module,
-            "_delete_vehicle_mileage_row",
-        ) as delete, patch.object(selenium_local_module, "_save_vehicle_mileage_form") as save:
+            selenium_local_module, "_vehicle_mileage_history", return_value=rows
+        ), patch.object(selenium_local_module, "_save_vehicle_mileage_form") as save, patch.object(
+            selenium_local_module, "_verify_vehicle_mileage_backfill"
+        ) as verify:
             detail = selenium_local_module._prepare_vehicle_mileage_form(
-                FakeDriver(), request, Path("artifacts"), update_context={"previous_task": request.to_dict()},
+                SimpleNamespace(get=lambda url: None), request, update_context={"previous_task": request.to_dict()},
             )
-
         self.assertIn("已存在", detail)
-        find_previous.assert_not_called()
-        fill.assert_not_called()
-        add.assert_not_called()
-        delete.assert_not_called()
         save.assert_not_called()
+        verify.assert_called_once()
+
+    def test_vehicle_mileage_manual_identity_problem_returns_waiting(self):
+        request = AmbulanceReturnRequest(task_id="manual-mileage", created_at=datetime.now(), raw_text="")
+        driver = Mock()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(selenium_local_module, "apply_tile"), \
+             patch.object(selenium_local_module, "mark_driver_operation_active"), \
+             patch.object(selenium_local_module, "_set_window_size_if_enabled"), \
+             patch.object(selenium_local_module, "_open_vehicle_mileage_page",
+                          side_effect=selenium_local_module.ManualUpdateRequiredError("月份搬移")):
+            result = selenium_local_module.run_vehicle_mileage_task(
+                request, Path(tmp), existing_driver=driver, use_session_lock=False,
+            )
+        self.assertEqual("vehicle_mileage_waiting_confirmation", result.status)
+        self.assertIn("需人工更新", result.detail)
 
     def test_vehicle_mileage_ambiguous_current_rows_fail_before_mutation(self):
-        matcher = getattr(selenium_local_module, "_vehicle_mileage_matching_row_indices", None)
-        self.assertIsNotNone(matcher, "strict current mileage matcher is required")
-        request = AmbulanceReturnRequest(
-            task_id="mileage-ambiguous",
-            created_at=datetime(2026, 7, 13, 8, 0),
-            raw_text="",
-            case_date="2026/07/13",
-            case_time="0805",
-            return_time="0910",
-            vehicle="新坡92",
-            driver="甲",
-            mileage="12345",
-        )
-
-        class FakeDriver:
-            def get(self, _url):
-                pass
-
+        from tests.test_vehicle_mileage_backfill import MileageBackfillTests, record
+        request = MileageBackfillTests().request()
+        rows = [record(1, "0800", "0900", 9980, 10000), record(2, "1000", "1100", 10000, 10020),
+                record(3, "1000", "1100", 10000, 10020)]
         with patch.object(selenium_local_module, "_wait_for_ppe_vehicle_mileage_page", return_value=True), patch.object(
-            selenium_local_module,
-            "_click_text_if_present",
+            selenium_local_module, "_click_text_if_present"
         ), patch.object(selenium_local_module.time, "sleep"), patch.object(
-            selenium_local_module,
-            "vehicle_ppe_names",
-            return_value={"新坡92": "92牌"},
-        ), patch.object(selenium_local_module, "_select_vehicle_record"), patch.object(
-            selenium_local_module,
-            "_vehicle_mileage_matching_row_indices",
-            return_value=[0, 1],
-        ), patch.object(selenium_local_module, "_fill_vehicle_grid_values") as fill, patch.object(
-            selenium_local_module,
-            "_add_vehicle_mileage_record",
-        ) as add, patch.object(selenium_local_module, "_delete_vehicle_mileage_row") as delete:
-            with self.assertRaisesRegex(selenium_local_module.WebDriverException, "multiple current mileage rows"):
+            selenium_local_module, "_vehicle_mileage_history", return_value=rows
+        ), patch.object(selenium_local_module, "_save_vehicle_mileage_form") as save:
+            with self.assertRaises(selenium_local_module.WebDriverException):
                 selenium_local_module._prepare_vehicle_mileage_form(
-                    FakeDriver(), request, Path("artifacts"), update_context={"previous_task": request.to_dict()},
+                    SimpleNamespace(get=lambda url: None), request, update_context={"previous_task": request.to_dict()},
                 )
-
-        fill.assert_not_called()
-        add.assert_not_called()
-        delete.assert_not_called()
+        save.assert_not_called()
 
     def test_vehicle_mileage_values_keep_existing_start_mileage_for_update(self):
         request = AmbulanceReturnRequest(
@@ -3017,7 +2988,9 @@ class SeleniumLocalTests(unittest.TestCase):
         ), patch.object(selenium_local_module, "_click_fuel_add_row") as add_row, patch.object(
             selenium_local_module,
             "_fill_fuel_grid_record",
-        ) as fill, patch.object(selenium_local_module, "_save_fuel_record_form") as save:
+        ) as fill, patch.object(selenium_local_module, "_save_fuel_record_form") as save, patch.object(
+            selenium_local_module, "_verify_saved_fuel_record"
+        ) as verify:
             detail = selenium_local_module._prepare_fuel_record_form(
                 SimpleNamespace(get=lambda _url: None),
                 request,
@@ -3028,6 +3001,7 @@ class SeleniumLocalTests(unittest.TestCase):
         add_row.assert_not_called()
         fill.assert_not_called()
         save.assert_not_called()
+        verify.assert_called_once()
 
     def test_fuel_update_changes_only_unique_previous_row_without_adding(self):
         matcher = getattr(selenium_local_module, "_fuel_grid_matching_row_indices", None)
@@ -3068,7 +3042,8 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module,
             "_save_fuel_record_form",
             return_value="saved",
-        ):
+        ), patch.object(selenium_local_module, "_verify_saved_fuel_record"):
+
             detail = selenium_local_module._prepare_fuel_record_form(
                 SimpleNamespace(get=lambda _url: None),
                 request,
@@ -3079,7 +3054,7 @@ class SeleniumLocalTests(unittest.TestCase):
         add_row.assert_not_called()
         fill.assert_called_once()
         self.assertEqual(fill.call_args.kwargs["row_index"], 1)
-        self.assertIn("已更新", detail)
+        self.assertIn("重新查詢", detail)
 
     def test_fuel_update_fails_closed_when_previous_row_is_missing_or_ambiguous(self):
         matcher = getattr(selenium_local_module, "_fuel_grid_matching_row_indices", None)

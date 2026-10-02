@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import html
 import os
 import json
 import re
@@ -52,7 +53,7 @@ from .failure_evidence import augment_failure_detail, capture_failure_artifacts,
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
 from .task_cancellation import TaskCancellationError
-from .update_safety import manual_update_reason
+from .update_safety import ManualUpdateRequiredError, manual_update_reason
 from .vehicle_reconciliation import VehicleCandidateLookupError
 from .window_layout import apply_tile
 
@@ -402,6 +403,8 @@ def run_vehicle_mileage_task(
     except TaskCancellationError:
         close_driver_on_exit = True
         raise
+    except ManualUpdateRequiredError as exc:
+        return SeleniumRunResult(False, "vehicle_mileage_waiting_confirmation", f"需人工更新：{exc}", summary_path)
     except Exception as exc:
         close_driver_on_exit = True
         detail = f"車輛里程操作失敗：{exc}"
@@ -1467,6 +1470,25 @@ def _prepare_duty_work_log_form(
             summary_path=summary_path,
         )
 
+    _report_progress(progress, "查詢既有工作紀錄")
+    try:
+        existing = _query_duty_work_logs(driver, request, cancel_check=cancel_check)
+    except TaskCancellationError:
+        raise
+    except (WebDriverException, RuntimeError, ValueError) as exc:
+        return SeleniumRunResult(
+            ok=True, status="duty_work_log_waiting_confirmation",
+            detail=f"勤務紀錄新增前無法確認是否已有相同案件與車輛：{exc}；暫停新增，避免重複。",
+            summary_path=summary_path,
+        )
+    if existing:
+        detail = _verified_save_detail(
+            "勤務紀錄", "",
+            lambda: _verify_saved_duty_work_log(driver, request, cancel_check=cancel_check),
+        )
+        status = "duty_work_log_waiting_confirmation" if WAITING_CONFIRMATION_MARKER in detail else "duty_work_log_saved"
+        return SeleniumRunResult(ok=True, status=status, detail=detail, summary_path=summary_path)
+
     _report_progress(progress, "新增工作紀錄")
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
     time.sleep(1)
@@ -1514,6 +1536,7 @@ def _prepare_duty_work_log_form(
         detail = f"消防勤務工作紀錄已預填但有欄位未確認：{', '.join(fill_result)}。已保存截圖，不會自動儲存。"
         status = "duty_work_log_prefill_partial"
     elif _save_duty_work_log_enabled():
+        expected = _duty_work_log_snapshot(driver)
         _report_progress(progress, "儲存")
         save_result = _click_duty_work_log_save(driver, cancel_check=cancel_check)
         time.sleep(1.5)
@@ -1525,15 +1548,12 @@ def _prepare_duty_work_log_form(
         ]
         confirmation = _save_confirmation_state(*confirmation_messages)
         _report_progress(progress, "確認勤務紀錄")
-        if save_result.get("ok") and confirmation == "success":
-            detail = f"消防勤務工作紀錄已預填並確認儲存成功：{' / '.join(confirmation_messages)}"
-            status = "duty_work_log_saved"
-        elif save_result.get("ok") and not confirmation_messages:
-            detail = "消防勤務工作紀錄已預填勤務項目、事由、處理情形並按下儲存；網站未回報錯誤。"
-            status = "duty_work_log_saved"
-        elif save_result.get("ok"):
-            detail = f"消防勤務工作紀錄已按下儲存，但網站回報未辨識訊息：{' / '.join(confirmation_messages)}；需人工確認。"
-            status = "duty_work_log_waiting_confirmation"
+        if save_result.get("ok") and confirmation != "failure":
+            detail = _verified_save_detail(
+                "勤務紀錄", " / ".join(confirmation_messages),
+                lambda: _verify_saved_duty_work_log(driver, request, expected, cancel_check=cancel_check),
+            )
+            status = "duty_work_log_waiting_confirmation" if WAITING_CONFIRMATION_MARKER in detail else "duty_work_log_saved"
         else:
             reason = save_result.get("reason") or save_result.get("alert") or "unknown"
             detail = f"消防勤務工作紀錄已預填，但儲存未成功：{reason}。"
@@ -1542,6 +1562,115 @@ def _prepare_duty_work_log_form(
         detail = "消防勤務工作紀錄已預填勤務項目、事由、處理情形，未按儲存。"
         status = "duty_work_log_prefilled"
     return SeleniumRunResult(ok=True, status=status, detail=detail, summary_path=summary_path)
+
+
+def _work_log_text(value: object) -> str:
+    return html.unescape(re.sub(r"<br\s*/?>", "\n", str(value or ""), flags=re.I)).replace("\r\n", "\n").strip()
+
+
+def _query_duty_work_logs(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest,
+    cancel_check: Callable[[], None] | None = None,
+) -> list[dict[str, str]]:
+    if cancel_check:
+        cancel_check()
+    case_id = str(request.case_id or "").strip()
+    if not re.fullmatch(r"\d{17}", case_id) or not request.vehicle:
+        raise ValueError("缺少可辨識的案件編號或車輛")
+    day = datetime.strptime(case_id[:8], "%Y%m%d")
+    roc_day = f"{day.year - 1911:03d}{day:%m%d}"
+    driver.get(_ap_url(DUTY_WORK_LOG_AP))
+    WebDriverWait(driver, 12).until(lambda d: bool(d.find_elements(By.ID, "_btnQuery")))
+    ready = driver.execute_script(
+        """
+        const values = {_txtSDATE: arguments[0], _txtEDATE: arguments[0],
+          _selSTIMEH: '00', _selSTIMEM: '00', _selETIMEH: '23', _selETIMEM: '59',
+          _txtPageNum: '1000', _txtMan: '', _selList: ''};
+        if (Object.keys(values).some(id => !document.getElementById(id))) return false;
+        for (const [id, value] of Object.entries(values)) document.getElementById(id).value = value;
+        return true;
+        """, roc_day,
+    )
+    if not ready:
+        raise WebDriverException("工作紀錄查詢欄位不完整")
+    if cancel_check:
+        cancel_check()
+    query_button = driver.find_element(By.ID, "_btnQuery")
+    _click_by_text_or_id(driver, ["_btnQuery"], ["查詢"])
+    WebDriverWait(driver, 12).until(EC.staleness_of(query_button))
+    WebDriverWait(driver, 12).until(lambda d: d.execute_script(
+        "return !!document.getElementById('_btnQuery') && /QUY-000/.test(document.body.innerText);"
+    ))
+    payload = driver.execute_script(
+        """
+        const page = document.getElementById('pageSelect');
+        const total = /共\\s*(\\d+)\\s*筆/.exec(document.body.innerText);
+        return {pages: page ? page.options.length : 1, total: total ? Number(total[1]) : null,
+          rows: Array.from(document.querySelectorAll('input[id="_btnUpdate"]'))
+            .map(el => String(el.getAttribute('onclick') || ''))};
+        """
+    )
+    if (not isinstance(payload, dict) or int(payload.get("pages", 0)) != 1
+            or not isinstance(payload.get("rows"), list) or payload.get("total") != len(payload["rows"])):
+        raise RuntimeError("工作紀錄查詢仍有分頁或回應格式改變，無法確認唯一性")
+    records = []
+    for action in payload.get("rows", []):
+        match = re.fullmatch(r"\s*Submit_SetSelectedRowData\(frm,'wap119\.RPS04060U','(.*)'\);?\s*", str(action), re.S)
+        if not match:
+            raise RuntimeError("工作紀錄資料列格式改變")
+        fields = match.group(1).split("(^w^)")
+        if len(fields) < 10 or not fields[0].isdigit():
+            raise RuntimeError("工作紀錄缺少正式紀錄編號")
+        if fields[1] != case_id:
+            continue
+        record = dict(zip(("record_id", "case_id", "work_at", "department", "unit", "item",
+                           "reason", "description", "status", "personnel"), map(_work_log_text, fields[:10])))
+        if re.search(r"(?:^|[\s\d.、])" + re.escape(request.vehicle) + r"(?:司機)?\s*[:：]", record["status"]):
+            records.append(record)
+        elif not re.search(r"(?:^|\n)\s*\d+\.[^:\n：]+[:：]", record["status"]):
+            # An incomplete or differently formatted same-case row must not lead to another insert.
+            raise RuntimeError("同案件已有工作紀錄，但無法確認車輛；請人工核對")
+    return records
+
+
+def _duty_work_log_snapshot(driver: webdriver.Chrome) -> dict[str, str]:
+    result = driver.execute_script(
+        """
+        function value(id) { const el = document.getElementById(id); return el ? String(el.value || '') : null; }
+        function text(id) { const el = document.getElementById(id);
+          return el && el.selectedIndex >= 0 ? el.options[el.selectedIndex].text : null; }
+        if (['_txtDATE', '_selTIMEH', '_selTIMEM', '_selList', '_selList2', '_areDescription', '_areStatus', '_areMan']
+            .some(id => !document.getElementById(id))) return null;
+        return {work_at: value('_txtDATE') + ' ' + value('_selTIMEH') + ':' + value('_selTIMEM'),
+          item: text('_selList'), reason: value('_selList2') ? text('_selList2') : '', description: value('_areDescription'),
+          status: value('_areStatus'), personnel: value('_areMan')};
+        """
+    )
+    if not isinstance(result, dict) or any(value is None for value in result.values()):
+        raise WebDriverException("勤務紀錄表單不完整，無法建立儲存核對內容")
+    return {key: _work_log_text(value) for key, value in result.items()}
+
+
+def _verify_saved_duty_work_log(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest, expected: dict[str, str] | None = None,
+    cancel_check: Callable[[], None] | None = None,
+) -> None:
+    records = _query_duty_work_logs(driver, request, cancel_check=cancel_check)
+    if len(records) != 1:
+        raise RuntimeError("回查未找到唯一的同案件、同車輛工作紀錄")
+    saved = records[0]
+    if expected is not None:
+        if not expected or any(saved.get(key) != value for key, value in expected.items()):
+            raise RuntimeError("回查的勤務內容與儲存前表單不一致")
+        return
+    item = request.duty_item or ("火警" if request.service_type == "disaster" else "救護")
+    people = set(filter(None, re.split(r"[,，、\s]+", saved["personnel"])))
+    return_lines = re.findall(r"(?m)^\s*返隊時間\s*[:：]\s*([^\n]*)", saved["description"])
+    if (saved["item"] != item or saved["status"] != _work_log_text(request.duty_status_text)
+            or (item != "其他類災害" and saved["reason"] != request.case_reason)
+            or people != set(request.personnel) or len(return_lines) != 1
+            or not _valid_work_log_return_time(return_lines[0])):
+        raise RuntimeError("既有勤務內容未吻合任務，暫停新增以避免重複")
 
 
 def _open_vehicle_mileage_page(
@@ -2179,45 +2308,13 @@ def _prepare_vehicle_mileage_form(
             "automatic delete/add is disabled to prevent data loss"
         )
 
-    vehicle_label = vehicle_mileage_record_label(request, artifacts_dir)
-    _report_progress(progress, "選取車輛")
-    _select_vehicle_record(driver, vehicle_label)
-    time.sleep(1)
-    current_matches = _vehicle_mileage_matching_row_indices(driver, request)
-    if len(current_matches) == 1:
-        _report_progress(progress, "確認里程紀錄")
-        return f"{request.vehicle} 車輛里程紀錄已存在，略過新增。"
-    if len(current_matches) > 1:
-        raise WebDriverException(
-            f"multiple current mileage rows: vehicle={request.vehicle} matches={current_matches}"
-        )
-    if previous_request:
-        previous_matches = _vehicle_mileage_matching_row_indices(driver, previous_request)
-        if len(previous_matches) != 1:
-            raise WebDriverException(
-                f"previous mileage row must match exactly once: "
-                f"vehicle={previous_request.vehicle} matches={previous_matches}"
-            )
-        row_index = previous_matches[0]
-        start_mileage = _vehicle_mileage_row_value(driver, row_index, "StartMileage")
-        values = _vehicle_mileage_values(request, start_mileage)
-        _report_progress(progress, "填寫返隊時間與里程")
-        _fill_vehicle_grid_values(driver, values, row_index=row_index)
-        _assert_vehicle_mileage_values_present(driver, values, row_index=row_index)
-        if _save_vehicle_mileage_enabled():
-            _report_progress(progress, "儲存")
-            detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
-            _report_progress(progress, "確認里程紀錄")
-            return f"已修正原車輛里程列。{detail}"
-        return "已修正原車輛里程列，未按儲存。"
-
-    _report_progress(progress, "填寫返隊時間與里程")
     return _add_vehicle_mileage_record(
         driver,
         request,
         artifacts_dir,
         cancel_check=cancel_check,
         progress=progress,
+        previous_request=previous_request,
     )
 
 
@@ -2313,7 +2410,10 @@ def _prepare_fuel_record_form(
     current_matches = _fuel_grid_matching_row_indices(driver, request)
     if len(current_matches) == 1:
         _report_progress(progress, "確認加油紀錄")
-        return f"{request.vehicle} 加油紀錄已存在，略過新增。"
+        detail = _verified_save_detail("加油", "", lambda: _verify_saved_fuel_record(
+            driver, request, artifacts_dir, cancel_check=cancel_check,
+        ))
+        return f"{request.vehicle} 加油紀錄已存在，略過新增；{detail}"
     if len(current_matches) > 1:
         raise WebDriverException(
             f"multiple current fuel rows: vehicle={request.vehicle} matches={current_matches}"
@@ -2333,7 +2433,9 @@ def _prepare_fuel_record_form(
             _report_progress(progress, "儲存")
             detail = _save_fuel_record_form(driver, request, cancel_check=cancel_check)
             _report_progress(progress, "確認加油紀錄")
-            return f"{request.vehicle} 已更新原加油紀錄。{detail}"
+            return _verified_save_detail("加油", detail, lambda: _verify_saved_fuel_record(
+                driver, request, artifacts_dir, cancel_check=cancel_check,
+            ))
         return f"{request.vehicle} 已更新原加油紀錄，未按儲存。"
 
     _report_progress(progress, "填寫加油紀錄")
@@ -2344,8 +2446,46 @@ def _prepare_fuel_record_form(
         _report_progress(progress, "儲存")
         detail = _save_fuel_record_form(driver, request, cancel_check=cancel_check)
         _report_progress(progress, "確認加油紀錄")
-        return detail
+        return _verified_save_detail("加油", detail, lambda: _verify_saved_fuel_record(
+            driver, request, artifacts_dir, cancel_check=cancel_check,
+        ))
     return f"{request.vehicle} 已填寫加油紀錄，未按儲存。"
+
+
+def _verify_saved_fuel_record(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest, artifacts_dir: Path | None = None,
+    cancel_check: Callable[[], None] | None = None,
+) -> None:
+    # Return through the query page so an unsaved Kendo model cannot prove persistence.
+    if cancel_check:
+        cancel_check()
+    driver.get("https://ppe.tyfd.gov.tw/FUC04100/Query")
+    if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
+        raise WebDriverException("加油回查返回登入頁。")
+    period = f"{request.fuel_record.date[:4]}/{request.fuel_record.date[4:6]}"
+    if _ensure_fuel_query_period(driver, period) != period:
+        raise WebDriverException("加油回查月份不符。")
+    _click_fuel_card_register(driver, _fuel_card_labels(request, artifacts_dir))
+    if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):
+        raise WebDriverException("加油回查明細未就緒。")
+    matches = _fuel_grid_matching_row_indices(driver, request)
+    if len(matches) != 1:
+        raise WebDriverException("儲存後查無唯一且內容相符的加油紀錄。")
+    amount = int((Decimal(request.fuel_record.quantity) * Decimal(request.fuel_record.unit_price)).quantize(
+        Decimal("1"), rounding="ROUND_HALF_UP",
+    ))
+    persisted = driver.execute_script(
+        """
+        const grid = window.jQuery && jQuery('#grid').data('kendoGrid');
+        if (!grid) return false;
+        const rows = Array.from(grid.dataSource.data());
+        const row = rows[arguments[0]];
+        return grid.dataSource.total() === rows.length && !!row
+          && Number(row.FCUseID) > 0 && Number(row.FuelAmount) === arguments[1];
+        """, matches[0], amount,
+    )
+    if persisted is not True:
+        raise WebDriverException("加油回查識別碼、金額或完整清單未確認。")
 
 
 def _fuel_query_period(driver: webdriver.Chrome) -> str:
@@ -2826,7 +2966,7 @@ def _save_fuel_record_form(
         return f"{request.vehicle} 已填寫加油紀錄並確認儲存成功：{' / '.join(confirmations)}"
     if confirmations:
         return f"{WAITING_CONFIRMATION_MARKER} fuel save response not recognized: {' / '.join(confirmations)}"
-    return f"{request.vehicle} 已填寫加油紀錄並按下儲存；網站未回報錯誤。"
+    return f"{WAITING_CONFIRMATION_MARKER} {request.vehicle} 加油已按儲存，尚需回查保存結果。"
 
 
 def _add_vehicle_mileage_record(
@@ -2835,10 +2975,11 @@ def _add_vehicle_mileage_record(
     artifacts_dir: Path | None = None,
     cancel_check: Callable[[], None] | None = None,
     progress: Callable[[str], None] | None = None,
+    previous_request: AmbulanceReturnRequest | None = None,
 ) -> str:
     _report_progress(progress, "依案件時間查詢前後里程")
     history = _vehicle_mileage_history(driver, request, artifacts_dir, cancel_check)
-    plan = _vehicle_mileage_backfill_plan(request, history)
+    plan = _vehicle_mileage_entry_plan(request, history, previous_request)
     month = plan["start_at"].strftime("%Y/%m")
     following = plan["following"]
     same_month = following is not None and following["month"] == month
@@ -2846,15 +2987,18 @@ def _add_vehicle_mileage_record(
         int(following["StartMileage"]) != int(plan["end_mileage"])
         or int(following.get("Mileage", -1)) != int(following["EndMileage"]) - int(plan["end_mileage"])
     )
-    if plan["existing"] is not None and not needs_following:
-        return f"{request.vehicle} 車輛里程紀錄已存在，前後里程已確認。"
+    if plan["existing"] is not None and not plan.get("edit_existing") and not needs_following:
+        detail = _verified_save_detail("里程", "", lambda: _verify_vehicle_mileage_backfill(
+            driver, request, plan, month, artifacts_dir, same_month,
+        ))
+        return f"{request.vehicle} 車輛里程紀錄已存在；{detail}"
     if not _save_vehicle_mileage_enabled() and needs_following and not same_month:
         return f"{WAITING_CONFIRMATION_MARKER} 補登需跨月修正後一筆開始里程，未啟用儲存，尚未修改。"
     if cancel_check:
         cancel_check()
     refreshed = _load_vehicle_mileage_month(driver, request, month, artifacts_dir)
-    current_plan = _vehicle_mileage_backfill_plan(
-        request, [row for row in history if row["month"] != month] + refreshed,
+    current_plan = _vehicle_mileage_entry_plan(
+        request, [row for row in history if row["month"] != month] + refreshed, previous_request,
     )
     if current_plan != plan:
         raise WebDriverException("查詢後前後里程已變動，請重新執行。")
@@ -2862,25 +3006,81 @@ def _add_vehicle_mileage_record(
     if not _save_vehicle_mileage_enabled():
         return "已填寫本案及後一筆里程，未按儲存。"
     detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
+    detail = _verified_save_detail("里程", detail, lambda: _verify_vehicle_mileage_backfill(
+        driver, request, plan, month, artifacts_dir, same_month,
+    ))
     if WAITING_CONFIRMATION_MARKER in detail:
         return detail
-    _verify_vehicle_mileage_backfill(driver, request, plan, month, artifacts_dir, same_month)
     if needs_following and not same_month:
         if cancel_check:
             cancel_check()
-        refreshed = _load_vehicle_mileage_month(driver, request, following["month"], artifacts_dir)
-        current_plan = _vehicle_mileage_backfill_plan(
-            request, [row for row in history if row["month"] != following["month"]] + refreshed,
-        )
-        if current_plan != plan:
-            raise WebDriverException("本案已儲存，但後一筆資料已變動，請重新執行。")
-        _write_vehicle_mileage_backfill(driver, request, plan, include_following=True, following_only=True)
-        detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
+        try:
+            refreshed = _load_vehicle_mileage_month(driver, request, following["month"], artifacts_dir)
+            current_plan = _vehicle_mileage_entry_plan(
+                request, [row for row in history if row["month"] != following["month"]] + refreshed, previous_request,
+            )
+            if current_plan != plan:
+                return f"{WAITING_CONFIRMATION_MARKER} 本案已回查，後一筆資料已變動，尚未修正；重試將重新查詢。"
+            _write_vehicle_mileage_backfill(driver, request, plan, include_following=True, following_only=True)
+            detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
+        except (WebDriverException, ManualUpdateRequiredError, ValueError) as exc:
+            return f"{WAITING_CONFIRMATION_MARKER} 本案里程已回查成功，跨月後一筆尚未確認：{exc}；重試將先查已保存紀錄。"
+        detail = _verified_save_detail("後一筆里程", detail, lambda: _verify_vehicle_mileage_backfill(
+            driver, request, plan, following["month"], artifacts_dir, True,
+        ))
         if WAITING_CONFIRMATION_MARKER in detail:
             return detail
-        _verify_vehicle_mileage_backfill(driver, request, plan, following["month"], artifacts_dir, True)
     _report_progress(progress, "本案與後一筆里程已核對")
     return f"{detail} 已依案件時間銜接前後里程。"
+
+
+def _vehicle_mileage_entry_plan(
+    request: AmbulanceReturnRequest, rows: list[dict], previous_request: AmbulanceReturnRequest | None,
+) -> dict:
+    if previous_request is None:
+        return _vehicle_mileage_backfill_plan(request, rows)
+    if previous_request.service_case_date().strftime("%Y/%m") != request.service_case_date().strftime("%Y/%m"):
+        raise ManualUpdateRequiredError("里程開始月份變更需人工搬移原紀錄，停止自動修改。")
+    try:
+        previous_plan = _vehicle_mileage_backfill_plan(previous_request, rows)
+    except WebDriverException:
+        # A prior attempt may have saved the case but not the following month.
+        if previous_request.case_time != request.case_time or previous_request.service_case_date().date() != request.service_case_date().date():
+            raise ManualUpdateRequiredError("原里程紀錄已無法定位且案件時間變更，請人工確認正式紀錄編號。")
+        current_plan = _vehicle_mileage_backfill_plan(request, rows)
+        if current_plan["existing"] is None:
+            raise WebDriverException("查無唯一的原里程紀錄或已更新紀錄，停止修改。")
+        return current_plan
+    existing = previous_plan["existing"]
+    if existing is None:
+        if previous_request.case_time != request.case_time:
+            raise ManualUpdateRequiredError("查無原里程紀錄且案件時間變更，請人工確認。")
+        current_plan = _vehicle_mileage_backfill_plan(request, rows)
+        if current_plan["existing"] is None:
+            raise WebDriverException("查無唯一的原里程紀錄，停止修改。")
+        return current_plan
+    try:
+        current_plan = _vehicle_mileage_backfill_plan(request, rows)
+    except WebDriverException:
+        current_plan = None
+    if current_plan and current_plan["existing"] is not None:
+        current = current_plan["existing"]
+        if (current["month"], str(current["Id"])) != (existing["month"], str(existing["Id"])):
+            raise WebDriverException("新時間對應不同正式里程紀錄，停止修改。")
+        return current_plan
+    remaining = [row for row in rows if (row["month"], str(row["Id"])) != (existing["month"], str(existing["Id"]))]
+    plan = _vehicle_mileage_backfill_plan(request, remaining)
+    if plan["existing"] is not None:
+        raise WebDriverException("新時間已有其他里程紀錄，停止修改。")
+    if plan["start_at"].strftime("%Y/%m") != existing["month"]:
+        raise ManualUpdateRequiredError("調整後里程開始月份變更，請人工搬移原紀錄。")
+    for key in ("previous", "following"):
+        old, new = previous_plan[key], plan[key]
+        if (None if old is None else (old["month"], str(old["Id"]))) != (None if new is None else (new["month"], str(new["Id"]))):
+            raise ManualUpdateRequiredError("里程修改會改變前後紀錄順序，請人工核對。")
+    plan["existing"] = existing
+    plan["edit_existing"] = True
+    return plan
 
 
 def _mileage_record_datetime(row: dict, prefix: str) -> datetime:
@@ -3073,11 +3273,21 @@ def _write_vehicle_mileage_backfill(
     )
     if result is not True:
         raise WebDriverException("里程資料已變動或識別不唯一，停止修改。")
-    if not following_only and plan["existing"] is None:
-        _add_vehicle_mileage_row(driver)
+    if not following_only and (plan["existing"] is None or plan.get("edit_existing")):
+        row_index = 0
+        if plan["existing"] is None:
+            _add_vehicle_mileage_row(driver)
+        else:
+            row_index = driver.execute_script(
+                "const rows = Array.from($('#grid').data('kendoGrid').dataSource.data()); "
+                "return rows.findIndex(row => String(row.Id) === String(arguments[0]));",
+                plan["existing"]["Id"],
+            )
+            if not isinstance(row_index, int) or row_index < 0:
+                raise WebDriverException("原里程列已變動，停止修改。")
         values = _vehicle_mileage_values(request, plan["start_mileage"], start_at=plan["start_at"])
-        _fill_vehicle_grid_values(driver, values)
-        _assert_vehicle_mileage_values_present(driver, values)
+        _fill_vehicle_grid_values(driver, values, row_index=row_index)
+        _assert_vehicle_mileage_values_present(driver, values, row_index=row_index)
     if include_following and plan["following"]:
         result = driver.execute_script(
             """
@@ -3107,8 +3317,10 @@ def _verify_vehicle_mileage_backfill(
             raise WebDriverException("儲存後查無唯一的本案里程紀錄。")
         matches = [row for row in rows if _mileage_record_datetime(row, "Start") ==
                    plan["start_at"]]
-        if len(matches) != 1 or str(matches[0]["StartMileage"]) != plan["start_mileage"]:
-            raise WebDriverException("儲存後本案開始里程不符。")
+        if (len(matches) != 1 or str(matches[0]["StartMileage"]) != plan["start_mileage"]
+                or int(matches[0].get("Mileage", -1)) != int(plan["end_mileage"]) - int(plan["start_mileage"])
+                or (plan["existing"] and str(matches[0]["Id"]) != str(plan["existing"]["Id"]))):
+            raise WebDriverException("儲存後本案里程或識別碼不符。")
     if include_following and plan["following"]:
         following = plan["following"]
         matches = [row for row in rows if str(row["Id"]) == str(following["Id"])]
@@ -3258,14 +3470,9 @@ def _prepare_disinfection_record(
         _report_progress(progress, "確認消毒紀錄")
         if confirmation == "failure":
             raise WebDriverException(f"disinfection save rejected: {' / '.join(confirmations)}")
-        if confirmation == "success":
-            return f"disinfection items updated={updated}; saved and confirmed. {' / '.join(confirmations)}"
-        if confirmations:
-            return (
-                f"{WAITING_CONFIRMATION_MARKER} disinfection save response not recognized: "
-                f"{' / '.join(confirmations)}"
-            )
-        return f"disinfection items updated={updated}; saved; site reported no error."
+        return _verified_save_detail("消毒", " / ".join(confirmations), lambda: _verify_saved_disinfection_record(
+            driver, request, cancel_check=cancel_check,
+        ))
     return f"disinfection items updated={updated}; not saved."
 
 def _switch_to_disinfection_content_if_present(driver: webdriver.Chrome) -> None:
@@ -3508,7 +3715,7 @@ def _effective_disinfection_items(items: list[str]) -> list[str]:
     return cleaned
 
 
-def _set_disinfection_item_statuses(driver: webdriver.Chrome, items: list[str], status_text: str) -> int:
+def _disinfection_item_ids(items: list[str]) -> list[int]:
     item_ids = {
         '\u6551\u8b77\u8eca\u9ad4': 1,
         '\u64d4\u67b6\u5e8a': 2,
@@ -3542,7 +3749,48 @@ def _set_disinfection_item_statuses(driver: webdriver.Chrome, items: list[str], 
         '\u9ad8\u6551\u5305(\u542b\u5167\u5bb9\u7269)': 30,
         '\u5927\u91cf\u50b7\u75c5\u60a3\u4e8b\u4ef6\u5668\u6750\u5305(\u542b\u5167\u5bb9\u7269)': 31,
     }
-    selected_ids = [item_ids[item] for item in items if item in item_ids]
+    return [item_ids[item] for item in items if item in item_ids]
+
+
+def _verify_saved_disinfection_record(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest,
+    cancel_check: Callable[[], None] | None = None,
+) -> None:
+    if cancel_check:
+        cancel_check()
+    driver.switch_to.default_content()
+    driver.get(_ems_ap_url(EMS_DISINFECTION_AP))
+    _switch_to_disinfection_content_if_present(driver)
+    _wait_for_disinfection_query_fields(driver)
+    _assert_disinfection_not_login(driver, "readback query")
+    _set_disinfection_query_date(driver, _disinfection_query_date(request))
+    if not _click_disinfection_query(driver):
+        raise WebDriverException("消毒回查查詢按鈕不存在。")
+    _wait_for_disinfection_query_completed(driver)
+    case_at = _disinfection_case_at(request)
+    case_time = case_at.strftime("%H%M") if case_at else request.case_time
+    if not _open_disinfection_detail_for_case(driver, case_time, request.vehicle, case_at=case_at):
+        raise WebDriverException("消毒回查找不到唯一的同案同車紀錄。")
+    _wait_for_disinfection_detail_ready(driver)
+    _assert_disinfection_not_login(driver, "readback detail")
+    items = _effective_disinfection_items(request.disinfection_items)
+    ids = _disinfection_item_ids(items)
+    if not ids or len(ids) != len(items):
+        raise WebDriverException("消毒回查品項無法完整辨識。")
+    saved = driver.execute_script(
+        """
+        return arguments[0].every(id => {
+          const el = document.getElementById(`_selIVBALL_${id}`);
+          return !!el && String(el.value) === '1';
+        });
+        """, ids,
+    )
+    if saved is not True:
+        raise WebDriverException("消毒回查品項與填寫內容不符。")
+
+
+def _set_disinfection_item_statuses(driver: webdriver.Chrome, items: list[str], status_text: str) -> int:
+    selected_ids = _disinfection_item_ids(items)
     if not selected_ids:
         return 0
     return int(
@@ -3714,7 +3962,7 @@ def _save_vehicle_mileage_form(
         return f"\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u3001\u6309\u4e0b\u5132\u5b58\u4e26\u6309\u4e0b\u78ba\u8a8d\uff1a{' / '.join(confirmations)}"
     if confirmations:
         return f"{WAITING_CONFIRMATION_MARKER} vehicle mileage save response not recognized: {' / '.join(confirmations)}"
-    return "\u5df2\u586b\u5beb\u8eca\u8f1b\u91cc\u7a0b\u4e26\u6309\u4e0b\u5132\u5b58\uff1b\u7db2\u7ad9\u672a\u56de\u5831\u932f\u8aa4\u3002"
+    return f"{WAITING_CONFIRMATION_MARKER} 已填寫車輛里程並按下儲存，尚需回查保存結果。"
 
 
 def _confirmation_aware_status(site_key: str, detail: str, *, save_enabled: bool, prefilled_status: str) -> str:
@@ -3723,6 +3971,16 @@ def _confirmation_aware_status(site_key: str, detail: str, *, save_enabled: bool
     if WAITING_CONFIRMATION_MARKER in str(detail or ""):
         return f"{site_key}_waiting_confirmation"
     return f"{site_key}_saved"
+
+
+def _verified_save_detail(site_label: str, detail: str, verify: Callable[[], None]) -> str:
+    try:
+        verify()
+    except TaskCancellationError:
+        raise
+    except (WebDriverException, RuntimeError, ValueError) as exc:
+        return f"{WAITING_CONFIRMATION_MARKER} {site_label}已嘗試儲存，但回查尚未確認：{exc}；重試前須先查既有紀錄。"
+    return f"{site_label}已重新查詢並核對儲存內容。"
 
 
 def _save_confirmation_state(*messages: str) -> str:

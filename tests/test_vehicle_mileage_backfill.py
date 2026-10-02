@@ -238,18 +238,19 @@ class MileageBackfillTests(unittest.TestCase):
         self.assertEqual([], writes)
         self.assertEqual(0, saves)
 
-    def test_unknown_save_response_does_not_advance_to_next_month(self):
+    def test_unconfirmed_readback_does_not_advance_to_next_month(self):
         after = record(2, "1200", "1300", 10000, 10050, "2026/10")
         after.update(StartDay="20261001", EndDay="20261001")
         with patch.object(runtime, "_vehicle_mileage_history", return_value=[record(1, "0800", "0900", 9980, 10000), after]), \
              patch.object(runtime, "_load_vehicle_mileage_month", return_value=[record(1, "0800", "0900", 9980, 10000)]), \
              patch.object(runtime, "_write_vehicle_mileage_backfill") as write, \
-             patch.object(runtime, "_verify_vehicle_mileage_backfill") as verify, \
+             patch.object(runtime, "_verify_vehicle_mileage_backfill", side_effect=runtime.WebDriverException("not saved")) as verify, \
              patch.object(runtime, "_save_vehicle_mileage_enabled", return_value=True), \
              patch.object(runtime, "_save_vehicle_mileage_form", return_value=runtime.WAITING_CONFIRMATION_MARKER):
-            runtime._add_vehicle_mileage_record(object(), self.request())
+            detail = runtime._add_vehicle_mileage_record(object(), self.request())
             self.assertEqual(1, write.call_count)
-            verify.assert_not_called()
+            verify.assert_called_once()
+            self.assertIn(runtime.WAITING_CONFIRMATION_MARKER, detail)
 
     def test_cross_day_and_roc_dates_use_previous_month_end(self):
         before = record(1, "2300", "0030", 9980, 10000, "2026/08")
@@ -299,6 +300,7 @@ class ScriptDriver:
         const grid = {dataSource: {data: () => rows, total: () => rows.length}, refresh() {}};
         global.window = global;
         global.$ = () => ({data: () => grid});
+        global.jQuery = global.$;
         const result = new Function(input.script)(...input.args);
         process.stdout.write(JSON.stringify({result, rows}));
         """
@@ -308,6 +310,114 @@ class ScriptDriver:
         output = json.loads(result.stdout)
         self.rows = output["rows"]
         return output["result"]
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js required for browser-script tests")
+class MileageEditTests(unittest.TestCase):
+    def test_edit_rejects_moving_case_to_another_month(self):
+        previous = MileageBackfillTests().request()
+        current = AmbulanceReturnRequest.from_dict(previous.to_dict())
+        current.case_date = "2026/10/07"
+        with self.assertRaises(runtime.ManualUpdateRequiredError):
+            runtime._vehicle_mileage_entry_plan(current, self.records(), previous)
+
+    def test_retry_wrong_own_distance_remains_waiting(self):
+        rows = self.records()
+        rows[1].update(EndMileage=10030, Mileage=999)
+        rows[2].update(StartMileage=10030, Mileage=20)
+        _, detail, saves = self.run_edit(rows)
+        self.assertIn(runtime.WAITING_CONFIRMATION_MARKER, detail)
+        self.assertEqual(0, saves)
+
+    def test_edit_does_not_accept_another_record_at_the_new_time(self):
+        previous = MileageBackfillTests().request()
+        current = AmbulanceReturnRequest.from_dict(previous.to_dict())
+        current.case_time, current.return_time, current.mileage = "1200", "1230", "10030"
+        rows = self.records()[:2] + [record(4, "1200", "1230", 10020, 10030)]
+        with self.assertRaises(runtime.WebDriverException):
+            runtime._vehicle_mileage_entry_plan(current, rows, previous)
+
+    def run_edit(self, records, *, mileage="10030", return_time="1100", case_time="1000", save=True, fail_on_save=None):
+        from copy import deepcopy
+        previous = MileageBackfillTests().request()
+        current = AmbulanceReturnRequest.from_dict(previous.to_dict())
+        current.mileage, current.return_time, current.case_time = mileage, return_time, case_time
+        persisted = deepcopy(records)
+        driver = ScriptDriver(deepcopy([row for row in records if row["month"] == "2026/09"]))
+        driver.get = lambda url: None
+        def load(d, r, month, artifacts=None):
+            d.rows = deepcopy([row for row in persisted if row["month"] == month])
+            return deepcopy(d.rows)
+        save_attempts = []
+        def persist(d, **kwargs):
+            save_attempts.append(1)
+            if len(save_attempts) == fail_on_save:
+                raise runtime.WebDriverException("synthetic save connection lost")
+            for row in d.rows:
+                index = next(i for i, old in enumerate(persisted) if old["Id"] == row["Id"])
+                persisted[index] = deepcopy(row)
+            return "saved"
+        with patch.object(runtime, "_wait_for_ppe_vehicle_mileage_page", return_value=True), \
+             patch.object(runtime, "_click_text_if_present"), patch.object(runtime.time, "sleep"), \
+             patch.object(runtime, "_select_vehicle_record"), \
+             patch.object(runtime, "_vehicle_mileage_history", side_effect=lambda *args: deepcopy(persisted)), \
+             patch.object(runtime, "_load_vehicle_mileage_month", side_effect=load), \
+             patch.object(runtime, "_vehicle_mileage_driver_value", return_value="synthetic-driver"), \
+             patch.object(runtime, "_save_vehicle_mileage_enabled", return_value=save), \
+             patch.object(runtime, "_save_vehicle_mileage_form", side_effect=persist) as saves:
+            detail = runtime._prepare_vehicle_mileage_form(driver, current, update_context={"previous_task": previous.to_dict()})
+        return persisted, detail, saves.call_count
+
+    def records(self):
+        return [record(1, "0800", "0900", 9980, 10000),
+                record(3, "1000", "1100", 10000, 10020),
+                record(2, "1200", "1300", 10020, 10050)]
+
+    def test_edit_repairs_following_start_and_distance(self):
+        rows, detail, saves = self.run_edit(self.records())
+        self.assertEqual((10030, 10030, 20), (rows[1]["EndMileage"], rows[2]["StartMileage"], rows[2]["Mileage"]))
+        self.assertEqual(1, saves)
+        self.assertNotIn(runtime.WAITING_CONFIRMATION_MARKER, detail)
+
+    def test_clamped_start_edit_preserves_actual_start_and_repairs_following(self):
+        rows = self.records()
+        rows[0]["EndTime"], rows[1]["StartTime"] = "1005", "1005"
+        saved, _, _ = self.run_edit(rows)
+        self.assertEqual("1005", saved[1]["StartTime"])
+        self.assertEqual(10030, saved[2]["StartMileage"])
+
+    def test_retry_repairs_following_after_case_was_already_saved(self):
+        rows = self.records()
+        rows[1].update(EndMileage=10030, Mileage=30)
+        saved, _, saves = self.run_edit(rows)
+        self.assertEqual(10030, saved[2]["StartMileage"])
+        self.assertEqual(1, saves)
+
+    def test_edit_rejects_end_mileage_beyond_following_end(self):
+        with self.assertRaises(runtime.WebDriverException):
+            self.run_edit(self.records(), mileage="10060")
+
+    def test_edit_rejects_time_overlap_with_following(self):
+        with self.assertRaises(runtime.WebDriverException):
+            self.run_edit(self.records(), return_time="1230")
+
+    def test_edit_repairs_following_in_next_month(self):
+        rows = self.records()
+        rows[2].update(StartDay="20261001", EndDay="20261001", month="2026/10")
+        saved, _, saves = self.run_edit(rows)
+        self.assertEqual((10030, 20), (saved[2]["StartMileage"], saved[2]["Mileage"]))
+        self.assertEqual(2, saves)
+
+    def test_cross_month_partial_failure_retries_without_duplicate_case(self):
+        rows = self.records()
+        rows[2].update(StartDay="20261001", EndDay="20261001", month="2026/10")
+        partial, detail, _ = self.run_edit(rows, fail_on_save=2)
+        self.assertIn(runtime.WAITING_CONFIRMATION_MARKER, detail)
+        self.assertEqual((10030, 10020), (partial[1]["EndMileage"], partial[2]["StartMileage"]))
+        complete, detail, _ = self.run_edit(partial)
+        self.assertEqual(3, len(complete))
+        self.assertEqual((10030, 10030, 20), (complete[1]["EndMileage"], complete[2]["StartMileage"], complete[2]["Mileage"]))
+        self.assertNotIn(runtime.WAITING_CONFIRMATION_MARKER, detail)
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js required for browser-script tests")

@@ -123,7 +123,9 @@ class DutyWorkLogReturnTimeTests(unittest.TestCase):
             selenium_local, "_fill_duty_work_log_values", return_value=["工作概述返隊時間"]
         ), patch.object(selenium_local, "_save_artifacts"), patch.object(
             selenium_local, "_save_duty_work_log_enabled", return_value=True
-        ), patch.object(selenium_local, "_click_duty_work_log_save") as save, patch.object(selenium_local.time, "sleep"):
+        ), patch.object(selenium_local, "_click_duty_work_log_save") as save, patch.object(
+            selenium_local, "_query_duty_work_logs", return_value=[]
+        ), patch.object(selenium_local.time, "sleep"):
             result = selenium_local._prepare_duty_work_log_form(
                 driver, self.request, Path("artifacts"), Path("summary.txt"),
             )
