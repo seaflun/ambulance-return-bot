@@ -460,16 +460,16 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["failure_stage"], "工作紀錄回查")
         self.assertIn("回查不到", payload["failure_reason"])
 
-    def test_connection_timeout_points_to_page_wait(self):
+    def test_connection_timeout_points_to_network_check(self):
         payload = diagnostic_payload(
             "consumables",
             "consumables_failed",
             "一站通耗材: Message: unknown error: net::ERR_CONNECTION_TIMED_OUT",
         )
 
-        self.assertEqual(payload["exception_type"], "web_page_timeout")
+        self.assertEqual(payload["exception_type"], "network_connection")
         self.assertEqual(payload["failure_stage"], "開啟耗材紀錄")
-        self.assertIn("載入", payload["failure_reason"])
+        self.assertIn("連線", payload["failure_reason"])
 
     def test_fuel_card_not_found_is_not_classified_as_login_failure(self):
         payload = diagnostic_payload(
@@ -507,17 +507,17 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("尚未在救護平板結案", payload["failure_reason"])
         self.assertIn("請先去救護平板結案", payload["next_action"])
 
-    def test_disinfection_missing_detail_points_to_tablet_closure(self):
+    def test_disinfection_missing_detail_is_not_proof_of_tablet_closure(self):
         payload = diagnostic_payload(
             "disinfection",
             "disinfection_failed",
             "消毒紀錄操作失敗：Message: missing disinfection detail for case time 2000",
         )
 
-        self.assertEqual(payload["exception_type"], "case_not_closed")
+        self.assertEqual(payload["exception_type"], "case_detail")
         self.assertEqual(payload["failure_stage"], "開啟消毒紀錄")
-        self.assertIn("尚未在救護平板結案", payload["failure_reason"])
-        self.assertIn("請先去救護平板結案", payload["next_action"])
+        self.assertNotIn("尚未在救護平板結案", payload["failure_reason"])
+        self.assertIn("時間", payload["next_action"])
 
     def test_consumable_missing_case_row_with_login_prefix_points_to_tablet_closure(self):
         payload = diagnostic_payload(
@@ -531,17 +531,26 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("尚未在救護平板結案", payload["failure_reason"])
         self.assertIn("請先去救護平板結案", payload["next_action"])
 
-    def test_disinfection_missing_detail_with_login_prefix_points_to_tablet_closure(self):
+    def test_disinfection_missing_detail_with_login_prefix_is_not_closure_proof(self):
         payload = diagnostic_payload(
             "disinfection",
             "disinfection_failed",
             "緊急救護消毒: 登入帳號：消毒=公務電腦同步帳號。消毒紀錄操作失敗：Message: missing disinfection detail for case time 2047",
         )
 
-        self.assertEqual(payload["exception_type"], "case_not_closed")
+        self.assertEqual(payload["exception_type"], "case_detail")
         self.assertEqual(payload["failure_stage"], "開啟消毒紀錄")
-        self.assertIn("尚未在救護平板結案", payload["failure_reason"])
-        self.assertIn("請先去救護平板結案", payload["next_action"])
+        self.assertNotIn("尚未在救護平板結案", payload["failure_reason"])
+        self.assertIn("時間", payload["next_action"])
+
+    def test_browser_network_marker_is_not_a_query_or_closure_failure(self):
+        payload = diagnostic_payload(
+            "vehicle_mileage", "vehicle_mileage_failed",
+            "query failed [browser_failure:network_connection]",
+        )
+        self.assertEqual(payload["exception_type"], "network_connection")
+        self.assertIn("連線", payload["failure_reason"])
+        self.assertIn("確認", payload["next_action"])
 
     def test_disinfection_empty_query_with_login_prefix_points_to_tablet_closure(self):
         payload = diagnostic_payload(

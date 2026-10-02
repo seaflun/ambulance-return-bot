@@ -249,6 +249,8 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     computed = diagnostic_payload(site_key, status, detail)
     prefer_computed = computed["exception_type"] in {
         "case_not_closed",
+        "case_detail",
+        "network_connection",
         "ppe_driver",
         "web_renderer_timeout",
         "web_page_timeout",
@@ -340,6 +342,7 @@ def _diagnostic_category(
     if "prefilled" in status or "ready" in status or "captcha" in status or "未按儲存" in raw_detail:
         return "waiting_confirmation"
     for browser_category in (
+        "network_connection",
         "web_renderer_timeout",
         "web_page_timeout",
         "chrome_unresponsive",
@@ -350,7 +353,7 @@ def _diagnostic_category(
     if "timed out receiving message from renderer" in text:
         return "renderer_timeout_unverified"
     if "err_connection_timed_out" in text:
-        return "web_page_timeout"
+        return "network_connection"
     if "stale element reference" in text or "staleelementreferenceexception" in text:
         return "stale_element"
     if (
@@ -385,7 +388,7 @@ def _diagnostic_category(
         return "multi_patient_consumables"
     if (
         "耗材列表找不到符合案件的內容列" in analysis_detail
-        or "missing disinfection detail" in text
+        or "missing disinfection detail: query returned no data" in text
         or ("耗材儲存後讀回不一致" in analysis_detail and "actual=[]" in analysis_detail)
     ):
         return "case_not_closed"
@@ -474,7 +477,7 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return stage
     if category in {"chrome_session", "chrome_unresponsive", "chromedriver_ended"}:
         return "啟動 Chrome"
-    if category in {"web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified"}:
+    if category in {"network_connection", "web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified"}:
         return (
             CIVILPOWER_STAGE_LABELS["io_add"]
             if site_key == "volunteer_assist"
@@ -599,7 +602,8 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "login": "登入、帳密、SSO 或驗證碼尚未完成。",
         "case_not_found": "系統清單內找不到符合本案件時間或地址的資料。",
         "case_not_closed": "案件可能尚未在救護平板結案，耗材或消毒明細尚未產生。",
-        "case_detail": "找到清單後無法開啟該案件的明細頁。",
+        "case_detail": "消毒清單未找到唯一匹配的同案同車明細，或明細未能開啟。",
+        "network_connection": "網站連線逾時或中斷；請確認分隊網路與該站連線。",
         "vehicle_not_found": "頁面內找不到任務指定的救護車。",
         "civilpower_selection": "民力系統選取視窗在期限內找不到符合條件的案件、出勤登記或人員。",
         "civilpower_io_query": "民力出入登記簿查詢結果尚未完成更新，程式未安全判定既有紀錄。",
@@ -627,6 +631,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return f"在公務電腦確認{site_name}資料無誤後手動儲存；若要重跑，請回可操作的本機任務頁重新執行該站。"
     if category == "chrome_session":
         return "關閉殘留 Chrome/ChromeDriver，重啟 worker，再重新登打。"
+    if category == "network_connection":
+        return "網路恢復後先重新查詢，確認是否已保存，再單獨重跑；不要直接重複儲存。"
     if category == "web_renderer_timeout":
         return f"保留截圖，重新整理{site_name}頁面後單獨重跑；若持續發生再重啟 Chrome。"
     if category == "web_page_timeout":
@@ -664,7 +670,7 @@ def _next_action_for(site_key: str, category: str) -> str:
     if category == "case_not_closed":
         return "請先去救護平板結案，完成後再回本頁按「單獨登打」重試。"
     if category == "case_detail":
-        return "保留目前清單畫面，先人工開啟明細；若仍無法開啟，回報該站頁面變更。"
+        return "核對消毒清單的日期、時間與車輛；有多筆候選時請人工確認明細，不要重複新增。"
     if category == "vehicle_not_found":
         if site_key == "consumables":
             return "確認案件已結案且患者頁含任務車輛後，再單獨重跑耗材。"

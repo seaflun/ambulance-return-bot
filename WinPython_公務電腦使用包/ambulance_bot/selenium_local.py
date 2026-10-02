@@ -3641,12 +3641,11 @@ def _select_disinfection_detail_row(
     digits = normalize_hhmm_local(case_time)
     variants = [digits, f"{digits[:2]}:{digits[2:]}"] if len(digits) == 4 else []
     matches: list[int] = []
+    minute_matches: list[int] = []
     for fallback_index, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         text = str(row.get("text") or "")
-        if case_at and not _disinfection_text_matches_case_at(text, case_at):
-            continue
         if variants and not any(variant in text for variant in variants):
             continue
         if vehicle and not _disinfection_text_matches_vehicle(text, vehicle):
@@ -3655,14 +3654,22 @@ def _select_disinfection_detail_row(
             row_index = int(row.get("index"))
         except (TypeError, ValueError):
             row_index = fallback_index
+        if case_at:
+            if not _disinfection_text_matches_case_at(text, case_at, match_seconds=False):
+                continue
+            minute_matches.append(row_index)
+            if not _disinfection_text_matches_case_at(text, case_at):
+                continue
         matches.append(row_index)
-    return matches[0] if len(matches) == 1 else None
+    if matches:
+        return matches[0] if len(matches) == 1 else None
+    return minute_matches[0] if case_at and vehicle and len(minute_matches) == 1 else None
 
 
-def _disinfection_text_matches_case_at(text: str, case_at: datetime) -> bool:
+def _disinfection_text_matches_case_at(text: str, case_at: datetime, *, match_seconds: bool = True) -> bool:
     timestamps = re.findall(r"\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}", text)
-    expected = case_at.strftime("%Y/%m/%d %H:%M:%S")
-    return any(" ".join(value.replace("-", "/").split()) == expected for value in timestamps)
+    expected = case_at.strftime("%Y/%m/%d %H:%M:%S" if match_seconds else "%Y/%m/%d %H:%M")
+    return any(" ".join(value.replace("-", "/").split())[:len(expected)] == expected for value in timestamps)
 
 
 def _disinfection_text_matches_vehicle(text: str, vehicle: str) -> bool:

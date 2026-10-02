@@ -125,13 +125,25 @@ def probe_browser_runtime(driver: Any) -> dict[str, Any]:
     }
 
 
+def _network_error_code(text: object) -> str:
+    match = re.search(
+        r"\bERR_(?:CONNECTION_TIMED_OUT|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED|"
+        r"NAME_NOT_RESOLVED|ADDRESS_UNREACHABLE|CONNECTION_RESET|CONNECTION_REFUSED)\b",
+        str(text or ""), re.IGNORECASE,
+    )
+    return match.group(0).upper() if match else ""
+
+
 def classify_browser_failure(exception: BaseException | None, probe: dict[str, Any]) -> dict[str, str]:
     text = str(exception or "").lower()
     chromedriver_alive = probe.get("chromedriver_alive")
     devtools_reachable = probe.get("devtools_reachable")
+    network_error = _network_error_code(exception) or _network_error_code(probe.get("network_error"))
 
     if chromedriver_alive is False:
         category = "chromedriver_ended"
+    elif network_error:
+        category = "network_connection"
     elif (
         devtools_reachable is False
         or "not connected to devtools" in text
@@ -153,6 +165,10 @@ def classify_browser_failure(exception: BaseException | None, probe: dict[str, A
         category = ""
 
     descriptions = {
+        "network_connection": (
+            "網站連線逾時或中斷；請確認分隊網路與該站連線。",
+            "網路恢復後先重新查詢，確認是否已保存，再單獨重跑；不要直接重複儲存。",
+        ),
         "web_renderer_timeout": (
             "網頁轉譯程序逾時；Chrome 與 ChromeDriver 仍可連線，較可能是該網頁卡住。",
             "保留截圖，重新整理該站頁面後單獨重跑；若持續發生再重啟 Chrome。",
@@ -315,8 +331,17 @@ def capture_failure_artifacts(
 
         html_path = output_dir / f"{stem}.html"
         try:
-            html_path.write_text(str(driver.page_source or ""), encoding="utf-8")
+            page_source = str(driver.page_source or "")
+            html_path.write_text(page_source, encoding="utf-8")
             evidence["html_path"] = str(html_path)
+            error_element = re.search(
+                r"""<[^>]+(?:class|id)\s*=\s*["'][^"']*\berror-code\b[^>]*>([^<]*)""",
+                page_source, re.IGNORECASE,
+            )
+            if error_element:
+                evidence["network_error"] = _network_error_code(error_element.group(1))
+                if evidence["network_error"]:
+                    evidence.update(classify_browser_failure(exception, evidence))
         except Exception as exc:
             evidence["html_error"] = f"{exc.__class__.__name__}: {exc}"
 

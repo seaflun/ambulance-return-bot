@@ -46,6 +46,33 @@ class _FakeDriver:
 
 
 class FailureEvidenceTests(unittest.TestCase):
+    def test_explicit_network_codes_do_not_mean_chrome_disconnected(self):
+        for code in ("ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED", "ERR_NAME_NOT_RESOLVED"):
+            with self.subTest(code=code):
+                diagnosis = classify_browser_failure(
+                    RuntimeError(f"net::{code}"),
+                    {"chromedriver_alive": True, "devtools_reachable": True},
+                )
+                self.assertEqual(diagnosis["category"], "network_connection")
+
+    def test_capture_network_error_page_overrides_generic_query_failure(self):
+        driver = _FakeDriver(page_source=(
+            '<html><script>const example="ERR_NETWORK_CHANGED";</script>'
+            '<div class="error-code">ERR_CONNECTION_TIMED_OUT</div></html>'
+        ))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            failure_evidence_module, "probe_browser_runtime",
+            return_value={"chromedriver_alive": True, "devtools_reachable": True},
+        ):
+            evidence = capture_failure_artifacts(
+                driver, Path(tmp), "network-fixture", "vehicle_mileage",
+                exception=RuntimeError("query failed"),
+            )
+        self.assertEqual(evidence["category"], "network_connection")
+        self.assertEqual(evidence["network_error"], "ERR_CONNECTION_TIMED_OUT")
+        self.assertIn("連線", evidence["reason"])
+        self.assertIn("確認", evidence["next_action"])
+
     def test_browser_session_recovery_attempts_are_bounded_and_disableable(self):
         with patch.dict(
             failure_evidence_module.os.environ,

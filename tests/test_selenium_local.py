@@ -1942,6 +1942,38 @@ class SeleniumLocalTests(unittest.TestCase):
         request.case_id = "20261330225845015"
         self.assertEqual(_disinfection_query_date(request), "2026-10-01")
 
+    def test_disinfection_unique_same_minute_vehicle_allows_different_seconds(self):
+        case_at = datetime(2026, 8, 7, 14, 18, 22)
+        rows = [{"index": 3, "text": "2026/08/07 14:18:28 新坡95 明細"}]
+        self.assertEqual(selenium_local_module._select_disinfection_detail_row(
+            rows, "1418", "新坡95", case_at=case_at,
+        ), 3)
+
+    def test_disinfection_second_fallback_rejects_ambiguous_or_wrong_identity(self):
+        case_at = datetime(2026, 8, 7, 14, 18, 22)
+        row = {"index": 3, "text": "2026/08/07 14:18:28 新坡95 明細"}
+        for rows, vehicle in (
+            ([row, {"index": 4, "text": "2026/08/07 14:18:35 新坡95 明細"}], "新坡95"),
+            ([row], "新坡92"),
+            ([row], ""),
+            ([{"index": 3, "text": "2026/08/08 14:18:28 新坡95 明細"}], "新坡95"),
+            ([{"index": 3, "text": "2026/08/07 14:19:28 新坡95 明細"}], "新坡95"),
+        ):
+            with self.subTest(rows=rows, vehicle=vehicle):
+                self.assertIsNone(selenium_local_module._select_disinfection_detail_row(
+                    rows, "1418", vehicle, case_at=case_at,
+                ))
+
+    def test_disinfection_exact_seconds_take_priority_over_minute_fallback(self):
+        case_at = datetime(2026, 8, 7, 14, 18, 22)
+        rows = [
+            {"index": 3, "text": "2026/08/07 14:18:28 新坡95 明細"},
+            {"index": 4, "text": "2026/08/07 14:18:22 新坡95 明細"},
+        ]
+        self.assertEqual(selenium_local_module._select_disinfection_detail_row(
+            rows, "1418", "新坡95", case_at=case_at,
+        ), 4)
+
     def test_disinfection_case_id_match_rejects_duplicate_vehicle_records(self):
         case_at = datetime(2026, 9, 30, 22, 58, 45)
         rows = [
