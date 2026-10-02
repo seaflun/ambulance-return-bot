@@ -4,6 +4,18 @@ from ambulance_bot.site_diagnostics import diagnostic_payload, merge_diagnostic_
 
 
 class SiteDiagnosticsTests(unittest.TestCase):
+    def test_duty_prequery_stop_has_lookup_diagnostics_including_legacy_records(self):
+        site = {"key": "duty_work_log", "status": "duty_work_log_waiting_confirmation",
+                "detail": "勤務紀錄新增前無法確認是否已有相同案件與車輛：同案件已有工作紀錄，但無法確認車輛；請人工核對；暫停新增，避免重複。",
+                "failure_stage": "儲存", "failure_reason": "尚未完成儲存確認。",
+                "next_action": "請手動儲存", "exception_type": "waiting_confirmation"}
+        fields = merge_diagnostic_fields(site)
+        self.assertEqual("duty_prequery", fields["exception_type"])
+        self.assertEqual("查詢既有工作紀錄", fields["failure_stage"])
+        self.assertIn("尚未新增", fields["failure_reason"])
+        self.assertIn("勤務項目", fields["next_action"])
+        self.assertNotIn("手動儲存", fields["next_action"])
+
     def test_waiting_confirmation_status_has_save_stage_and_no_five_site_wording(self):
         payload = diagnostic_payload(
             "vehicle_mileage",

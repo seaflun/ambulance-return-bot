@@ -1568,6 +1568,31 @@ def _work_log_text(value: object) -> str:
     return html.unescape(re.sub(r"<br\s*/?>", "\n", str(value or ""), flags=re.I)).replace("\r\n", "\n").strip()
 
 
+def _work_log_vehicle_labels(status: str, known_vehicles: set[str]) -> set[str]:
+    lines = status.split("\n")
+    first_line = re.sub(r"^\s*\d+\.\s*", "", lines[0]).strip()
+    for line in lines[1:]:
+        for extra in re.finditer(r"(?:^|[\s、])(?:\d+\.)?([^\s:：]+?)(?:司機)?\s*[:：]", line):
+            label = extra.group(1)
+            if label in known_vehicles or re.fullmatch(r"[\u4e00-\u9fffA-Za-z]+\d{1,3}", label):
+                raise RuntimeError("同案件已有工作紀錄，但車輛分列格式無法確認；請人工核對")
+    assignments = re.split(r"、|\s+(?=[^\s:：]+\s*[:：])", first_line)
+    vehicles = set()
+    for assignment in assignments:
+        match = re.fullmatch(r"([^\s:：、]+?)(?:司機)?\s*[:：]\s*([^:：、]+)", assignment.strip())
+        if not match or not match.group(2).strip():
+            raise RuntimeError("同案件已有工作紀錄，但無法確認車輛；請人工核對")
+        label = match.group(1)
+        if label == "指揮官":
+            continue
+        if label not in known_vehicles and not re.fullmatch(r"[\u4e00-\u9fffA-Za-z]+\d{1,3}", label):
+            raise RuntimeError("同案件已有工作紀錄，但無法確認車輛；請人工核對")
+        vehicles.add(label)
+    if not vehicles:
+        raise RuntimeError("同案件已有工作紀錄，但無法確認車輛；請人工核對")
+    return vehicles
+
+
 def _query_duty_work_logs(
     driver: webdriver.Chrome, request: AmbulanceReturnRequest,
     cancel_check: Callable[[], None] | None = None,
@@ -1613,6 +1638,9 @@ def _query_duty_work_logs(
     if (not isinstance(payload, dict) or int(payload.get("pages", 0)) != 1
             or not isinstance(payload.get("rows"), list) or payload.get("total") != len(payload["rows"])):
         raise RuntimeError("工作紀錄查詢仍有分頁或回應格式改變，無法確認唯一性")
+    item = request.duty_item or ("火警" if request.service_type == "disaster" else "救護")
+    target_vehicles = {entry.vehicle for entry in request.effective_vehicle_entries() if entry.vehicle}
+    known_vehicles = set(vehicle_ppe_names()) | target_vehicles
     records = []
     for action in payload.get("rows", []):
         match = re.fullmatch(r"\s*Submit_SetSelectedRowData\(frm,'wap119\.RPS04060U','(.*)'\);?\s*", str(action), re.S)
@@ -1625,11 +1653,13 @@ def _query_duty_work_logs(
             continue
         record = dict(zip(("record_id", "case_id", "work_at", "department", "unit", "item",
                            "reason", "description", "status", "personnel"), map(_work_log_text, fields[:10])))
-        if re.search(r"(?:^|[\s\d.、])" + re.escape(request.vehicle) + r"(?:司機)?\s*[:：]", record["status"]):
+        if not record["item"]:
+            raise RuntimeError("同案件已有工作紀錄，但無法確認勤務項目；請人工核對")
+        if record["item"] != item:
+            continue
+        vehicles = _work_log_vehicle_labels(record["status"], known_vehicles)
+        if vehicles & target_vehicles:
             records.append(record)
-        elif not re.search(r"(?:^|\n)\s*\d+\.[^:\n：]+[:：]", record["status"]):
-            # An incomplete or differently formatted same-case row must not lead to another insert.
-            raise RuntimeError("同案件已有工作紀錄，但無法確認車輛；請人工核對")
     return records
 
 

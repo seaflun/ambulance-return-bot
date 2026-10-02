@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ambulance_bot import selenium_local as runtime
-from ambulance_bot.models import AmbulanceReturnRequest
+from ambulance_bot.models import AmbulanceReturnRequest, VehicleEntry
 from tests.test_vehicle_mileage_backfill import ScriptDriver
 
 
@@ -59,7 +59,7 @@ class SavedRecordReadbackTests(unittest.TestCase):
                 "description": "119案件\n救護\n返隊時間:2026/10/01 01:01:00\n地點:測試",
                 "status": request.duty_status_text, "personnel": ""}
 
-    def query_duty(self, records, pages=1, total=None):
+    def query_duty(self, records, pages=1, total=None, request=None):
         actions = []
         keys = ["record_id", "case_id", "work_at", "department", "unit", "item", "reason", "description", "status", "personnel"]
         for record in records:
@@ -70,7 +70,48 @@ class SavedRecordReadbackTests(unittest.TestCase):
         driver.execute_script.side_effect = [True, True, {"pages": pages, "rows": actions,
                                                        "total": len(actions) if total is None else total}]
         with patch.object(runtime, "_click_by_text_or_id"):
-            return runtime._query_duty_work_logs(driver, self.request())
+            return runtime._query_duty_work_logs(driver, request or self.request())
+
+    def test_duty_query_separates_work_items_in_both_orders(self):
+        for target_item, stored_item in [("火警", "救護"), ("救護", "火警")]:
+            request = self.request()
+            request.duty_item = target_item
+            for status in ["新坡92:甲", "新坡95:乙", "車輛資料缺漏"]:
+                record = dict(self.stored_duty_record(), item=stored_item, status=status)
+                with self.subTest(target=target_item, stored=stored_item, status=status):
+                    self.assertEqual([], self.query_duty([record], request=request))
+
+    def test_duty_query_accepts_other_vehicle_without_numbered_prefix(self):
+        for status in ["新坡95:乙", "新坡95司機：乙", "1.新坡95司機:乙、新坡11司機:丙\n2.處理完成",
+                       "1.觀音11司機:乙\n2.處理完成"]:
+            with self.subTest(status=status):
+                self.assertEqual([], self.query_duty([dict(self.stored_duty_record(), status=status)]))
+
+    def test_duty_query_considers_all_requested_vehicles(self):
+        request = self.request()
+        request.two_vehicle = True
+        request.vehicle_entries = [VehicleEntry(vehicle="新坡92", driver="甲"),
+                                   VehicleEntry(vehicle="新坡95", driver="乙")]
+        record = dict(self.stored_duty_record(), status="新坡95:乙")
+        self.assertEqual([record], self.query_duty([record], request=request))
+        with patch.object(runtime, "_query_duty_work_logs", return_value=[record]):
+            with self.assertRaises(RuntimeError):
+                runtime._verify_saved_duty_work_log(Mock(), request)
+
+    def test_duty_query_rejects_unknown_work_item_or_vehicle_assignments(self):
+        for item, status in [("", "新坡95:乙"), ("救護", "1.指揮官:甲"),
+                             ("救護", "新坡95:乙、車輛不明:丙"), ("救護", "新坡95:"),
+                             ("救護", "新坡95: "), ("救護", "1.新坡95:乙\n2.新坡92:甲")]:
+            with self.subTest(item=item, status=status), self.assertRaises(RuntimeError):
+                self.query_duty([dict(self.stored_duty_record(), item=item, status=status)])
+
+    def test_duty_same_work_duplicate_records_still_stop_saved_verification(self):
+        record = self.stored_duty_record()
+        rows = self.query_duty([record, dict(record, record_id="456")])
+        self.assertEqual(2, len(rows))
+        with patch.object(runtime, "_query_duty_work_logs", return_value=rows):
+            with self.assertRaises(RuntimeError):
+                runtime._verify_saved_duty_work_log(Mock(), self.request())
 
     def test_duty_query_parses_real_row_protocol_and_uses_accepted_case_id(self):
         stored = self.stored_duty_record()

@@ -248,6 +248,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     detail = str(site.get("detail") or "")
     computed = diagnostic_payload(site_key, status, detail)
     prefer_computed = computed["exception_type"] in {
+        "duty_prequery",
         "case_not_closed",
         "case_detail",
         "network_connection",
@@ -337,6 +338,8 @@ def _diagnostic_category(
         return ""
     if "vehicle_candidate" in status:
         return "vehicle_candidate"
+    if site_key == "duty_work_log" and "勤務紀錄新增前無法確認" in analysis_detail:
+        return "duty_prequery"
     if "waiting_confirmation" in status:
         return "waiting_confirmation"
     if "prefilled" in status or "ready" in status or "captcha" in status or "未按儲存" in raw_detail:
@@ -547,6 +550,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return _field_stage(site_key, detail)
     if category == "waiting_confirmation":
         return SITE_STATUS_STAGE.get(status) or "儲存"
+    if category == "duty_prequery":
+        return "查詢既有工作紀錄"
     return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "執行流程")
 
 
@@ -590,6 +595,7 @@ def _field_stage(site_key: str, detail: str) -> str:
 
 def _reason_for(category: str, status: str, detail: str) -> str:
     return {
+        "duty_prequery": "新增前無法確認既有工作紀錄的勤務項目或車輛，尚未新增或儲存。",
         "waiting_confirmation": "資料已開啟或預填，但尚未完成儲存確認。",
         "chrome_session": "Chrome 或 ChromeDriver 工作階段無法建立或已中斷。",
         "web_renderer_timeout": "網頁轉譯程序逾時；Chrome 與 ChromeDriver 仍可連線，較可能是網頁卡住。",
@@ -627,6 +633,8 @@ def _reason_for(category: str, status: str, detail: str) -> str:
 
 def _next_action_for(site_key: str, category: str) -> str:
     site_name = SITE_SHORT_NAMES.get(site_key, "該站")
+    if category == "duty_prequery":
+        return "先核對同案號的勤務項目與車輛；救災、救護各自確認，查明既有紀錄後只重跑工作站，避免重複新增。"
     if category == "waiting_confirmation":
         return f"在公務電腦確認{site_name}資料無誤後手動儲存；若要重跑，請回可操作的本機任務頁重新執行該站。"
     if category == "chrome_session":
