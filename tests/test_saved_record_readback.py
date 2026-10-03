@@ -31,6 +31,76 @@ class FormScriptDriver:
 
 
 class SavedRecordReadbackTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js required for browser-script tests")
+    def test_duty_query_waits_for_complete_document_before_reading_rows(self):
+        driver = Mock()
+        driver.find_element.return_value.is_enabled.side_effect = runtime.StaleElementReferenceException("reloaded")
+        document_state = "loading"
+
+        def execute(script, *args):
+            nonlocal document_state
+            harness = """
+            const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+            global.document = {
+              readyState: input.state,
+              body: {innerText: 'QUY-000:查詢完成 共 ' + (input.state === 'complete' ? '0' : '1') + ' 筆'},
+              getElementById: id => ({value: '', options: [1]}),
+              querySelectorAll: () => []
+            };
+            process.stdout.write(JSON.stringify(new Function(input.script)(...input.args)));
+            """
+            completed = subprocess.run([shutil.which("node"), "-e", harness],
+                                       input=json.dumps(dict(script=script, args=args, state=document_state)),
+                                       text=True, capture_output=True, encoding="utf-8", check=True)
+            result = json.loads(completed.stdout)
+            if result is False:
+                document_state = "complete"
+            return result
+
+        driver.execute_script.side_effect = execute
+        with patch.object(runtime, "_click_by_text_or_id"):
+            self.assertEqual([], runtime._query_duty_work_logs(driver, self.request()))
+        self.assertEqual("complete", document_state)
+
+    def test_duty_prequery_timeout_requeries_and_confirms_existing_without_insert(self):
+        driver = Mock()
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=[runtime.TimeoutException(),
+                          [self.stored_duty_record()]]) as query, \
+             patch.object(runtime, "_verify_saved_duty_work_log") as verify, \
+             patch.object(runtime, "_click_by_text_or_id") as click:
+            result = runtime._prepare_duty_work_log_form(driver, self.request(), Path("."), Path("summary.txt"))
+        self.assertEqual("duty_work_log_saved", result.status)
+        self.assertEqual(2, query.call_count)
+        verify.assert_called_once()
+        click.assert_not_called()
+
+    def test_duty_prequery_repeated_timeout_stops_before_insert(self):
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=runtime.TimeoutException()) as query, \
+             patch.object(runtime, "_click_by_text_or_id") as click:
+            result = runtime._prepare_duty_work_log_form(Mock(), self.request(), Path("."), Path("summary.txt"))
+        self.assertEqual("duty_work_log_waiting_confirmation", result.status)
+        self.assertEqual(2, query.call_count)
+        self.assertIn("逾時", result.detail)
+        click.assert_not_called()
+
+    def test_duty_prequery_unsafe_data_is_not_retried(self):
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=RuntimeError("無法確認車輛")) as query, \
+             patch.object(runtime, "_click_by_text_or_id") as click:
+            result = runtime._prepare_duty_work_log_form(Mock(), self.request(), Path("."), Path("summary.txt"))
+        self.assertEqual("duty_work_log_waiting_confirmation", result.status)
+        query.assert_called_once()
+        click.assert_not_called()
+
+    def test_duty_prequery_retry_propagates_cancellation(self):
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=[runtime.TimeoutException(),
+                          runtime.TaskCancellationError("cancelled")]):
+            with self.assertRaises(runtime.TaskCancellationError):
+                runtime._prepare_duty_work_log_form(Mock(), self.request(), Path("."), Path("summary.txt"))
+
     def test_duty_prequery_cancellation_is_not_swallowed_as_waiting(self):
         with patch.object(runtime, "_ensure_duty_login", return_value=True), \
              patch.object(runtime, "_query_duty_work_logs", side_effect=runtime.TaskCancellationError("cancelled")):

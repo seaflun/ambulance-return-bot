@@ -455,6 +455,21 @@ def sinposmart_elapsed_label(seconds: int) -> str:
     return f"{minutes} 分鐘"
 
 
+def sinposmart_duty_sheet_summary(event: dict[str, Any]) -> dict[str, str]:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    if sanitize_scalar(snapshot.get("tool_name"), 120) != "duty_sheet":
+        return {}
+    workbook_name = sanitize_scalar(snapshot.get("workbook_name"), 240).replace("\\", "/").rsplit("/", 1)[-1]
+    raw_date = sanitize_scalar(snapshot.get("target_date"), 40)
+    target_date = parse_sinposmart_snapshot_date(raw_date.replace("/", "-"))
+    mode_label = {"manual": "手動", "automatic": "自動"}.get(sanitize_scalar(snapshot.get("execution_mode"), 40), "未知")
+    return {
+        "workbook_name": workbook_name or "未知",
+        "target_date": target_date.strftime("%Y/%m/%d") if target_date else "未知",
+        "mode_label": mode_label,
+    }
+
+
 def sinposmart_rescue_video_summary(event: dict[str, Any]) -> dict[str, Any]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     if sanitize_scalar(snapshot.get("tool_name"), 120) != "rescue_video":
@@ -1000,6 +1015,7 @@ def sinposmart_admin_tool_event(
     card["last_occurred_at"] = finished_at or started_at or card["last_occurred_at"]
     card["result_text"] = str(base_event.get("error") or base_event.get("content") or "")
     card["rescue_video_summary"] = sinposmart_rescue_video_summary(base_event)
+    card["duty_sheet_summary"] = sinposmart_duty_sheet_summary(base_event)
     card["waiting_age_seconds"] = 0
     card["waiting_overdue"] = False
     card["waiting_reason"] = ""

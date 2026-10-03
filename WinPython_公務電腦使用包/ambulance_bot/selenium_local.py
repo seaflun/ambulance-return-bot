@@ -1472,13 +1472,21 @@ def _prepare_duty_work_log_form(
 
     _report_progress(progress, "查詢既有工作紀錄")
     try:
-        existing = _query_duty_work_logs(driver, request, cancel_check=cancel_check)
+        for attempt in range(2):
+            try:
+                existing = _query_duty_work_logs(driver, request, cancel_check=cancel_check)
+                break
+            except TimeoutException:
+                if attempt:
+                    raise
+                _report_progress(progress, "既有工作紀錄查詢逾時，重新查詢一次（尚未新增）")
     except TaskCancellationError:
         raise
     except (WebDriverException, RuntimeError, ValueError) as exc:
+        reason = (exc.msg or "工作紀錄查詢逾時（已重查一次）") if isinstance(exc, TimeoutException) else str(exc)
         return SeleniumRunResult(
             ok=True, status="duty_work_log_waiting_confirmation",
-            detail=f"勤務紀錄新增前無法確認是否已有相同案件與車輛：{exc}；暫停新增，避免重複。",
+            detail=f"勤務紀錄新增前無法確認是否已有相同案件與車輛：{reason}；暫停新增，避免重複。",
             summary_path=summary_path,
         )
     if existing:
@@ -1605,7 +1613,9 @@ def _query_duty_work_logs(
     day = datetime.strptime(case_id[:8], "%Y%m%d")
     roc_day = f"{day.year - 1911:03d}{day:%m%d}"
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
-    WebDriverWait(driver, 12).until(lambda d: bool(d.find_elements(By.ID, "_btnQuery")))
+    WebDriverWait(driver, 12).until(
+        lambda d: bool(d.find_elements(By.ID, "_btnQuery")), "工作紀錄查詢頁載入逾時",
+    )
     ready = driver.execute_script(
         """
         const values = {_txtSDATE: arguments[0], _txtEDATE: arguments[0],
@@ -1622,10 +1632,11 @@ def _query_duty_work_logs(
         cancel_check()
     query_button = driver.find_element(By.ID, "_btnQuery")
     _click_by_text_or_id(driver, ["_btnQuery"], ["查詢"])
-    WebDriverWait(driver, 12).until(EC.staleness_of(query_button))
-    WebDriverWait(driver, 12).until(lambda d: d.execute_script(
-        "return !!document.getElementById('_btnQuery') && /QUY-000/.test(document.body.innerText);"
-    ))
+    WebDriverWait(driver, 12).until(EC.staleness_of(query_button), "工作紀錄查詢送出後頁面更新逾時")
+    WebDriverWait(driver, 30).until(lambda d: d.execute_script(
+        "return document.readyState === 'complete' && !!document.getElementById('_btnQuery') "
+        "&& /QUY-000/.test(document.body.innerText);"
+    ), "工作紀錄查詢結果確認逾時（文件未載入完成或未取得 QUY-000）")
     payload = driver.execute_script(
         """
         const page = document.getElementById('pageSelect');
@@ -3671,12 +3682,12 @@ def _select_disinfection_detail_row(
     digits = normalize_hhmm_local(case_time)
     variants = [digits, f"{digits[:2]}:{digits[2:]}"] if len(digits) == 4 else []
     matches: list[int] = []
-    minute_matches: list[int] = []
+    near_matches: list[int] = []
     for fallback_index, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         text = str(row.get("text") or "")
-        if variants and not any(variant in text for variant in variants):
+        if not case_at and variants and not any(variant in text for variant in variants):
             continue
         if vehicle and not _disinfection_text_matches_vehicle(text, vehicle):
             continue
@@ -3687,19 +3698,26 @@ def _select_disinfection_detail_row(
         if case_at:
             if not _disinfection_text_matches_case_at(text, case_at, match_seconds=False):
                 continue
-            minute_matches.append(row_index)
+            near_matches.append(row_index)
             if not _disinfection_text_matches_case_at(text, case_at):
                 continue
         matches.append(row_index)
     if matches:
         return matches[0] if len(matches) == 1 else None
-    return minute_matches[0] if case_at and vehicle and len(minute_matches) == 1 else None
+    return near_matches[0] if case_at and vehicle and len(near_matches) == 1 else None
 
 
 def _disinfection_text_matches_case_at(text: str, case_at: datetime, *, match_seconds: bool = True) -> bool:
     timestamps = re.findall(r"\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}", text)
-    expected = case_at.strftime("%Y/%m/%d %H:%M:%S" if match_seconds else "%Y/%m/%d %H:%M")
-    return any(" ".join(value.replace("-", "/").split())[:len(expected)] == expected for value in timestamps)
+    for value in timestamps:
+        try:
+            actual = datetime.strptime(" ".join(value.replace("-", "/").split()), "%Y/%m/%d %H:%M:%S")
+        except ValueError:
+            continue
+        if actual == case_at or (not match_seconds and actual.date() == case_at.date()
+                                 and abs((actual - case_at).total_seconds()) < 60):
+            return True
+    return False
 
 
 def _disinfection_text_matches_vehicle(text: str, vehicle: str) -> bool:

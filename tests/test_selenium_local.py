@@ -1942,6 +1942,36 @@ class SeleniumLocalTests(unittest.TestCase):
         request.case_id = "20261330225845015"
         self.assertEqual(_disinfection_query_date(request), "2026-10-01")
 
+    def test_disinfection_observed_nine_second_difference_crossing_minute(self):
+        case_at = datetime(2026, 10, 3, 7, 7, 54)
+        driver = Mock()
+        driver.execute_script.side_effect = [
+            [{"index": 3, "text": "1 2026/10/03 07:08:03 新坡分隊 新坡92 明細"}], True,
+        ]
+        self.assertTrue(_open_disinfection_detail_for_case(
+            driver, "0707", "新坡92", case_at=case_at,
+        ))
+        self.assertEqual(driver.execute_script.call_args.args[1], 3)
+
+    def test_disinfection_near_time_match_requires_unique_same_day_vehicle(self):
+        case_at = datetime(2026, 10, 3, 7, 7, 54)
+        row = {"index": 3, "text": "2026/10/03 07:08:03 新坡92 明細"}
+        for rows, vehicle in (
+            ([row, {"index": 4, "text": "2026/10/03 07:07:59 新坡92 明細"}], "新坡92"),
+            ([row], "新坡95"), ([row], ""),
+            ([{"index": 3, "text": "2026/10/03 07:08:54 新坡92 明細"}], "新坡92"),
+            ([{"index": 3, "text": "2026/10/03 09:08:03 新坡92 明細"}], "新坡92"),
+            ([{"index": 3, "text": "2026/10/04 07:08:03 新坡92 明細"}], "新坡92"),
+        ):
+            with self.subTest(rows=rows, vehicle=vehicle):
+                self.assertIsNone(selenium_local_module._select_disinfection_detail_row(
+                    rows, "0707", vehicle, case_at=case_at,
+                ))
+        self.assertIsNone(selenium_local_module._select_disinfection_detail_row(
+            [{"index": 3, "text": "2026/10/04 00:00:03 新坡92 明細"}],
+            "2359", "新坡92", case_at=datetime(2026, 10, 3, 23, 59, 54),
+        ))
+
     def test_disinfection_unique_same_minute_vehicle_allows_different_seconds(self):
         case_at = datetime(2026, 8, 7, 14, 18, 22)
         rows = [{"index": 3, "text": "2026/08/07 14:18:28 新坡95 明細"}]

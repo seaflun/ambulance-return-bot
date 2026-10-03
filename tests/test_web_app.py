@@ -5175,6 +5175,36 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("tool_label", body)
         self.assertNotIn('class="pause-reason"', body)
 
+    def test_sinposmart_admin_shows_duty_sheet_request_context(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        for index, (context, expected) in enumerate((
+            ({"workbook_name": r"C:\private\每日勤務表.xlsx", "target_date": "2026/10/04", "execution_mode": "manual"},
+             "檔案：每日勤務表.xlsx｜登打日期：2026/10/04｜執行模式：手動"),
+            ({"target_date": "1151005", "execution_mode": "automatic"},
+             "檔案：未知｜登打日期：2026/10/05｜執行模式：自動"),
+            ({}, "檔案：未知｜登打日期：未知｜執行模式：未知"),
+        )):
+            with self.subTest(context=context):
+                response = self.client.post(
+                    "/api/sinposmart/events",
+                    headers={"X-Credential-Sync-Token": "sync-token"},
+                    json={
+                        "event_id": f"duty-context-{index}",
+                        "occurred_at": f"{fire_day}T08:43:28",
+                        "record_type": "tool_action_finished",
+                        "status": "failed", "error": "全天多時段漏排",
+                        "snapshot": {"tool_name": "duty_sheet", "run_id": f"context-{index}", **context},
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+                self.assertIn(expected, body)
+                self.assertNotIn("C:\\private", body)
+                stored = app_module.sinposmart_store().read_day(fire_day)
+                event = next(event for event in stored["events"] if event["event_id"] == f"duty-context-{index}")
+                self.assertEqual(event["snapshot"].get("target_date"), context.get("target_date"))
+
     def test_sinposmart_admin_shows_tool_failure_reason_and_safe_detail(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()
