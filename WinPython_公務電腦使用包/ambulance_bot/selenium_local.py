@@ -1499,12 +1499,32 @@ def _prepare_duty_work_log_form(
             summary_path=summary_path,
         )
     if existing:
-        detail = _verified_save_detail(
-            "勤務紀錄", "",
-            lambda: _verify_saved_duty_work_log(driver, request, cancel_check=cancel_check),
+        _report_progress(progress, "核對既有工作紀錄")
+        record_ids = "、".join(str(record.get("record_id") or "未知") for record in existing)
+        try:
+            _verify_saved_duty_work_log(driver, request, cancel_check=cancel_check)
+        except TaskCancellationError:
+            raise
+        except (WebDriverException, RuntimeError, ValueError) as exc:
+            reason = str(exc)
+            driver_failed = isinstance(exc, WebDriverException) and not isinstance(exc, TimeoutException)
+            if isinstance(exc, WebDriverException):
+                reason = _detail_with_failure_evidence(
+                    reason, driver, output_dir, request, "duty_work_log", exc,
+                    _ap_url(DUTY_WORK_LOG_AP), query_started_at,
+                )
+                driver_failed = driver_failed or is_browser_session_recovery_error(reason)
+            return SeleniumRunResult(
+                ok=not driver_failed,
+                status="duty_work_log_failed" if driver_failed else "duty_work_log_waiting_confirmation",
+                detail=f"{WAITING_CONFIRMATION_MARKER} 勤務紀錄已存在（正式編號：{record_ids}），核對既有工作紀錄失敗：{reason}；尚未新增或儲存，不會重複登打。",
+                summary_path=summary_path,
+            )
+        return SeleniumRunResult(
+            ok=True, status="duty_work_log_saved",
+            detail=f"勤務紀錄已存在（正式編號：{record_ids}），已重新查詢確認登打，未新增或儲存。",
+            summary_path=summary_path,
         )
-        status = "duty_work_log_waiting_confirmation" if WAITING_CONFIRMATION_MARKER in detail else "duty_work_log_saved"
-        return SeleniumRunResult(ok=True, status=status, detail=detail, summary_path=summary_path)
 
     _report_progress(progress, "新增工作紀錄")
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
@@ -1736,14 +1756,8 @@ def _verify_saved_duty_work_log(
         if not expected or any(saved.get(key) != value for key, value in expected.items()):
             raise RuntimeError("回查的勤務內容與儲存前表單不一致")
         return
-    item = request.duty_item or ("火警" if request.service_type == "disaster" else "救護")
-    people = set(filter(None, re.split(r"[,，、\s]+", saved["personnel"])))
-    return_lines = re.findall(r"(?m)^\s*返隊時間\s*[:：]\s*([^\n]*)", saved["description"])
-    if (saved["item"] != item or saved["status"] != _work_log_text(request.duty_status_text)
-            or (item != "其他類災害" and saved["reason"] != request.case_reason)
-            or people != set(request.personnel) or len(return_lines) != 1
-            or not _valid_work_log_return_time(return_lines[0])):
-        raise RuntimeError("既有勤務內容未吻合任務，暫停新增以避免重複")
+    # Existing manual records only need an identifiable same-case/item/vehicle row.
+    # Content equality is required solely after this run actually saves a form.
 
 
 def _open_vehicle_mileage_page(

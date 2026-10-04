@@ -67,6 +67,8 @@ SITE_STAGE_DEFINITIONS = {
     "duty_work_log": [
         "啟動 Chrome",
         "登入勤務系統",
+        "查詢既有工作紀錄",
+        "核對既有工作紀錄",
         "新增工作紀錄",
         "由案件帶入",
         "查詢案件",
@@ -120,7 +122,7 @@ SITE_STAGE_GROUPS = {
     "duty_work_log": (
         (
             "登入與案件",
-            ("啟動 Chrome", "登入勤務系統", "新增工作紀錄", "由案件帶入", "查詢案件", "選取案件"),
+            ("啟動 Chrome", "登入勤務系統", "查詢既有工作紀錄", "核對既有工作紀錄", "新增工作紀錄", "由案件帶入", "查詢案件", "選取案件"),
         ),
         ("填寫勤務", ("填寫勤務資料",)),
         ("儲存確認", ("儲存", "確認勤務紀錄")),
@@ -252,6 +254,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     computed = diagnostic_payload(site_key, status, detail)
     prefer_computed = computed["exception_type"] in {
         "duty_prequery",
+        "duty_existing_verify",
         "case_not_closed",
         "case_detail",
         "network_connection",
@@ -352,6 +355,8 @@ def _diagnostic_category(
             return browser_category
     if "invalid session id" in text or "session deleted" in text:
         return "chrome_unresponsive"
+    if site_key == "duty_work_log" and ("勤務紀錄已存在" in analysis_detail or "既有勤務內容未吻合任務" in analysis_detail):
+        return "duty_existing_verify"
     if site_key == "duty_work_log" and "勤務紀錄新增前無法確認" in analysis_detail:
         return "duty_prequery"
     if "waiting_confirmation" in status:
@@ -466,6 +471,8 @@ def _is_invalid_argument_oserror(exception: BaseException | None, text: str) -> 
 
 
 def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
+    if site_key == "duty_work_log" and ("勤務紀錄已存在" in detail or "既有勤務內容未吻合任務" in detail):
+        return "核對既有工作紀錄"
     if site_key == "duty_work_log" and "勤務紀錄新增前無法確認" in detail:
         return "查詢既有工作紀錄"
     if category == "civilpower_case_verify":
@@ -603,6 +610,7 @@ def _field_stage(site_key: str, detail: str) -> str:
 def _reason_for(category: str, status: str, detail: str) -> str:
     return {
         "duty_prequery": "新增前無法確認既有工作紀錄的勤務項目或車輛，尚未新增或儲存。",
+        "duty_existing_verify": "官網已有工作紀錄，但尚未確認唯一的同案件、同勤務項目與車輛紀錄；未新增或儲存。",
         "waiting_confirmation": "資料已開啟或預填，但尚未完成儲存確認。",
         "chrome_session": "Chrome 或 ChromeDriver 工作階段無法建立或已中斷。",
         "web_renderer_timeout": "網頁轉譯程序逾時；Chrome 與 ChromeDriver 仍可連線，較可能是網頁卡住。",
@@ -639,6 +647,8 @@ def _reason_for(category: str, status: str, detail: str) -> str:
 
 
 def _next_action_for(site_key: str, category: str) -> str:
+    if category == "duty_existing_verify":
+        return "依正式紀錄編號確認同案件、同勤務項目與車輛的既有紀錄；未確認前不要再次新增或儲存。"
     site_name = SITE_SHORT_NAMES.get(site_key, "該站")
     if category == "duty_prequery":
         return "先核對同案號的勤務項目與車輛；救災、救護各自確認，查明既有紀錄後只重跑工作站，避免重複新增。"

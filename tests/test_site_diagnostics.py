@@ -4,6 +4,19 @@ from ambulance_bot.site_diagnostics import diagnostic_payload, merge_diagnostic_
 
 
 class SiteDiagnosticsTests(unittest.TestCase):
+    def test_existing_duty_mismatch_has_readback_stage_and_no_save_instruction(self):
+        for detail in [
+            "waiting_confirmation: 勤務紀錄已存在，既有勤務內容未吻合任務；尚未新增或儲存。",
+            "waiting_confirmation: 勤務紀錄已嘗試儲存，但回查尚未確認：既有勤務內容未吻合任務，暫停新增以避免重複",
+        ]:
+            with self.subTest(detail=detail):
+                fields = merge_diagnostic_fields({"key": "duty_work_log", "status": "duty_work_log_waiting_confirmation",
+                    "detail": detail, "failure_stage": "儲存", "exception_type": "waiting_confirmation"})
+                self.assertEqual("duty_existing_verify", fields["exception_type"])
+                self.assertEqual("核對既有工作紀錄", fields["failure_stage"])
+                self.assertNotIn("手動儲存", fields["next_action"])
+                self.assertIn("未新增", fields["failure_reason"])
+
     def test_duty_prequery_browser_failure_overrides_legacy_waiting_diagnosis(self):
         for failure, category in [
             ("invalid session id: session deleted as the browser has closed the connection", "chrome_unresponsive"),

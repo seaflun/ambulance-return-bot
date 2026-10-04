@@ -229,8 +229,7 @@ class SavedRecordReadbackTests(unittest.TestCase):
         record = dict(self.stored_duty_record(), status="新坡95:乙")
         self.assertEqual([record], self.query_duty([record], request=request))
         with patch.object(runtime, "_query_duty_work_logs", return_value=[record]):
-            with self.assertRaises(RuntimeError):
-                runtime._verify_saved_duty_work_log(Mock(), request)
+            runtime._verify_saved_duty_work_log(Mock(), request)
 
     def test_duty_query_recognizes_official_trailing_vehicle_driver_lines(self):
         request = self.request()
@@ -242,8 +241,7 @@ class SavedRecordReadbackTests(unittest.TestCase):
                       status="到達現場，出一水線執行滅火攻擊。\n新坡11 / 甲\n新坡15 / 乙")
         self.assertEqual([record], self.query_duty([record], request=request))
         with patch.object(runtime, "_query_duty_work_logs", return_value=[record]):
-            with self.assertRaisesRegex(RuntimeError, "既有勤務內容未吻合"):
-                runtime._verify_saved_duty_work_log(Mock(), request)
+            runtime._verify_saved_duty_work_log(Mock(), request)
 
     def test_duty_query_slash_vehicle_lines_reject_missing_driver_and_mixed_assignments(self):
         for status in ["處理完成\n新坡92 / ", "新坡95:乙\n新坡92 / 甲",
@@ -294,13 +292,85 @@ class SavedRecordReadbackTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     runtime._verify_saved_duty_work_log(Mock(), self.request(), {"status": self.request().duty_status_text})
 
-    def test_duty_verify_retry_checks_request_and_preserved_summary(self):
+    def test_duty_verify_existing_record_does_not_validate_manual_summary_content(self):
         stored = self.stored_duty_record()
         with patch.object(runtime, "_query_duty_work_logs", return_value=[stored]):
             runtime._verify_saved_duty_work_log(Mock(), self.request())
             stored["description"] = "返隊時間:無效"
-            with self.assertRaises(RuntimeError):
-                runtime._verify_saved_duty_work_log(Mock(), self.request())
+            runtime._verify_saved_duty_work_log(Mock(), self.request())
+
+    def disaster_existing_request_and_record(self):
+        request = self.request()
+        request.service_type = "disaster"
+        request.duty_item = "火警"
+        request.case_reason = "雜草(含廢棄物、墓地)"
+        request.vehicle_entries = [VehicleEntry(vehicle="新坡11", driver="甲"),
+                                   VehicleEntry(vehicle="新坡15", driver="乙")]
+        request.personnel = ["甲", "乙", "丙"]
+        request.commander = "丙"
+        request.action_note = "到達現場，出一水線執行滅火攻擊，交由轄區分隊處理"
+        record = dict(self.stored_duty_record(), record_id="456", item=request.duty_item,
+                      reason=request.case_reason, personnel="甲,乙,丙",
+                      status=request.action_note + "。\n新坡11 / 甲\n新坡15 / 乙")
+        return request, record
+
+    def test_disaster_existing_official_format_is_confirmed_without_insert_or_save(self):
+        request, record = self.disaster_existing_request_and_record()
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", return_value=[record]), \
+             patch.object(runtime, "_click_by_text_or_id") as insert, \
+             patch.object(runtime, "_click_duty_work_log_save") as save:
+            result = runtime._prepare_duty_work_log_form(Mock(), request, Path("."), Path("summary.txt"))
+        self.assertEqual("duty_work_log_saved", result.status)
+        self.assertIn("已存在", result.detail)
+        self.assertIn("456", result.detail)
+        insert.assert_not_called()
+        save.assert_not_called()
+
+    def test_existing_records_only_need_presence_regardless_of_manual_content(self):
+        request, record = self.disaster_existing_request_and_record()
+        for changes, field in [
+            ({"status": record["status"].replace("新坡15 / 乙", "新坡15 / 丙")}, "車輛／司機"),
+            ({"status": record["status"].replace("新坡15 / 乙", "新坡11 / 甲")}, "車輛／司機"),
+            ({"status": record["status"].replace("新坡15 / 乙", "新坡95 / 乙")}, "車輛／司機"),
+            ({"status": record["status"].replace("不需支援", "需支援").replace("滅火攻擊", "警戒")}, "處置內容"),
+            ({"status": request.action_note + "。\n指揮官:甲\n新坡11 / 甲\n新坡15 / 乙"}, "指揮官"),
+            ({"personnel": "甲,乙"}, "服勤人員"),
+            ({"reason": "一般火災"}, "事由"),
+            ({"description": "返隊時間:無效"}, "返隊時間"),
+        ]:
+            for service_type in ["disaster", "ems"]:
+                request.service_type = service_type
+                with self.subTest(field=field, service_type=service_type), \
+                     patch.object(runtime, "_ensure_duty_login", return_value=True), \
+                     patch.object(runtime, "_query_duty_work_logs", return_value=[dict(record, **changes)]), \
+                     patch.object(runtime, "_click_by_text_or_id") as insert, \
+                     patch.object(runtime, "_click_duty_work_log_save") as save:
+                    result = runtime._prepare_duty_work_log_form(Mock(), request, Path("."), Path("summary.txt"))
+                    self.assertEqual("duty_work_log_saved", result.status)
+                    self.assertIn("已存在", result.detail)
+                    self.assertIn("未新增或儲存", result.detail)
+                    self.assertNotIn("已嘗試儲存", result.detail)
+                    insert.assert_not_called()
+                    save.assert_not_called()
+
+    def test_disaster_existing_verification_cancellation_does_not_insert_or_save(self):
+        request, record = self.disaster_existing_request_and_record()
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=[
+                 [record], runtime.TaskCancellationError("cancelled")]), \
+             patch.object(runtime, "_click_by_text_or_id") as insert, \
+             patch.object(runtime, "_click_duty_work_log_save") as save:
+            with self.assertRaises(runtime.TaskCancellationError):
+                runtime._prepare_duty_work_log_form(Mock(), request, Path("."), Path("summary.txt"))
+        insert.assert_not_called()
+        save.assert_not_called()
+
+    def test_disaster_post_save_readback_still_requires_exact_form_content(self):
+        request, record = self.disaster_existing_request_and_record()
+        with patch.object(runtime, "_query_duty_work_logs", return_value=[record]):
+            with self.assertRaisesRegex(RuntimeError, "儲存前表單不一致"):
+                runtime._verify_saved_duty_work_log(Mock(), request, {"status": request.duty_status_text})
 
     def test_readback_cancellation_propagates_before_navigation(self):
         for verify, args in [(runtime._query_duty_work_logs, ()), (runtime._verify_saved_fuel_record, ()),
