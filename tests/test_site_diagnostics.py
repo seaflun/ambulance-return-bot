@@ -4,6 +4,21 @@ from ambulance_bot.site_diagnostics import diagnostic_payload, merge_diagnostic_
 
 
 class SiteDiagnosticsTests(unittest.TestCase):
+    def test_duty_prequery_browser_failure_overrides_legacy_waiting_diagnosis(self):
+        for failure, category in [
+            ("invalid session id: session deleted as the browser has closed the connection", "chrome_unresponsive"),
+            ("[browser_failure:chromedriver_ended]", "chromedriver_ended"),
+            ("[browser_failure:web_page_timeout]", "web_page_timeout"),
+        ]:
+            site = {"key": "duty_work_log", "status": "duty_work_log_waiting_confirmation",
+                    "detail": f"勤務紀錄新增前無法確認是否已有相同案件與車輛：{failure}；暫停新增，避免重複。",
+                    "failure_stage": "儲存", "exception_type": "duty_prequery"}
+            with self.subTest(category=category):
+                fields = merge_diagnostic_fields(site)
+                self.assertEqual(category, fields["exception_type"])
+                self.assertEqual("查詢既有工作紀錄", fields["failure_stage"])
+                self.assertIn("先重新查詢", fields["next_action"])
+
     def test_duty_prequery_stop_has_lookup_diagnostics_including_legacy_records(self):
         site = {"key": "duty_work_log", "status": "duty_work_log_waiting_confirmation",
                 "detail": "勤務紀錄新增前無法確認是否已有相同案件與車輛：同案件已有工作紀錄，但無法確認車輛；請人工核對；暫停新增，避免重複。",

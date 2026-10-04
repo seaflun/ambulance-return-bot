@@ -234,10 +234,13 @@ def diagnostic_payload(site_key: str, status: str, detail: str, exception: BaseE
     if not category:
         return {field: "" for field in DIAGNOSTIC_FIELDS}
     stage = _stage_for(site_key, status_text, detail_text, category)
+    next_action = _next_action_for(site_key, category)
+    if stage == "查詢既有工作紀錄" and category != "duty_prequery":
+        next_action += " 恢復後先重新查詢同案件、同勤務項目及車輛，確認既有紀錄；未確認前不要新增或重複儲存。"
     return {
         "failure_stage": stage,
         "failure_reason": _reason_for(category, status_text, detail_text),
-        "next_action": _next_action_for(site_key, category),
+        "next_action": next_action,
         "exception_type": exception.__class__.__name__ if exception is not None else category,
     }
 
@@ -338,12 +341,6 @@ def _diagnostic_category(
         return ""
     if "vehicle_candidate" in status:
         return "vehicle_candidate"
-    if site_key == "duty_work_log" and "勤務紀錄新增前無法確認" in analysis_detail:
-        return "duty_prequery"
-    if "waiting_confirmation" in status:
-        return "waiting_confirmation"
-    if "prefilled" in status or "ready" in status or "captcha" in status or "未按儲存" in raw_detail:
-        return "waiting_confirmation"
     for browser_category in (
         "network_connection",
         "web_renderer_timeout",
@@ -353,6 +350,14 @@ def _diagnostic_category(
     ):
         if f"[browser_failure:{browser_category}]" in text:
             return browser_category
+    if "invalid session id" in text or "session deleted" in text:
+        return "chrome_unresponsive"
+    if site_key == "duty_work_log" and "勤務紀錄新增前無法確認" in analysis_detail:
+        return "duty_prequery"
+    if "waiting_confirmation" in status:
+        return "waiting_confirmation"
+    if "prefilled" in status or "ready" in status or "captcha" in status or "未按儲存" in raw_detail:
+        return "waiting_confirmation"
     if "timed out receiving message from renderer" in text:
         return "renderer_timeout_unverified"
     if "err_connection_timed_out" in text:
@@ -461,6 +466,8 @@ def _is_invalid_argument_oserror(exception: BaseException | None, text: str) -> 
 
 
 def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
+    if site_key == "duty_work_log" and "勤務紀錄新增前無法確認" in detail:
+        return "查詢既有工作紀錄"
     if category == "civilpower_case_verify":
         return CIVILPOWER_STAGE_LABELS["case_verify"]
     if category == "civilpower_selection":

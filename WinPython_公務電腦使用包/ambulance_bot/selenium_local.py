@@ -49,7 +49,7 @@ from .duty_credentials import (
     task_login_credential_attempts,
     update_saved_credential_id_number,
 )
-from .failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
+from .failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text, is_browser_session_recovery_error
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
 from .task_cancellation import TaskCancellationError
@@ -1471,6 +1471,7 @@ def _prepare_duty_work_log_form(
         )
 
     _report_progress(progress, "查詢既有工作紀錄")
+    query_started_at = time.monotonic()
     try:
         for attempt in range(2):
             try:
@@ -1484,9 +1485,17 @@ def _prepare_duty_work_log_form(
         raise
     except (WebDriverException, RuntimeError, ValueError) as exc:
         reason = (exc.msg or "工作紀錄查詢逾時（已重查一次）") if isinstance(exc, TimeoutException) else str(exc)
+        driver_failed = isinstance(exc, WebDriverException) and not isinstance(exc, TimeoutException)
+        if isinstance(exc, WebDriverException):
+            reason = _detail_with_failure_evidence(
+                reason, driver, output_dir, request, "duty_work_log", exc,
+                _ap_url(DUTY_WORK_LOG_AP), query_started_at,
+            )
+            driver_failed = driver_failed or is_browser_session_recovery_error(reason)
         return SeleniumRunResult(
-            ok=True, status="duty_work_log_waiting_confirmation",
-            detail=f"勤務紀錄新增前無法確認是否已有相同案件與車輛：{reason}；暫停新增，避免重複。",
+            ok=not driver_failed,
+            status="duty_work_log_failed" if driver_failed else "duty_work_log_waiting_confirmation",
+            detail=f"查詢既有工作紀錄失敗；勤務紀錄新增前無法確認是否已有相同案件與車輛：{reason}；暫停新增，避免重複。",
             summary_path=summary_path,
         )
     if existing:
@@ -1578,6 +1587,29 @@ def _work_log_text(value: object) -> str:
 
 def _work_log_vehicle_labels(status: str, known_vehicles: set[str]) -> set[str]:
     lines = status.split("\n")
+    if any(re.match(r"^[^\s/]+\s*/", line.strip()) for line in lines):
+        vehicles = set()
+        prefix_end = len(lines)
+        for index in range(len(lines) - 1, -1, -1):
+            match = re.fullmatch(r"([^\s/:：]+)\s*/\s*([^/:：]+)", lines[index].strip())
+            if not match:
+                break
+            label = match.group(1)
+            if not match.group(2).strip() or (label not in known_vehicles
+                    and not re.fullmatch(r"[\u4e00-\u9fffA-Za-z]+\d{1,3}", label)):
+                raise RuntimeError("同案件已有工作紀錄，但無法確認車輛；請人工核對")
+            vehicles.add(label)
+            prefix_end = index
+        for line in lines[:prefix_end]:
+            if re.match(r"^[^\s/]+\s*/", line.strip()):
+                raise RuntimeError("同案件已有工作紀錄，但車輛分列格式無法確認；請人工核對")
+            for extra in re.finditer(r"(?:^|[\s、])(?:\d+\.)?([^\s:：]+?)(?:司機)?\s*[:：]", line):
+                label = extra.group(1)
+                if label in known_vehicles or re.fullmatch(r"[\u4e00-\u9fffA-Za-z]+\d{1,3}", label):
+                    raise RuntimeError("同案件已有工作紀錄，但車輛分列格式無法確認；請人工核對")
+        if not vehicles:
+            raise RuntimeError("同案件已有工作紀錄，但無法確認車輛；請人工核對")
+        return vehicles
     first_line = re.sub(r"^\s*\d+\.\s*", "", lines[0]).strip()
     for line in lines[1:]:
         for extra in re.finditer(r"(?:^|[\s、])(?:\d+\.)?([^\s:：]+?)(?:司機)?\s*[:：]", line):

@@ -2,6 +2,7 @@ import unittest
 import shutil
 import json
 import subprocess
+import tempfile
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
@@ -36,14 +37,15 @@ class SavedRecordReadbackTests(unittest.TestCase):
         driver = Mock()
         driver.find_element.return_value.is_enabled.side_effect = runtime.StaleElementReferenceException("reloaded")
         document_state = "loading"
+        blank_page_seen = False
 
         def execute(script, *args):
-            nonlocal document_state
+            nonlocal document_state, blank_page_seen
             harness = """
             const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
             global.document = {
-              readyState: input.state,
-              body: {innerText: 'QUY-000:查詢完成 共 ' + (input.state === 'complete' ? '0' : '1') + ' 筆'},
+              readyState: input.state === 'loading' ? 'loading' : 'complete',
+              body: {innerText: input.state === 'blank' ? '' : 'QUY-000:查詢完成 共 ' + (input.state === 'complete' ? '0' : '1') + ' 筆'},
               getElementById: id => ({value: '', options: [1]}),
               querySelectorAll: () => []
             };
@@ -54,13 +56,15 @@ class SavedRecordReadbackTests(unittest.TestCase):
                                        text=True, capture_output=True, encoding="utf-8", check=True)
             result = json.loads(completed.stdout)
             if result is False:
-                document_state = "complete"
+                blank_page_seen = blank_page_seen or document_state == "blank"
+                document_state = "blank" if document_state == "loading" else "complete"
             return result
 
         driver.execute_script.side_effect = execute
         with patch.object(runtime, "_click_by_text_or_id"):
             self.assertEqual([], runtime._query_duty_work_logs(driver, self.request()))
         self.assertEqual("complete", document_state)
+        self.assertTrue(blank_page_seen)
 
     def test_duty_prequery_timeout_requeries_and_confirms_existing_without_insert(self):
         driver = Mock()
@@ -78,6 +82,7 @@ class SavedRecordReadbackTests(unittest.TestCase):
     def test_duty_prequery_repeated_timeout_stops_before_insert(self):
         with patch.object(runtime, "_ensure_duty_login", return_value=True), \
              patch.object(runtime, "_query_duty_work_logs", side_effect=runtime.TimeoutException()) as query, \
+             patch.object(runtime, "_detail_with_failure_evidence", side_effect=lambda detail, *args: detail), \
              patch.object(runtime, "_click_by_text_or_id") as click:
             result = runtime._prepare_duty_work_log_form(Mock(), self.request(), Path("."), Path("summary.txt"))
         self.assertEqual("duty_work_log_waiting_confirmation", result.status)
@@ -92,6 +97,65 @@ class SavedRecordReadbackTests(unittest.TestCase):
             result = runtime._prepare_duty_work_log_form(Mock(), self.request(), Path("."), Path("summary.txt"))
         self.assertEqual("duty_work_log_waiting_confirmation", result.status)
         query.assert_called_once()
+        click.assert_not_called()
+
+    def test_duty_prequery_browser_disconnect_is_failed_with_evidence_and_no_insert(self):
+        error = runtime.WebDriverException("invalid session id: disconnected: not connected to DevTools")
+        driver = Mock()
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=error) as query, \
+             patch.object(runtime, "_detail_with_failure_evidence", return_value="[browser_failure:chrome_unresponsive]") as evidence, \
+             patch.object(runtime, "_click_by_text_or_id") as click:
+            result = runtime._prepare_duty_work_log_form(driver, self.request(), Path("."), Path("summary.txt"))
+        self.assertFalse(result.ok)
+        self.assertEqual("duty_work_log_failed", result.status)
+        self.assertIn("查詢既有工作紀錄", result.detail)
+        self.assertIn("[browser_failure:chrome_unresponsive]", result.detail)
+        query.assert_called_once()
+        self.assertIs(error, evidence.call_args.args[5])
+        click.assert_not_called()
+
+    def test_duty_prequery_repeated_timeout_keeps_query_stage_and_evidence(self):
+        error = runtime.TimeoutException("工作紀錄查詢結果確認逾時")
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=error) as query, \
+             patch.object(runtime, "_detail_with_failure_evidence", return_value="[browser_failure:web_page_timeout]") as evidence, \
+             patch.object(runtime, "_click_by_text_or_id") as click:
+            result = runtime._prepare_duty_work_log_form(Mock(), self.request(), Path("."), Path("summary.txt"))
+        self.assertTrue(result.ok)
+        self.assertEqual("duty_work_log_waiting_confirmation", result.status)
+        self.assertIn("查詢既有工作紀錄", result.detail)
+        self.assertIn("[browser_failure:web_page_timeout]", result.detail)
+        self.assertEqual(2, query.call_count)
+        evidence.assert_called_once()
+        click.assert_not_called()
+
+    def test_duty_prequery_browser_failure_closes_driver_before_runner_retry(self):
+        driver = Mock()
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(runtime, "_create_driver", return_value=driver), \
+             patch.object(runtime, "mark_driver_operation_active"), \
+             patch.object(runtime, "apply_tile"), \
+             patch.object(runtime, "_set_window_size_if_enabled"), \
+             patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=runtime.WebDriverException("invalid session id")), \
+             patch.object(runtime, "_detail_with_failure_evidence", return_value="[browser_failure:chrome_unresponsive]"), \
+             patch.object(runtime, "_quit_driver") as quit_driver, \
+             patch.object(runtime, "_click_duty_work_log_save") as save:
+            result = runtime.run_local_selenium_task(self.request(), Path(tmp),
+                                                     use_session_lock=False, force_new_driver=True)
+        self.assertFalse(result.ok)
+        quit_driver.assert_called_once_with(driver)
+        save.assert_not_called()
+
+    def test_duty_prequery_timeout_with_dead_browser_probe_is_failed(self):
+        with patch.object(runtime, "_ensure_duty_login", return_value=True), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=runtime.TimeoutException()), \
+             patch.object(runtime, "_detail_with_failure_evidence", return_value="[browser_failure:chromedriver_ended]"), \
+             patch.object(runtime, "_click_by_text_or_id") as click:
+            result = runtime._prepare_duty_work_log_form(Mock(), self.request(), Path("."), Path("summary.txt"))
+        self.assertFalse(result.ok)
+        self.assertEqual("duty_work_log_failed", result.status)
         click.assert_not_called()
 
     def test_duty_prequery_retry_propagates_cancellation(self):
@@ -167,6 +231,26 @@ class SavedRecordReadbackTests(unittest.TestCase):
         with patch.object(runtime, "_query_duty_work_logs", return_value=[record]):
             with self.assertRaises(RuntimeError):
                 runtime._verify_saved_duty_work_log(Mock(), request)
+
+    def test_duty_query_recognizes_official_trailing_vehicle_driver_lines(self):
+        request = self.request()
+        request.service_type = "disaster"
+        request.duty_item = "火警"
+        request.vehicle_entries = [VehicleEntry(vehicle="新坡11", driver="甲"),
+                                   VehicleEntry(vehicle="新坡15", driver="乙")]
+        record = dict(self.stored_duty_record(), item="火警", record_id="4105061",
+                      status="到達現場，出一水線執行滅火攻擊。\n新坡11 / 甲\n新坡15 / 乙")
+        self.assertEqual([record], self.query_duty([record], request=request))
+        with patch.object(runtime, "_query_duty_work_logs", return_value=[record]):
+            with self.assertRaisesRegex(RuntimeError, "既有勤務內容未吻合"):
+                runtime._verify_saved_duty_work_log(Mock(), request)
+
+    def test_duty_query_slash_vehicle_lines_reject_missing_driver_and_mixed_assignments(self):
+        for status in ["處理完成\n新坡92 / ", "新坡95:乙\n新坡92 / 甲",
+                       "處理完成\n車輛不明 / 乙\n新坡92 / 甲",
+                       "處理完成\n新坡95 / 乙\n未確認\n新坡92 / 甲"]:
+            with self.subTest(status=status), self.assertRaises(RuntimeError):
+                self.query_duty([dict(self.stored_duty_record(), status=status)])
 
     def test_duty_query_rejects_unknown_work_item_or_vehicle_assignments(self):
         for item, status in [("", "新坡95:乙"), ("救護", "1.指揮官:甲"),
