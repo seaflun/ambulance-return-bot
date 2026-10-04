@@ -59,6 +59,40 @@ class FakeDesktopRunner:
 
 
 class WebAppTests(unittest.TestCase):
+    def test_admin_overlap_manual_confirmation_requires_ack_token_and_syncs_exact_vehicle(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        task = app_module.AmbulanceReturnRequest.from_dict({
+            "task_id": "manual-overlap-api", "created_at": datetime.now().isoformat(),
+            "service_type": "disaster", "vehicle_entries": [{"vehicle": "新坡11"}, {"vehicle": "新坡15"}],
+        })
+        self.store.create(task)
+        self.store.update_site_result(task.task_id, app_module.SiteAutomationResult(
+            "vehicle_mileage", "里程", "vehicle_mileage_failed", "案件與既有用車時間重疊，停止補登。"), vehicle_key="新坡11")
+        self.store.update_site_result(task.task_id, app_module.SiteAutomationResult(
+            "vehicle_mileage", "里程", "vehicle_mileage_saved", "原成功"), vehicle_key="新坡15")
+        payload = self.store.get(task.task_id)
+        app_module.upsert_public_pc_report({"task_id": task.task_id, "task": payload["task"],
+            "site_statuses": payload["site_statuses"], "status": "vehicle_mileage_failed", "event_id": "overlap-baseline"})
+        body = self.client.get("/admin/disaster").get_data(as_text=True)
+        self.assertIn("確認新坡11既有里程", body)
+        self.assertNotIn("確認新坡15既有里程", body)
+        endpoint = f"/tasks/{task.task_id}/sites/vehicle_mileage/complete"
+        data = {"vehicle_key": "新坡11", "return_service": "disaster",
+                "confirmation_token": app_module.site_manual_complete_token(task.task_id, "vehicle_mileage", "新坡11")}
+        self.assertEqual(409, self.client.post(endpoint, data=data).status_code)
+        self.assertEqual(403, self.client.post(endpoint, data=dict(data, confirmation_token="bad", confirmed_existing_mileage="1")).status_code)
+        response = self.client.post(endpoint, data=dict(data, confirmed_existing_mileage="1"))
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.headers["Location"].endswith("/admin/disaster"))
+        report = app_module.public_pc_report_for_task(task.task_id)
+        results = report["site_statuses"]["vehicle_mileage"]["vehicle_results"]
+        self.assertEqual("completed_by_user", results["新坡11"]["status"])
+        self.assertEqual(payload["site_statuses"]["vehicle_mileage"]["vehicle_results"]["新坡15"], results["新坡15"])
+        self.assertIn("PPE", results["新坡11"]["detail"])
+        completed = self.store.get(task.task_id)
+        self.assertEqual(409, self.client.post(endpoint, data=dict(data, confirmed_existing_mileage="1")).status_code)
+        self.assertEqual(completed, self.store.get(task.task_id))
+
     def test_sinposmart_civilpower_roster_is_read_only_and_requires_sync_authorization(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "test-duty-roster"
         self.assertEqual(self.client.get("/api/sinposmart/civilpower-roster").status_code, 403)

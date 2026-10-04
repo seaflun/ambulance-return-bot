@@ -159,6 +159,7 @@ from ambulance_bot.task_store import (
     WorkerClaimConflictError,
     initial_site_attempts,
     initial_worker_queue_state,
+    mileage_overlap_confirmation_available,
     pending_legacy_silent_save_report_event_id,
     task_completion_snapshot,
     task_has_vehicle_reconciliation,
@@ -910,14 +911,30 @@ def complete_site(task_id: str, site_key: str):
     supplied_token = str(request.form.get("confirmation_token") or "").strip()
     if not hmac.compare_digest(supplied_token, expected_token):
         abort(403)
+    confirmed_existing_mileage = form_flag_enabled(request.form.get("confirmed_existing_mileage"))
     try:
-        payload = store.mark_site_completed(task_id, site_key, vehicle_key=vehicle_key)
+        try:
+            payload = store.get(task_id)
+        except FileNotFoundError:
+            payload = materialize_public_pc_report_task(task_id)
+            if payload is None:
+                abort(404)
+        if confirmed_existing_mileage and task_payload_is_active(payload):
+            return "已有登打流程排隊或執行中，請等待完成後再人工核對。", 409
+        payload = store.mark_site_completed(
+            task_id, site_key, vehicle_key=vehicle_key, confirmed_existing_mileage=confirmed_existing_mileage,
+        )
+        payload = mark_public_pc_report_retry_task(task_id, payload)
     except SiteCompletionConflictError as exc:
         return str(exc), 409
     except (FileNotFoundError, KeyError):
         abort(404)
     report_public_pc_task_event(payload, f"人工確認站別完成：{site_display_name(site_key)}")
-    return redirect(url_for("task_detail", task_id=task_id))
+    sync_public_pc_report_retry_task(
+        payload, action=f"人工確認站別完成：{site_display_name(site_key)}",
+        detail=str(payload["site_statuses"][site_key].get("detail") or "使用者已人工確認完成。"),
+    )
+    return task_site_run_redirect(task_id)
 
 
 @app.post("/tasks/<task_id>/abort")
@@ -7785,6 +7802,7 @@ def template_helpers() -> dict:
         "site_display_detail": site_display_detail,
         "site_waits_for_confirmation": site_waits_for_confirmation,
         "site_manual_complete_token": site_manual_complete_token,
+        "mileage_overlap_confirmation_available": mileage_overlap_confirmation_available,
         "site_vehicle_candidate_rows": site_vehicle_candidate_rows,
         "site_vehicle_candidate_token": site_vehicle_candidate_token,
         "site_vehicle_reconciliation_ready_to_retry": site_vehicle_reconciliation_ready_to_retry,

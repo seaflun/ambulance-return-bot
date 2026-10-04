@@ -507,6 +507,18 @@
                     </form>
                   {% endif %}
                   {% set failure_history = public_pc_site_failure_history(item, site_key) %}
+                  {% for vehicle_key, vehicle_result in (site.get('vehicle_results') or {}).items() %}
+                    {% if mileage_overlap_confirmation_available(site_key, vehicle_result) and site_manual_complete_token(task.task_id, site_key, vehicle_key) %}
+                      <form class="site-retry-form" method="post" action="{{ url_for('complete_site', task_id=task.task_id, site_key=site_key) }}">
+                        <input type="hidden" name="return_service" value="{{ retry_return_service }}">
+                        <input type="hidden" name="vehicle_key" value="{{ vehicle_key }}">
+                        <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task.task_id, site_key, vehicle_key) }}">
+                        <label><input type="checkbox" name="confirmed_existing_mileage" value="1" required {% if task_active %}disabled{% endif %}>已核對 PPE，確認{{ vehicle_key }}此案已由人工登打</label>
+                        <button type="submit" {% if task_active %}disabled{% endif %}>確認{{ vehicle_key }}既有里程</button>
+                        <div>時間、地址不同的特例請先核對；只標示人工完成，不修改 PPE。</div>
+                      </form>
+                    {% endif %}
+                  {% endfor %}
                   {% if failure_history %}
                     <details class="site-error-history">
                       <summary>{% if status_class(site.status) == 'complete' %}歷史錯誤紀錄（已完成）{% else %}錯誤紀錄{% endif %}</summary>

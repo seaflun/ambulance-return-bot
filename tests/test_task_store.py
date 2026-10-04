@@ -24,6 +24,61 @@ from ambulance_bot.vehicle_reconciliation import (
 
 
 class JsonTaskStoreTests(unittest.TestCase):
+    def mileage_overlap_task(self, store):
+        request = AmbulanceReturnRequest.from_dict({
+            "task_id": "manual-mileage-overlap", "created_at": datetime.now().isoformat(),
+            "service_type": "disaster", "vehicle_entries": [{"vehicle": "新坡11"}, {"vehicle": "新坡15"}],
+        })
+        store.create(request)
+        store.update_site_result(request.task_id, SiteAutomationResult(
+            "vehicle_mileage", "里程", "vehicle_mileage_failed", "案件與既有用車時間重疊，停止補登。"), vehicle_key="新坡11")
+        store.update_site_result(request.task_id, SiteAutomationResult(
+            "vehicle_mileage", "里程", "vehicle_mileage_saved", "保留原成功"), vehicle_key="新坡15")
+        return request
+
+    def test_manual_existing_mileage_confirmation_preserves_other_vehicle_and_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = self.mileage_overlap_task(store)
+            before = store.get(request.task_id)
+            completed = store.mark_site_completed(request.task_id, "vehicle_mileage", "新坡11", confirmed_existing_mileage=True)
+            site = completed["site_statuses"]["vehicle_mileage"]
+            self.assertEqual("completed_by_user", site["vehicle_results"]["新坡11"]["status"])
+            self.assertIn("PPE", site["vehicle_results"]["新坡11"]["detail"])
+            self.assertEqual(before["site_statuses"]["vehicle_mileage"]["vehicle_results"]["新坡15"], site["vehicle_results"]["新坡15"])
+            self.assertEqual(before["task"], completed["task"])
+            self.assertEqual("", site["vehicle_results"]["新坡11"]["exception_type"])
+            old_attempts = before["site_attempts"]["vehicle_mileage"]
+            new_attempts = completed["site_attempts"]["vehicle_mileage"]
+            self.assertEqual(len(old_attempts) + 1, len(new_attempts))
+            for old, new in zip(old_attempts, new_attempts):
+                self.assertEqual((old["attempt_id"], old["time"], old["status"], old["detail"]),
+                                 (new["attempt_id"], new["time"], new["status"], new["detail"]))
+
+    def test_manual_existing_mileage_confirmation_requires_explicit_ack_and_exact_failed_vehicle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = self.mileage_overlap_task(store)
+            for site, vehicle, acknowledged in [("vehicle_mileage", "新坡11", False),
+                                                ("vehicle_mileage", "", True), ("vehicle_mileage", "新坡15", True),
+                                                ("duty_work_log", "新坡11", True)]:
+                with self.subTest(site=site, vehicle=vehicle), self.assertRaises(SiteCompletionConflictError):
+                    store.mark_site_completed(request.task_id, site, vehicle, confirmed_existing_mileage=acknowledged)
+
+    def test_manual_existing_mileage_confirmation_rejects_other_failure_and_queued_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonTaskStore(Path(tmp))
+            request = self.mileage_overlap_task(store)
+            before = store.get(request.task_id)
+            store.queue_for_worker(request.task_id, run_site_key="vehicle_mileage")
+            with self.assertRaises(SiteCompletionConflictError):
+                store.mark_site_completed(request.task_id, "vehicle_mileage", "新坡11", confirmed_existing_mileage=True)
+            store.save_payload(request.task_id, before)
+            store.update_site_result(request.task_id, SiteAutomationResult(
+                "vehicle_mileage", "里程", "vehicle_mileage_failed", "查詢逾時"), vehicle_key="新坡11")
+            with self.assertRaises(SiteCompletionConflictError):
+                store.mark_site_completed(request.task_id, "vehicle_mileage", "新坡11", confirmed_existing_mileage=True)
+
     def test_original_vehicle_can_be_confirmed_without_being_a_website_candidate(self):
         for site_key in ("consumables", "disinfection"):
             with self.subTest(site_key=site_key), tempfile.TemporaryDirectory() as tmp:

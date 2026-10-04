@@ -10,7 +10,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .models import AmbulanceReturnRequest
-from .site_diagnostics import DIAGNOSTIC_FIELDS, result_with_diagnostics
+from .site_diagnostics import DIAGNOSTIC_FIELDS, diagnostic_payload, result_with_diagnostics
 from .vehicle_reconciliation import (
     normalize_vehicle_candidates,
     pending_reconciliation_targets,
@@ -364,6 +364,13 @@ class WorkerClaimConflictError(RuntimeError):
 
 class SiteCompletionConflictError(RuntimeError):
     pass
+
+
+def mileage_overlap_confirmation_available(site_key: str, record: dict[str, Any]) -> bool:
+    return (
+        site_key == "vehicle_mileage" and isinstance(record, dict) and record.get("status") == "vehicle_mileage_failed"
+        and diagnostic_payload(site_key, str(record.get("status") or ""), str(record.get("detail") or ""))["exception_type"] == "mileage_overlap"
+    )
 
 
 class JsonTaskStore:
@@ -1499,7 +1506,9 @@ class JsonTaskStore:
             self.save_payload(task_id, payload)
             return payload, True
 
-    def mark_site_completed(self, task_id: str, site_key: str, vehicle_key: str = "") -> dict[str, Any]:
+    def mark_site_completed(
+        self, task_id: str, site_key: str, vehicle_key: str = "", *, confirmed_existing_mileage: bool = False,
+    ) -> dict[str, Any]:
         with self._lock:
             payload = self.get(task_id)
             site = payload["site_statuses"][site_key]
@@ -1507,14 +1516,24 @@ class JsonTaskStore:
             normalized_vehicle_key = str(vehicle_key or "").strip()
             results = site.get("vehicle_results")
             completed_detail = "使用者已人工確認完成。"
+            if confirmed_existing_mileage:
+                if (not normalized_vehicle_key or site_key != "vehicle_mileage"
+                        or worker_queue_state(payload).get("status") in {"queued", "claimed"}
+                        or task_payload_is_active_for_edit(payload)):
+                    raise SiteCompletionConflictError("只有未排隊或執行中的個別車輛可確認既有里程。")
+                if not isinstance(results, dict) or not mileage_overlap_confirmation_available(site_key, results.get(normalized_vehicle_key) or {}):
+                    raise SiteCompletionConflictError("只有里程時間重疊失敗的車輛可人工確認既有紀錄。")
+                completed_detail = "使用者已人工核對 PPE，確認此車同案里程已登打（特例地址／時間可能不同）；保留官網紀錄，未新增或儲存。"
 
             if normalized_vehicle_key:
                 if not isinstance(results, dict) or not isinstance(results.get(normalized_vehicle_key), dict):
                     raise SiteCompletionConflictError("找不到要確認的車輛回報。")
                 record = dict(results[normalized_vehicle_key])
-                if "waiting_confirmation" not in str(record.get("status") or ""):
+                if "waiting_confirmation" not in str(record.get("status") or "") and not confirmed_existing_mileage:
                     raise SiteCompletionConflictError("只有待人工確認的車輛可標記完成。")
                 record.update(status="completed_by_user", detail=completed_detail, updated_at=now_text())
+                if confirmed_existing_mileage:
+                    record.update({field: "" for field in DIAGNOSTIC_FIELDS})
                 results = dict(results)
                 results[normalized_vehicle_key] = record
                 site["vehicle_results"] = results
@@ -1584,7 +1603,7 @@ class JsonTaskStore:
             self.add_event_to_payload(
                 payload,
                 "completed_by_user",
-                f"{site['name']}{event_target} 使用者已確認完成。",
+                f"{site['name']}{event_target} " + (completed_detail if confirmed_existing_mileage else "使用者已確認完成。"),
             )
             self._resolve_pending_edit_site(payload, site_key)
             self._reconcile_completion_payload(
