@@ -31,7 +31,87 @@ class FormScriptDriver:
         return json.loads(result.stdout)
 
 
+class DutyQueryScriptDriver:
+    def __init__(self, text, *, state="complete", pages=1, rows=None, query_button=True):
+        self.get = Mock()
+        self.find_elements = Mock(return_value=[Mock()])
+        self.find_element = Mock()
+        self.find_element.return_value.is_enabled.side_effect = runtime.StaleElementReferenceException("reloaded")
+        self.page = dict(text=text, state=state, pages=pages, rows=rows or [], query_button=query_button)
+
+    def execute_script(self, script, *args):
+        harness = """
+        const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+        global.document = {
+          readyState: input.page.state, body: {innerText: input.page.text},
+          getElementById: id => id === '_btnQuery' && !input.page.query_button ? null :
+            {value: '', options: Array(input.page.pages)},
+          querySelectorAll: () => input.page.rows.map(action => ({getAttribute: () => action}))
+        };
+        process.stdout.write(JSON.stringify(new Function(input.script)(...input.args)));
+        """
+        result = subprocess.run([shutil.which("node"), "-e", harness],
+                                input=json.dumps(dict(script=script, args=args, page=self.page)),
+                                text=True, capture_output=True, encoding="utf-8", check=True)
+        return json.loads(result.stdout)
+
+
 class SavedRecordReadbackTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js required for browser-script tests")
+    def test_duty_query_accepts_official_no_records_response(self):
+        real_wait = runtime.WebDriverWait
+        for text, pages in [("QUY-300:查無資料 共0筆", 1), ("QUY-300:查無資料", 0),
+                            ("QUY-300： 查無資料 共 0 筆", 0)]:
+            with self.subTest(text=text, pages=pages), \
+                 patch.object(runtime, "WebDriverWait", side_effect=lambda d, t: real_wait(d, 0.15, poll_frequency=0.001)), \
+                 patch.object(runtime, "_click_by_text_or_id"):
+                driver = DutyQueryScriptDriver(text, pages=pages)
+                self.assertEqual([], runtime._query_duty_work_logs(driver, self.request()))
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js required for browser-script tests")
+    def test_duty_no_records_does_not_accept_unready_or_contradictory_page(self):
+        real_wait = runtime.WebDriverWait
+        record = self.stored_duty_record()
+        keys = ("record_id", "case_id", "work_at", "department", "unit", "item", "reason", "description", "status", "personnel")
+        data = "(^w^)".join(record[key].replace("\n", "<BR>") for key in keys) + "(^w^)"
+        action = f"Submit_SetSelectedRowData(frm,'wap119.RPS04060U','{data}');"
+        for page in [dict(text=""), dict(text="共0筆"), dict(text="QUY-300:查詢失敗 共0筆"),
+                     dict(text="QUY-300:查無資料 共0筆", state="loading"),
+                     dict(text="QUY-300:查無資料 共0筆", query_button=False),
+                     dict(text="QUY-300:查無資料 共1筆", rows=[action]),
+                     dict(text="QUY-300:查無資料 共0筆", rows=["unexpected"]),
+                     dict(text="QUY-300:查無資料 共0筆", pages=2),
+                     dict(text="QUY-000:查詢完成")]:
+            with self.subTest(page=page), \
+                 patch.object(runtime, "WebDriverWait", side_effect=lambda d, t: real_wait(d, 0.15, poll_frequency=0.001)), \
+                 patch.object(runtime, "_click_by_text_or_id"), \
+                 self.assertRaises((runtime.TimeoutException, RuntimeError)):
+                runtime._query_duty_work_logs(DutyQueryScriptDriver(**page), self.request())
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js required for browser-script tests")
+    def test_duty_first_record_continues_to_prefill_after_official_empty_query(self):
+        real_wait = runtime.WebDriverWait
+        for service_type in ("ems", "disaster"):
+            request = self.request()
+            request.service_type = service_type
+            progress = []
+            with self.subTest(service_type=service_type), tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+                stack.enter_context(patch.object(runtime, "WebDriverWait", side_effect=lambda d, t: real_wait(d, 0.15, poll_frequency=0.001)))
+                for name, value in {"_ensure_duty_login": True, "_extract_all_emergency_cases": [],
+                                    "_match_case_for_request": {"case_id": request.case_id}, "_click_case_choose": True,
+                                    "_fill_duty_work_log_values": None, "_save_duty_work_log_enabled": False}.items():
+                    stack.enter_context(patch.object(runtime, name, return_value=value))
+                for name in ("_click_by_text_or_id", "_switch_to_window_containing", "_set_case_query_date_range",
+                             "_click_query_if_present", "_switch_to_work_log_form_for_case", "_save_artifacts"):
+                    stack.enter_context(patch.object(runtime, name))
+                stack.enter_context(patch.object(runtime.time, "sleep"))
+                save = stack.enter_context(patch.object(runtime, "_click_duty_work_log_save"))
+                result = runtime._prepare_duty_work_log_form(DutyQueryScriptDriver("QUY-300:查無資料 共0筆"),
+                    request, Path(tmp), Path(tmp) / "summary.txt", progress=progress.append)
+            self.assertEqual("duty_work_log_prefilled", result.status)
+            self.assertIn("新增工作紀錄", progress)
+            save.assert_not_called()
+
     @unittest.skipUnless(shutil.which("node"), "Node.js required for browser-script tests")
     def test_duty_query_waits_for_complete_document_before_reading_rows(self):
         driver = Mock()

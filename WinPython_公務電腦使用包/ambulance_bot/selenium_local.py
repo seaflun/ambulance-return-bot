@@ -1687,19 +1687,23 @@ def _query_duty_work_logs(
     WebDriverWait(driver, 12).until(EC.staleness_of(query_button), "工作紀錄查詢送出後頁面更新逾時")
     WebDriverWait(driver, 30).until(lambda d: d.execute_script(
         "return document.readyState === 'complete' && !!document.getElementById('_btnQuery') "
-        "&& /QUY-000/.test(document.body.innerText);"
-    ), "工作紀錄查詢結果確認逾時（文件未載入完成或未取得 QUY-000）")
+        "&& (/QUY-000/.test(document.body.innerText) || /QUY-300\\s*[:：]\\s*查無資料/.test(document.body.innerText));"
+    ), "工作紀錄查詢結果確認逾時（文件未載入完成或未取得查詢完成／查無資料回覆）")
     payload = driver.execute_script(
         """
         const page = document.getElementById('pageSelect');
-        const total = /共\\s*(\\d+)\\s*筆/.exec(document.body.innerText);
-        return {pages: page ? page.options.length : 1, total: total ? Number(total[1]) : null,
+        const text = document.body.innerText;
+        const noRecords = /QUY-300\\s*[:：]\\s*查無資料/.test(text);
+        const total = /共\\s*(\\d+)\\s*筆/.exec(text);
+        return {pages: page ? (noRecords && !page.options.length ? 1 : page.options.length) : 1,
+          total: total ? Number(total[1]) : (noRecords ? 0 : null), no_records: noRecords,
           rows: Array.from(document.querySelectorAll('input[id="_btnUpdate"]'))
             .map(el => String(el.getAttribute('onclick') || ''))};
         """
     )
     if (not isinstance(payload, dict) or int(payload.get("pages", 0)) != 1
-            or not isinstance(payload.get("rows"), list) or payload.get("total") != len(payload["rows"])):
+            or not isinstance(payload.get("rows"), list) or payload.get("total") != len(payload["rows"])
+            or (payload.get("no_records") and payload.get("total") != 0)):
         raise RuntimeError("工作紀錄查詢仍有分頁或回應格式改變，無法確認唯一性")
     item = request.duty_item or ("火警" if request.service_type == "disaster" else "救護")
     target_vehicles = {entry.vehicle for entry in request.effective_vehicle_entries() if entry.vehicle}
