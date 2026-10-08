@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -269,6 +270,11 @@ class WebAppTests(unittest.TestCase):
         }
         data.update(overrides)
         return data
+
+    def rendered_form_errors(self, response):
+        initial_errors = re.search(r"const initialErrors = (.+);", response.get_data(as_text=True))
+        self.assertIsNotNone(initial_errors)
+        return json.loads(initial_errors.group(1))
 
     def import_case_for_form(self, case: dict) -> None:
         cases_dir = app_module.artifacts_dir / "cases"
@@ -3760,7 +3766,7 @@ class WebAppTests(unittest.TestCase):
                 response = self.client.post("/tasks/disaster", data=data_for(f"fire-mileage-{mileage}", mileage))
 
                 self.assertEqual(response.status_code, 400)
-                self.assertIn(expected_error, html.unescape(response.data.decode("utf-8")))
+                self.assertIn(expected_error, self.rendered_form_errors(response))
 
         with mock.patch.object(app_module, "ensure_disaster_media_folders", return_value=[]):
             allowed = self.client.post("/tasks/disaster", data=data_for("fire-mileage-allowed", "12300"))
@@ -3859,7 +3865,7 @@ class WebAppTests(unittest.TestCase):
         response = self.client.post("/tasks/disaster", data=data)
 
         self.assertEqual(400, response.status_code)
-        self.assertIn("指揮官必須是本案服勤人員", html.unescape(response.data.decode("utf-8")))
+        self.assertIn("指揮官必須是本案服勤人員", self.rendered_form_errors(response))
         self.assertEqual([], self.store.list_recent())
 
     def test_create_disaster_task_requires_valid_summary_type(self):
@@ -3985,9 +3991,9 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.store.list_recent(), [])
-        self.assertIn('<div class="form-errors" role="alert">', body)
+        self.assertIn('<dialog id="client-form-errors"', body)
         self.assertIn('name="return_date" id="return-date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="2026/06/07"', body)
-        self.assertIn('target.scrollIntoView({ block: "start" });', body)
+        self.assertIn('target.focus();', body)
         self.assertIn('const formErrors = ', body)
         self.assertIn('"請填寫返隊時間": { name: "return_time"', body)
         self.assertIn('"請選擇出動車輛": { name: "vehicle"', body)
@@ -4000,6 +4006,24 @@ class WebAppTests(unittest.TestCase):
         positions = [body.index(message) for message in expected_order]
         self.assertEqual(positions, sorted(positions))
 
+    def test_both_task_forms_preserve_all_server_errors_in_one_safe_dialog(self):
+        errors = ["請核對里程", "請核對司機", '<script>alert("backend error")</script>', "站別設定錯誤"]
+        routes = (("/tasks", "validate_task_form"), ("/tasks/disaster", "validate_disaster_task_form"))
+        for endpoint, validator in routes:
+            with self.subTest(endpoint=endpoint), mock.patch.object(app_module, validator, return_value=errors):
+                response = self.client.post(endpoint, data=self.valid_task_data())
+                body = response.get_data(as_text=True)
+                self.assertEqual(400, response.status_code)
+                self.assertEqual(1, body.count('<dialog id="client-form-errors"'))
+                self.assertIn('id="client-form-errors-list"', body)
+                self.assertIn('id="form-error-confirm" type="button"', body)
+                self.assertNotIn('<div class="form-errors"', body)
+                initial_errors = re.search(r"const initialErrors = (.+);", body)
+                self.assertIsNotNone(initial_errors)
+                self.assertEqual(errors, json.loads(initial_errors.group(1)))
+                self.assertNotIn(errors[2], body)
+                self.assertEqual([], self.store.list_recent())
+
     def test_create_task_requires_consumables(self):
         response = self.client.post(
             "/tasks",
@@ -4010,7 +4034,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.store.list_recent(), [])
-        self.assertIn("請選擇耗材", body)
+        self.assertIn("請選擇耗材", self.rendered_form_errors(response))
 
     def test_create_task_rejects_non_numeric_mileage(self):
         response = self.client.post(
@@ -4067,7 +4091,7 @@ class WebAppTests(unittest.TestCase):
                 )
 
                 self.assertEqual(response.status_code, 400)
-                self.assertIn(expected_error, html.unescape(response.data.decode("utf-8")))
+                self.assertIn(expected_error, self.rendered_form_errors(response))
 
         allowed = self.client.post(
             "/tasks",

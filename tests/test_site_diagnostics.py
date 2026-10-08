@@ -317,6 +317,66 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("儲存動作", payload["failure_reason"])
         self.assertIn("勿直接覆寫", payload["next_action"])
 
+    def test_mileage_sequence_failures_have_specific_stage_and_action(self):
+        for message in ["本案結束里程小於前一筆結束里程。",
+                        "本案結束里程超過後一筆結束里程。",
+                        "本案與前一筆結束里程相差不可超過 300 公里。"]:
+            with self.subTest(message=message):
+                payload = diagnostic_payload("vehicle_mileage", "vehicle_mileage_failed",
+                    f"車輛里程操作失敗：Message: {message}")
+                self.assertEqual("mileage_sequence", payload["exception_type"])
+                self.assertEqual("核對前後里程", payload["failure_stage"])
+                for text in ("前後正式里程", "不連續", "停止寫入"):
+                    self.assertIn(text, payload["failure_reason"])
+                for text in ("月份", "時間", "里程", "失敗車輛"):
+                    self.assertIn(text, payload["next_action"])
+                self.assertNotIn("查詢案件", payload["failure_reason"])
+                self.assertNotIn("手動儲存", payload["next_action"])
+
+    def test_multi_vehicle_mileage_sequence_failure_overrides_success_query_text(self):
+        success = "新坡11: 里程已重新查詢並核對儲存內容。 已依案件時間銜接前後里程。"
+        failure = "新坡15: 車輛里程操作失敗：Message: 本案結束里程小於前一筆結束里程。"
+        for detail in (f"{success} | {failure}", f"{failure} | {success}"):
+            with self.subTest(detail=detail):
+                payload = diagnostic_payload("vehicle_mileage", "vehicle_mileage_failed", detail)
+                self.assertEqual("mileage_sequence", payload["exception_type"])
+                self.assertEqual("核對前後里程", payload["failure_stage"])
+                self.assertIn("失敗車輛", payload["next_action"])
+
+    def test_merge_replaces_legacy_diagnostics_for_mileage_sequence(self):
+        for stage, category in (("查詢案件", "query"), ("開啟車輛里程", "unknown"), ("儲存", "save")):
+            with self.subTest(category=category):
+                merged = merge_diagnostic_fields({
+                    "key": "vehicle_mileage", "status": "vehicle_mileage_failed",
+                    "detail": "新坡11: 里程已重新查詢並核對儲存內容。 | "
+                              "新坡15: 車輛里程操作失敗：Message: 本案結束里程小於前一筆結束里程。",
+                    "failure_stage": stage, "failure_reason": "舊診斷",
+                    "next_action": "舊處理建議", "exception_type": category,
+                })
+                self.assertEqual("mileage_sequence", merged["exception_type"])
+                self.assertEqual("核對前後里程", merged["failure_stage"])
+                self.assertIn("停止寫入", merged["failure_reason"])
+                self.assertIn("失敗車輛", merged["next_action"])
+
+    def test_mileage_sequence_messages_do_not_reclassify_other_sites(self):
+        for site in ("duty_work_log", "fuel_record", "consumables", "disinfection", "volunteer_assist"):
+            for message in ("本案結束里程小於前一筆結束里程。", "本案結束里程超過後一筆結束里程。",
+                            "本案與前一筆結束里程相差不可超過 300 公里。"):
+                with self.subTest(site=site, message=message):
+                    payload = diagnostic_payload(site, f"{site}_failed", message)
+                    self.assertNotEqual("mileage_sequence", payload["exception_type"])
+                    self.assertNotEqual("核對前後里程", payload["failure_stage"])
+
+    def test_generic_mileage_text_is_not_a_sequence_failure(self):
+        payload = diagnostic_payload("vehicle_mileage", "vehicle_mileage_failed", "本案里程資料待核對")
+        self.assertNotEqual("mileage_sequence", payload["exception_type"])
+
+    def test_saved_mileage_keeps_empty_failure_diagnostics(self):
+        payload = diagnostic_payload("vehicle_mileage", "vehicle_mileage_saved",
+                                     "已確認儲存；先前本案結束里程小於前一筆結束里程。")
+        self.assertEqual("", payload["failure_reason"])
+        self.assertEqual("", payload["exception_type"])
+
     def test_merge_replaces_legacy_save_diagnosis_for_mileage_overlap(self):
         merged = merge_diagnostic_fields(
             {

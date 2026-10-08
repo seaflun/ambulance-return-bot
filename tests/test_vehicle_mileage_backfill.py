@@ -445,8 +445,10 @@ class MileageGridScriptTests(unittest.TestCase):
         """
         result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, encoding="utf-8", check=True)
         self.assertEqual([
-            "前一件案件結束里程：10000", "上次該車輛登打的里程：10050",
-            "前一件案件結束里程：尚無紀錄，登打時查詢里程系統", "上次該車輛登打的里程：20000",
+            "前一件案件結束里程：10000（最近同步參考，非即時官網資料）",
+            "上次該車輛登打的里程：10050（最近同步參考，非即時官網資料）",
+            "前一件案件結束里程：尚無紀錄，登打時查詢里程系統（最近同步參考，非即時官網資料）",
+            "上次該車輛登打的里程：20000（最近同步參考，非即時官網資料）",
         ], json.loads(result.stdout))
 
     def test_following_row_is_found_by_id_after_insert_and_only_mileages_change(self):
@@ -513,7 +515,8 @@ class MileageGridScriptTests(unittest.TestCase):
             let day = '2026/09/07', clock = '1000';
             const document = {querySelector(selector) {
               return {value: selector.includes('case_date') ? day : selector.includes('case_time') ? clock
-                : selector.includes('vehicle') ? 'car' : '10020'};
+                : selector.includes('vehicle') ? 'car' : '10020',
+                closest: () => ({classList: {add() {}}})};
             }};
             const form = document, card = document;
             """

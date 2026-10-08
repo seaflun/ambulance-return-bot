@@ -50,6 +50,7 @@ class FuelPriceWebTests(unittest.TestCase):
     tearDown = web_fixtures.WebAppTests.tearDown
     _restore_env = web_fixtures.WebAppTests._restore_env
     valid_task_data = web_fixtures.WebAppTests.valid_task_data
+    rendered_form_errors = web_fixtures.WebAppTests.rendered_form_errors
 
     def fuel_data(self, price, **overrides):
         return self.valid_task_data(
@@ -83,7 +84,7 @@ class FuelPriceWebTests(unittest.TestCase):
                 before = self.store.list_recent()
                 response = self.client.post("/tasks", data=self.fuel_data(price, case_id=f"EMS-BAD-{index}"))
                 self.assertEqual(400, response.status_code)
-                self.assertIn(PRICE_MESSAGE, response.get_data(as_text=True))
+                self.assertIn(f"1車加油單價需為 {PRICE_MESSAGE}的有限數字", self.rendered_form_errors(response))
                 self.assertEqual(before, self.store.list_recent())
                 queue.assert_not_called()
 
@@ -103,7 +104,7 @@ class FuelPriceWebTests(unittest.TestCase):
             fuel_time_2="1120", fuel_quantity_2="40", fuel_unit_price_2="1699",
         ))
         self.assertEqual(400, response.status_code)
-        self.assertIn(f"2車加油單價需為 {PRICE_MESSAGE}", response.get_data(as_text=True))
+        self.assertIn(f"2車加油單價需為 {PRICE_MESSAGE}的有限數字", self.rendered_form_errors(response))
         self.assertEqual([], self.store.list_recent())
 
     def test_ems_edit_rejects_invalid_price_without_changing_existing_task(self):
@@ -115,7 +116,7 @@ class FuelPriceWebTests(unittest.TestCase):
             with self.subTest(price=price):
                 response = self.client.post(f"/tasks/{task_id}/edit", data=self.fuel_data(price))
                 self.assertEqual(400, response.status_code)
-                self.assertIn(PRICE_MESSAGE, response.get_data(as_text=True))
+                self.assertIn(f"1車加油單價需為 {PRICE_MESSAGE}的有限數字", self.rendered_form_errors(response))
                 self.assertEqual(before, self.store.get(task_id))
 
     def test_disaster_create_rejects_invalid_price_before_folders_or_store(self):
@@ -124,7 +125,7 @@ class FuelPriceWebTests(unittest.TestCase):
                 before = self.store.list_recent()
                 response = self.client.post("/tasks/disaster", data=self.disaster_data(price, f"FIRE-BAD-{index}"))
                 self.assertEqual(400, response.status_code)
-                self.assertIn(PRICE_MESSAGE, response.get_data(as_text=True))
+                self.assertIn(f"第1車加油單價需為 {PRICE_MESSAGE}的有限數字", self.rendered_form_errors(response))
                 self.assertEqual(before, self.store.list_recent())
                 folders.assert_not_called()
 
@@ -132,7 +133,7 @@ class FuelPriceWebTests(unittest.TestCase):
         with mock.patch.object(app_module, "ensure_disaster_media_folders", return_value=[]) as folders:
             response = self.client.post("/tasks/disaster", data=self.disaster_data("29.9", second_price="1699"))
         self.assertEqual(400, response.status_code)
-        self.assertIn(f"第2車加油單價需為 {PRICE_MESSAGE}", response.get_data(as_text=True))
+        self.assertIn(f"第2車加油單價需為 {PRICE_MESSAGE}的有限數字", self.rendered_form_errors(response))
         self.assertEqual([], self.store.list_recent())
         folders.assert_not_called()
 

@@ -354,6 +354,101 @@ class SavedRecordReadbackTests(unittest.TestCase):
         stored = self.stored_duty_record()
         self.assertEqual([stored], self.query_duty([stored]))
 
+    def manual_pair(self):
+        request = self.request()
+        request.personnel = ["甲", "乙"]
+        request.driver = "甲"
+        request.case_address = "測試路1號"
+        shorthand = dict(self.stored_duty_record(), status="95車*丙\n人工摘要",
+                         personnel="丙,丁")
+        manual = dict(self.stored_duty_record(), record_id="456", case_id="",
+                      work_at="1150930 23:00", personnel="甲,乙",
+                      status="1.駕駛甲\n2.支援新坡95車勤務，由新坡95車送醫後返隊",
+                      description="119案件\n緊急救護\n地點:測試路1號")
+        return request, shorthand, manual
+
+    def test_duty_query_identifies_manual_support_crew_without_case_id(self):
+        request, shorthand, manual = self.manual_pair()
+        self.assertEqual([manual], self.query_duty([shorthand, manual], request=request))
+
+    def test_duty_query_identifies_short_vehicle_without_confusing_support_record(self):
+        request, shorthand, manual = self.manual_pair()
+        request.vehicle = "新坡95"
+        request.driver = "丙"
+        request.personnel = ["甲", "乙", "丙", "丁"]
+        self.assertEqual([shorthand], self.query_duty([manual, shorthand], request=request))
+
+    def test_duty_manual_identity_is_not_address_only(self):
+        request, _, manual = self.manual_pair()
+        for change in [{"case_id": "20260930225845016"}, {"item": "火警"},
+                       {"unit": "觀音分隊"}, {"description": "地點:測試路10號"},
+                       {"work_at": "1150930 23:04"}, {"work_at": "1151001 22:58"}]:
+            with self.subTest(change=change):
+                self.assertEqual([], self.query_duty([dict(manual, **change)], request=request))
+
+    def test_duty_manual_incomplete_or_conflicting_crew_remains_uncertain(self):
+        request, _, manual = self.manual_pair()
+        for change in [{"personnel": "甲"}, {"personnel": "甲,丙"},
+                       {"status": "駕駛不明\n支援新坡95車"}]:
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                self.query_duty([dict(manual, **change)], request=request)
+
+    def test_duty_manual_duplicate_candidates_still_require_confirmation(self):
+        request, _, manual = self.manual_pair()
+        rows = self.query_duty([manual, dict(manual, record_id="789")], request=request)
+        self.assertEqual(2, len(rows))
+        with patch.object(runtime, "_query_duty_work_logs", return_value=rows), \
+             self.assertRaises(RuntimeError):
+            runtime._verify_saved_duty_work_log(Mock(), request)
+
+    def test_duty_short_vehicle_needs_unique_unit_alias_and_driver(self):
+        request, shorthand, _ = self.manual_pair()
+        for change in [{"status": "95車*"}, {"unit": "觀音分隊"}]:
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                self.query_duty([dict(shorthand, **change)], request=request)
+        with patch.object(runtime, "vehicle_ppe_names", return_value={"新坡95", "觀音95"}), \
+             self.assertRaises(RuntimeError):
+            self.query_duty([shorthand], request=request)
+
+    def test_duty_short_vehicle_mixed_assignments_remain_uncertain(self):
+        request, shorthand, _ = self.manual_pair()
+        for status in ["95車*丙\n2.新坡92:甲", "95車*丙\n92車*甲",
+                       "95車*丙\n2.新坡92車*甲",
+                       "95車*丙\n新坡92 / 甲", "95車*丙 / 新坡92 /甲",
+                       "95車*丙、新坡92 /甲"]:
+            with self.subTest(status=status), self.assertRaises(RuntimeError):
+                self.query_duty([dict(shorthand, status=status)], request=request)
+
+    def test_duty_manual_support_crew_is_part_of_shared_case_personnel(self):
+        request, shorthand, manual = self.manual_pair()
+        request.personnel = ["甲", "乙", "丙", "丁"]
+        self.assertEqual([manual], self.query_duty([shorthand, manual], request=request))
+        request.vehicle = "新坡95"
+        request.driver = "丙"
+        self.assertEqual([shorthand], self.query_duty([manual, shorthand], request=request))
+
+    def test_duty_manual_multiple_vehicle_or_driver_assignments_require_confirmation(self):
+        request, _, manual = self.manual_pair()
+        request.personnel = ["甲", "乙", "丙", "丁"]
+        for extra in ["2.新坡95司機:丙", "2.新坡95車*丙", "2.駕駛丙", "2.駕駛員:丙"]:
+            with self.subTest(extra=extra), self.assertRaises(RuntimeError):
+                self.query_duty([dict(manual, status="1.駕駛甲\n" + extra)], request=request)
+
+    def test_duty_manual_crew_needs_its_driver_and_no_unknown_people(self):
+        request, _, manual = self.manual_pair()
+        request.personnel = ["甲", "乙", "丙", "丁"]
+        for change in [{"personnel": "乙,丙"}, {"personnel": "甲,未知"}]:
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                self.query_duty([dict(manual, **change)], request=request)
+
+    def test_duty_manual_candidate_with_unknown_task_driver_requires_confirmation(self):
+        request, _, manual = self.manual_pair()
+        request.personnel = ["甲", "乙", "丙", "丁"]
+        for driver in ["", "外案"]:
+            request.driver = driver
+            with self.subTest(driver=driver), self.assertRaises(RuntimeError):
+                self.query_duty([manual], request=request)
+
     def test_duty_query_does_not_confuse_same_time_different_case(self):
         other = self.stored_duty_record()
         other["case_id"] = "20260930225845016"

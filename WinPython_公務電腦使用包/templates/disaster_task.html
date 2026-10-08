@@ -230,10 +230,6 @@
   {% set selected_reason = selected_case.reason or selected_case.case_reason or '' %}
   {% set selected_reason_options = disaster_reason_options_by_type[selected_summary_type] %}
   <form method="post" action="{{ form_action }}" id="disaster-form" autocomplete="off" novalidate>
-    {% if form_errors %}
-      <div class="form-errors" role="alert"><ul>{% for error in form_errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
-    {% endif %}
-    <div class="form-errors" id="client-form-errors" role="alert" hidden><ul></ul></div>
     <input type="hidden" name="service_type" value="disaster">
     <input type="hidden" name="return_to" value="disaster">
     <section class="panel">
@@ -319,7 +315,6 @@
   </form>
   {% else %}
   <section class="panel task-form-locked" role="status" aria-live="polite">
-    {% if form_errors %}<div class="form-errors" role="alert"><ul>{% for error in form_errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}
     <p>請先從上方案件按「帶入」，下方輸入欄位才會開啟。</p>
   </section>
   {% endif %}
@@ -327,6 +322,7 @@
   {% include "_recent_tasks.html" %}
   {% endif %}
 </main>
+{% include "_task_form_error_dialog.html" %}
 <script>
   const lookupForm=document.getElementById('lookup-form');
   const lookupStatus=document.getElementById('lookup-status');
@@ -364,7 +360,6 @@
   const maxVehicleMileageChangeKm = 300;
   const lockedSubcategory = document.getElementById('locked-recorder-subcategory');
   const folderPreview = document.getElementById('disaster-folder-preview');
-  const clientFormErrors = document.getElementById('client-form-errors');
   const currentVehiclePackages = document.getElementById('current-vehicle-packages');
   const currentVehicleButtons = currentVehiclePackages.querySelector('.package-buttons');
   const currentPersonnelPackages = document.getElementById('current-personnel-packages');
@@ -435,7 +430,7 @@
     const hint=card.querySelector('[data-last-mileage-for="vehicle"]');
     if(!vehicle||!hint) return;
     const mileage=String(lastVehicleMileages[vehicle.value]||'').trim();
-    hint.textContent=/^\d+$/.test(mileage)?`上次該車輛登打的里程：${mileage}`:'';
+    hint.textContent=/^\d+$/.test(mileage)?`上次該車輛登打的里程：${mileage}（最近同步參考，非即時官網資料）`:'';
   }
   function bindCard(card){
     if(card.dataset.bound==='1') return;
@@ -562,11 +557,7 @@
     });
   }
   function showClientFormErrors(errors){
-    const errorList=clientFormErrors.querySelector('ul');
-    errorList.innerHTML='';
-    errors.forEach(error=>{ const item=document.createElement('li'); item.textContent=error; errorList.appendChild(item); });
-    clientFormErrors.hidden=errors.length===0;
-    if(errors.length) clientFormErrors.scrollIntoView({block:'start'});
+    window.showTaskFormErrors(errors);
   }
   function mileageChangeErrors(card,index){
     const vehicle=card.querySelector('[name="vehicle"]');
@@ -582,8 +573,14 @@
     const currentMileage=Number(currentMileageText);
     if(!Number.isSafeInteger(previousMileage)||!Number.isSafeInteger(currentMileage)) return [];
     const fieldLabel=`第${index+1}車里程`;
-    if(currentMileage<previousMileage) return [`${fieldLabel}不能小於上次登打的里程（${previousMileage}）`];
-    if(currentMileage-previousMileage>maxVehicleMileageChangeKm) return [`${fieldLabel}與上次登打相差不可超過 ${maxVehicleMileageChangeKm} 公里（上次 ${previousMileage}）`];
+    if(currentMileage<previousMileage){
+      mileageInput.closest('.field-visual')?.classList.add('has-error');
+      return [`${fieldLabel}不能小於上次登打的里程（${previousMileage}）`];
+    }
+    if(currentMileage-previousMileage>maxVehicleMileageChangeKm){
+      mileageInput.closest('.field-visual')?.classList.add('has-error');
+      return [`${fieldLabel}與上次登打相差不可超過 ${maxVehicleMileageChangeKm} 公里（上次 ${previousMileage}）`];
+    }
     return [];
   }
   form.addEventListener('submit',event=>{
@@ -614,7 +611,7 @@
   updateRequiredHints();
   {% endif %}
   {% if case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
-  window.setTimeout(()=>{ if(!document.querySelector('form:focus-within')) window.location.reload(); },2000);
+  window.setTimeout(()=>{ if(!document.querySelector('form:focus-within')&&!document.getElementById('client-form-errors').open) window.location.reload(); },2000);
   {% endif %}
 </script>
 </body>

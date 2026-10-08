@@ -1614,8 +1614,20 @@ def _work_log_text(value: object) -> str:
     return html.unescape(re.sub(r"<br\s*/?>", "\n", str(value or ""), flags=re.I)).replace("\r\n", "\n").strip()
 
 
-def _work_log_vehicle_labels(status: str, known_vehicles: set[str]) -> set[str]:
+def _work_log_vehicle_labels(status: str, known_vehicles: set[str], unit: str = "") -> set[str]:
     lines = status.split("\n")
+    first_line = re.sub(r"^\s*\d+\.\s*", "", lines[0]).strip()
+    short_vehicle = re.fullmatch(r"(\d{1,3})車\s*[*＊:：]\s*([^\s*＊:：/、，,]+)", first_line)
+    if short_vehicle:
+        if any(re.search(r"(?:^|\s)(?:\d+\.\s*)?(?:[\u4e00-\u9fffA-Za-z]+\d{1,3}(?:車)?(?:司機)?\s*[*＊:：/]|\d{1,3}車\s*[*＊:：])", line)
+               for line in lines[1:]):
+            raise RuntimeError("同案件已有工作紀錄，但車輛分列格式無法確認；請人工核對")
+        labels = {label for label in known_vehicles
+                  if re.fullmatch(r"[\u4e00-\u9fffA-Za-z]+" + re.escape(short_vehicle.group(1)), label)}
+        if (not short_vehicle.group(2).strip() or len(labels) != 1
+                or unit != re.sub(r"\d+$", "", next(iter(labels))) + "分隊"):
+            raise RuntimeError("同案件已有工作紀錄，但縮寫車輛或單位無法確認；請人工核對")
+        return labels
     if any(re.match(r"^[^\s/]+\s*/", line.strip()) for line in lines):
         vehicles = set()
         prefix_end = len(lines)
@@ -1660,6 +1672,46 @@ def _work_log_vehicle_labels(status: str, known_vehicles: set[str]) -> set[str]:
     if not vehicles:
         raise RuntimeError("同案件已有工作紀錄，但無法確認車輛；請人工核對")
     return vehicles
+
+
+def _manual_work_log_matches_request(record: dict[str, str], request: AmbulanceReturnRequest) -> bool:
+    # An unlinked manual EMS entry needs independent case and crew evidence.
+    if request.service_type != "ems" or len(request.effective_vehicle_entries()) != 1:
+        return False
+    unit = re.sub(r"\d+$", "", request.vehicle) + "分隊"
+    address = re.search(r"(?:^|\n)地點\s*[:：]\s*([^\n]+)", record["description"])
+    if record["unit"] != unit or not address or address.group(1).strip() != request.case_address.strip():
+        return False
+    work_time = re.fullmatch(r"(\d{3})(\d{2})(\d{2}) (\d{2}):(\d{2})", record["work_at"])
+    if not work_time:
+        return False
+    try:
+        year, month, day, hour, minute = map(int, work_time.groups())
+        work_at = datetime(year + 1911, month, day, hour, minute)
+        case_at = datetime.strptime(request.case_id[:12], "%Y%m%d%H%M")
+    except ValueError:
+        return False
+    if work_at.date() != case_at.date() or abs((work_at - case_at).total_seconds()) > 300:
+        return False
+    expected_crew = {name.strip() for name in request.personnel if name.strip()}
+    actual_crew = {name for name in re.split(r"[,，、\s]+", record["personnel"]) if name}
+    if not request.driver or request.driver not in expected_crew:
+        raise RuntimeError("同地址與出勤時間有人工工作紀錄，但任務駕駛不明；請人工核對")
+    status_lines = record["status"].split("\n")
+    if any(re.match(r"^\s*(?:\d+\.\s*)?(?:駕駛(?:員)?|[\u4e00-\u9fffA-Za-z]+\d{1,3}(?:車)?(?:司機)?\s*[*＊:：/]|\d{1,3}車\s*[*＊:：/])", line)
+           for line in status_lines[1:]):
+        raise RuntimeError("同地址與出勤時間有人工工作紀錄，但車輛或駕駛分列無法確認；請人工核對")
+    first_line = re.sub(r"^\s*\d+\.\s*", "", status_lines[0]).strip()
+    driver = re.fullmatch(r"駕駛(?:員)?\s*[:：]?\s*([^\s:：,，、]+)", first_line)
+    if driver and len(expected_crew) >= 2 and len(actual_crew) >= 2:
+        # A case's personnel may include both ambulances; its driver identifies this vehicle.
+        if (driver.group(1) == request.driver and request.driver in actual_crew
+                and actual_crew <= expected_crew):
+            return True
+        if (driver.group(1) != request.driver and driver.group(1) in actual_crew
+                and actual_crew < expected_crew):
+            return False
+    raise RuntimeError("同地址與出勤時間有人工工作紀錄，但駕駛或完整出勤人員無法確認；請人工核對")
 
 
 def _query_duty_work_logs(
@@ -1725,15 +1777,19 @@ def _query_duty_work_logs(
         fields = match.group(1).split("(^w^)")
         if len(fields) < 10 or not fields[0].isdigit():
             raise RuntimeError("工作紀錄缺少正式紀錄編號")
-        if fields[1] != case_id:
+        if fields[1] and fields[1] != case_id:
             continue
         record = dict(zip(("record_id", "case_id", "work_at", "department", "unit", "item",
                            "reason", "description", "status", "personnel"), map(_work_log_text, fields[:10])))
+        if not record["case_id"]:
+            if record["item"] == item and _manual_work_log_matches_request(record, request):
+                records.append(record)
+            continue
         if not record["item"]:
             raise RuntimeError("同案件已有工作紀錄，但無法確認勤務項目；請人工核對")
         if record["item"] != item:
             continue
-        vehicles = _work_log_vehicle_labels(record["status"], known_vehicles)
+        vehicles = _work_log_vehicle_labels(record["status"], known_vehicles, record["unit"])
         if vehicles & target_vehicles:
             records.append(record)
     return records
@@ -3157,7 +3213,21 @@ def _add_vehicle_mileage_record(
 ) -> str:
     _report_progress(progress, "依案件時間查詢前後里程")
     history = _vehicle_mileage_history(driver, request, artifacts_dir, cancel_check)
-    plan = _vehicle_mileage_entry_plan(request, history, previous_request)
+    try:
+        plan = _vehicle_mileage_entry_plan(request, history, previous_request)
+    except WebDriverException as exc:
+        if not any(message in str(exc) for message in (
+            "查無案件之前的結束里程", "本案結束里程小於前一筆結束里程",
+            "本案結束里程超過後一筆結束里程", "本案與前一筆結束里程相差不可超過 300 公里",
+        )):
+            raise
+        # Recheck the case month before trusting a plan built after an older-month query.
+        if cancel_check:
+            cancel_check()
+        case_month = request.service_case_date().strftime("%Y/%m")
+        refreshed = _load_vehicle_mileage_month(driver, request, case_month, artifacts_dir)
+        history = [row for row in history if row["month"] != case_month] + refreshed
+        plan = _vehicle_mileage_entry_plan(request, history, previous_request)
     month = plan["start_at"].strftime("%Y/%m")
     following = plan["following"]
     same_month = following is not None and following["month"] == month
@@ -3180,6 +3250,8 @@ def _add_vehicle_mileage_record(
     )
     if current_plan != plan:
         raise WebDriverException("查詢後前後里程已變動，請重新執行。")
+    if cancel_check:
+        cancel_check()
     _write_vehicle_mileage_backfill(driver, request, plan, include_following=same_month)
     if not _save_vehicle_mileage_enabled():
         return "已填寫本案及後一筆里程，未按儲存。"
@@ -3199,6 +3271,8 @@ def _add_vehicle_mileage_record(
             )
             if current_plan != plan:
                 return f"{WAITING_CONFIRMATION_MARKER} 本案已回查，後一筆資料已變動，尚未修正；重試將重新查詢。"
+            if cancel_check:
+                cancel_check()
             _write_vehicle_mileage_backfill(driver, request, plan, include_following=True, following_only=True)
             detail = _save_vehicle_mileage_form(driver, cancel_check=cancel_check)
         except (WebDriverException, ManualUpdateRequiredError, ValueError) as exc:
@@ -3316,7 +3390,11 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
     first = str(before[0]["EndMileage"])
     last = _resolve_end_mileage(first, request.mileage)
     if not re.fullmatch(r"\d+", last) or int(last) < int(first):
-        raise WebDriverException("本案結束里程小於前一筆結束里程。")
+        previous_at = _mileage_record_datetime(before[0], "End").strftime("%Y/%m/%d %H:%M")
+        raise WebDriverException(
+            f"本案結束里程小於前一筆結束里程。前一筆 {previous_at}、紀錄 {before[0]['Id']}、"
+            f"結束里程 {first}；本案結束里程 {last}。"
+        )
     if int(last) - int(first) > 300:
         raise WebDriverException("本案與前一筆結束里程相差不可超過 300 公里。")
     following = after[0] if after else None
@@ -3377,15 +3455,29 @@ def _load_vehicle_mileage_month(
     )
     if parse_qs(urlsplit(driver.current_url).query).get("period") != [month]:
         raise WebDriverException("登打頁月份與案件查詢月份不一致。")
-    result = driver.execute_script(
-        """
-        const grid = window.$ && $('#grid').data('kendoGrid');
-        if (!grid) return {error: 'grid not found'};
-        const source = grid.dataSource;
-        const rows = Array.from(source.data());
-        if (source.total() !== rows.length) return {error: 'incomplete mileage history page'};
-        return {rows: JSON.parse(JSON.stringify(rows.map(row => row.toJSON())))};
-        """
+    def completed_history(current):
+        return current.execute_script(
+            """
+            if (document.readyState !== 'complete') return null;
+            const grid = window.$ && $('#grid').data('kendoGrid');
+            if (!grid || (window.jQuery && jQuery.active !== 0)) return null;
+            const source = grid.dataSource;
+            if (source._requestInProgress) return null;
+            const rows = Array.from(source.data());
+            if (source.total() !== rows.length) return {error: 'incomplete mileage history page'};
+            if (typeof recordList === 'undefined' || !Array.isArray(recordList)) {
+              return {error: 'server mileage history payload not found'};
+            }
+            const ids = data => data.map(row => String(row.Id)).sort();
+            if (JSON.stringify(ids(rows)) !== JSON.stringify(ids(recordList))) {
+              return {error: 'mileage grid does not match server history payload'};
+            }
+            return {rows: JSON.parse(JSON.stringify(rows.map(row => row.toJSON())))};
+            """
+        )
+
+    result = WebDriverWait(driver, 20).until(
+        completed_history, "里程明細尚未載入完成，未將空表格判為零筆。"
     )
     if not isinstance(result, dict) or result.get("error") or not isinstance(result.get("rows"), list):
         raise WebDriverException(f"里程歷史查詢未完成：{result}")
@@ -5149,6 +5241,7 @@ def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
     if not case_id:
         return False
     script = """
+    if (document.readyState !== 'complete') return false;
     const caseId = String(arguments[0] || '').trim();
     const rows = Array.from(document.querySelectorAll('tr'));
     const row = rows.find(item => Array.from(item.children).some(cell => {
@@ -5175,10 +5268,57 @@ def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
         except WebDriverException:
             return False
 
+    def wait_for_page_reload(previous_query, expected_page):
+        WebDriverWait(driver, 12).until(EC.staleness_of(previous_query))
+        WebDriverWait(driver, 12).until(lambda current: current.execute_script(
+            """
+            const page = document.querySelector('select[name="pageSelect"]');
+            return document.readyState === 'complete' && !!document.getElementById('_btnQuery')
+              && !!page && Number(page.value) === arguments[0];
+            """, expected_page,
+        ))
+
     try:
         return bool(WebDriverWait(driver, 10, poll_frequency=0.25).until(try_click))
     except (TimeoutException, WebDriverException):
+        pass
+
+    # Collecting all cases leaves the popup on its last page; select the target again by ID.
+    total_pages = _case_lookup_total_pages(driver)
+    if total_pages <= 1:
         return False
+    try:
+        previous_query = driver.find_element(By.ID, "_btnQuery")
+        reset = driver.execute_script(
+            """
+            const page = document.querySelector('select[name="pageSelect"]');
+            const first = page && Array.from(page.options).find(option => Number(option.value) === 1);
+            if (!first) return null;
+            if (Number(page.value) === 1) return {changed: false};
+            page.value = String(first.value);
+            page.dispatchEvent(new Event('change', { bubbles: true }));
+            return {changed: true};
+            """
+        )
+        if not isinstance(reset, dict):
+            return False
+        if reset.get("changed"):
+            wait_for_page_reload(previous_query, 1)
+        for page_number in range(1, total_pages + 1):
+            try:
+                if WebDriverWait(driver, 10, poll_frequency=0.25).until(try_click):
+                    return True
+            except TimeoutException:
+                pass
+            if page_number >= total_pages:
+                break
+            previous_query = driver.find_element(By.ID, "_btnQuery")
+            if not _click_next_page_if_present(driver):
+                return False
+            wait_for_page_reload(previous_query, page_number + 1)
+    except (TimeoutException, WebDriverException):
+        return False
+    return False
 
 
 def _extract_selected_case_form(driver: webdriver.Chrome) -> dict[str, object]:

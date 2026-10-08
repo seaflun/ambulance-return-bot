@@ -1,0 +1,107 @@
+<style>
+  #client-form-errors {
+    width: min(640px, calc(100% - 32px));
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    padding: 0;
+    border: 1px solid #f1b9b9;
+    border-radius: 16px;
+    background: #fff;
+    color: #263244;
+    box-shadow: 0 20px 60px rgba(20, 34, 54, .25);
+    box-sizing: border-box;
+  }
+  #client-form-errors::backdrop { background: rgba(20, 34, 54, .45); }
+  #client-form-errors .form-error-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-height: calc(100vh - 34px);
+    max-height: calc(100dvh - 34px);
+    padding: 24px;
+    box-sizing: border-box;
+  }
+  #client-form-errors h2 { margin: 0; color: #b42318; font-size: 22px; flex-shrink: 0; }
+  #client-form-errors p { margin: 0; line-height: 1.6; flex-shrink: 0; }
+  #client-form-errors-list {
+    margin: 0;
+    padding: 16px 16px 16px 36px;
+    min-height: 0;
+    max-height: min(50vh, 420px);
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    background: #fff5f5;
+    border-radius: 10px;
+    line-height: 1.7;
+  }
+  #client-form-errors-list li + li { margin-top: 8px; }
+  #client-form-errors .form-error-actions { display: flex; justify-content: flex-end; flex-shrink: 0; }
+  #client-form-errors #form-error-confirm {
+    min-width: 100px;
+    min-height: 44px;
+    border: 0;
+    border-radius: 10px;
+    padding: 10px 24px;
+    background: #b42318;
+    color: #fff;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  #client-form-errors #form-error-confirm:focus-visible { outline: 3px solid #263244; outline-offset: 3px; }
+  @media (max-width: 600px) {
+    #client-form-errors { width: calc(100% - 24px); }
+    #client-form-errors .form-error-layout { gap: 12px; padding: 18px; }
+    #client-form-errors h2 { font-size: 20px; }
+    #client-form-errors-list { max-height: 45vh; }
+  }
+</style>
+<dialog id="client-form-errors" aria-labelledby="form-error-title" aria-describedby="form-error-description client-form-errors-list">
+  <div class="form-error-layout">
+    <h2 id="form-error-title">請修正以下資料</h2>
+    <p id="form-error-description">以下資料需要修正。請按「確認」後回到表單調整，再重新送出。</p>
+    <ul id="client-form-errors-list"></ul>
+    <div class="form-error-actions">
+      <button id="form-error-confirm" type="button" autofocus>確認</button>
+    </div>
+  </div>
+</dialog>
+<script>
+  (() => {
+    const dialog = document.getElementById("client-form-errors");
+    const errorList = document.getElementById("client-form-errors-list");
+    const confirmButton = document.getElementById("form-error-confirm");
+    const initialErrors = {{ form_errors | default([]) | tojson }};
+
+    window.showTaskFormErrors = (errors) => {
+      const messages = [...new Set((Array.isArray(errors) ? errors : [])
+        .map((error) => String(error ?? "").trim()).filter(Boolean))];
+      if (!messages.length) return;
+      errorList.replaceChildren();
+      messages.forEach((message) => {
+        const item = document.createElement("li");
+        item.textContent = message;
+        errorList.appendChild(item);
+      });
+      if (!dialog.open) dialog.showModal();
+    };
+
+    dialog.addEventListener("cancel", (event) => event.preventDefault());
+    confirmButton.addEventListener("click", () => {
+      dialog.close();
+      const form = document.getElementById("task-form") || document.getElementById("disaster-form");
+      if (!form) return;
+      const target = Array.from(form.querySelectorAll(
+        ".has-error input, .has-error select, .has-error textarea, .is-pending input, .is-pending select, .is-pending textarea, input:invalid, select:invalid, textarea:invalid"
+      )).find((field) => !field.disabled && field.type !== "hidden" && !field.hidden && !field.closest?.("[hidden]"));
+      if (target) target.focus();
+    });
+
+    const showInitialErrors = () => window.showTaskFormErrors(initialErrors);
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", showInitialErrors, { once: true });
+    } else {
+      showInitialErrors();
+    }
+  })();
+</script>
