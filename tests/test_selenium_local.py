@@ -3045,6 +3045,9 @@ class SeleniumLocalTests(unittest.TestCase):
             return_value=True,
         ), patch.object(
             selenium_local_module,
+            "_load_fuel_detail_records",
+        ), patch.object(
+            selenium_local_module,
             "_fuel_grid_matching_row_indices",
             return_value=[0],
         ), patch.object(selenium_local_module, "_click_fuel_add_row") as add_row, patch.object(
@@ -3089,6 +3092,9 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module,
             "_wait_for_ppe_fuel_record_detail_page",
             return_value=True,
+        ), patch.object(
+            selenium_local_module,
+            "_load_fuel_detail_records",
         ), patch.object(
             selenium_local_module,
             "_fuel_grid_matching_row_indices",
@@ -3142,6 +3148,9 @@ class SeleniumLocalTests(unittest.TestCase):
                 selenium_local_module,
                 "_wait_for_ppe_fuel_record_detail_page",
                 return_value=True,
+            ), patch.object(
+                selenium_local_module,
+                "_load_fuel_detail_records",
             ), patch.object(
                 selenium_local_module,
                 "_fuel_grid_matching_row_indices",
@@ -3368,7 +3377,7 @@ class SeleniumLocalTests(unittest.TestCase):
     def test_fuel_register_waits_for_detail_page_before_filling_grid(self):
         source = Path(selenium_local_module.__file__).read_text(encoding="utf-8")
 
-        self.assertIn("if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):", source)
+        self.assertIn("if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=30):", source)
 
     def test_duty_work_log_login_passes_the_full_request_to_priority_selection(self):
         class FakeDriver:

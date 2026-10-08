@@ -13,6 +13,7 @@ from typing import Any
 from urllib.request import urlopen
 
 from PIL import Image
+from selenium.common.exceptions import TimeoutException
 
 
 BROWSER_FAILURE_MARKER = "[browser_failure:{category}]"
@@ -155,7 +156,7 @@ def classify_browser_failure(exception: BaseException | None, probe: dict[str, A
     elif "timed out receiving message from renderer" in text and devtools_reachable is True:
         category = "web_renderer_timeout"
     elif (
-        ("timeout" in text or "timed out" in text)
+        (isinstance(exception, TimeoutException) or "timeout" in text or "timed out" in text)
         and devtools_reachable is True
     ):
         category = "web_page_timeout"

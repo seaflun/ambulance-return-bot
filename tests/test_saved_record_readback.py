@@ -61,7 +61,8 @@ class SavedRecordReadbackTests(unittest.TestCase):
     def test_duty_query_accepts_official_no_records_response(self):
         real_wait = runtime.WebDriverWait
         for text, pages in [("QUY-300:查無資料 共0筆", 1), ("QUY-300:查無資料", 0),
-                            ("QUY-300： 查無資料 共 0 筆", 0)]:
+                            ("QUY-300： 查無資料 共 0 筆", 0), ("QUY-500:查無資料", 0),
+                            ("QUY-500：查無資料 共0筆", 1)]:
             with self.subTest(text=text, pages=pages), \
                  patch.object(runtime, "WebDriverWait", side_effect=lambda d, t: real_wait(d, 0.15, poll_frequency=0.001)), \
                  patch.object(runtime, "_click_by_text_or_id"):
@@ -81,6 +82,10 @@ class SavedRecordReadbackTests(unittest.TestCase):
                      dict(text="QUY-300:查無資料 共1筆", rows=[action]),
                      dict(text="QUY-300:查無資料 共0筆", rows=["unexpected"]),
                      dict(text="QUY-300:查無資料 共0筆", pages=2),
+                     dict(text="QUY-500:查詢失敗 共0筆"),
+                     dict(text="QUY-500:查無資料 共1筆", rows=[action]),
+                     dict(text="QUY-500:查無資料 共0筆", state="loading"),
+                     dict(text="QUY-500:查無資料 共0筆", pages=2),
                      dict(text="QUY-000:查詢完成")]:
             with self.subTest(page=page), \
                  patch.object(runtime, "WebDriverWait", side_effect=lambda d, t: real_wait(d, 0.15, poll_frequency=0.001)), \
@@ -106,7 +111,7 @@ class SavedRecordReadbackTests(unittest.TestCase):
                     stack.enter_context(patch.object(runtime, name))
                 stack.enter_context(patch.object(runtime.time, "sleep"))
                 save = stack.enter_context(patch.object(runtime, "_click_duty_work_log_save"))
-                result = runtime._prepare_duty_work_log_form(DutyQueryScriptDriver("QUY-300:查無資料 共0筆"),
+                result = runtime._prepare_duty_work_log_form(DutyQueryScriptDriver("QUY-500:查無資料 共0筆"),
                     request, Path(tmp), Path(tmp) / "summary.txt", progress=progress.append)
             self.assertEqual("duty_work_log_prefilled", result.status)
             self.assertIn("新增工作紀錄", progress)
@@ -518,7 +523,8 @@ class SavedRecordReadbackTests(unittest.TestCase):
         with ExitStack() as stack:
             for name, value in {"_wait_for_ppe_fuel_record_page": True, "_ensure_fuel_query_period": "2026/09",
                                 "_fuel_card_labels": ["synthetic-plate"], "_click_fuel_card_register": None,
-                                "_wait_for_ppe_fuel_record_detail_page": True, "_click_fuel_add_row": None,
+                                "_wait_for_ppe_fuel_record_detail_page": True, "_load_fuel_detail_records": None,
+                                "_click_fuel_add_row": None,
                                 "_fill_fuel_grid_record": None, "_assert_fuel_grid_record_present": None,
                                 "_save_fuel_record_enabled": True, "_save_fuel_record_form": "存檔完成"}.items():
                 stack.enter_context(patch.object(runtime, name, return_value=value))
@@ -556,7 +562,8 @@ class SavedRecordReadbackTests(unittest.TestCase):
                  patch.object(runtime, "_ensure_fuel_query_period", return_value="2026/09"), \
                  patch.object(runtime, "_fuel_card_labels", return_value=["synthetic"]), \
                  patch.object(runtime, "_click_fuel_card_register"), \
-                 patch.object(runtime, "_wait_for_ppe_fuel_record_detail_page", return_value=True):
+                 patch.object(runtime, "_wait_for_ppe_fuel_record_detail_page", return_value=True), \
+                 patch.object(runtime, "_load_fuel_detail_records"):
                 detail = runtime._verified_save_detail("加油", "", lambda: runtime._verify_saved_fuel_record(driver, self.request()))
             self.assertEqual(complete, runtime.WAITING_CONFIRMATION_MARKER not in detail)
             driver.get.assert_called_once()

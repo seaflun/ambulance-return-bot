@@ -687,6 +687,15 @@ def run_fuel_record_task(
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / f"{request.task_id}.txt"
     summary_path.write_text(_task_text(request), encoding="utf-8")
+    for vehicle_request in request.vehicle_requests():
+        try:
+            vehicle_request.fuel_record.validate_unit_price()
+        except ValueError as exc:
+            return SeleniumRunResult(
+                False, "fuel_record_waiting_confirmation",
+                f"{vehicle_request.vehicle} 加油資料未通過檢查：{exc}；尚未開啟網頁或儲存，請修正單價後再執行。",
+                summary_path,
+            )
     manual_reason = manual_update_reason("fuel_record", request, update_context)
     if manual_reason:
         return SeleniumRunResult(
@@ -1687,13 +1696,13 @@ def _query_duty_work_logs(
     WebDriverWait(driver, 12).until(EC.staleness_of(query_button), "工作紀錄查詢送出後頁面更新逾時")
     WebDriverWait(driver, 30).until(lambda d: d.execute_script(
         "return document.readyState === 'complete' && !!document.getElementById('_btnQuery') "
-        "&& (/QUY-000/.test(document.body.innerText) || /QUY-300\\s*[:：]\\s*查無資料/.test(document.body.innerText));"
+        "&& (/QUY-000/.test(document.body.innerText) || /QUY-(?:300|500)\\s*[:：]\\s*查無資料/.test(document.body.innerText));"
     ), "工作紀錄查詢結果確認逾時（文件未載入完成或未取得查詢完成／查無資料回覆）")
     payload = driver.execute_script(
         """
         const page = document.getElementById('pageSelect');
         const text = document.body.innerText;
-        const noRecords = /QUY-300\\s*[:：]\\s*查無資料/.test(text);
+        const noRecords = /QUY-(?:300|500)\\s*[:：]\\s*查無資料/.test(text);
         const total = /共\\s*(\\d+)\\s*筆/.exec(text);
         return {pages: page ? (noRecords && !page.options.length ? 1 : page.options.length) : 1,
           total: total ? Number(total[1]) : (noRecords ? 0 : null), no_records: noRecords,
@@ -2305,6 +2314,7 @@ def _is_ppe_fuel_record_detail_page(driver: webdriver.Chrome) -> bool:
         driver.execute_script(
             """
             if (!!document.getElementById('Account') && !!document.getElementById('Password')) return false;
+            if (document.readyState !== 'complete' || !window.jQuery || jQuery.active !== 0) return false;
             const path = String(location.pathname || '');
             if (!path.includes('/FUC04100/Detail')) return false;
             const grid = window.jQuery ? jQuery('#grid').data('kendoGrid') : null;
@@ -2458,6 +2468,7 @@ def _prepare_fuel_record_form(
     progress: Callable[[str], None] | None = None,
 ) -> str:
     fuel = request.fuel_record
+    fuel.validate_unit_price()
     _report_progress(progress, "開啟登打油耗")
     driver.get("https://ppe.tyfd.gov.tw/FUC04100/Query")
     if not _wait_for_ppe_fuel_record_page(driver, timeout=12):
@@ -2495,8 +2506,9 @@ def _prepare_fuel_record_form(
         raise WebDriverException(
             f"fuel vehicle validation failed after month query: period={target_period} vehicle={request.vehicle}; {exc}"
         ) from exc
-    if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):
+    if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=30):
         raise WebDriverException("fuel detail page did not open")
+    _load_fuel_detail_records(driver, request, cancel_check=cancel_check)
 
     current_matches = _fuel_grid_matching_row_indices(driver, request)
     if len(current_matches) == 1:
@@ -2557,8 +2569,9 @@ def _verify_saved_fuel_record(
     if _ensure_fuel_query_period(driver, period) != period:
         raise WebDriverException("加油回查月份不符。")
     _click_fuel_card_register(driver, _fuel_card_labels(request, artifacts_dir))
-    if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=12):
+    if not _wait_for_ppe_fuel_record_detail_page(driver, timeout=30):
         raise WebDriverException("加油回查明細未就緒。")
+    _load_fuel_detail_records(driver, request, cancel_check=cancel_check)
     matches = _fuel_grid_matching_row_indices(driver, request)
     if len(matches) != 1:
         raise WebDriverException("儲存後查無唯一且內容相符的加油紀錄。")
@@ -2577,6 +2590,80 @@ def _verify_saved_fuel_record(
     )
     if persisted is not True:
         raise WebDriverException("加油回查識別碼、金額或完整清單未確認。")
+
+
+def _load_fuel_detail_records(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest,
+    cancel_check: Callable[[], None] | None = None,
+) -> None:
+    # A completed, successful read is required even when the month has no fuel rows.
+    if cancel_check:
+        cancel_check()
+    period = request.fuel_record.date[:6]
+    called = driver.execute_script(
+        """
+        const period = arguments[0];
+        const parameters = new URLSearchParams(location.search);
+        const card = Number(parameters.get('FCID'));
+        const originalPost = window.PostJsonData;
+        if (parameters.get('period') !== period || !(card > 0) || typeof fcId === 'undefined' || Number(fcId) !== card
+            || typeof originalPost !== 'function' || typeof window.GetFuelUseData !== 'function') return false;
+        const state = {card, period, completed: false, ready: false, ids: [], message: ''};
+        window.__sinpoFuelDetailQueryState = state;
+        window.PostJsonData = function (...args) {
+          const [url, payload, callback] = args;
+          if (String(url) !== '/FUC04100/QueryFCUse' || Number(payload?.FCID) !== card
+              || String(payload?.PERIOD) !== period || typeof callback !== 'function') {
+            return originalPost.apply(this, args);
+          }
+          const next = Array.from(args);
+          next[2] = function (...responseArgs) {
+            const response = responseArgs[0];
+            const rows = Array.isArray(response?.Data) ? response.Data : null;
+            const valid = response?.Success === true && rows !== null && rows.every(row =>
+              Number(row?.FCID) === card && String(row?.Close_Period) === period && Number(row?.FCUseID) > 0);
+            try {
+              const result = callback.apply(this, responseArgs);
+              state.ready = valid;
+              state.ids = valid ? rows.map(row => String(row.FCUseID)) : [];
+              state.message = String(response?.Message || '').slice(0, 200);
+              return result;
+            } finally {
+              state.completed = true;
+            }
+          };
+          return originalPost.apply(this, next);
+        };
+        try {
+          window.GetFuelUseData(card, period);
+          return true;
+        } finally {
+          window.PostJsonData = originalPost;
+        }
+        """, period,
+    )
+    if called is not True:
+        raise WebDriverException("加油明細月份、油卡或查詢功能未確認；已停止後續操作。")
+
+    def completed(current):
+        if cancel_check:
+            cancel_check()
+        return current.execute_script(
+            """
+            const state = window.__sinpoFuelDetailQueryState;
+            if (!state?.completed || state.period !== arguments[0]) return null;
+            const grid = window.jQuery && jQuery('#grid').data('kendoGrid');
+            const rows = grid ? Array.from(grid.dataSource.data()) : [];
+            const ids = rows.map(row => String(row.FCUseID));
+            return {ready: !!state.ready && !!grid && grid.dataSource.total() === rows.length
+              && JSON.stringify(ids) === JSON.stringify(state.ids), message: state.message};
+            """, period,
+        )
+
+    result = WebDriverWait(driver, 30).until(completed, "加油明細資料查詢確認逾時，未將空表格判為零筆。")
+    if not isinstance(result, dict) or result.get("ready") is not True:
+        message = compact_failure_text(str(result.get("message", ""))) if isinstance(result, dict) else ""
+        raise WebDriverException(f"加油明細查詢失敗或資料不完整；已停止後續操作。{message}")
 
 
 def _fuel_query_period(driver: webdriver.Chrome) -> str:

@@ -519,10 +519,13 @@ def _is_consumable_maintenance_page_ready(driver: webdriver.Chrome) -> bool:
 
 
 def _is_consumable_maintenance_page(driver: webdriver.Chrome) -> bool:
-    if "ACS15001" in driver.current_url:
-        return True
-    text = driver.find_element(By.TAG_NAME, "body").text
-    return "救護紀錄表耗材維護" in text or "救護紀錄表列表" in text
+    current = urlparse(str(driver.current_url or ""))
+    target = urlparse(ACS_URL)
+    return (
+        current.scheme == target.scheme
+        and current.netloc == target.netloc
+        and current.path.rstrip("/") == target.path
+    )
 
 
 def _is_consumable_detail_page(driver: webdriver.Chrome) -> bool:

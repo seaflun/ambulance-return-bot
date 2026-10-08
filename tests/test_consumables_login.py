@@ -101,6 +101,102 @@ class ConsumablesLoginTests(unittest.TestCase):
         self.assertEqual(driver.opened_urls, [consumables_login_module.ACS_URL])
         self.assertEqual(wait.calls, 1)
 
+    def test_consumable_maintenance_page_rejects_detail_breadcrumb(self):
+        driver = Mock(current_url="https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=synthetic")
+        driver.find_element.return_value.text = "耗材紀錄 救護紀錄表耗材維護 救護紀錄表列表"
+        driver.find_elements.return_value = []
+        driver.execute_script.return_value = "complete"
+
+        self.assertFalse(consumables_login_module._is_consumable_maintenance_page_ready(driver))
+
+    def test_consumable_maintenance_page_rejects_route_name_in_other_urls(self):
+        for url in (
+            "https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?returnUrl=/ACS/ACS15001",
+            "https://nfaemsap3.nfa.gov.tw/ACS/ACS15001-extra",
+            "https://nfaemsap3.nfa.gov.tw/SSO/?next=ACS15001",
+            "https://example.invalid/ACS/ACS15001",
+        ):
+            with self.subTest(url=url):
+                driver = Mock(current_url=url)
+                driver.find_element.return_value.text = "救護紀錄表耗材維護"
+                driver.find_elements.return_value = [object()]
+                driver.execute_script.return_value = "complete"
+
+                self.assertFalse(consumables_login_module._is_consumable_maintenance_page_ready(driver))
+
+    def test_consumable_maintenance_page_requires_complete_document_without_table_contract(self):
+        for ready_state, has_table, expected in (
+            ("loading", True, False),
+            ("interactive", True, False),
+            ("complete", False, True),
+            ("complete", True, True),
+        ):
+            with self.subTest(ready_state=ready_state, has_table=has_table):
+                driver = Mock(current_url=consumables_login_module.ACS_URL + "?page=1")
+                driver.execute_script.return_value = ready_state
+                driver.find_elements.return_value = [object()] if has_table else []
+
+                self.assertEqual(
+                    consumables_login_module._is_consumable_maintenance_page_ready(driver),
+                    expected,
+                )
+
+    def test_consumable_maintenance_navigation_waits_for_complete_list_then_content_links(self):
+        class FakeDriver:
+            def __init__(self):
+                self.current_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS15002?emmTemsisid=synthetic"
+                self.ready_state = "complete"
+                self.opened_urls = []
+
+            def get(self, url):
+                self.opened_urls.append(url)
+
+            def find_element(self, _by, _value):
+                return Mock(text="救護紀錄表耗材維護 救護紀錄表列表")
+
+            def find_elements(self, _by, _value):
+                return []
+
+            def execute_script(self, _script):
+                return self.ready_state
+
+        class FakeWait:
+            def __init__(self, driver):
+                self.driver = driver
+                self.observed_ready = []
+
+            def until(self, predicate):
+                self.observed_ready.append(bool(predicate(self.driver)))
+                if self.observed_ready[-1]:
+                    return True
+                self.driver.current_url = consumables_login_module.ACS_URL
+                self.driver.ready_state = "interactive"
+                self.observed_ready.append(bool(predicate(self.driver)))
+                self.driver.ready_state = "complete"
+                self.observed_ready.append(bool(predicate(self.driver)))
+                return self.observed_ready[-1]
+
+        driver = FakeDriver()
+        wait = FakeWait(driver)
+        consumables_login_module._open_consumable_maintenance_page(driver, wait)
+
+        self.assertEqual(wait.observed_ready, [False, False, True])
+        self.assertEqual(driver.opened_urls, [consumables_login_module.ACS_URL])
+
+        class ContentWait:
+            def until(self, predicate):
+                if predicate(driver):
+                    raise AssertionError("empty list must not satisfy the content-link wait")
+                raise consumables_login_module.TimeoutException("content links are not loaded")
+
+        with patch.object(consumables_login_module, "WebDriverWait", return_value=ContentWait()), patch.object(
+            consumables_login_module,
+            "_collect_consumable_candidates",
+        ) as collect:
+            with self.assertRaises(consumables_login_module.TimeoutException):
+                consumables_login_module._find_consumable_detail_hrefs(driver, Mock())
+        collect.assert_not_called()
+
     def test_consumable_maintenance_navigation_error_includes_current_url(self):
         class FakeDriver:
             current_url = "https://nfaemsap3.nfa.gov.tw/ACS/ACS13001"

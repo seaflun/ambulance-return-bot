@@ -8403,15 +8403,16 @@ def validate_fuel_record(fuel_record, label: str) -> list[str]:
     date = str(getattr(fuel_record, "date", "") or "").strip()
     time_value = str(getattr(fuel_record, "time", "") or "").strip()
     quantity = str(getattr(fuel_record, "quantity", "") or "").strip()
-    unit_price = str(getattr(fuel_record, "unit_price", "") or "").strip()
     if not re.fullmatch(r"\d{8}", date):
         errors.append(f"{label}\u52a0\u6cb9\u65e5\u671f\u683c\u5f0f\u9700\u70ba YYYYMMDD")
     if not re.fullmatch(r"([01]\d|2[0-3])[0-5]\d", time_value):
         errors.append(f"{label}\u52a0\u6cb9\u6642\u9593\u683c\u5f0f\u9700\u70ba HHmm")
     if not re.fullmatch(r"\d+(?:\.\d+)?", quantity):
         errors.append(f"{label}\u6cb9\u91cf\u9700\u70ba\u6578\u5b57")
-    if not re.fullmatch(r"\d+(?:\.\d+)?", unit_price):
-        errors.append(f"{label}\u55ae\u50f9\u9700\u70ba\u6578\u5b57")
+    try:
+        fuel_record.validate_unit_price()
+    except ValueError as exc:
+        errors.append(f"{label}{exc}")
     return errors
 
 

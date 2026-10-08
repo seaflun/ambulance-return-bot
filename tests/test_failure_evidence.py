@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
+from selenium.common.exceptions import TimeoutException
 
 import ambulance_bot.failure_evidence as failure_evidence_module
 from ambulance_bot.failure_evidence import (
@@ -167,6 +168,30 @@ class FailureEvidenceTests(unittest.TestCase):
         )
 
         self.assertEqual(diagnosis["category"], "web_page_timeout")
+
+    def test_chinese_selenium_timeout_keeps_browser_diagnostic_priority(self):
+        for alive, devtools, message, category in (
+            (True, True, "工作紀錄查詢結果確認逾時", "web_page_timeout"),
+            (True, False, "工作紀錄查詢結果確認逾時", "chrome_unresponsive"),
+            (False, False, "工作紀錄查詢結果確認逾時", "chromedriver_ended"),
+            (True, True, "網頁查詢逾時 net::ERR_NETWORK_CHANGED", "network_connection"),
+            (True, True, "timed out receiving message from renderer", "web_renderer_timeout"),
+            (True, None, "工作紀錄查詢結果確認逾時", ""),
+        ):
+            with self.subTest(alive=alive, devtools=devtools, message=message):
+                diagnosis = classify_browser_failure(
+                    TimeoutException(message),
+                    {"chromedriver_alive": alive, "devtools_reachable": devtools},
+                )
+                self.assertEqual(category, diagnosis["category"])
+
+    def test_chinese_runtime_error_is_not_assumed_to_be_page_timeout(self):
+        diagnosis = classify_browser_failure(
+            RuntimeError("工作紀錄查詢結果確認逾時"),
+            {"chromedriver_alive": True, "devtools_reachable": True},
+        )
+
+        self.assertEqual("", diagnosis["category"])
 
     def test_probe_uses_process_and_devtools_endpoint(self):
         driver = _FakeDriver()

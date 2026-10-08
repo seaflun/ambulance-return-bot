@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
@@ -353,6 +354,20 @@ class FuelRecord:
     product: str = DEFAULT_FUEL_PRODUCT
     quantity: str = ""
     unit_price: str = ""
+
+    def validate_unit_price(self) -> None:
+        if not self.enabled:
+            return
+        message = "加油單價需為 0–100 元／公升的有限數字"
+        unit_price = str(self.unit_price).strip()
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", unit_price):
+            raise ValueError(message)
+        try:
+            price = Decimal(unit_price)
+        except InvalidOperation as exc:
+            raise ValueError(message) from exc
+        if not price.is_finite() or not Decimal("0") <= price <= Decimal("100"):
+            raise ValueError(message)
 
     @classmethod
     def from_dict(cls, payload: object) -> "FuelRecord":

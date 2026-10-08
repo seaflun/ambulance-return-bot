@@ -584,8 +584,8 @@
           <label class="fuel-required" data-fuel-required="fuel_quantity">油量<span class="field-error-mark" aria-hidden="true">*</span>
             <input name="fuel_quantity" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ primary_fuel.quantity or '' }}">
           </label>
-          <label class="fuel-required" data-fuel-required="fuel_unit_price">單價<span class="field-error-mark" aria-hidden="true">*</span>
-            <input name="fuel_unit_price" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ primary_fuel.unit_price or '' }}">
+          <label class="fuel-required" data-fuel-required="fuel_unit_price">單價（元／公升，0–100）<span class="field-error-mark" aria-hidden="true">*</span>
+            <input type="number" name="fuel_unit_price" inputmode="decimal" min="0" max="100" step="any" value="{{ primary_fuel.unit_price or '' }}">
           </label>
         </div>
         <div class="fuel-total" data-fuel-total="1">最終總價：0</div>
@@ -841,8 +841,8 @@
             <label class="fuel-required" data-fuel-required="fuel_quantity_2">油量<span class="field-error-mark" aria-hidden="true">*</span>
               <input name="fuel_quantity_2" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ second_fuel.quantity or '' }}">
             </label>
-            <label class="fuel-required" data-fuel-required="fuel_unit_price_2">單價<span class="field-error-mark" aria-hidden="true">*</span>
-              <input name="fuel_unit_price_2" inputmode="decimal" pattern="[0-9]+(\.[0-9]+)?" data-numeric="decimal" value="{{ second_fuel.unit_price or '' }}">
+            <label class="fuel-required" data-fuel-required="fuel_unit_price_2">單價（元／公升，0–100）<span class="field-error-mark" aria-hidden="true">*</span>
+              <input type="number" name="fuel_unit_price_2" inputmode="decimal" min="0" max="100" step="any" value="{{ second_fuel.unit_price or '' }}">
             </label>
           </div>
           <div class="fuel-total" data-fuel-total="2">最終總價：0</div>
@@ -1214,6 +1214,14 @@
       return /^\d+(\.\d+)?$/.test(String(value || "").trim());
     }
 
+    function fuelUnitPriceValid(value) {
+      const text = String(value || "").trim();
+      const price = Number(text);
+      const [whole, fraction = ""] = text.split(".");
+      return fuelDecimalValid(text) && Number.isFinite(price) && price >= 0 && price <= 100
+        && (Number(whole) !== 100 || !/[1-9]/.test(fraction));
+    }
+
     function hhmmValid(value) {
       return /^([01]\d|2[0-3])[0-5]\d$/.test(String(value || "").trim());
     }
@@ -1222,6 +1230,7 @@
       const value = document.querySelector(`input[name="${name}"]`)?.value.trim() || "";
       if (name.startsWith("fuel_date")) return /^\d{4}\/\d{2}\/\d{2}$/.test(value);
       if (name.startsWith("fuel_time")) return hhmmValid(value);
+      if (name.startsWith("fuel_unit_price")) return fuelUnitPriceValid(value);
       return fuelDecimalValid(value);
     }
 
@@ -1256,8 +1265,8 @@
       if (!fuelDecimalValid(quantity)) {
         errors.push(`${label}油量需為數字`);
       }
-      if (!fuelDecimalValid(unitPrice)) {
-        errors.push(`${label}單價需為數字`);
+      if (!fuelUnitPriceValid(unitPrice)) {
+        errors.push(`${label}加油單價需為 0–100 元／公升的有限數字`);
       }
       return errors;
     }
