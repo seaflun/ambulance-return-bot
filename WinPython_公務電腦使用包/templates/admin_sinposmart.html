@@ -171,6 +171,7 @@
     }
     .credential-sync-name { font-weight: 800; overflow-wrap: anywhere; }
     .credential-sync-login { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .credential-sync-statuses { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
     .event-head { display: grid; grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; align-items: start; }
     .login-card .event-head { align-items: center; }
     .event-time { color: var(--muted); font-size: var(--text-sm); }
@@ -227,6 +228,7 @@
       .login-card .event-badges { grid-column: 2; grid-row: 2; max-width: 150px; }
       .event-step { grid-template-columns: 1fr; gap: 4px; align-items: start; }
       .credential-sync-row { grid-template-columns: 1fr; gap: 4px; align-items: start; }
+      .credential-sync-statuses { justify-content: flex-start; }
       .remote-update-card { grid-template-columns: 1fr; }
       .remote-update-card form, .remote-update-card button { width: 100%; }
     }
@@ -548,14 +550,17 @@
       <details class="section" aria-label="Worker 帳密同步">
         <summary class="section-head">
           <h2 class="section-title">Worker 帳密同步</h2>
-          <div class="section-note">顯示已傳送給 Worker 的帳號姓名；不保存或顯示帳號與密碼</div>
+          <div class="section-note">顯示值班台儲存狀態與 Worker 同步結果；不顯示帳號與密碼</div>
         </summary>
         <div class="credential-sync-list">
           {% for account in credential_sync_status.accounts %}
           <article class="event-card credential-sync-row">
             <h3 class="credential-sync-name">{{ account.name }}</h3>
             <div class="credential-sync-login">最後登入：{{ account.last_login_at or '近 7 個消防日無登入紀錄' }}</div>
-            <span class="status {{ account.status_class }}">{{ account.status_label }}</span>
+            <div class="credential-sync-statuses">
+              <span class="status {{ account.duty_pc_save_class }}">值班台：{{ account.duty_pc_save_label }}</span>
+              <span class="status {{ account.status_class }}">Worker：{{ account.status_label }}</span>
+            </div>
           </article>
           {% else %}
           <section class="empty">尚未收到傳送給 Worker 的帳密同步資料。</section>

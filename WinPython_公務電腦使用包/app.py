@@ -2223,6 +2223,11 @@ def credential_sync_status_file() -> Path:
     return artifacts_dir / "credential_sync" / "worker_status.json"
 
 
+def credential_sync_duty_pc_save_status(value: object) -> str:
+    status = str(value or "").strip()
+    return status if status in {"saved", "not_saved", "failed"} else "unknown"
+
+
 def credential_sync_account_profiles(accounts: list[dict[str, object]]) -> list[dict[str, str]]:
     profiles: list[dict[str, str]] = []
     names: set[str] = set()
@@ -2237,6 +2242,7 @@ def credential_sync_account_profiles(accounts: list[dict[str, object]]) -> list[
             {
                 "name": name[:120],
                 "actor_no": str(account.get("actor_no") or "").strip()[:40],
+                "duty_pc_save_status": credential_sync_duty_pc_save_status(account.get("duty_pc_save_status")),
             }
         )
     return profiles
@@ -2277,6 +2283,7 @@ def _credential_sync_status_accounts(status: dict) -> dict[str, dict[str, str]]:
                 "last_sent_at": str(item.get("last_sent_at") or "").strip(),
                 "last_completed_at": str(item.get("last_completed_at") or "").strip(),
                 "last_status": str(item.get("last_status") or "").strip().lower(),
+                "duty_pc_save_status": credential_sync_duty_pc_save_status(item.get("duty_pc_save_status")),
             }
     if rows:
         return rows
@@ -2289,6 +2296,7 @@ def _credential_sync_status_accounts(status: dict) -> dict[str, dict[str, str]]:
         "last_sent_at": str(status.get("last_attempt_requested_at") or "").strip(),
         "last_completed_at": str(status.get("last_attempt_completed_at") or status.get("current_stored_at") or "").strip(),
         "last_status": str(status.get("last_attempt_status") or "").strip().lower(),
+        "duty_pc_save_status": "unknown",
     }
     return rows
 
@@ -2307,7 +2315,11 @@ def _credential_sync_record_account_profiles(record: dict) -> list[dict[str, str
         if not name or name in names:
             continue
         names.add(name)
-        profiles.append({"name": name, "actor_no": str(item.get("actor_no") or "").strip()})
+        profiles.append({
+            "name": name,
+            "actor_no": str(item.get("actor_no") or "").strip(),
+            "duty_pc_save_status": credential_sync_duty_pc_save_status(item.get("duty_pc_save_status")),
+        })
     if profiles:
         return profiles
     for name in record.get("account_names") or []:
@@ -2365,10 +2377,17 @@ def credential_sync_admin_view(days: list[dict] | None = None) -> dict[str, list
         "saved": ("成功", "complete"),
         "failed": ("失敗", "failed"),
     }
+    duty_pc_labels = {
+        "saved": ("已儲存", "complete"),
+        "not_saved": ("未儲存", ""),
+        "failed": ("儲存失敗", "failed"),
+        "unknown": ("未回報", ""),
+    }
     accounts: list[dict[str, str]] = []
     for account in _credential_sync_status_accounts(status).values():
         last_status = account["last_status"]
         status_label, status_class = labels.get(last_status, ("尚未收到 Worker 回覆", ""))
+        duty_pc_label, duty_pc_class = duty_pc_labels[account["duty_pc_save_status"]]
         login_detail = login_details.get(credential_sync_person_name(account["name"]).casefold(), {})
         accounts.append(
             {
@@ -2377,6 +2396,8 @@ def credential_sync_admin_view(days: list[dict] | None = None) -> dict[str, list
                 "sort_actor_no": str(account.get("actor_no") or login_detail.get("actor_no") or ""),
                 "status_label": status_label,
                 "status_class": status_class,
+                "duty_pc_save_label": duty_pc_label,
+                "duty_pc_save_class": duty_pc_class,
             }
         )
     accounts.sort(key=lambda account: (credential_sync_actor_sort_key(account["sort_actor_no"]), account["name"].casefold()))
@@ -2395,6 +2416,7 @@ def _record_credential_sync_attempt_unlocked(record: dict) -> None:
             "last_sent_at": sent_at,
             "last_completed_at": "",
             "last_status": "pending",
+            "duty_pc_save_status": credential_sync_duty_pc_save_status(profile.get("duty_pc_save_status")),
         }
     _write_credential_sync_status_accounts(status, rows)
     _write_credential_sync_status_unlocked(status)
@@ -2413,6 +2435,7 @@ def _record_credential_sync_result_unlocked(record: dict, status: str) -> None:
             "last_sent_at": str(previous.get("last_sent_at") or record.get("created_at") or "").strip(),
             "last_completed_at": completed_at,
             "last_status": status,
+            "duty_pc_save_status": credential_sync_duty_pc_save_status(profile.get("duty_pc_save_status")),
         }
     _write_credential_sync_status_accounts(current, rows)
     _write_credential_sync_status_unlocked(current)

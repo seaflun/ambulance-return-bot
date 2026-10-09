@@ -5165,6 +5165,62 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("user8b", failed_page)
         self.assertNotIn("pass8b", failed_page)
 
+    def test_sinposmart_admin_reports_duty_pc_save_status_independently_of_worker_ack(self):
+        worker_token = "0123456789abcdef0123456789abcdef"
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = worker_token
+        self.client.post(
+            "/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"},
+            json={"event_id": "save-state-login", "occurred_at": datetime.now().isoformat(timespec="seconds"),
+                  "record_type": "login", "status": "ok", "actor_no": "1", "display_name": "1番 測試同仁0"},
+        )
+        states = [("saved", "已儲存"), ("not_saved", "未儲存"), ("failed", "儲存失敗"), (None, "未回報")]
+        payload = self.credential_sync_payload() | {
+            "accounts": [
+                {"actor_no": str(index + 1), "name": f"測試同仁{index}", "user_id": f"private-user-{index}",
+                 "password": f"private-password-{index}", **({"duty_pc_save_status": state} if state else {})}
+                for index, (state, _label) in enumerate(states)
+            ],
+        }
+        queued = self.client.post("/api/credential-sync", json=payload, headers={"X-Credential-Sync-Token": "sync-token"})
+        self.assertEqual(queued.status_code, 200)
+        before_ack = app_module.credential_sync_admin_view()["accounts"]
+        self.assertEqual([row["duty_pc_save_label"] for row in before_ack], [label for _state, label in states])
+        self.assertTrue(all(row["last_status"] == "pending" for row in before_ack))
+        saved = self.client.post(
+            "/worker/credential-sync/sync-test-1/ack", json={"status": "saved", "detail": "saved"},
+            headers={"X-Worker-Token": worker_token},
+        )
+        self.assertEqual(saved.status_code, 200)
+        after_ack = app_module.credential_sync_admin_view()["accounts"]
+        self.assertEqual([row["duty_pc_save_label"] for row in after_ack], [label for _state, label in states])
+        self.assertTrue(all(row["last_status"] == "saved" for row in after_ack))
+        body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+        raw_status = app_module.credential_sync_status_file().read_text(encoding="utf-8")
+        for _state, label in states:
+            self.assertTrue(f"值班台：{label}" in body, f"後台未顯示值班台狀態：{label}")
+        self.assertTrue("Worker：成功" in body)
+        for index in range(len(states)):
+            for private in (f"private-user-{index}", f"private-password-{index}"):
+                self.assertNotIn(private, body)
+                self.assertNotIn(private, raw_status)
+
+    def test_legacy_sync_does_not_reuse_previous_duty_pc_saved_claim(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        account = {"actor_no": "7", "name": "測試同仁", "user_id": "private-user", "password": "private-password"}
+        for index, extra in enumerate(({"duty_pc_save_status": "saved"}, {}, {"duty_pc_save_status": "untrusted-private-value"})):
+            response = self.client.post(
+                "/api/credential-sync", headers=headers,
+                json=self.credential_sync_payload() | {"sync_code": f"status-{index}", "accounts": [account | extra]},
+            )
+            self.assertEqual(response.status_code, 200)
+            row = app_module.credential_sync_admin_view()["accounts"][0]
+            self.assertEqual(row["duty_pc_save_status"], "saved" if index == 0 else "unknown")
+        raw = app_module.credential_sync_status_file().read_text(encoding="utf-8")
+        self.assertNotIn("untrusted-private-value", raw)
+
     def test_sinposmart_admin_sections_are_collapsed_by_default(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()
