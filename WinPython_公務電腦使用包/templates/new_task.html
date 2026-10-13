@@ -1451,8 +1451,12 @@
         normalizeNumericInput(input);
         updateFieldVisualHints();
         updateFuelRequiredHints();
-        updateFuelTotals();
       });
+    });
+
+    document.querySelectorAll('input[name="fuel_quantity"], input[name="fuel_unit_price"], input[name="fuel_quantity_2"], input[name="fuel_unit_price_2"]').forEach((input) => {
+      input.addEventListener("input", updateFuelTotals);
+      input.addEventListener("change", updateFuelTotals);
     });
 
     document.querySelectorAll("[data-time-hhmm]").forEach((input) => {

@@ -3,6 +3,7 @@ import re
 import shutil
 import subprocess
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
 
@@ -198,6 +199,101 @@ class FuelPriceClientTests(unittest.TestCase):
                     self.assertIn("fuelUnitPriceValid(unitPrice)", source)
                 else:
                     self.assertIn("fuelUnitPriceValid(input.value)", source)
+
+
+class _FuelInputs(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.fields = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "input" and attrs.get("name", "").startswith("fuel_"):
+            self.fields.append(attrs)
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js required for fuel total behavior tests")
+class FuelTotalClientTests(unittest.TestCase):
+    def run_inputs(self, suffix, event, *, prefilled=False):
+        template = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包" / "templates" / "new_task.html"
+        source = template.read_text(encoding="utf-8")
+        markup = _FuelInputs()
+        markup.feed(source)
+        total_function = re.search(r"(?ms)^    function updateFuelTotals\(\)\s*\{.*?^    \}", source)
+        self.assertIsNotNone(total_function)
+        bindings = re.findall(r"(?ms)^    document\.querySelectorAll\([^\n]+\)\.forEach\(\(input\) => \{.*?^    \}\);", source)
+        payload = dict(fields=markup.fields, source=total_function.group(0),
+                       bindings=bindings, suffix=suffix, event=event, prefilled=prefilled)
+        script = r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const fields = input.fields.map(attrs => ({attrs, value: '', handlers: {},
+  addEventListener(event, handler) {(this.handlers[event] ||= []).push(handler);}}));
+const outputs = {'1': {textContent: '最終總價：0'}, '2': {textContent: '最終總價：0'}};
+function matches(field, selector) {
+  return selector.split(',').some(part => {
+    const name = part.match(/\[name="([^"]+)"\]/);
+    if (name) return field.attrs.name === name[1];
+    if (part.trim() === '.fuel-required input') return /fuel_(date|time|quantity|unit_price)(?:_2)?$/.test(field.attrs.name);
+    const attr = part.match(/^\[([^\]]+)\]$/);
+    return attr ? Object.hasOwn(field.attrs, attr[1]) : false;
+  });
+}
+const document = {
+  querySelectorAll: selector => fields.filter(field => matches(field, selector)),
+  querySelector: selector => {
+    const total = selector.match(/\[data-fuel-total="([12])"\]/);
+    return total ? outputs[total[1]] : fields.find(field => matches(field, selector));
+  }
+};
+function normalizeNumericInput() {}
+function normalizeTimeInput() {}
+function updateFieldVisualHints() {}
+function updateFuelRequiredHints() {}
+eval(input.source);
+for (const binding of input.bindings) eval(binding);
+function change(name, value, event) {
+  const field = fields.find(field => field.attrs.name === name);
+  field.value = value;
+  for (const handler of field.handlers[event] || []) handler({target: field});
+}
+if (input.prefilled) {
+  fields.find(field => field.attrs.name === 'fuel_quantity' + input.suffix).value = '48.552';
+  fields.find(field => field.attrs.name === 'fuel_unit_price' + input.suffix).value = '29.9';
+  updateFuelTotals();
+} else {
+  updateFuelTotals();
+  change('fuel_quantity' + input.suffix, '48.552', input.event);
+  change('fuel_unit_price' + input.suffix, '29.9', input.event);
+}
+const number = input.suffix ? '2' : '1';
+const initial = outputs[number].textContent;
+change('fuel_unit_price' + input.suffix, '30', input.event);
+const priceChanged = outputs[number].textContent;
+change('fuel_quantity' + input.suffix, '50', input.event);
+const quantityChanged = outputs[number].textContent;
+change('fuel_unit_price' + input.suffix, '0', input.event);
+const zeroPrice = outputs[number].textContent;
+change('fuel_unit_price' + input.suffix, '100', input.event);
+process.stdout.write(JSON.stringify({initial, priceChanged, quantityChanged, zeroPrice,
+  maxPrice: outputs[number].textContent, otherVehicle: outputs[number === '1' ? '2' : '1'].textContent}));
+"""
+        result = subprocess.run([shutil.which("node"), "-e", script], input=json.dumps(payload),
+                                text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_fuel_total_updates_from_both_fields_in_both_vehicles(self):
+        for suffix in ("", "_2"):
+            for event in ("input", "change"):
+                for prefilled in (False, True):
+                    with self.subTest(suffix=suffix, event=event, prefilled=prefilled):
+                        self.assertEqual(dict(initial="最終總價：1452", priceChanged="最終總價：1457",
+                                              quantityChanged="最終總價：1500", zeroPrice="最終總價：0",
+                                              maxPrice="最終總價：5000", otherVehicle="最終總價：0"),
+                                         self.run_inputs(suffix, event, prefilled=prefilled))
+
+    def test_backend_total_matches_the_reported_quantity_and_price(self):
+        self.assertEqual("1452", app_module._fuel_total_amount("48.552", "29.9"))
 
 
 if __name__ == "__main__":
