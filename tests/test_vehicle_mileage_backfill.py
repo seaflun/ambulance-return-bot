@@ -19,6 +19,37 @@ def record(identity, start, end, first, last, month="2026/09"):
 
 
 class MileageBackfillTests(unittest.TestCase):
+    def test_mileage_reason_matches_entry_service_when_inserting(self):
+        self._check_mileage_reason_matches_entry_service(edit_existing=False)
+
+    def test_mileage_reason_matches_entry_service_when_editing(self):
+        self._check_mileage_reason_matches_entry_service(edit_existing=True)
+
+    def _check_mileage_reason_matches_entry_service(self, edit_existing):
+        for service_type, summary_type, expected_reason in (
+            ("disaster", "火災", "火警"),
+            ("disaster", "災害搶救", "火警"),
+            ("disaster", "救護", "火警"),
+            ("ems", "救護", "救護"),
+            ("ems", "火災", "救護"),
+            ("ems", "", "救護"),
+        ):
+            with self.subTest(service_type=service_type, summary_type=summary_type):
+                request = self.request()
+                request.service_type = service_type
+                request.summary_type = summary_type
+                existing = record(2, "1000", "1100", 10000, 10020) if edit_existing else None
+                plan = dict(previous=None, existing=existing, following=None,
+                            edit_existing=edit_existing, start_mileage="10000",
+                            start_at=datetime(2026, 9, 7, 10))
+                driver = Mock()
+                driver.execute_script.side_effect = [True, 0]
+                with patch.object(runtime, "_add_vehicle_mileage_row"), \
+                     patch.object(runtime, "_fill_vehicle_grid_values") as fill, \
+                     patch.object(runtime, "_assert_vehicle_mileage_values_present"):
+                    runtime._write_vehicle_mileage_backfill(driver, request, plan, include_following=False)
+                self.assertEqual(expected_reason, fill.call_args.args[1]["事由"])
+
     def test_month_query_retries_loading_overlay_before_opening_vehicle(self):
         self._run_obstructed_month_query(2)
 

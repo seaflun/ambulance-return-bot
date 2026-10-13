@@ -4652,7 +4652,7 @@ def _vehicle_mileage_values(
         "\u7d50\u675f\u6642\u9593": request.return_time,
         "\u958b\u59cb\u91cc\u7a0b": start_mileage,
         "\u7d50\u675f\u91cc\u7a0b": end_mileage,
-        "\u4e8b\u7531": "\u6551\u8b77",
+        "\u4e8b\u7531": "\u706b\u8b66" if request.service_type == "disaster" else "\u6551\u8b77",
         "\u524d\u5f80\u5730\u9ede": clean_case_address(request.case_address),
         "\u99d5\u99db\u4eba": request.driver,
     }
