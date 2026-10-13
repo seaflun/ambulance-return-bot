@@ -87,10 +87,235 @@
 {% block content %}
   <div class="page-intro">
     <h2 class="page-intro__title">重大功能更新</h2>
-    <p class="page-intro__description">依照功能推出時間，整理救護、救災、民力及值班作業的重要新增與改善。</p>
+    <p class="page-intro__description">依照版本發布時間，列出救護、救災、民力及值班作業的功能新增與修正。</p>
   </div>
 
   <section class="update-timeline" aria-label="SinpoSmart 重大更新項目">
+    <article class="update-card" data-release-version="2026.10.13.2245">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 13 日</p>
+          <h2 class="update-card__title">補齊系統更新項目與發布檢查</h2>
+        </div>
+        <span class="update-card__versions">2026.10.13.2245</span>
+      </header>
+      <ul class="update-card__items">
+        <li>補齊 9 月底至今的更新說明，依版本列出功能修正。</li>
+        <li>每次發布均須附上對應版本的更新項目，避免更新後頁面仍停留在舊紀錄。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.13.1549">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 13 日</p>
+          <h2 class="update-card__title">修正加油總價即時更新</h2>
+        </div>
+        <span class="update-card__versions">2026.10.13.1549</span>
+      </header>
+      <ul class="update-card__items">
+        <li>兩輛救護車的油量或單價變更時，立即重新計算總價。</li>
+        <li>例如油量 48.552 公升、單價 29.9 元，總價顯示 1452 元；單價維持 0–100 元限制。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.13.0919">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 13 日</p>
+          <h2 class="update-card__title">修正救災車輛里程事由</h2>
+        </div>
+        <span class="update-card__versions">2026.10.13.0919</span>
+      </header>
+      <ul class="update-card__items">
+        <li>救災車輛在公務系統登打里程時，事由改為「火警」。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.09.2000">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 9 日</p>
+          <h2 class="update-card__title">補強值班台帳號儲存狀態</h2>
+        </div>
+        <span class="update-card__versions">2026.10.09.2000</span>
+      </header>
+      <ul class="update-card__items">
+        <li>分別顯示值班台帳號儲存結果與救災救護 Worker 同步結果，方便確認同步狀態。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.09.0053">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 9 日</p>
+          <h2 class="update-card__title">改善里程核對與登打錯誤提醒</h2>
+        </div>
+        <span class="update-card__versions">2026.10.09.0053</span>
+      </header>
+      <ul class="update-card__items">
+        <li>加強里程查詢資料載入與前後紀錄核對，避免使用尚未完成載入的資料。</li>
+        <li>救災、救護表單的輸入錯誤改用網頁內視窗提示，確認後再繼續操作。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.08.0844">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 8 日</p>
+          <h2 class="update-card__title">改善空白查詢與站點資料等待</h2>
+        </div>
+        <span class="update-card__versions">2026.10.08.0844</span>
+      </header>
+      <ul class="update-card__items">
+        <li>工作紀錄查無資料時，確認查詢已完成後繼續流程；補強各站點資料載入等待。</li>
+        <li>加油單價限制為 0–100 元。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.06.0726">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 6 日</p>
+          <h2 class="update-card__title">修正當日沒有工作紀錄時停住</h2>
+        </div>
+        <span class="update-card__versions">2026.10.06.0726</span>
+      </header>
+      <ul class="update-card__items">
+        <li>辨識勤務系統正式的查無資料結果，避免把正常零筆結果當成網頁未完成。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.04.1943">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 4 日</p>
+          <h2 class="update-card__title">支援逐車確認人工里程紀錄</h2>
+        </div>
+        <span class="update-card__versions">2026.10.04.1943</span>
+      </header>
+      <ul class="update-card__items">
+        <li>人工里程紀錄與任務時間重疊時，可依車輛明確確認已登打的紀錄。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.04.1650">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 4 日</p>
+          <h2 class="update-card__title">改善人工補登工作紀錄辨識</h2>
+        </div>
+        <span class="update-card__versions">2026.10.04.1650</span>
+      </header>
+      <ul class="update-card__items">
+        <li>核對既有工作紀錄時，接受人工補打與自動登打內容格式的差異。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.04.1146">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 4 日</p>
+          <h2 class="update-card__title">補強勤務查詢結果辨識</h2>
+        </div>
+        <span class="update-card__versions">2026.10.04.1146</span>
+      </header>
+      <ul class="update-card__items">
+        <li>保留真正的查詢失敗原因，並改善正式車輛紀錄列的辨識。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.03.1036">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 3 日</p>
+          <h2 class="update-card__title">改善查詢等待與跨分鐘消毒核對</h2>
+        </div>
+        <span class="update-card__versions">2026.10.03.1036</span>
+      </header>
+      <ul class="update-card__items">
+        <li>等待工作紀錄查詢完成，改善跨分鐘消毒紀錄比對，並顯示工作紀錄的查詢情境。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.02.2121">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 2 日</p>
+          <h2 class="update-card__title">分開核對救災與救護工作紀錄</h2>
+        </div>
+        <span class="update-card__versions">2026.10.02.2121</span>
+      </header>
+      <ul class="update-card__items">
+        <li>同一案件同時出動救災與救護車時，兩邊各自核對工作登打，避免互相誤判為重複。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.02.1553">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 2 日</p>
+          <h2 class="update-card__title">改善消毒時間比對與網路錯誤判斷</h2>
+        </div>
+        <span class="update-card__versions">2026.10.02.1553</span>
+      </header>
+      <ul class="update-card__items">
+        <li>改善消毒紀錄時間比對，並補強網路異常時的失敗原因辨識。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.02.1157">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 2 日</p>
+          <h2 class="update-card__title">加強儲存結果與歷史里程核對</h2>
+        </div>
+        <span class="update-card__versions">2026.10.02.1157</span>
+      </header>
+      <ul class="update-card__items">
+        <li>確認公務網站儲存後的實際紀錄，改善歷史里程修改及後台事件核對。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.10.01.1044">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 1 日</p>
+          <h2 class="update-card__title">改善同案多次派遣的消毒查詢</h2>
+        </div>
+        <span class="update-card__versions">2026.10.01.1044</span>
+      </header>
+      <ul class="update-card__items">
+        <li>同一案件多次出勤時，改善消毒紀錄查找與對應。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.09.27.0210">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 9 月 27 日</p>
+          <h2 class="update-card__title">改善跨日耗材查詢</h2>
+        </div>
+        <span class="update-card__versions">2026.09.27.0210</span>
+      </header>
+      <ul class="update-card__items">
+        <li>改善跨午夜案件的耗材紀錄查詢。</li>
+      </ul>
+    </article>
+
+    <article class="update-card" data-release-version="2026.09.27.0027">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 9 月 27 日</p>
+          <h2 class="update-card__title">改善連續案件里程時間重疊</h2>
+        </div>
+        <span class="update-card__versions">2026.09.27.0027</span>
+      </header>
+      <ul class="update-card__items">
+        <li>改善前後相接案件的里程紀錄時間重疊判定。</li>
+      </ul>
+    </article>
+
     <article class="update-card">
       <header class="update-card__heading">
         <div>

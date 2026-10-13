@@ -30,6 +30,12 @@ jobs:
           }
           "AMBULANCE_RETURN_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Verify system update notes
+        shell: pwsh
+        run: |
+          python -X utf8 scripts/verify_system_updates.py --version $env:AMBULANCE_RETURN_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "Missing system update notes." }
+
       - name: Build update package
         shell: pwsh
         run: |
@@ -48,6 +54,8 @@ jobs:
                   throw "Missing release asset: $path"
               }
           }
+          python -X utf8 scripts/verify_system_updates.py --version $env:AMBULANCE_RETURN_VERSION --package UPDATE/ambulance-return-public-package.zip
+          if ($LASTEXITCODE -ne 0) { throw "Packaged system update notes do not match." }
 
       - name: Publish GitHub release
         shell: pwsh

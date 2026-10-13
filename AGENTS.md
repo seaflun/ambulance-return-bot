@@ -92,6 +92,10 @@ If PowerShell displays Chinese as mojibake, verify content with UTF-8 reads befo
 
 ## Packaging And Release
 
+- Every authorized `commit release 部署重啟更新` must include user-facing notes in `WinPython_公務電腦使用包/templates/system_updates.html` in the same source commit as the version change. Put the newest release first, with `data-release-version` matching `VERSION.txt`, a visible version, and concrete Traditional Chinese description items. Keep older entries.
+- Run `python -X utf8 scripts/verify_system_updates.py` before committing. Before publication, also pass `--version <version> --package UPDATE/ambulance-return-public-package.zip` to verify the actual packaged page. Missing or stale notes block release; do not bypass the checks using direct `gh release` commands.
+- After NAS deployment/restart, read `/updates` and verify that the current version and its actual change descriptions are visible. Verify the public-duty package contains the same page and finish the existing Worker terminal checks. Version parity alone does not prove the update notes were refreshed.
+
 Build the public-duty package:
 
 ```powershell

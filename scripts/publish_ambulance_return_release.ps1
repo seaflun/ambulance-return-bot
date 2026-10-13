@@ -33,6 +33,9 @@ foreach ($path in @($versionPath, $zipPath, $shaPath, $updaterPath)) {
     }
 }
 
+& python -X utf8 (Join-Path $PSScriptRoot "verify_system_updates.py") --version $Version --package $zipPath
+if ($LASTEXITCODE -ne 0) { throw "System update notes verification failed; release stopped." }
+
 $stageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ambulance-return-release-" + $Version)
 New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 $stagedVersionPath = Join-Path $stageDir "ambulance-return-version.txt"
