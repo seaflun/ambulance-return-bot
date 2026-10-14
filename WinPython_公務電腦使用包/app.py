@@ -191,6 +191,8 @@ _local_case_lookup_thread: threading.Thread | None = None
 _public_pc_report_lock = threading.Lock()
 _public_pc_pending_report_lock = threading.RLock()
 _credential_sync_relay_lock = threading.RLock()
+_duty_updates_lock = threading.Lock()
+_duty_updates_cache = {"expires_at": 0.0, "history": None}
 _case_lookup_start_error = ""
 SELECTED_CASE_PENDING_COOKIE = "sinposmart_selected_case_pending"
 SELECTED_CASE_PENDING_MAX_AGE_SECONDS = 300
@@ -318,7 +320,9 @@ def index():
 
 @app.get("/updates")
 def system_updates():
-    return render_template("system_updates.html")
+    selected = "duty" if request.args.get("system") == "duty" else "ambulance"
+    history = duty_update_history() if selected == "duty" else None
+    return render_template("system_updates.html", updates_system=selected, duty_history=history)
 
 
 @app.get("/task-entry")
@@ -2163,6 +2167,64 @@ def _read_text_url(url: str, timeout_seconds: float = 2.0) -> str:
     with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
         content = response.read()
     return content.decode("utf-8-sig").strip()
+
+
+def _normalize_duty_update_history(value: object, expected_version: str = "") -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("Invalid duty update history.")
+    releases, milestones = value.get("releases"), value.get("major_history", [])
+    if not isinstance(releases, list) or not releases or not isinstance(milestones, list):
+        raise ValueError("Missing duty update entries.")
+    for entry in releases + milestones:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("title"), str)
+                or not entry["title"].strip() or not isinstance(entry.get("items"), list)
+                or not entry["items"] or not all(isinstance(item, str) and item.strip() for item in entry["items"])
+                or not isinstance(entry.get("period", ""), str) or not entry.get("period", "").strip()):
+            raise ValueError("Invalid duty update description.")
+    versions = [entry.get("version", "") for entry in releases]
+    for version in versions:
+        if not isinstance(version, str) or not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d{4}", version):
+            raise ValueError("Invalid duty update version.")
+        datetime.strptime(version, "%Y.%m.%d.%H%M")
+    if len(versions) != len(set(versions)):
+        raise ValueError("Duplicate duty update versions.")
+    releases = sorted(releases, key=lambda entry: tuple(map(int, entry["version"].split("."))), reverse=True)
+    latest = releases[0]["version"]
+    if expected_version and latest != expected_version:
+        raise ValueError("Duty update history does not match the published version.")
+    return deepcopy({"version": latest, "releases": releases, "major_history": milestones})
+
+
+def duty_update_history() -> dict:
+    with _duty_updates_lock:
+        now = time.monotonic()
+        if now < _duty_updates_cache["expires_at"] and _duty_updates_cache["history"] is not None:
+            return deepcopy(_duty_updates_cache["history"])
+        stored = _duty_updates_cache["history"]
+        if stored is None:
+            try:
+                path = Path(__file__).with_name("templates") / "sinposmart_update_history.json"
+                stored = _normalize_duty_update_history(json.loads(path.read_text(encoding="utf-8-sig")))
+            except (OSError, UnicodeError, ValueError):
+                stored = {"version": "", "releases": [], "major_history": []}
+        try:
+            version = _read_text_url("https://github.com/seaflun/sinposmart/releases/latest/download/sinposmart-version.txt")
+            if not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d{4}", version):
+                raise ValueError("Invalid published duty version.")
+            if version == stored["version"]:
+                history = deepcopy(stored)
+            else:
+                folder = urllib.parse.quote("WinPython_公務電腦使用包", safe="")
+                url = f"https://raw.githubusercontent.com/seaflun/sinposmart/public-package-{version}/{folder}/update_history.json"
+                history = _normalize_duty_update_history(json.loads(_read_text_url(url)), version)
+            history["source_unavailable"] = False
+            retry_after = 300
+        except (OSError, urllib.error.URLError, UnicodeError, ValueError):
+            history = deepcopy(stored)
+            history["source_unavailable"] = True
+            retry_after = 60
+        _duty_updates_cache.update(expires_at=now + retry_after, history=history)
+        return deepcopy(history)
 
 
 def sinposmart_installed_version_info(selected_day: dict | None) -> dict[str, str] | None:

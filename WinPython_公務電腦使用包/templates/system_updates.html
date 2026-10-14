@@ -7,6 +7,18 @@
 
 {% block extra_head %}
 <style>
+  .update-system-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+
+  .update-system-tabs .button {
+    min-width: 112px;
+    justify-content: center;
+  }
+
   .update-timeline {
     display: grid;
     grid-template-columns: 1fr;
@@ -85,12 +97,71 @@
 {% endblock %}
 
 {% block content %}
+  <nav class="update-system-tabs" aria-label="選擇更新歷程">
+    <a class="button{% if updates_system != 'ambulance' %} secondary{% endif %}" href="/updates?system=ambulance"{% if updates_system == 'ambulance' %} aria-current="page"{% endif %}>救護台</a>
+    <a class="button{% if updates_system != 'duty' %} secondary{% endif %}" href="/updates?system=duty"{% if updates_system == 'duty' %} aria-current="page"{% endif %}>值班台</a>
+  </nav>
+
+  {% if updates_system == 'duty' %}
   <div class="page-intro">
-    <h2 class="page-intro__title">重大功能更新</h2>
-    <p class="page-intro__description">依照版本發布時間，列出救護、救災、民力及值班作業的功能新增與修正。</p>
+    <h2 class="page-intro__title">值班台更新歷程</h2>
+    <p class="page-intro__description">值班台公務電腦程式的功能新增與修正，最新版本在最上面。</p>
+  </div>
+  {% if duty_history.source_unavailable %}
+  <p class="update-note">最新紀錄暫時無法連線，目前顯示已保存的更新歷程。</p>
+  {% endif %}
+  <section class="update-timeline" data-history-system="duty" aria-label="值班台更新歷程">
+    {% for release in duty_history.releases %}
+    <article class="update-card" data-duty-release-version="{{ release.version }}">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ release.period }}</p>
+          <h2 class="update-card__title">{{ release.title }}</h2>
+        </div>
+        <span class="update-card__versions">{{ release.version }}</span>
+      </header>
+      <ul class="update-card__items">
+        {% for item in release["items"] %}<li>{{ item }}</li>{% endfor %}
+      </ul>
+    </article>
+    {% else %}
+    <p class="update-note">目前沒有可顯示的值班台更新歷程。</p>
+    {% endfor %}
+    {% for milestone in duty_history.major_history %}
+    <article class="update-card">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ milestone.period }}</p>
+          <h2 class="update-card__title">{{ milestone.title }}</h2>
+        </div>
+      </header>
+      <ul class="update-card__items">
+        {% for item in milestone["items"] %}<li>{{ item }}</li>{% endfor %}
+      </ul>
+    </article>
+    {% endfor %}
+  </section>
+  {% else %}
+  <div class="page-intro">
+    <h2 class="page-intro__title">救護台更新歷程</h2>
+    <p class="page-intro__description">救護台與 NAS 後台的功能新增與修正，最新版本在最上面。</p>
   </div>
 
-  <section class="update-timeline" aria-label="SinpoSmart 重大更新項目">
+  <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.14.2038">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 14 日</p>
+          <h2 class="update-card__title">系統更新分開顯示值班台歷程</h2>
+        </div>
+        <span class="update-card__versions">2026.10.14.2038</span>
+      </header>
+      <ul class="update-card__items">
+        <li>系統更新項目新增「救護台／值班台」切換，各自顯示更新歷程。</li>
+        <li>值班台沿用已發布更新日誌，版本由新到舊排列，歷史里程碑放在版本紀錄後。</li>
+        <li>定期刷新值班台最新紀錄，連線失敗時保留已保存的歷程；發布前檢查包內歷程與來源一致。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.13.2245">
       <header class="update-card__heading">
         <div>
@@ -381,6 +452,8 @@
       </ul>
     </article>
   </section>
+
+  {% endif %}
 
   <p class="update-note">更新項目依程式版本紀錄整理；畫面列出主要功能與流程改善。</p>
 {% endblock %}

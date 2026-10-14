@@ -95,6 +95,7 @@ If PowerShell displays Chinese as mojibake, verify content with UTF-8 reads befo
 - Every authorized `commit release 部署重啟更新` must include user-facing notes in `WinPython_公務電腦使用包/templates/system_updates.html` in the same source commit as the version change. Put the newest release first, with `data-release-version` matching `VERSION.txt`, a visible version, and concrete Traditional Chinese description items. Keep older entries.
 - Run `python -X utf8 scripts/verify_system_updates.py` before committing. Before publication, also pass `--version <version> --package UPDATE/ambulance-return-public-package.zip` to verify the actual packaged page. Missing or stale notes block release; do not bypass the checks using direct `gh release` commands.
 - After NAS deployment/restart, read `/updates` and verify that the current version and its actual change descriptions are visible. Verify the public-duty package contains the same page and finish the existing Worker terminal checks. Version parity alone does not prove the update notes were refreshed.
+- Keep ambulance and duty-GUI histories separate. The duty fallback data is `WinPython_公務電腦使用包/templates/sinposmart_update_history.json`, copied from the published SinpoSmart GUI history; its versions must be unique and newest first. The release validator also checks that the exact data is included in the public-duty ZIP. Verify both `/updates?system=ambulance` and `/updates?system=duty` after deployment.
 
 Build the public-duty package:
 

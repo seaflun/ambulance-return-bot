@@ -1,6 +1,7 @@
 """Reject releases whose user-facing update page is missing or stale."""
 import argparse
 from html.parser import HTMLParser
+import json
 from pathlib import Path
 import re
 import sys
@@ -51,17 +52,41 @@ def verify_notes(text, version):
             raise ValueError("Each update needs a visible version and nonempty description items.")
 
 
+def verify_duty_history(text):
+    history = json.loads(text)
+    if not isinstance(history, dict):
+        raise ValueError("Invalid duty history.")
+    releases, milestones = history.get("releases"), history.get("major_history", [])
+    if not isinstance(releases, list) or not releases or not isinstance(milestones, list):
+        raise ValueError("Missing duty update entries.")
+    for entry in releases + milestones:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("title"), str)
+                or not entry["title"].strip() or not isinstance(entry.get("period"), str)
+                or not entry["period"].strip() or not isinstance(entry.get("items"), list)
+                or not entry["items"] or not all(isinstance(item, str) and item.strip() for item in entry["items"])):
+            raise ValueError("Each duty update needs a date, title and description.")
+    versions = [entry.get("version", "") for entry in releases]
+    if not all(isinstance(version, str) and re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d{4}", version) for version in versions):
+        raise ValueError("Invalid duty update version.")
+    if len(versions) != len(set(versions)) or versions != sorted(versions, reverse=True):
+        raise ValueError("Duty update versions must be unique and newest first.")
+    return versions[0]
+
+
 def main():
     runtime = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version")
     parser.add_argument("--template", type=Path, default=runtime / "templates/system_updates.html")
     parser.add_argument("--package", type=Path)
+    parser.add_argument("--duty-history", type=Path, default=runtime / "templates/sinposmart_update_history.json")
     args = parser.parse_args()
     version = args.version or (runtime / "VERSION.txt").read_text(encoding="utf-8-sig").strip()
     try:
         source = args.template.read_bytes()
         verify_notes(source.decode("utf-8-sig"), version)
+        duty_source = args.duty_history.read_bytes()
+        duty_version = verify_duty_history(duty_source.decode("utf-8-sig"))
         if args.package:
             with zipfile.ZipFile(args.package) as archive:
                 prefix = "WinPython_公務電腦使用包/"
@@ -69,10 +94,12 @@ def main():
                     raise ValueError("Packaged version does not match release version.")
                 if archive.read(prefix + "templates/system_updates.html") != source:
                     raise ValueError("Packaged updates page does not match the reviewed source.")
+                if archive.read(prefix + "templates/sinposmart_update_history.json") != duty_source:
+                    raise ValueError("Packaged duty update history does not match the reviewed source.")
     except (ValueError, OSError, KeyError, zipfile.BadZipFile) as error:
         print(f"System updates check failed: {error}", file=sys.stderr)
         return 1
-    print(f"System updates verified: {version}")
+    print(f"System updates verified: {version}; duty history: {duty_version}")
     return 0
 
 

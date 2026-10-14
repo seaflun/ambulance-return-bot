@@ -2536,6 +2536,75 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("max-width: none;", body)
         self.assertNotIn("grid-template-columns: repeat(2, minmax(0, 1fr));", body)
 
+    def test_nas_updates_separates_duty_history_and_preserves_offline_notes(self):
+        with mock.patch.object(app_module, "_duty_updates_cache", {"expires_at": 0, "history": None}, create=True), \
+                mock.patch.object(app_module, "_read_text_url", side_effect=urllib.error.URLError("offline")):
+            response = self.client.get("/updates?system=duty", headers={"Host": "100.114.126.58:8080"})
+        self.assertEqual(response.status_code, 200)
+        body = html.unescape(response.get_data(as_text=True))
+        self.assertIn('data-history-system="duty"', body)
+        self.assertIn("值班台更新歷程", body)
+        self.assertIn('data-duty-release-version="2026.10.14.1038"', body)
+        self.assertIn("更新日誌改為最新版本置頂", body)
+        self.assertLess(body.index("2026.10.14.1038"), body.index("2026.10.13.2240"))
+        self.assertLess(body.index("2026.10.13.2240"), body.index("2026.10.13.2039"))
+        self.assertLess(body.index("2026.09.24.1818"), body.index("值班勤務表與登打核心"))
+        self.assertIn("已保存的更新歷程", body)
+        self.assertNotIn("修正加油總價即時更新", body)
+        self.assertNotIn("data-release-version=", body)
+        rescue_body = self.client.get("/updates?system=ambulance").get_data(as_text=True)
+        self.assertIn('data-history-system="ambulance"', rescue_body)
+        self.assertIn("修正加油總價即時更新", rescue_body)
+        self.assertNotIn("data-duty-release-version=", rescue_body)
+
+    def test_duty_update_history_refreshes_new_release_and_keeps_last_good_cache(self):
+        path = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包/templates/sinposmart_update_history.json"
+        history = json.loads(path.read_text(encoding="utf-8-sig"))
+        future = "2026.10.15.0900"
+        history["releases"].append({"version": future, "period": "2026/10/15", "title": "後續版本功能", "items": ["新增更新項目"]})
+        with mock.patch.object(app_module, "_duty_updates_cache", {"expires_at": 0, "history": None}), \
+                mock.patch.object(app_module.time, "monotonic", return_value=1) as clock, \
+                mock.patch.object(app_module, "_read_text_url", side_effect=[future, json.dumps(history)]) as reader:
+            body = self.client.get("/updates?system=duty").get_data(as_text=True)
+            self.assertLess(body.index(future), body.index("2026.10.14.1038"))
+            self.assertIn("後續版本功能", body)
+            self.assertNotIn("已保存的更新歷程", body)
+            self.client.get("/updates?system=duty")
+            self.assertEqual(reader.call_count, 2)
+            clock.return_value = 302
+            reader.side_effect = urllib.error.URLError("offline")
+            body = self.client.get("/updates?system=duty").get_data(as_text=True)
+            self.assertIn("後續版本功能", body)
+            self.assertIn("已保存的更新歷程", body)
+
+    def test_duty_update_history_rejects_invalid_or_mismatched_remote_entries(self):
+        future = "2026.10.15.0900"
+        entry = {"version": future, "period": "2026/10/15", "title": "不可顯示的資料", "items": ["測試項目"]}
+        for payload in ("invalid-json", {"releases": [entry, entry]},
+                        {"releases": [{**entry, "items": []}]},
+                        {"releases": [{**entry, "version": "2026.10.15.0800"}]}):
+            with self.subTest(payload=payload), mock.patch.object(
+                    app_module, "_duty_updates_cache", {"expires_at": 0, "history": None}), mock.patch.object(
+                    app_module, "_read_text_url", side_effect=[future, payload if isinstance(payload, str) else json.dumps(payload)]):
+                response = self.client.get("/updates?system=duty")
+                self.assertEqual(response.status_code, 200)
+                body = response.get_data(as_text=True)
+                self.assertIn("2026.10.14.1038", body)
+                self.assertIn("已保存的更新歷程", body)
+                self.assertNotIn("不可顯示的資料", body)
+
+    def test_duty_update_history_escapes_remote_description_html(self):
+        future = "2026.10.15.0900"
+        history = {"releases": [{"version": future, "period": "2026/10/15",
+                                "title": '<img src=x onerror="alert(1)">', "items": ["<script>alert(1)</script>"]}]}
+        with mock.patch.object(app_module, "_duty_updates_cache", {"expires_at": 0, "history": None}), \
+                mock.patch.object(app_module, "_read_text_url", side_effect=[future, json.dumps(history)]):
+            body = self.client.get("/updates?system=duty").get_data(as_text=True)
+        self.assertIn(future, body)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", body)
+        self.assertNotIn("<script>alert(1)</script>", body)
+        self.assertNotIn("<img src=x", body)
+
     def test_vehicle_settings_links_are_shown_on_nas_pages(self):
         response = self.client.get("/app", headers={"Host": "100.114.126.58:8080"})
         disaster_response = self.client.get("/app/disaster", headers={"Host": "100.114.126.58:8080"})
