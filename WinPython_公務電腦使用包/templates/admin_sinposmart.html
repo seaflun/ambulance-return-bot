@@ -174,6 +174,10 @@
     .credential-sync-statuses { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
     .event-head { display: grid; grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; align-items: start; }
     .login-card .event-head { align-items: center; }
+    .login-diagnostic { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .login-diagnostic > summary { cursor: pointer; color: var(--ink); font-weight: 760; }
+    .login-page-text { margin: 10px 0; padding: 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); font: inherit; }
+    .login-page-image { display: block; max-width: 100%; height: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; }
     .event-time { color: var(--muted); font-size: var(--text-sm); }
     .event-title { font-weight: 800; overflow-wrap: anywhere; }
     .event-meta { margin-top: 4px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
@@ -540,6 +544,23 @@
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
               </div>
             </div>
+            {% if event.login_diagnostic %}
+              {% set diagnostic = event.login_diagnostic %}
+              <details class="login-diagnostic">
+                <summary>登入失敗頁面與原因</summary>
+                <div class="event-detail">階段：{{ event.login_stage_label }}</div>
+                {% if diagnostic.reason %}<div class="event-detail">原因：{{ diagnostic.reason }}</div>{% endif %}
+                {% if diagnostic.captured_at %}<div class="event-detail">擷取時間：{{ diagnostic.captured_at }}</div>{% endif %}
+                {% if diagnostic.page_title %}<div class="event-detail">頁面標題：{{ diagnostic.page_title }}</div>{% endif %}
+                {% if diagnostic.page_url %}<div class="event-detail">頁面網址：{{ diagnostic.page_url }}</div>{% endif %}
+                {% if diagnostic.page_text %}<pre class="login-page-text">{{ diagnostic.page_text }}</pre>{% endif %}
+                {% if diagnostic.image_png %}
+                  <img class="login-page-image" src="data:image/png;base64,{{ diagnostic.image_png }}" alt="登入失敗頁面（輸入欄位已遮蔽）" loading="lazy" decoding="async">
+                {% else %}
+                  <div class="event-detail">未取得可顯示的遮蔽截圖{% if diagnostic.capture_status == 'oversize' %}（圖片超過保存限制）{% endif %}；仍保留已取得的原因與頁面資訊。</div>
+                {% endif %}
+              </details>
+            {% endif %}
           </article>
         {% else %}
           <section class="empty">目前沒有登入紀錄。</section>

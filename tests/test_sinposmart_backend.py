@@ -1,5 +1,9 @@
+import base64
+import json
+import struct
 import tempfile
 import unittest
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +19,141 @@ from ambulance_bot.sinposmart_backend import (
 
 
 class SinpoSmartBackendStoreTests(unittest.TestCase):
+    @staticmethod
+    def login_page_png(width=512, height=1):
+        def chunk(kind, content):
+            return struct.pack(">I", len(content)) + kind + content + struct.pack(">I", zlib.crc32(kind + content))
+
+        header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+        pixels = b"\x00" + b"\x80\x80\x80" * 512
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(pixels, 0)) + chunk(b"IEND", b"")
+
+    def test_login_failure_diagnostic_is_sanitized_and_png_survives_store_round_trip(self):
+        image = base64.b64encode(self.login_page_png()).decode("ascii")
+        self.assertGreater(len(image), 1200)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            event = store.upsert_event({
+                "event_id": "login-password-expired", "occurred_at": "2026-10-15T10:00:00",
+                "record_type": "login_failed", "status": "failed", "error": "密碼：不應保存的值",
+                "snapshot": {"login_method": "automatic", "login_diagnostic": {
+                    "reason_code": "password_change_required", "stage": "post_login",
+                    "reason": "每三個月必須更換密碼；password='do not store'",
+                    "page_url": "https://worker:private@example.test/change-password?token=hidden#secret",
+                    "page_title": "密碼須更新 帳號=private-user",
+                    "page_text": "請更換密碼\n帳號：private-user\n密碼：private-password\nhttps://a:b@example.test/form?secret=hidden#fragment",
+                    "captured_at": "2026-10-15T10:00:00+08:00", "capture_status": "captured",
+                    "image_redacted": True, "image_png": image, "raw_html": "<input value='private-password'>",
+                }},
+            }, now=datetime(2026, 10, 15, 10, 0))
+            day = store.read_day("2026-10-15", now=datetime(2026, 10, 15, 10, 1))
+            diagnostic = day["events"][0]["snapshot"]["login_diagnostic"]
+            self.assertEqual(diagnostic["image_png"], image)
+            self.assertIs(diagnostic["image_redacted"], True)
+            self.assertEqual(diagnostic["page_url"], "https://example.test/change-password")
+            self.assertEqual(diagnostic["capture_status"], "captured")
+            self.assertNotIn("raw_html", diagnostic)
+            saved = store.path_for_day("2026-10-15").read_text(encoding="utf-8")
+            for secret in ("不應保存的值", "do not store", "private-user", "private-password", "worker:private", "a:b@", "hidden", "fragment"):
+                self.assertNotIn(secret, saved)
+            card = day["admin_view"]["login_events"][0]
+            self.assertEqual(card["status_label"], "密碼須更新")
+            self.assertEqual(card["status_class"], "failed")
+            self.assertEqual(card["login_diagnostic"]["reason_code"], "password_change_required")
+            self.assertEqual(event["record_type"], "login_failed")
+
+    def test_login_failure_retains_reason_when_evidence_image_is_unsafe(self):
+        valid = base64.b64encode(self.login_page_png()).decode("ascii")
+        cases = [
+            ("not-base64!", True), (base64.b64encode(b"not a png").decode("ascii"), True),
+            (base64.b64encode(self.login_page_png()[:-4]).decode("ascii"), True),
+            (valid, False), (valid, "true"),
+            (base64.b64encode(b"x" * (512 * 1024 + 1)).decode("ascii"), True),
+            (base64.b64encode(self.login_page_png(4097, 1)).decode("ascii"), True),
+            (base64.b64encode(self.login_page_png(2049, 2048)).decode("ascii"), True),
+            (base64.b64encode(self.login_page_png(0, 1)).decode("ascii"), True),
+        ]
+        for image, redacted in cases:
+            with self.subTest(image_prefix=image[:24], redacted=redacted):
+                event = normalize_sinposmart_event({
+                    "record_type": "login_failed", "status": "failed",
+                    "snapshot": {"login_diagnostic": {"reason_code": "password_change_required",
+                        "reason": "密碼已到期，請更換密碼", "capture_status": "captured",
+                        "image_png": image, "image_redacted": redacted}},
+                })
+                diagnostic = event["snapshot"]["login_diagnostic"]
+                self.assertEqual(diagnostic["reason"], "密碼已到期，請更換密碼")
+                self.assertNotIn("image_png", diagnostic)
+                self.assertIn(diagnostic["capture_status"], {"unavailable", "oversize"})
+
+    def test_login_evidence_rejects_corrupt_png_content_and_drops_metadata(self):
+        png = self.login_page_png()
+        def chunk(kind, content):
+            return struct.pack(">I", len(content)) + kind + content + struct.pack(">I", zlib.crc32(kind + content))
+        bad_pixels = chunk(b"IDAT", zlib.compress(b"\x05" + b"\x80\x80\x80" * 512))
+        invalid = [png[:-1] + bytes([png[-1] ^ 1]), png + b"trailing", png[:33] + bad_pixels + png[-12:],
+                   png[:33] + chunk(b"IDAT", zlib.compress(b"too few pixels")) + png[-12:],
+                   png[:33] + chunk(b"IDAT", b"invalid deflate") + png[-12:],
+                   png[:-12] + chunk(b"PLTE", b"\x00\x00\x00") + png[-12:],
+                   b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 512, 1, 8, 3, 0, 0, 0))
+                   + chunk(b"IDAT", zlib.compress(b"\x00" + bytes(512))) + png[-12:]]
+        for image in invalid:
+            with self.subTest(image_size=len(image)):
+                event = normalize_sinposmart_event({"record_type": "login_failed", "snapshot": {"login_diagnostic": {
+                    "reason": "密碼須更新", "image_redacted": True, "image_png": base64.b64encode(image).decode("ascii"),
+                }}})
+                self.assertNotIn("image_png", event["snapshot"]["login_diagnostic"])
+        with_metadata = png[:33] + chunk(b"tEXt", b"password=do-not-save") + png[33:]
+        event = normalize_sinposmart_event({"record_type": "login_failed", "snapshot": {"login_diagnostic": {
+            "reason": "密碼須更新", "image_redacted": True, "image_png": base64.b64encode(with_metadata).decode("ascii"),
+        }}})
+        cleaned = base64.b64decode(event["snapshot"]["login_diagnostic"]["image_png"])
+        self.assertEqual(cleaned, png)
+        self.assertNotIn(b"do-not-save", cleaned)
+        rgba_png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(b"\x00\x80\x80\x80\xff")) + png[-12:])
+        event = normalize_sinposmart_event({"record_type": "login_failed", "snapshot": {"login_diagnostic": {
+            "reason": "密碼須更新", "image_redacted": True, "image_png": base64.b64encode(rgba_png).decode("ascii"),
+        }}})
+        self.assertEqual(base64.b64decode(event["snapshot"]["login_diagnostic"]["image_png"]), rgba_png)
+
+    def test_login_failure_diagnostic_bounds_fields_and_rejects_unsafe_urls(self):
+        for url in ("javascript:alert(1)", "data:text/html,hello", "//example.test/path", "https://[bad/path", "https://example.test\\@evil.test/path"):
+            with self.subTest(url=url):
+                event = normalize_sinposmart_event({"record_type": "login_failed", "snapshot": {"login_diagnostic": {
+                    "reason_code": "unknown", "stage": "unsafe", "reason": "理" * 700,
+                    "page_url": url, "page_title": "題" * 200, "page_text": "文" * 4500,
+                    "captured_at": "時" * 80, "capture_status": "unknown", "extra": "discard",
+                }}})
+                diagnostic = event["snapshot"]["login_diagnostic"]
+                self.assertEqual(diagnostic["reason_code"], "login_failed")
+                self.assertEqual(diagnostic["stage"], "login")
+                self.assertEqual(diagnostic["page_url"], "")
+                self.assertEqual(len(diagnostic["reason"]), 600)
+                self.assertEqual(len(diagnostic["page_title"]), 160)
+                self.assertEqual(len(diagnostic["page_text"]), 4000)
+                self.assertEqual(len(diagnostic["captured_at"]), 40)
+                self.assertNotIn("extra", diagnostic)
+        for value in ({}, None, "invalid", []):
+            with self.subTest(value=value):
+                event = normalize_sinposmart_event({"record_type": "login_failed", "snapshot": {"login_diagnostic": value}})
+                self.assertEqual(event["snapshot"]["login_diagnostic"], {})
+        event = normalize_sinposmart_event({"record_type": "login_failed", "snapshot": {"login_diagnostic": {
+            "reason_code": [], "reason": {"secret": "must-not-stringify"}, "page_text": ["must-not-stringify"],
+        }}})
+        self.assertEqual(event["snapshot"]["login_diagnostic"]["reason_code"], "login_failed")
+        self.assertNotIn("must-not-stringify", json.dumps(event))
+        for text in ('{"token": "demo token secret"}', "'password': 'demo password secret'", '"密碼"："範例密碼 值"',
+                     "Authorization: Bearer demo-bearer-value", '"authorization": "Bearer demo-bearer-value"',
+                     '"session_id": "demo session secret"', "session-id='demo session secret'", "sessionid=demo-session-secret",
+                     '"api_key": "demo api secret"', "api-key='demo api secret'", "apikey=demo-api-secret"):
+            with self.subTest(assignment=text):
+                event = normalize_sinposmart_event({"record_type": "login_failed", "error": text,
+                    "snapshot": {"login_diagnostic": {"reason": text, "page_text": text, "page_title": text}}})
+                for secret in ("demo token secret", "demo password secret", "範例密碼 值", "demo-bearer-value",
+                               "demo session secret", "demo-session-secret", "demo api secret", "demo-api-secret"):
+                    self.assertNotIn(secret, json.dumps(event, ensure_ascii=False))
+
     def test_fire_day_uses_0800_boundary(self):
         self.assertEqual(sinposmart_fire_day_for(datetime(2026, 6, 15, 7, 59)), "2026-06-14")
         self.assertEqual(sinposmart_fire_day_for(datetime(2026, 6, 15, 8, 0)), "2026-06-15")

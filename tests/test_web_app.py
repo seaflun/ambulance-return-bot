@@ -5,12 +5,14 @@ import io
 import json
 import os
 import re
+import struct
 import subprocess
 import tempfile
 import threading
 import time
 import unittest
 import urllib.error
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2560,13 +2562,15 @@ class WebAppTests(unittest.TestCase):
     def test_duty_update_history_refreshes_new_release_and_keeps_last_good_cache(self):
         path = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包/templates/sinposmart_update_history.json"
         history = json.loads(path.read_text(encoding="utf-8-sig"))
-        future = "2026.10.15.0900"
-        history["releases"].append({"version": future, "period": "2026/10/15", "title": "後續版本功能", "items": ["新增更新項目"]})
+        current = history["releases"][0]["version"]
+        future_at = datetime.strptime(current, "%Y.%m.%d.%H%M") + timedelta(minutes=1)
+        future = future_at.strftime("%Y.%m.%d.%H%M")
+        history["releases"].append({"version": future, "period": future_at.strftime("%Y/%m/%d"), "title": "後續版本功能", "items": ["新增更新項目"]})
         with mock.patch.object(app_module, "_duty_updates_cache", {"expires_at": 0, "history": None}), \
                 mock.patch.object(app_module.time, "monotonic", return_value=1) as clock, \
                 mock.patch.object(app_module, "_read_text_url", side_effect=[future, json.dumps(history)]) as reader:
             body = self.client.get("/updates?system=duty").get_data(as_text=True)
-            self.assertLess(body.index(future), body.index("2026.10.14.1038"))
+            self.assertLess(body.index(future), body.index(current))
             self.assertIn("後續版本功能", body)
             self.assertNotIn("已保存的更新歷程", body)
             self.client.get("/updates?system=duty")
@@ -5781,6 +5785,66 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("暫停原因：尚未收到完成結果", body)
         self.assertNotIn("pending_write_automation", body)
         self.assertNotIn("加入佇列", body)
+
+    def test_sinposmart_login_failure_api_stores_safe_page_and_renders_password_update_evidence(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        def chunk(kind, content):
+            return struct.pack(">I", len(content)) + kind + content + struct.pack(">I", zlib.crc32(kind + content))
+        png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 512, 1, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(b"\x00" + b"\x80\x80\x80" * 512, 0)) + chunk(b"IEND", b""))
+        image = base64.b64encode(png).decode("ascii")
+        response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+            "event_id": "password-update-page", "fire_day": fire_day, "occurred_at": f"{fire_day}T12:00:00",
+            "record_type": "login_failed", "trigger_type": "login", "status": "failed", "actor_no": "10",
+            "error": "必須更新密碼 帳號=private-account", "snapshot": {"login_method": "automatic", "login_diagnostic": {
+                "reason_code": "password_change_required", "stage": "post_login", "reason": "密碼已到期，請更換密碼",
+                "page_url": "https://private-user:private-password@example.test/change?token=private-token#private-fragment",
+                "page_title": "<img src=x onerror=alert(1)> 密碼須更新", "page_text": "<script>alert('xss')</script>\n密碼：private-password",
+                "captured_at": f"{fire_day}T12:00:00+08:00", "capture_status": "captured", "image_redacted": True, "image_png": image,
+            }},
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["ack_id"], "password-update-page")
+        day = app_module.sinposmart_store().read_day(fire_day)
+        diagnostic = day["events"][0]["snapshot"]["login_diagnostic"]
+        self.assertEqual(diagnostic["image_png"], image)
+        self.assertEqual(diagnostic["page_url"], "https://example.test/change")
+        stored = app_module.sinposmart_store().path_for_day(fire_day).read_text(encoding="utf-8")
+        body = self.client.get(f"/admin/sinposmart?fire_day={fire_day}").get_data(as_text=True)
+        self.assertIn('>密碼須更新</span>', body)
+        self.assertIn('登入失敗頁面與原因', body)
+        self.assertIn('https://example.test/change', body)
+        self.assertIn(f'src="data:image/png;base64,{image}"', body)
+        self.assertIn('&lt;script&gt;', body)
+        self.assertIn('&lt;img src=x onerror=alert(1)&gt;', body)
+        self.assertNotIn("<script>alert('xss')</script>", body)
+        self.assertNotIn('<img src=x onerror=alert(1)>', body)
+        for secret in ("private-account", "private-user", "private-password", "private-token", "private-fragment"):
+            self.assertNotIn(secret, stored)
+            self.assertNotIn(secret, body)
+
+    def test_sinposmart_login_failure_api_keeps_reason_and_explains_missing_image(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        for index, diagnostic in enumerate((
+            {"reason_code": "browser_start_failed", "stage": "login", "reason": "瀏覽器無法啟動", "capture_status": "unavailable"},
+            {"reason_code": "password_change_required", "reason": "密碼須更新", "capture_status": "captured", "image_redacted": False, "image_png": "not-png"},
+            {},
+        )):
+            response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                "event_id": f"login-no-image-{index}", "fire_day": fire_day, "occurred_at": f"{fire_day}T12:00:0{index}",
+                "record_type": "login_failed", "status": "failed", "error": "登入失敗", "snapshot": {"login_diagnostic": diagnostic},
+            })
+            self.assertEqual(response.status_code, 200)
+        body = self.client.get(f"/admin/sinposmart?fire_day={fire_day}").get_data(as_text=True)
+        self.assertIn("瀏覽器無法啟動", body)
+        self.assertIn("未取得可顯示的遮蔽截圖", body)
+        self.assertIn(">密碼須更新</span>", body)
+        self.assertNotIn("data:image/png", body)
+        day = app_module.sinposmart_store().read_day(fire_day)
+        self.assertEqual(len(day["events"]), 3)
+        self.assertNotIn("image_png", json.dumps(day["events"]))
 
     def test_sinposmart_admin_compacts_login_and_logout_badges(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"

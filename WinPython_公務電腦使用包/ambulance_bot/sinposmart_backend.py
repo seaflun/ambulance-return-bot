@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
+import struct
+import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -54,6 +59,9 @@ SINPOSMART_EVENT_FIELDS = (
 )
 SENSITIVE_KEY_PATTERN = re.compile(r"(password|passwd|pwd|token|secret|cookie|authorization|credential)", re.I)
 SENSITIVE_TEXT_PATTERN = re.compile(r"(?i)(password|token|secret|cookie|authorization)\s*[:=]\s*[^,\s;]+")
+LOGIN_SENSITIVE_TEXT_PATTERN = re.compile(
+    r'''(?i)(password|passwd|pwd|token|secret|cookie|authorization|credential|username|user_id|account|session[_-]?id|api[_-]?key|帳號|账号|密碼|密码|帳密|權杖|驗證碼|验证码|授權碼)["']?\s*[:=：]\s*(?:"[^"\n]*"|'[^'\n]*'|[^,;，；\r\n]+)'''
+)
 TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
 SINPOSMART_RESULT_ADVISORY_SECONDS = 15 * 60
 _STORE_LOCKS_GUARD = Lock()
@@ -1030,6 +1038,10 @@ def sinposmart_admin_tool_event(
 def sinposmart_login_status_label(event: dict[str, Any]) -> str:
     record_type = str(event.get("record_type") or "")
     if record_type == "login_failed":
+        snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+        diagnostic = snapshot.get("login_diagnostic") if isinstance(snapshot.get("login_diagnostic"), dict) else {}
+        if diagnostic.get("reason_code") == "password_change_required":
+            return "密碼須更新"
         return "登入失敗"
     if record_type == "login_expired":
         return "登入失效"
@@ -1061,6 +1073,14 @@ def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[s
     if sinposmart_person_label_score(preferred_person) > sinposmart_person_label_score(current_person):
         current_person = preferred_person
     card = sinposmart_admin_event(event, label, current_person)
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    diagnostic = sanitize_login_diagnostic(snapshot.get("login_diagnostic"))
+    if diagnostic:
+        card["login_diagnostic"] = diagnostic
+        card["login_stage_label"] = "登入後檢查" if diagnostic["stage"] == "post_login" else "網站登入"
+    if record_type == "login_failed" or (record_type == "error" and str(event.get("trigger_type") or "") == "login"):
+        card["content"] = sanitize_login_text(card["content"], 1200)
+        card["error"] = sanitize_login_text(card["error"], 1200)
     if record_type in {"login", "login_failed"}:
         snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
         method = str(snapshot.get("login_method") or "")
@@ -1078,7 +1098,7 @@ def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[s
             "system": "系統登出",
             "update": "更新前登出",
         }.get(method, "登出")
-    card["login_detail"] = card["error"] or (card["content"] if card["status_class"] == "failed" else "")
+    card["login_detail"] = diagnostic.get("reason") or card["error"] or (card["content"] if card["status_class"] == "failed" else "")
     if record_type == "error":
         card["record_label"] = label
     occurred_at = sinposmart_event_time(event)
@@ -1420,6 +1440,9 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         "snapshot": snapshot,
     }
     event["merged_event_ids"] = [event["event_id"]]
+    if record_type == "login_failed" or (record_type == "error" and event["trigger_type"] == "login"):
+        event["content"] = sanitize_login_text(raw_event.get("content"), 1200)
+        event["error"] = sanitize_login_text(raw_event.get("error"), 1200)
     if record_type == "tool_action_started" and not event["item_title"]:
         snapshot = event["snapshot"] if isinstance(event.get("snapshot"), dict) else {}
         tool_label = sanitize_scalar(snapshot.get("tool_label"), 120)
@@ -1546,6 +1569,135 @@ def parse_event_datetime(value: Any, fallback: datetime) -> datetime:
     return taipei_local_datetime(parsed)
 
 
+def sanitize_login_url(value: Any) -> str:
+    if not isinstance(value, str) or re.search(r'''[\s\\\x00-\x1f\x7f<>"']''', value.strip()):
+        return ""
+    try:
+        parts = urlsplit(value.strip())
+        if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
+            return ""
+        host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+        if parts.port is not None:
+            host += f":{parts.port}"
+        return urlunsplit((parts.scheme.lower(), host, parts.path, "", ""))[:320]
+    except ValueError:
+        return ""
+
+
+def sanitize_login_text(value: Any, max_length: int) -> str:
+    text = value.replace("\x00", "").strip() if isinstance(value, str) else ""
+    text = re.sub(r'''https?://[^\s<>"'，；]+''', lambda match: sanitize_login_url(match.group()), text, flags=re.I)
+    text = LOGIN_SENSITIVE_TEXT_PATTERN.sub(r"\1=***", text)
+    return text[:max_length]
+
+
+def sanitize_login_png(value: Any, redacted: Any) -> tuple[str, str]:
+    if redacted is not True or not isinstance(value, str) or not value:
+        return "unavailable", ""
+    if len(value) > ((512 * 1024 + 2) // 3) * 4:
+        return "oversize", ""
+    try:
+        data = base64.b64decode(value, validate=True)
+        if len(data) > 512 * 1024:
+            return "oversize", ""
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "unavailable", ""
+        position, header, compressed, chunks, ended = 8, None, [], [], False
+        palette_size, transparency_seen, image_ended = 0, False, False
+        while position + 12 <= len(data):
+            length = struct.unpack_from(">I", data, position)[0]
+            kind = data[position + 4:position + 8]
+            end = position + 12 + length
+            if end > len(data) or not re.fullmatch(b"[A-Za-z]{4}", kind):
+                return "unavailable", ""
+            content = data[position + 8:end - 4]
+            if zlib.crc32(kind + content) != struct.unpack_from(">I", data, end - 4)[0]:
+                return "unavailable", ""
+            if kind in {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"}:
+                chunks.append(data[position:end])
+            if compressed and kind != b"IDAT":
+                image_ended = True
+            if header is None:
+                if kind != b"IHDR" or length != 13:
+                    return "unavailable", ""
+                header = struct.unpack(">IIBBBBB", content)
+                width, height, bit_depth, color, compression, filtering, interlace = header
+                if not width or not height or width > 4096 or height > 4096 or width * height > 4194304:
+                    return "oversize", ""
+                depths = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}}
+                if bit_depth not in depths.get(color, set()) or compression or filtering or interlace not in {0, 1}:
+                    return "unavailable", ""
+            elif kind == b"IHDR":
+                return "unavailable", ""
+            elif kind == b"PLTE":
+                if compressed or palette_size or color in {0, 4} or not length or length % 3 or length > 768:
+                    return "unavailable", ""
+                palette_size = length // 3
+                if color == 3 and palette_size > 2 ** bit_depth:
+                    return "unavailable", ""
+            elif kind == b"tRNS":
+                if compressed or transparency_seen or color not in {0, 2, 3}:
+                    return "unavailable", ""
+                if (color == 0 and length != 2) or (color == 2 and length != 6) or (color == 3 and not 0 < length <= palette_size):
+                    return "unavailable", ""
+                transparency_seen = True
+            elif kind == b"IDAT":
+                if image_ended or (color == 3 and not palette_size):
+                    return "unavailable", ""
+                compressed.append(content)
+            elif kind == b"IEND":
+                ended = length == 0 and end == len(data)
+                break
+            elif not kind[0] & 32 and kind != b"PLTE":
+                return "unavailable", ""
+            position = end
+        if not ended or not compressed or header is None:
+            return "unavailable", ""
+        channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color]
+        passes = [(0, 0, 1, 1)] if not interlace else [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)]
+        rows = []
+        for x, y, dx, dy in passes:
+            columns = max(0, (width - x + dx - 1) // dx)
+            count = max(0, (height - y + dy - 1) // dy)
+            if columns and count:
+                rows.extend([1 + (columns * channels * bit_depth + 7) // 8] * count)
+        expected = sum(rows)
+        decoder = zlib.decompressobj()
+        pixels = decoder.decompress(b"".join(compressed), expected + 1)
+        if len(pixels) != expected or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            return "unavailable", ""
+        offset = 0
+        for row_length in rows:
+            if pixels[offset] > 4:
+                return "unavailable", ""
+            offset += row_length
+        return "captured", base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"".join(chunks)).decode("ascii")
+    except (ValueError, binascii.Error, struct.error, zlib.error):
+        return "unavailable", ""
+
+
+def sanitize_login_diagnostic(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        return {}
+    codes = {"password_change_required", "invalid_credentials", "login_failed", "browser_start_failed", "login_timeout"}
+    reason_code = value.get("reason_code")
+    clean = {
+        "reason_code": reason_code if isinstance(reason_code, str) and reason_code in codes else "login_failed",
+        "stage": "post_login" if value.get("stage") == "post_login" else "login",
+        "reason": sanitize_login_text(value.get("reason"), 600),
+        "page_url": sanitize_login_url(value.get("page_url")),
+        "page_title": sanitize_login_text(value.get("page_title"), 160),
+        "page_text": sanitize_login_text(value.get("page_text"), 4000),
+        "captured_at": sanitize_login_text(value.get("captured_at"), 40),
+        "image_redacted": value.get("image_redacted") is True,
+    }
+    capture_status, image = sanitize_login_png(value.get("image_png"), value.get("image_redacted"))
+    clean["capture_status"] = "oversize" if not image and value.get("capture_status") == "oversize" else capture_status
+    if image:
+        clean["image_png"] = image
+    return clean
+
+
 def sanitize_value(value: Any, depth: int = 0) -> Any:
     if depth > 4:
         return ""
@@ -1555,7 +1707,7 @@ def sanitize_value(value: Any, depth: int = 0) -> Any:
             key_text = str(key)
             if SENSITIVE_KEY_PATTERN.search(key_text):
                 continue
-            clean[key_text[:80]] = sanitize_value(item, depth + 1)
+            clean[key_text[:80]] = sanitize_login_diagnostic(item) if key_text == "login_diagnostic" else sanitize_value(item, depth + 1)
         return clean
     if isinstance(value, list):
         return [sanitize_value(item, depth + 1) for item in value[:200]]
