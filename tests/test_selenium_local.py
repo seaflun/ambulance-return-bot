@@ -3840,6 +3840,10 @@ class SeleniumLocalTests(unittest.TestCase):
             "_select_daily_vehicle_mileage_month",
         ) as select_month, patch.object(
             selenium_local_module,
+            "_wait_for_vehicle_mileage_detail",
+            return_value=[],
+        ) as detail_ready, patch.object(
+            selenium_local_module,
             "_extract_latest_vehicle_mileage_record",
             return_value={"mileage": "12345", "record_end_date": "20260821", "record_end_time": "1800"},
         ), patch.object(
@@ -3878,6 +3882,7 @@ class SeleniumLocalTests(unittest.TestCase):
         )
         select_month.assert_called_once_with(driver, "2026/08")
         select_vehicle.assert_called_once_with(driver, "KEC-2608")
+        detail_ready.assert_called_once_with(driver, "2026/08")
         prepare.assert_not_called()
         save.assert_not_called()
         quit_driver.assert_called_once_with(driver)
@@ -3929,6 +3934,10 @@ class SeleniumLocalTests(unittest.TestCase):
             "_select_daily_vehicle_mileage_month",
         ) as select_month, patch.object(
             selenium_local_module,
+            "_wait_for_vehicle_mileage_detail",
+            return_value=[],
+        ) as detail_ready, patch.object(
+            selenium_local_module,
             "_release_selenium_session",
         ), patch.object(
             selenium_local_module,
@@ -3944,6 +3953,7 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertEqual("12345", results[0]["mileage"])
         self.assertEqual("20260731", results[0]["record_end_date"])
         self.assertEqual("已讀取 PPE 2026/07 最新里程。", results[0]["detail"])
+        self.assertEqual([call(driver, "2026/08"), call(driver, "2026/07")], detail_ready.call_args_list)
         self.assertEqual(
             [call(driver, "2026/08"), call(driver, "2026/07")],
             select_month.call_args_list,

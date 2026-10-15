@@ -149,19 +149,41 @@ class WorkerTests(unittest.TestCase):
         ):
             artifacts_dir = Path(tmp)
             event = worker_module.begin_manual_task_execution("task-heartbeat-lock", artifacts_dir)
-            self.assertIsNotNone(event)
             path = manual_task_lock_path(artifacts_dir)
-            first = json.loads(path.read_text(encoding="utf-8"))["heartbeat_at"]
-            deadline = time.time() + 1.0
-            latest = first
-            while latest <= first and time.time() < deadline:
-                time.sleep(0.01)
-                latest = json.loads(path.read_text(encoding="utf-8"))["heartbeat_at"]
 
-            self.assertGreater(latest, first)
-            assert event is not None
-            worker_module.end_manual_task_execution("task-heartbeat-lock", event, artifacts_dir)
-            self.assertFalse(path.exists())
+            def read_heartbeat(reader=None):
+                read_text = reader or path.read_text
+                for attempt in range(3):
+                    try:
+                        with manual_task_lock_module._manual_task_lock_guard(artifacts_dir):
+                            return json.loads(read_text(encoding="utf-8"))["heartbeat_at"]
+                    except PermissionError:
+                        if attempt == 2:
+                            raise
+                        time.sleep(worker_module.worker_execution_lease_heartbeat_seconds())
+
+            try:
+                self.assertIsNotNone(event)
+                sample = json.dumps({"heartbeat_at": 1.0})
+                transient = mock.Mock(side_effect=[PermissionError("temporary sharing conflict"), sample])
+                self.assertEqual(1.0, read_heartbeat(transient))
+                self.assertEqual(2, transient.call_count)
+                permanent = mock.Mock(side_effect=PermissionError("persistent access failure"))
+                with self.assertRaises(PermissionError):
+                    read_heartbeat(permanent)
+                self.assertEqual(3, permanent.call_count)
+
+                first = read_heartbeat()
+                deadline = time.monotonic() + 1.0
+                latest = first
+                while latest <= first and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                    latest = read_heartbeat()
+                self.assertGreater(latest, first)
+            finally:
+                if event is not None:
+                    worker_module.end_manual_task_execution("task-heartbeat-lock", event, artifacts_dir)
+                self.assertFalse(path.exists())
 
     def test_execution_lease_heartbeat_retries_transient_refresh_error(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(

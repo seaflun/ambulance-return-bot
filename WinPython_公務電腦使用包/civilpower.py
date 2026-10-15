@@ -15,7 +15,7 @@ from uuid import uuid4
 import ddddocr
 from PIL import Image
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -78,6 +78,23 @@ class _AmbiguousSelectionError(RuntimeError):
 
 class _IncompleteQueryError(RuntimeError):
     pass
+
+
+class _CivilpowerPrefilled(RuntimeError):
+    pass
+
+
+def _civilpower_save_enabled() -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.getenv("AUTOMATION_DRY_RUN", "false").strip().lower() not in truthy
+        and os.getenv("SAVE_CIVILPOWER_RECORD", "true").strip().lower() in truthy
+    )
+
+
+def _require_civilpower_save_enabled(label: str) -> None:
+    if not _civilpower_save_enabled():
+        raise _CivilpowerPrefilled(f"不儲存測試：已填寫並核對{label}，停在正式送出前。")
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +239,14 @@ def query_civilpower_roster(driver) -> list[dict[str, str]]:
 
 
 def _read_civilpower_roster_page(driver) -> list[dict[str, str]]:
+    snapshot = _table_page_snapshot(driver)
+    if snapshot is not None:
+        raw_members = []
+        for row in snapshot["rows"]:
+            cells = [_clean_text(text) for text in row.get("cells", [])]
+            if len(cells) >= 3:
+                raw_members.append(dict(zip(("unit", "title", "name"), cells[:3])))
+        return raw_members
     raw_members: list[dict[str, str]] = []
     for row in _table_rows(driver):
         cells = [_clean_text(cell.text) for cell in _row_cells(row)]
@@ -356,6 +381,10 @@ def run_civilpower_task(
         plan = _plan_with_checkpointed_in_time(original_plan, checkpoint)
         login_account = ""
 
+        def save_checkpoint() -> None:
+            if _civilpower_save_enabled():
+                _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+
         def record_login_account(user_id: str) -> None:
             nonlocal login_account
             login_account = _clean_text(user_id)
@@ -376,7 +405,7 @@ def run_civilpower_task(
         def persist_out_submission() -> None:
             if login_account:
                 checkpoint["civilpower_login_account"] = login_account
-            _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+            save_checkpoint()
 
         out_created = _ensure_io_record(
             active_driver,
@@ -389,7 +418,7 @@ def run_civilpower_task(
         )
         if login_account and out_created:
             checkpoint["civilpower_login_account"] = login_account
-        _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+        save_checkpoint()
         can_create_in_record = out_created or bool(_checkpointed_civilpower_login_account(checkpoint))
         _ensure_correct_in_io_record(
             active_driver,
@@ -400,11 +429,11 @@ def run_civilpower_task(
             can_create_in_record=can_create_in_record,
             progress=report_stage,
         )
-        _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+        save_checkpoint()
 
         def reconcile_inbound(imported_plan: CivilpowerTaskPlan) -> None:
             _record_checkpointed_in_time(checkpoint, imported_plan)
-            _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+            save_checkpoint()
             _ensure_correct_in_io_record(
                 active_driver,
                 imported_plan,
@@ -414,7 +443,7 @@ def run_civilpower_task(
                 can_create_in_record=can_create_in_record,
                 progress=report_stage,
             )
-            _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+            save_checkpoint()
 
         saved_plan = _ensure_work_log(
             active_driver,
@@ -424,17 +453,24 @@ def run_civilpower_task(
             cancel_check=cancel_check,
             progress=report_stage,
             reconcile_inbound=reconcile_inbound,
-            before_save=lambda: _save_task_checkpoint(artifacts_dir, original_plan, checkpoint),
+            before_save=save_checkpoint,
         )
         if saved_plan is not None:
             plan = saved_plan
-        _save_task_checkpoint(artifacts_dir, original_plan, checkpoint)
+        save_checkpoint()
+        if not _civilpower_save_enabled():
+            return SiteAutomationResult(
+                "volunteer_assist", "民力系統", "volunteer_assist_prefilled",
+                "不儲存測試：已查詢確認既有出入登記及工作紀錄，未送出正式資料。",
+            )
         return SiteAutomationResult(
             "volunteer_assist",
             "民力系統",
             "volunteer_assist_saved",
             "已確認救護出勤／救護返隊出入登記，案件代入工作紀錄並回查確認。",
         )
+    except _CivilpowerPrefilled as exc:
+        return SiteAutomationResult("volunteer_assist", "民力系統", "volunteer_assist_prefilled", str(exc))
     except TaskCancellationError:
         raise
     except Exception as exc:
@@ -531,7 +567,28 @@ def _login_once(driver, account: str, password: str, attempt: int) -> None:
         raise RuntimeError("內部入口網驗證碼 OCR 未辨識到文字。")
     _set_input(wait, "#verify_code", captcha_text)
     _click(wait, "#loginBtn")
-    wait.until(lambda current: not _is_oa_login_page(current))
+    _wait_for_oa_login_result(driver, wait)
+
+
+def _wait_for_oa_login_result(driver, wait: WebDriverWait) -> None:
+    def ready(current):
+        state = current.execute_script("""
+            const visible = element => Boolean(element.getClientRects().length)
+                && getComputedStyle(element).visibility !== 'hidden';
+            const errors = Array.from(document.querySelectorAll(
+                '.alert-danger, .swal2-popup, .sweet-alert, #error_msg, #errorMsg, [role="alert"]'
+            )).filter(visible).map(element => element.innerText || '').join(' ');
+            return {loginPage: Boolean(document.querySelector('#login_name, #verify_code, #loginBtn')),
+                    error: errors};
+        """)
+        if isinstance(state, dict) and isinstance(state.get("loginPage"), bool):
+            error = _clean_text(state.get("error"))
+            if re.search(r"驗證碼.{0,8}(錯誤|不正確)|帳號.{0,8}密碼.{0,8}(錯誤|不正確)|登入失敗|驗證失敗|密碼錯誤", error):
+                raise RuntimeError("內部入口網登入失敗：" + error)
+            return not state["loginPage"]
+        return not _is_oa_login_page(current)
+
+    wait.until(ready)
 
 
 def _is_oa_login_page(driver) -> bool:
@@ -598,6 +655,7 @@ def _ensure_io_record(
     _set_input(wait, "#txt_AddReason", plan.out_reason if status == OUT_STATUS else plan.in_reason)
     _wait_for_io_record_form_values(driver, wait, plan, status)
     _raise_if_cancelled(cancel_check)
+    _require_civilpower_save_enabled("救護出勤出入登記" if status == OUT_STATUS else "救護返隊出入登記")
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_save_verify"])
     checkpoint[f"{marker}_save_state"] = "pending_verification"
     if before_save is not None:
@@ -875,6 +933,7 @@ def _edit_io_record_time(
     _select_jqx_combobox(driver, wait, "#txt_EditServeUnit", plan.serve_unit)
     _wait_for_io_edit_form_values(driver, wait, plan)
     _raise_if_cancelled(cancel_check)
+    _require_civilpower_save_enabled("救護返隊時間修改")
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["in_edit_save"])
     _click(wait, "#btn_IOWorkLogEdit")
     _wait_after_save(driver, wait, "#jqxEditWindow")
@@ -937,6 +996,7 @@ def _ensure_work_log(
             before_save=before_save,
         )
     _raise_if_cancelled(cancel_check)
+    _require_civilpower_save_enabled("工作紀錄簿")
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_save"])
     checkpoint["work_log_save_state"] = "pending_verification"
     if before_save is not None:
@@ -1099,15 +1159,13 @@ def _find_work_log_record(
     candidates.append([plan.member_name, plan.out_reason, case_datetime])
     candidates.append([plan.member_name, case_datetime])
     def find_record(current) -> bool:
-        for tokens in candidates:
-            rows = _find_paginated_table_rows(
-                current, wait, tokens, row_filter=lambda row: not _case_identity_conflicts(row, plan.case_id)
-            )
-            if rows:
-                if len(rows) == 1:
-                    return True
-                raise RuntimeError("工作紀錄簿找到多筆相同義消協勤紀錄，無法安全判定。")
-        return False
+        rows = _find_paginated_table_rows(
+            current, wait, candidates[0], alternative_tokens=candidates[1:],
+            row_filter=lambda row: not _case_identity_conflicts(row, plan.case_id),
+        )
+        if len(rows) > 1:
+            raise RuntimeError("工作紀錄簿找到多筆相同義消協勤紀錄，無法安全判定。")
+        return bool(rows)
 
     matched = find_record(driver)
     if matched or not wait_for_match:
@@ -1496,6 +1554,9 @@ def _pagination_links(root, direction: str) -> list[object]:
 
 
 def _pagination_signature(root) -> tuple:
+    snapshot = _table_page_snapshot(root)
+    if snapshot is not None:
+        return tuple(row["text"] for row in snapshot["rows"]), tuple(snapshot["pages"])
     pages = root.find_elements(By.CSS_SELECTOR, ".pagination .active")
     return tuple(row.text for row in _table_rows(root)), tuple(page.text for page in pages)
 
@@ -1522,17 +1583,28 @@ def _change_result_page(root, wait: WebDriverWait, direction: str) -> None:
 
 
 def _find_paginated_table_rows(
-    root, wait: WebDriverWait, required_tokens: list[str], *, row_filter=None
+    root, wait: WebDriverWait, required_tokens: list[str], *, row_filter=None,
+    alternative_tokens: list[list[str]] | None = None,
 ) -> list[object]:
-    def matching_rows():
-        rows = _matching_table_rows(root, required_tokens)
-        return [row for row in rows if row_filter(row)] if row_filter is not None else rows
+    candidates = [required_tokens, *(alternative_tokens or [])]
 
-    rows = matching_rows()
+    def matching_rows():
+        snapshot = _table_page_snapshot(root) if len(candidates) > 1 else None
+        matches = []
+        for tokens in candidates:
+            rows = (
+                [row["element"] for row in snapshot["rows"]
+                 if all(_token_matches(row["text"], token) for token in tokens if token)]
+                if snapshot is not None else _matching_table_rows(root, tokens)
+            )
+            matches.append([row for row in rows if row_filter(row)] if row_filter is not None else rows)
+        return matches
+
+    matches = matching_rows()
     if not _pagination_links(root, "next"):
-        return rows
-    matched_count = len(rows)
-    matched_page = 0 if rows else None
+        return next((rows for rows in matches if rows), [])
+    matched_counts = [len(rows) for rows in matches]
+    matched_pages = [0 if rows else None for rows in matches]
     page = 0
     signatures = [_pagination_signature(root)]
     seen = {signatures[0]}
@@ -1546,12 +1618,17 @@ def _find_paginated_table_rows(
             raise _IncompleteQueryError("民力查詢翻頁重複回到已讀頁面，已停止避免漏查。")
         seen.add(signature)
         signatures.append(signature)
-        rows = matching_rows()
-        if rows:
-            matched_count += len(rows)
-            matched_page = page
-        if matched_count > 1:
+        matches = matching_rows()
+        for index, rows in enumerate(matches):
+            if rows:
+                matched_counts[index] += len(rows)
+                matched_pages[index] = page
+        if len(candidates) == 1 and matched_counts[0] > 1:
             raise _AmbiguousSelectionError("民力查詢找到多筆符合條件的紀錄，無法安全選取：" + "、".join(required_tokens))
+    chosen = next((index for index, count in enumerate(matched_counts) if count), 0)
+    matched_count, matched_page = matched_counts[chosen], matched_pages[chosen]
+    if matched_count > 1:
+        raise _AmbiguousSelectionError("民力查詢找到多筆符合條件的紀錄，無法安全選取：" + "、".join(candidates[chosen]))
     # Selenium rows from earlier pages are stale. Return to the match and acquire it again.
     # A miss returns to the starting page so a different lookup criterion can scan all pages.
     target_page = matched_page if matched_page is not None else 0
@@ -1562,7 +1639,7 @@ def _find_paginated_table_rows(
             raise _IncompleteQueryError("民力查詢翻頁期間資料已變動，請重新查詢；尚未確認紀錄不存在。")
     if not matched_count:
         return []
-    rows = matching_rows()
+    rows = matching_rows()[chosen]
     if len(rows) != 1:
         raise _IncompleteQueryError("民力查詢返回符合頁面後資料已變動，請重新查詢；尚未確認紀錄不存在。")
     return rows
@@ -1574,6 +1651,10 @@ def _matching_table_rows(driver, required_tokens: list[str]) -> list[object]:
         matches = []
         refreshed = False
         try:
+            snapshot = _table_page_snapshot(driver)
+            if snapshot is not None:
+                return [row["element"] for row in snapshot["rows"]
+                        if all(_token_matches(row["text"], token) for token in required_tokens if token)]
             table_rows = _table_rows(driver)
         except StaleElementReferenceException:
             continue
@@ -1590,7 +1671,53 @@ def _matching_table_rows(driver, required_tokens: list[str]) -> list[object]:
     return matches
 
 
+def _table_page_snapshot(root) -> dict | None:
+    browser = root if callable(getattr(root, "execute_script", None)) else getattr(root, "parent", None)
+    execute_script = getattr(browser, "execute_script", None)
+    if not callable(execute_script):
+        return None
+    scope = None if browser is root else root
+    try:
+        snapshot = execute_script("""
+            const root = arguments[0] || document;
+            const visible = element => {
+                if (!element.getClientRects().length) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    if (style.display === 'none' || style.visibility === 'hidden'
+                        || style.visibility === 'collapse' || Number(style.opacity) === 0) return false;
+                }
+                return true;
+            };
+            const rows = Array.from(root.querySelectorAll(
+                "table tbody tr, table tr, [role='row'], .jqx-grid-row"
+            )).map((element, index) => ({element, index, visible: visible(element),
+                text: element.innerText || '',
+                cells: Array.from(element.querySelectorAll("td, [role='gridcell'], .jqx-grid-cell"))
+                    .map(cell => visible(cell) ? (cell.innerText || '') : '')
+            })).filter(row => row.visible && row.cells.length);
+            return {rows, pages: Array.from(root.querySelectorAll('.pagination .active'))
+                .map(element => element.innerText || '')};
+        """, scope)
+    except StaleElementReferenceException:
+        raise
+    except (WebDriverException, TypeError, AttributeError):
+        return None
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list) or not isinstance(snapshot.get("pages"), list):
+        return None
+    if any(not isinstance(row, dict) or row.get("element") is None
+           or not isinstance(row.get("text"), str) or row.get("visible") is not True
+           for row in snapshot["rows"]):
+        return None
+    for row in snapshot["rows"]:
+        row["text"] = _clean_text(row["text"])
+    return snapshot
+
+
 def _table_rows(driver) -> list[object]:
+    snapshot = _table_page_snapshot(driver)
+    if snapshot is not None:
+        return [row["element"] for row in snapshot["rows"]]
     rows: list[object] = []
     selectors = "table tbody tr, table tr, [role='row'], .jqx-grid-row"
     seen_ids: set[str] = set()

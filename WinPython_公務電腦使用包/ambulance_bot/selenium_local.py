@@ -205,23 +205,28 @@ def _env_enabled(name: str, default: str = "false") -> bool:
 
 
 def _save_vehicle_mileage_enabled() -> bool:
-    return _env_enabled("SAVE_VEHICLE_MILEAGE", default="true")
+    return not _env_enabled("AUTOMATION_DRY_RUN") and _env_enabled("SAVE_VEHICLE_MILEAGE", default="true")
 
 
 def _save_fuel_record_enabled() -> bool:
-    return _env_enabled("SAVE_FUEL_RECORD", default="true")
+    return not _env_enabled("AUTOMATION_DRY_RUN") and _env_enabled("SAVE_FUEL_RECORD", default="true")
 
 
 def _save_duty_work_log_enabled() -> bool:
-    return _env_enabled("SAVE_DUTY_WORK_LOG", default="true")
+    return not _env_enabled("AUTOMATION_DRY_RUN") and _env_enabled("SAVE_DUTY_WORK_LOG", default="true")
 
 
 def _save_disinfection_record_enabled() -> bool:
-    return _env_enabled("SAVE_DISINFECTION_RECORD", default="true")
+    return not _env_enabled("AUTOMATION_DRY_RUN") and _env_enabled("SAVE_DISINFECTION_RECORD", default="true")
 
 
 def _save_disinfection_probe_enabled() -> bool:
     return _env_enabled("SAVE_DISINFECTION_PROBE", default="false")
+
+
+def _assert_automation_write_allowed() -> None:
+    if _env_enabled("AUTOMATION_DRY_RUN"):
+        raise WebDriverException("不儲存測試模式禁止送出正式資料。")
 
 
 def run_local_selenium_task(
@@ -547,11 +552,9 @@ def _read_daily_vehicle_mileage_for_month(
     driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
     if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
         raise WebDriverException("PPE session returned to login page before vehicle mileage query")
-    _click_text_if_present(driver, ["車輛管理"])
-    _click_text_if_present(driver, ["車輛使用紀錄"])
-    time.sleep(1)
     _select_daily_vehicle_mileage_month(driver, target_month)
     _select_vehicle_record(driver, str(target["ppe_name"]))
+    _wait_for_vehicle_mileage_detail(driver, target_month)
     return _extract_latest_vehicle_mileage_record(driver)
 
 
@@ -1446,12 +1449,9 @@ def _open_duty_work_log_case_picker(
         )
 
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
-    time.sleep(1)
     _click_by_text_or_id(driver, ["_btnInsert"], ["\u65b0\u589e"])
-    time.sleep(1.5)
     _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
     _switch_to_window_containing(driver, "_txtSDATE")
-    time.sleep(1.5)
     _save_artifacts(driver, output_dir, request.task_id, "duty_case_picker")
     return SeleniumRunResult(
         ok=True,
@@ -1537,13 +1537,10 @@ def _prepare_duty_work_log_form(
 
     _report_progress(progress, "新增工作紀錄")
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
-    time.sleep(1)
     _click_by_text_or_id(driver, ["_btnInsert"], ["\u65b0\u589e"])
-    time.sleep(1.5)
     _report_progress(progress, "由案件帶入")
     _click_by_text_or_id(driver, ["_btnReCallntman"], ["\u7531\u6848\u4ef6\u5e36\u5165"])
     _switch_to_window_containing(driver, "_txtSDATE")
-    time.sleep(1.5)
     case_query_start_at = _case_query_start_at(request)
     _report_progress(progress, "查詢案件")
     _set_case_query_date_range(driver, lookup_range="24h", start_at=case_query_start_at)
@@ -1573,7 +1570,6 @@ def _prepare_duty_work_log_form(
             detail=f"找到案件但無法按選擇：{case.get('category')} {case.get('address')}",
             summary_path=summary_path,
         )
-    time.sleep(1.5)
     _switch_to_work_log_form_for_case(driver, case)
     _report_progress(progress, "填寫勤務資料")
     fill_result = _fill_duty_work_log_values(driver, request)
@@ -2299,6 +2295,7 @@ def _click_duty_work_log_save(
     driver: webdriver.Chrome,
     cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, object]:
+    _assert_automation_write_allowed()
     if cancel_check is not None:
         cancel_check()
     result = driver.execute_script(
@@ -2447,12 +2444,6 @@ def _prepare_vehicle_mileage_form(
     progress: Callable[[str], None] | None = None,
 ) -> str:
     _report_progress(progress, "開啟車輛里程")
-    driver.get("https://ppe.tyfd.gov.tw/CarRecord/List")
-    if not _wait_for_ppe_vehicle_mileage_page(driver, timeout=12):
-        raise WebDriverException("PPE session returned to login page before vehicle mileage form")
-    _click_text_if_present(driver, ["\u8eca\u8f1b\u7ba1\u7406"])
-    _click_text_if_present(driver, ["\u8eca\u8f1b\u4f7f\u7528\u7d00\u9304"])
-    time.sleep(1)
     previous_request = _vehicle_mileage_previous_request(update_context, request)
     if previous_request is None:
         return _add_vehicle_mileage_record(
@@ -2852,8 +2843,6 @@ def _ensure_fuel_query_period(driver: webdriver.Chrome, target_period: str) -> s
     )
     if not query_result.get("clicked"):
         raise WebDriverException(f"fuel query control not found: period={target_period}")
-    time.sleep(1)
-
     deadline = time.monotonic() + 8
     latest_period = _fuel_query_period(driver)
     while time.monotonic() < deadline:
@@ -2945,7 +2934,6 @@ def _click_fuel_card_register(driver: webdriver.Chrome, vehicle_labels: str | li
             or {}
         )
         if result.get("clicked"):
-            time.sleep(1.5)
             return
         time.sleep(0.5)
     label_text = " / ".join(labels)
@@ -3174,6 +3162,7 @@ def _save_fuel_record_form(
     request: AmbulanceReturnRequest,
     cancel_check: Callable[[], None] | None = None,
 ) -> str:
+    _assert_automation_write_allowed()
     if cancel_check is not None:
         cancel_check()
     called = bool(
@@ -3450,6 +3439,17 @@ def _load_vehicle_mileage_month(
         )
     )
     _select_vehicle_record(driver, vehicle_mileage_record_label(request, artifacts_dir))
+    rows = _wait_for_vehicle_mileage_detail(driver, month)
+    for row in rows:
+        if _mileage_record_datetime(row, "Start").strftime("%Y/%m") != month:
+            raise WebDriverException("里程查詢月份與回傳資料不一致。")
+        if not str(row.get("Id") or "").strip():
+            raise WebDriverException("里程紀錄缺少穩定識別碼。")
+        row["month"] = month
+    return rows
+
+
+def _wait_for_vehicle_mileage_detail(driver: webdriver.Chrome, month: str) -> list[dict]:
     WebDriverWait(driver, 12).until(
         lambda current: "/CarRecord/Edit" in current.current_url
     )
@@ -3481,14 +3481,7 @@ def _load_vehicle_mileage_month(
     )
     if not isinstance(result, dict) or result.get("error") or not isinstance(result.get("rows"), list):
         raise WebDriverException(f"里程歷史查詢未完成：{result}")
-    rows = result["rows"]
-    for row in rows:
-        if _mileage_record_datetime(row, "Start").strftime("%Y/%m") != month:
-            raise WebDriverException("里程查詢月份與回傳資料不一致。")
-        if not str(row.get("Id") or "").strip():
-            raise WebDriverException("里程紀錄缺少穩定識別碼。")
-        row["month"] = month
-    return rows
+    return result["rows"]
 
 
 def _vehicle_mileage_history(
@@ -4173,6 +4166,7 @@ def _click_save_control(
     driver: webdriver.Chrome,
     cancel_check: Callable[[], None] | None = None,
 ) -> bool:
+    _assert_automation_write_allowed()
     if _click_save_control_in_current_frame(driver, cancel_check=cancel_check):
         return True
     try:
@@ -4188,6 +4182,7 @@ def _click_vehicle_mileage_save(
     driver: webdriver.Chrome,
     cancel_check: Callable[[], None] | None = None,
 ) -> bool:
+    _assert_automation_write_allowed()
     if cancel_check is not None:
         cancel_check()
     clicked = bool(
@@ -4289,6 +4284,7 @@ def _click_disinfection_save(
     driver: webdriver.Chrome,
     cancel_check: Callable[[], None] | None = None,
 ) -> bool:
+    _assert_automation_write_allowed()
     if cancel_check is not None:
         cancel_check()
     clicked = bool(
@@ -4452,7 +4448,6 @@ def _select_vehicle_record(driver: webdriver.Chrome, vehicle_label: str) -> None
             click_vehicle_record_when_ready,
             f"車輛 {vehicle_label} 登打按鈕仍被載入畫面遮擋或尚未就緒，請稍後重試。",
         )
-        time.sleep(2)
         return
 
     script = """
@@ -4560,13 +4555,11 @@ def _select_vehicle_record(driver: webdriver.Chrome, vehicle_label: str) -> None
         result = driver.execute_script(script, vehicle_label)
         if isinstance(result, dict):
             if result.get("ok"):
-                time.sleep(2)
                 return
             if result.get("vehicle_found") or result.get("needs_retry"):
                 time.sleep(0.4)
                 continue
         elif result:
-            time.sleep(2)
             return
         break
     raise WebDriverException(f"vehicle not found: {vehicle_label}")
@@ -5157,9 +5150,11 @@ def _click_by_text_or_id(driver: webdriver.Chrome, ids: list[str], texts: list[s
     if (target) { target.click(); return {ok: true, via: target.id || target.value || target.innerText}; }
     return {ok: false};
     """
-    result = driver.execute_script(script, ids, texts)
-    if not result or not result.get("ok"):
-        raise WebDriverException(f"control not found: {ids} {texts}")
+    def click_when_ready(current):
+        result = current.execute_script(script, ids, texts)
+        return result if isinstance(result, dict) and result.get("ok") else False
+
+    WebDriverWait(driver, 12).until(click_when_ready, f"control not found: {ids} {texts}")
 
 
 def _switch_to_newest_window(driver: webdriver.Chrome) -> None:
@@ -5176,15 +5171,22 @@ def _switch_to_newest_window(driver: webdriver.Chrome) -> None:
 
 
 def _switch_to_window_containing(driver: webdriver.Chrome, text: str) -> None:
-    if _try_switch_to_window_containing(driver, text):
-        return
-    raise WebDriverException(f"window containing text not found: {text}")
+    WebDriverWait(driver, 10).until(
+        lambda current: _try_switch_to_window_containing(current, text),
+        f"window containing text not found: {text}",
+    )
 
 
 def _try_switch_to_window_containing(driver: webdriver.Chrome, text: str) -> bool:
     for handle in driver.window_handles:
         driver.switch_to.window(handle)
         try:
+            if text.startswith("_"):
+                if driver.execute_script(
+                    "return document.readyState === 'complete' && !!document.getElementById(arguments[0]);", text
+                ):
+                    return True
+                continue
             if text in driver.page_source:
                 return True
         except WebDriverException:
@@ -5241,14 +5243,14 @@ def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
     if not case_id:
         return False
     script = """
-    if (document.readyState !== 'complete') return false;
+    if (document.readyState !== 'complete') return null;
     const caseId = String(arguments[0] || '').trim();
     const rows = Array.from(document.querySelectorAll('tr'));
     const row = rows.find(item => Array.from(item.children).some(cell => {
       if (!['TD', 'TH'].includes(cell.tagName)) return false;
       return String(cell.innerText || cell.textContent || '').trim() === caseId;
     }));
-    if (!row) return false;
+    if (!row) return {ready: true, clicked: false};
     const controls = Array.from(row.querySelectorAll('input, button, a'));
     const target = controls.find(el => {
       if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
@@ -5258,15 +5260,22 @@ def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
         .map(x => String(x || '')).join(' ');
       return text.includes('選擇') || /choose/i.test(text);
     });
-    if (!target) return false;
+    if (!target) return null;
     target.click();
-    return true;
+    return {ready: true, clicked: true};
     """
     def try_click(current_driver):
         try:
-            return bool(current_driver.execute_script(script, case_id))
+            result = current_driver.execute_script(script, case_id)
+            if isinstance(result, dict):
+                return result if result.get("ready") else False
+            return {"ready": True, "clicked": True} if result else False
         except WebDriverException:
             return False
+
+    def choose_on_page():
+        result = WebDriverWait(driver, 10, poll_frequency=0.25).until(try_click)
+        return bool(result.get("clicked"))
 
     def wait_for_page_reload(previous_query, expected_page):
         WebDriverWait(driver, 12).until(EC.staleness_of(previous_query))
@@ -5279,7 +5288,8 @@ def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
         ))
 
     try:
-        return bool(WebDriverWait(driver, 10, poll_frequency=0.25).until(try_click))
+        if choose_on_page():
+            return True
     except (TimeoutException, WebDriverException):
         pass
 
@@ -5306,7 +5316,7 @@ def _click_case_choose(driver: webdriver.Chrome, case_id: str) -> bool:
             wait_for_page_reload(previous_query, 1)
         for page_number in range(1, total_pages + 1):
             try:
-                if WebDriverWait(driver, 10, poll_frequency=0.25).until(try_click):
+                if choose_on_page():
                     return True
             except TimeoutException:
                 pass

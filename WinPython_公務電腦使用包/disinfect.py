@@ -5,6 +5,7 @@ import re
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 import ddddocr
 from PIL import Image
@@ -42,7 +43,14 @@ def ocr_digits_with_ddddocr(image_path: Path) -> str:
 
 def wait_until_logged_in(driver: webdriver.Chrome, timeout: int = 15) -> None:
     wait = WebDriverWait(driver, timeout)
-    wait.until(lambda d: _is_logged_in(d))
+
+    def login_completed(current_driver: webdriver.Chrome) -> bool:
+        state = _disinfection_login_state(current_driver)
+        if state == "error":
+            raise RuntimeError("帳號、密碼或驗證碼錯誤，消毒系統拒絕登入")
+        return state == "success"
+
+    wait.until(login_completed)
 
 
 def login_and_get_driver(
@@ -215,33 +223,37 @@ def _is_login_page(driver: webdriver.Chrome) -> bool:
 
 
 def _is_logged_in(driver: webdriver.Chrome) -> bool:
-    if _is_disinfection_login_error_page(driver):
-        return False
-    return bool(
-        driver.execute_script(
-            """
-            if (!!document.getElementById('_btnOK') || !!document.getElementById('capt')) {
-                return false;
-            }
-            if (location.href.includes('/EmmWeb/') || location.href.includes('ActionControlServlet')) {
-                return true;
-            }
-            const text = document.body ? document.body.innerText : '';
-            return text.includes('報表系統')
-                || text.includes('消毒紀錄')
-                || text.includes('登出')
-                || text.includes('功能選單');
-            """
-        )
-    )
+    return _disinfection_login_state(driver) == "success"
 
 
 def _is_disinfection_login_error_page(driver: webdriver.Chrome) -> bool:
-    return bool(
-        driver.execute_script(
-            """
-            const text = (document.body ? document.body.innerText : '').replace(/\\s+/g, '');
-            return /帳號.*密碼.*驗證碼.*(?:錯誤|不存在)/.test(text);
-            """
-        )
+    return _disinfection_login_state(driver) == "error"
+
+
+def _disinfection_login_state(driver: webdriver.Chrome) -> str:
+    snapshot = driver.execute_script(
+        """
+        return {
+            url: location.href,
+            ready: document.readyState !== 'loading',
+            login_form: !!document.querySelector('#_btnOK, #capt, #_txtUsername, #_txtPassword'),
+            text: document.body ? document.body.innerText : '',
+            authenticated_frame: !!document.querySelector('frame[name="R_content"], iframe[name="R_content"]')
+        };
+        """
     )
+    if not isinstance(snapshot, dict):
+        return "pending"
+    text = re.sub(r"\s+", "", str(snapshot.get("text") or ""))
+    if re.search(r"(?:帳號|密碼|驗證碼).{0,24}(?:錯誤|不存在|不正確|無效|失敗)", text):
+        return "error"
+    if not snapshot.get("ready") or snapshot.get("login_form"):
+        return "pending"
+    url = urlsplit(str(snapshot.get("url") or ""))
+    if url.hostname != "emsdt.tyfd.gov.tw" or not url.path.startswith("/EmmWeb/"):
+        return "pending"
+    if snapshot.get("authenticated_frame") or any(
+        marker in text for marker in ("報表系統", "消毒紀錄", "登出", "功能選單")
+    ):
+        return "success"
+    return "pending"

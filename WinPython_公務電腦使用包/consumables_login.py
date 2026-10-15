@@ -50,6 +50,10 @@ def save_consumables_record_enabled() -> bool:
     return os.getenv("SAVE_CONSUMABLES_RECORD", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _consumables_dry_run_enabled() -> bool:
+    return os.getenv("AUTOMATION_DRY_RUN", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _distribute_consumables(consumables: dict[str, int], page_count: int) -> list[dict[str, int]]:
     if page_count < 1:
         raise ValueError("page_count must be at least 1")
@@ -178,7 +182,7 @@ def _open_consumable_record_for_task(
     if progress is not None:
         progress("查詢案件")
     hrefs = _find_consumable_detail_hrefs(driver, request)
-    if len(hrefs) > 1 and not save_consumables_record_enabled():
+    if len(hrefs) > 1 and not save_consumables_record_enabled() and not _consumables_dry_run_enabled():
         raise RuntimeError("同案多患者耗材必須啟用自動儲存，否則切換頁面會遺失未送出的資料。")
     allocations = _distribute_consumables(request.consumables, len(hrefs))
     completed: list[str] = []
@@ -190,7 +194,7 @@ def _open_consumable_record_for_task(
         try:
             if progress is not None:
                 progress("選取患者頁")
-            driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
+            _open_consumable_detail_if_needed(driver, href)
             if not _wait_for_consumable_detail_page(driver, wait):
                 raise RuntimeError("consumable detail page did not open; SSO login may be required")
             expected_case_id = _normalized_consumable_case_id(request.case_id)
@@ -207,7 +211,7 @@ def _open_consumable_record_for_task(
             page_request = replace(request, consumables=dict(allocation))
             if progress is not None:
                 progress("填寫耗材品項")
-                if save_consumables_record_enabled():
+                if save_consumables_record_enabled() and not _consumables_dry_run_enabled():
                     progress("儲存")
             single_detail = _write_current_consumable_page(
                 driver,
@@ -215,7 +219,7 @@ def _open_consumable_record_for_task(
                 page_request,
                 **({"cancel_check": cancel_check} if cancel_check is not None else {}),
             )
-            if progress is not None and save_consumables_record_enabled():
+            if progress is not None and save_consumables_record_enabled() and not _consumables_dry_run_enabled():
                 progress("回查耗材紀錄")
         except TaskCancellationError:
             raise
@@ -233,6 +237,8 @@ def _open_consumable_record_for_task(
     if len(hrefs) == 1:
         return f"已開啟耗材內容頁：{driver.current_url}{_consumable_vehicle_notice(driver, request)}{single_detail}"
     page_label = {2: "兩頁", 3: "三頁", 4: "四頁"}.get(len(hrefs), f"{len(hrefs)}頁")
+    if _consumables_dry_run_enabled():
+        return f"辨識{request.vehicle}同案{len(hrefs)}位患者；{page_label}均已唯讀核對耗材，未修改或儲存。"
     detail = f"辨識{request.vehicle}同案{len(hrefs)}位患者；{'、'.join(summaries)}，{page_label}均已儲存確認。"
     if supplements:
         detail = f"{detail} {' '.join(supplements)}"
@@ -252,6 +258,8 @@ def _write_current_consumable_page(
         if not expected_sid:
             raise RuntimeError("耗材內容頁缺少 emmTemsisid，停止填寫。")
         item_quantities = _resolve_consumable_item_quantities(driver, request)
+        if _consumables_dry_run_enabled():
+            return f" 已唯讀核對耗材 {len(item_quantities)} 筆的品項與數量，未修改或儲存。"
         if save_consumables_record_enabled():
             _clear_existing_consumables(driver, wait)
             _inject_consumables_for_save(driver, item_quantities)
@@ -462,11 +470,14 @@ def _open_acs_system(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
     if _is_sso_page(driver):
         raise RuntimeError("ACS system returned to SSO login page")
-    time.sleep(1.2)
     _open_consumable_maintenance_page(driver, wait)
 
 
 def _open_consumable_maintenance_page(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
+    if _is_consumable_maintenance_page_ready(driver):
+        _prepare_consumable_list_snapshot(driver, wait)
+        if _read_complete_consumable_candidates(driver) is not None:
+            return
     navigation_errors: list[str] = []
     for attempt in range(1, 4):
         try:
@@ -493,6 +504,7 @@ def _open_consumable_maintenance_page(driver: webdriver.Chrome, wait: WebDriverW
             )
             continue
         if _is_consumable_maintenance_page_ready(driver):
+            _prepare_consumable_list_snapshot(driver, wait)
             return
         if _is_sso_page(driver):
             raise RuntimeError("進入耗材紀錄頁時被導回 SSO，登入 session 尚未建立。")
@@ -558,13 +570,17 @@ def _consumable_detail_payload_ready(driver: webdriver.Chrome) -> bool:
                 hasCaseIdField: !!caseField,
                 caseId: String(caseField?.value || '').trim(),
                 hasCallNoField: !!callNoField,
-                callNo: String(callNoField?.value || '').trim()
+                callNo: String(callNoField?.value || '').trim(),
+                documentReady: document.readyState,
+                ajaxActive: window.jQuery ? window.jQuery.active : null
             };
             """
         )
     except Exception:
         return False
     if not isinstance(state, dict):
+        return False
+    if state.get("documentReady", "complete") != "complete" or state.get("ajaxActive", 0) != 0:
         return False
     if not all(
         state.get(key)
@@ -579,6 +595,20 @@ def _consumable_detail_payload_ready(driver: webdriver.Chrome) -> bool:
         bool(actual_sid and actual_case_id and actual_call_no)
         and (not expected_sid or actual_sid == expected_sid)
     )
+
+
+def _open_consumable_detail_if_needed(driver: webdriver.Chrome, href: str) -> None:
+    target = urlparse(urljoin("https://nfaemsap3.nfa.gov.tw", href))
+    current = urlparse(str(driver.current_url or ""))
+    if (
+        current.scheme == target.scheme == "https"
+        and current.netloc == target.netloc == "nfaemsap3.nfa.gov.tw"
+        and current.path.rstrip("/") == target.path.rstrip("/") == "/ACS/ACS15002"
+        and parse_qs(current.query) == parse_qs(target.query)
+        and _consumable_detail_payload_ready(driver)
+    ):
+        return
+    driver.get(target.geturl())
 
 
 def _find_consumable_detail_href(driver: webdriver.Chrome, request: AmbulanceReturnRequest) -> str:
@@ -671,6 +701,9 @@ def _collect_consumable_candidates(
     driver: webdriver.Chrome,
     request: AmbulanceReturnRequest,
 ) -> list[dict[str, str]]:
+    complete_candidates = _read_complete_consumable_candidates(driver)
+    if complete_candidates is not None:
+        return _observe_complete_consumable_candidates(driver, request, complete_candidates)
     _reset_consumable_page_to_first(driver)
     candidates = _stable_consumable_candidates(driver)
     if not candidates:
@@ -704,6 +737,194 @@ def _collect_consumable_candidates(
         if not candidates:
             break
     return collected
+
+
+def _consumable_case_candidates_signature(
+    request: AmbulanceReturnRequest,
+    candidates: list[dict[str, str]],
+) -> tuple[tuple[str, str, str], ...]:
+    case_time = normalize_hhmm(request.case_time)
+    address = clean_case_address(request.case_address)
+    relevant = []
+    for item in candidates:
+        sid = str(item.get("sid") or _emm_temsis_id_from_href(str(item.get("href") or "")))
+        text = str(item.get("text") or "")
+        if _consumable_candidate_date_matches(request.case_id, sid, text) and (
+            _consumable_sid_score(request.case_id, sid) > 0
+            or bool(case_time and _hhmm_from_row_text(text) == case_time)
+            or bool(address and address in clean_case_address(text))
+        ):
+            relevant.append(item)
+    return tuple(sorted(_consumable_candidates_signature(relevant)))
+
+
+def _observe_complete_consumable_candidates(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+    candidates: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    signature = _consumable_case_candidates_signature(request, candidates)
+    stable_rounds = 0
+    for _ in range(32):
+        time.sleep(0.25)
+        current = _read_complete_consumable_candidates(driver)
+        if current is None:
+            stable_rounds = 0
+            continue
+        current_signature = _consumable_case_candidates_signature(request, current)
+        if current_signature == signature:
+            stable_rounds += 1
+        else:
+            signature = current_signature
+            stable_rounds = 0
+    if stable_rounds < 8:
+        raise RuntimeError("耗材候選列表完整觀察後仍未穩定，停止辨識。")
+    if not _prepare_consumable_list_snapshot(driver, WebDriverWait(driver, 15)):
+        raise RuntimeError("耗材完整清單無法完成當次正式重新查詢，停止辨識。")
+    refreshed = _read_complete_consumable_candidates(driver)
+    if refreshed is None or _consumable_case_candidates_signature(request, refreshed) != signature:
+        raise RuntimeError("耗材同案患者清單於正式重新查詢後變動或尚未完整，停止整批填寫。")
+    return refreshed
+
+
+def _prepare_consumable_list_snapshot(driver: webdriver.Chrome, wait: WebDriverWait) -> bool:
+    try:
+        state = driver.execute_script(
+            """
+            const $ = window.jQuery;
+            const search = document.querySelector('#search');
+            const ids = ['emmTemsisid', 'deptno', 'isSaved', 'attendanceDateStart',
+                         'attendanceDateEnd', 'address', 'traumaPrimaryCategory'];
+            if (!$ || !search || !ids.every(id => document.getElementById(id))) return false;
+            if (window.__ambulanceAcsList) {
+                const generation = window.__ambulanceAcsList.generation;
+                search.click();
+                return window.__ambulanceAcsList.generation > generation;
+            }
+            const state = {generation: 0, completedGeneration: 0, payload: null};
+            state.fingerprint = () => JSON.stringify(ids.map(id => [id,
+                String(document.getElementById(id)?.value || '')]).concat([
+                ['trauma', String(document.querySelector('[name="trauma"]:checked')?.value || '')]
+            ]));
+            window.__ambulanceAcsList = state;
+            function isQuery(settings) {
+                const url = new URL(settings.url, window.location.href);
+                return url.origin === window.location.origin &&
+                    url.pathname === '/ACS/ACS15001/getACS15001DTO';
+            }
+            $(document).on('ajaxSend.ambulanceAcsList', function(_event, xhr, settings) {
+                if (!isQuery(settings)) return;
+                state.generation += 1;
+                state.xhr = xhr;
+                state.query = state.fingerprint();
+                state.payload = null;
+                state.status = 0;
+            });
+            $(document).on('ajaxComplete.ambulanceAcsList', function(_event, xhr, settings) {
+                if (!isQuery(settings) || state.xhr !== xhr) return;
+                state.completedGeneration = state.generation;
+                state.status = xhr.status;
+                try { state.payload = JSON.parse(xhr.responseText); }
+                catch (_error) { state.payload = null; }
+            });
+            search.click();
+            return state.generation > 0;
+            """
+        )
+        if state is not True:
+            return False
+        wait.until(
+            lambda d: d.execute_script(
+                """
+                const state = window.__ambulanceAcsList;
+                return !!state && state.generation > 0 &&
+                    state.generation === state.completedGeneration && window.jQuery.active === 0;
+                """
+            ) is True
+        )
+        return True
+    except Exception:
+        # Sites without this exact query contract retain the full DOM observation.
+        return False
+
+
+def _read_complete_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]] | None:
+    """Read all rows only when this query's official payload and rendered identities agree."""
+    try:
+        if not _is_consumable_maintenance_page(driver):
+            return None
+        state = driver.execute_script(
+            """
+            const unavailable = {complete: false};
+            const state = window.__ambulanceAcsList;
+            const $ = window.jQuery;
+            if (state?.generation && state.generation !== state.completedGeneration)
+                return {complete: false, pending: true};
+            if (state?.generation && (!Number.isInteger(state.status) || state.status < 200 || state.status >= 300 ||
+                state.payload?.result !== 'success' || !Array.isArray(state.payload.list) ||
+                state.payload.list.some(row => !row || typeof row !== 'object' || Array.isArray(row) ||
+                    !String(row.emmTemsisid || '').trim())))
+                return {complete: false, failed: true};
+            const payload = new Map();
+            if (state?.generation) {
+                for (const row of state.payload.list) {
+                    const sid = String(row.emmTemsisid || '').trim();
+                    if (payload.has(sid)) return {complete: false, failed: true};
+                    payload.set(sid, JSON.stringify(row));
+                }
+            }
+            if (document.readyState !== 'complete' || !$ || $.active !== 0 ||
+                !$.fn?.dataTable?.isDataTable('#result-datatable') || !state ||
+                !state.generation || state.generation !== state.completedGeneration ||
+                state.status < 200 || state.status >= 300 ||
+                state.query !== state.fingerprint() || state.payload?.result !== 'success' ||
+                !Array.isArray(state.payload.list)) return unavailable;
+            const api = $('#result-datatable').DataTable();
+            const info = api.page.info();
+            const rows = api.rows({page: 'all', search: 'none', order: 'applied'}).data().toArray();
+            const nodes = api.rows({page: 'all', search: 'none', order: 'applied'}).nodes().toArray();
+            if (info.serverSide !== false || api.settings()[0]?.bDrawing ||
+                info.recordsTotal !== rows.length || rows.length !== state.payload.list.length ||
+                nodes.length !== rows.length || nodes.some(node => !node)) return unavailable;
+            function identity(href) {
+                const url = new URL(href, location.href);
+                if (url.origin !== location.origin || url.pathname !== '/ACS/ACS15002') return '';
+                const values = url.searchParams.getAll('emmTemsisid');
+                return values.length === 1 ? values[0] : '';
+            }
+            const candidates = [];
+            const seen = new Set();
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const sid = String(row?.emmTemsisid || '').trim();
+                const links = nodes[i].querySelectorAll("a.btn_t02[href*='ACS15002']");
+                // ACS renders this anchor from emmTemsisid; row.url points to an external report.
+                if (!sid || seen.has(sid) || payload.get(sid) !== JSON.stringify(row) ||
+                    links.length !== 1 || identity(links[0].getAttribute('href')) !== sid) return unavailable;
+                seen.add(sid);
+                candidates.push({href: links[0].getAttribute('href'), sid: sid,
+                    text: String(nodes[i].innerText || nodes[i].textContent || '').trim()});
+            }
+            const current = api.rows({page: 'current'}).data().toArray()
+                .map(row => String(row.emmTemsisid)).sort();
+            const visible = Array.from(document.querySelectorAll(
+                "#result-datatable a.btn_t02[href*='ACS15002']"))
+                .map(link => identity(link.getAttribute('href'))).sort();
+            if (current.some(sid => !sid || !seen.has(sid)) ||
+                JSON.stringify(current) !== JSON.stringify(visible)) return unavailable;
+            return {complete: true, candidates: candidates};
+            """
+        )
+    except Exception:
+        return None
+    if isinstance(state, dict) and (state.get("failed") or state.get("pending")):
+        raise RuntimeError("耗材查詢失敗或尚未完成，停止辨識，避免使用上次查詢資料。")
+    if not isinstance(state, dict) or state.get("complete") is not True:
+        return None
+    candidates = state.get("candidates")
+    if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
+        return None
+    return [dict(item) for item in candidates]
 
 
 def _reset_consumable_page_to_first(driver: webdriver.Chrome) -> None:
@@ -1043,7 +1264,7 @@ def _find_consumable_hrefs_by_vehicle_code(
     expected_case_id = _normalized_consumable_case_id(case_id)
     matched: list[str] = []
     for href in hrefs:
-        driver.get(urljoin("https://nfaemsap3.nfa.gov.tw", href))
+        _open_consumable_detail_if_needed(driver, href)
         wait = WebDriverWait(driver, 15)
         if not _wait_for_consumable_detail_page(driver, wait):
             suffix = _patient_sid_parts(_emm_temsis_id_from_href(href))[1]
@@ -1156,12 +1377,12 @@ def _resolve_consumable_item_id(
 
         function findKey(map, prefix) {
             const normalizedPrefix = String(prefix).trim() + ' ';
-            for (const [key, value] of Object.entries(map)) {
-                if (String(value).trim().startsWith(normalizedPrefix)) {
-                    return key;
-                }
+            const matches = Object.entries(map).filter(([_key, value]) =>
+                String(value).trim().startsWith(normalizedPrefix));
+            if (matches.length > 1) {
+                throw new Error('耗材代碼前綴不唯一：' + prefix);
             }
-            return '';
+            return matches.length === 1 ? matches[0][0] : '';
         }
 
         const classId = findKey(post('ACS15002/getAcsClassId', {type: classType}), classIdPrefix);
