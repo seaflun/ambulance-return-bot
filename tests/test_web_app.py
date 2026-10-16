@@ -5786,6 +5786,88 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("pending_write_automation", body)
         self.assertNotIn("加入佇列", body)
 
+    def test_sinposmart_admin_resolves_late_login_arrivals_across_fire_day(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        next_day = datetime.now().date()
+        previous_day = (next_day - timedelta(days=1)).isoformat()
+        next_day = next_day.isoformat()
+        for actor, stale_second, completed_second in (("16", "02", "27"), ("26", "04", "34")):
+            completion_key = f"entry:{next_day}:755:in:{actor}:到勤"
+            for suffix, fire_day, time, record_type, status in (
+                ("queued", previous_day, "07:59:09", "action_queued", "pending_write_automation"),
+                ("stale", next_day, f"08:00:{stale_second}", "action_result", "skipped_stale_schedule"),
+                ("retry", next_day, "08:01:24", "action_queued", "pending_write_automation"),
+                ("submitted", next_day, f"08:01:{completed_second}", "action_result", "submitted"),
+            ):
+                response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                    "event_id": f"arrival-{actor}-{suffix}", "fire_day": fire_day,
+                    "occurred_at": f"{next_day}T{time}", "record_type": record_type,
+                    "trigger_type": "due", "status": status, "actor_no": "17",
+                    "item_kind": "出入", "item_title": "入 / 到勤", "target": f"{actor}番 測試員",
+                    "target_time": "07:55", "result_ref": f"result-{actor}" if suffix == "submitted" else "",
+                    "snapshot": {"completion_key": completion_key},
+                })
+                self.assertEqual(response.status_code, 200)
+
+        store = app_module.sinposmart_store()
+        original_files = {path.name: path.read_bytes() for path in store.root_dir.glob("*.json")}
+        previous_view = store.read_day(previous_day)["admin_view"]
+        self.assertEqual(previous_view["summary"]["actions"], 2)
+        self.assertEqual(previous_view["summary"]["submitted"], 2)
+        self.assertEqual(previous_view["summary"]["waiting"], 0)
+        self.assertEqual(previous_view["summary"]["attention"], 0)
+        cards = {card["event_id"]: card for card in previous_view["action_events"]}
+        for actor, completed_second in (("16", "27"), ("26", "34")):
+            card = cards[f"arrival-{actor}-submitted"]
+            self.assertEqual(card["started_at"], f"{next_day}T07:59:09")
+            self.assertEqual(card["completed_at"], f"{next_day}T08:01:{completed_second}")
+            self.assertEqual(card["completion_source_fire_day"], next_day)
+            stored_result = next(event for event in store.read_day(next_day)["events"] if event["event_id"] == card["event_id"])
+            self.assertEqual(stored_result["result_ref"], f"result-{actor}")
+        page = self.client.get(f"/admin/sinposmart?fire_day={previous_day}")
+        self.assertEqual(page.status_code, 200)
+        body = page.get_data(as_text=True)
+        self.assertEqual(body.count(f"完成結果來源：消防日 {next_day}"), 2)
+        self.assertNotIn("等待逾時待確認", body)
+
+        next_view = store.read_day(next_day)["admin_view"]
+        self.assertEqual(len(next_view["action_events"]), 2)
+        self.assertEqual(next_view["summary"]["submitted"], 2)
+        for card in next_view["action_events"]:
+            self.assertEqual(card["started_at"], f"{next_day}T08:01:24")
+            self.assertEqual(card["completion_source_fire_day"], "")
+        self.assertNotIn("完成結果來源：", self.client.get(f"/admin/sinposmart?fire_day={next_day}").get_data(as_text=True))
+        listed = {day["fire_day"]: day["admin_view"] for day in store.list_days()}
+        self.assertEqual(listed[previous_day], previous_view)
+        self.assertEqual(listed[next_day], next_view)
+        self.assertEqual({path.name: path.read_bytes() for path in store.root_dir.glob("*.json")}, original_files)
+
+    def test_sinposmart_admin_does_not_complete_another_arrival_across_fire_day(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        next_day = datetime.now().date()
+        previous_day = (next_day - timedelta(days=1)).isoformat()
+        next_day = next_day.isoformat()
+        for actor, fire_day, time, record_type, status in (
+            ("16", previous_day, "07:59:09", "action_queued", "pending_write_automation"),
+            ("26", next_day, "08:01:34", "action_result", "submitted"),
+        ):
+            response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                "event_id": f"unrelated-arrival-{actor}", "fire_day": fire_day, "occurred_at": f"{next_day}T{time}",
+                "record_type": record_type, "trigger_type": "due", "status": status,
+                "item_kind": "出入", "item_title": "入 / 到勤", "target": f"{actor}番 測試員", "target_time": "07:55",
+                "snapshot": {"completion_key": f"entry:{next_day}:755:in:{actor}:到勤"},
+            })
+            self.assertEqual(response.status_code, 200)
+        view = app_module.sinposmart_store().read_day(previous_day)["admin_view"]
+        self.assertEqual(view["summary"]["actions"], 1)
+        self.assertEqual(view["summary"]["submitted"], 0)
+        self.assertEqual(view["summary"]["waiting"] + view["summary"]["attention"], 1)
+        self.assertEqual(view["action_events"][0]["event_id"], "unrelated-arrival-16")
+        self.assertEqual(view["action_events"][0]["completion_source_fire_day"], "")
+        body = self.client.get(f"/admin/sinposmart?fire_day={previous_day}").get_data(as_text=True)
+        self.assertNotIn("完成結果來源：", body)
+        self.assertNotIn("26番", body)
+
     def test_sinposmart_login_failure_api_stores_safe_page_and_renders_password_update_evidence(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()

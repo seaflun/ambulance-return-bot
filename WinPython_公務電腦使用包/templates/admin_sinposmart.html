@@ -436,6 +436,9 @@
                 {% endfor %}
               </div>
             {% endif %}
+            {% if event.completion_source_fire_day %}
+              <div class="event-detail">完成結果來源：消防日 {{ event.completion_source_fire_day }}</div>
+            {% endif %}
             {% if event.waiting_reason %}
               <div class="waiting-reason {{ 'attention' if event.waiting_overdue else '' }}">等待狀態：{{ event.waiting_reason }}</div>
             {% endif %}

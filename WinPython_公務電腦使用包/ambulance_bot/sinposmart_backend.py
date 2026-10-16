@@ -812,6 +812,31 @@ def better_sinposmart_action_result(current: dict[str, Any] | None, candidate: d
     return current
 
 
+def sinposmart_following_day_result_matches(queued: dict[str, Any], result: dict[str, Any]) -> bool:
+    key = sinposmart_action_group_key(queued)
+    if key[0] != "completion_key" or sinposmart_action_group_key(result) != key:
+        return False
+    if str(result.get("record_type") or "") != "action_result":
+        return False
+    status = str(result.get("status") or "").strip().lower()
+    terminal_statuses = {
+        "submitted", "saved", "success", "completed", "ok", "已登打", "已儲存", "成功", "完成",
+        "skipped_duplicate", "failed", "error", "fail", "失敗",
+    }
+    if status not in terminal_statuses or sinposmart_action_status_label(status, "action_result") not in {"已登打", "已存在", "失敗"}:
+        return False
+    queued_day = parse_sinposmart_snapshot_date(queued.get("fire_day"))
+    result_day = parse_sinposmart_snapshot_date(result.get("fire_day"))
+    if not queued_day or not result_day or (result_day - queued_day).days != 1:
+        return False
+    try:
+        queued_at = taipei_local_datetime(datetime.fromisoformat(sinposmart_event_time(queued)))
+        result_at = taipei_local_datetime(datetime.fromisoformat(sinposmart_event_time(result)))
+    except ValueError:
+        return False
+    return result_at >= queued_at
+
+
 def merge_sinposmart_targetless_action_groups(
     action_groups: dict[tuple[str, ...], dict[str, dict[str, Any]]],
 ) -> None:
@@ -898,6 +923,9 @@ def sinposmart_admin_action_event(
         )
     card["started_at"] = started_at
     card["completed_at"] = completed_at
+    queued_day = parse_sinposmart_snapshot_date(queued_event.get("fire_day")) if queued_event else None
+    result_day = parse_sinposmart_snapshot_date(result_event.get("fire_day")) if result_event else None
+    card["completion_source_fire_day"] = result_day.isoformat() if queued_day and result_day and queued_day != result_day else ""
     card["steps"] = steps
     card["last_occurred_at"] = completed_at or started_at or card["last_occurred_at"]
     card["waiting_age_seconds"] = 0
@@ -1202,10 +1230,21 @@ def build_sinposmart_admin_view(
         if sinposmart_is_login_event(event):
             login_events.append(event)
 
-    # Rechecks can cross the 08:00 storage boundary; borrow proof, not day events.
-    for event in sorted(related_results or [], key=sinposmart_event_time, reverse=True):
+    # Queues and rechecks can cross 08:00; borrow proof without changing day events.
+    local_result_keys = {key for key, state in action_groups.items() if state.get("result")}
+    related_events = sorted(related_results or [], key=sinposmart_event_time)
+    for event in related_events:
         key = sinposmart_action_group_key(event)
-        if key[0] != "completion_key" or key not in action_groups:
+        if key[0] != "completion_key" or key not in action_groups or key in local_result_keys:
+            continue
+        action_state = action_groups[key]
+        queued = action_state.get("queued")
+        if queued and sinposmart_following_day_result_matches(queued, event):
+            action_state["result"] = better_sinposmart_action_result(action_state.get("result"), event)
+    # Preserve descending prior-proof selection for existing duplicate results.
+    for event in reversed(related_events):
+        key = sinposmart_action_group_key(event)
+        if key[0] != "completion_key" or key not in action_groups or key not in local_result_keys:
             continue
         current = action_groups[key].get("result")
         if not current or str(current.get("status") or "") != "skipped_duplicate":
@@ -1352,13 +1391,19 @@ class SinpoSmartBackendStore:
             return payload
 
     def _related_submission_results(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        local_result_keys = {sinposmart_action_group_key(event) for event in events if event.get("record_type") == "action_result"}
+        queued_events: dict[tuple[str, ...], dict[str, Any]] = {}
+        for event in events:
+            key = sinposmart_action_group_key(event)
+            if event.get("record_type") == "action_queued" and key[0] == "completion_key" and key not in local_result_keys:
+                queued_events[key] = newer_sinposmart_event(queued_events.get(key), event)
         keys = {
             sinposmart_action_group_key(event)
             for event in events
             if event.get("record_type") == "action_result" and event.get("status") == "skipped_duplicate"
         }
         keys = {key for key in keys if key[0] == "completion_key"}
-        if not keys:
+        if not keys and not queued_events:
             return []
         results: list[dict[str, Any]] = []
         for path in self.root_dir.glob("*.json"):
@@ -1371,9 +1416,10 @@ class SinpoSmartBackendStore:
             for event in payload["events"]:
                 if not isinstance(event, dict) or event.get("record_type") != "action_result":
                     continue
-                if sinposmart_action_group_key(event) not in keys:
-                    continue
-                if sinposmart_action_status_label(str(event.get("status") or ""), "action_result") == "已登打":
+                key = sinposmart_action_group_key(event)
+                if key in keys and sinposmart_action_status_label(str(event.get("status") or ""), "action_result") == "已登打":
+                    results.append(event)
+                elif key in queued_events and sinposmart_following_day_result_matches(queued_events[key], event):
                     results.append(event)
         return results
 

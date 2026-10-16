@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.16.2206">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 16 日</p>
+          <h2 class="update-card__title">修正延遲登入後跨消防日完成狀態</h2>
+        </div>
+        <span class="update-card__versions">2026.10.16.2206</span>
+      </header>
+      <ul class="update-card__items">
+        <li>值班後台可將 08:00 前排隊、之後完成的同一筆勤務正確配對，避免舊消防日持續顯示等待或逾時。</li>
+        <li>跨日完成卡保留實際開始與完成時間，並標示完成結果來源的消防日。</li>
+        <li>只採用相同勤務識別、下一相鄰消防日的明確結果；保留重試、失敗與既有完成結果的判定規則。</li>
+        <li>此修正更新後台顯示，不重新登打、不移動或改寫原始勤務事件。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.15.2250">
       <header class="update-card__heading">
         <div>

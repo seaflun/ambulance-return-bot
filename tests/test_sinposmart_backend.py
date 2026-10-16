@@ -6,6 +6,7 @@ import unittest
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from itertools import permutations
 from pathlib import Path
 
 from ambulance_bot.sinposmart_backend import (
@@ -1138,6 +1139,161 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
 
                 self.assertEqual(len(view["action_events"]), 1)
                 self.assertEqual(view["action_events"][0]["status_label"], expected)
+
+    def test_admin_view_closes_prior_day_queues_from_actual_next_day_results_without_writes(self):
+        now = datetime(2026, 10, 16, 9, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            submitted_ids = {}
+            for target, stale_second, completed_second in ((16, 2, 27), (26, 4, 34)):
+                base = {"actor_no": "17", "trigger_type": "due", "item_kind": "出入", "item_title": "到勤",
+                        "target": f"{target}番", "target_time": "07:55",
+                        "snapshot": {"completion_key": f"entry:2026-10-16:755:in:{target}:到勤"}}
+                for suffix, record_type, occurred_at, status in (
+                    ("queued", "action_queued", "2026-10-16T07:59:09", "pending_write_automation"),
+                    ("stale", "action_result", f"2026-10-16T08:00:{stale_second:02d}", "skipped_stale_schedule"),
+                    ("retry", "action_queued", "2026-10-16T08:01:24", "pending_write_automation"),
+                    ("submitted", "action_result", f"2026-10-16T08:01:{completed_second}", "submitted"),
+                ):
+                    event = store.upsert_event({**base, "event_id": f"arrival-{target}-{suffix}", "record_type": record_type,
+                        "occurred_at": occurred_at, "status": status, "result_ref": f"arrival-{target}.json" if suffix == "submitted" else ""}, now=now)
+                    if suffix == "submitted":
+                        submitted_ids[target] = event["event_id"]
+            original_files = {path: path.read_bytes() for path in Path(tmp).glob("*.json")}
+            day = store.read_day("2026-10-15", now=now)
+            listed_day = next(item for item in store.list_days(now=now) if item["fire_day"] == "2026-10-15")
+            for payload in (day, listed_day):
+                view = payload["admin_view"]
+                self.assertEqual(view["summary"]["actions"], 2)
+                self.assertEqual(view["summary"]["submitted"], 2)
+                self.assertEqual(view["summary"]["attention"], 0)
+                self.assertEqual(view["summary"]["waiting"], 0)
+                self.assertEqual({event["record_type"] for event in payload["events"]}, {"action_queued"})
+                self.assertEqual({event["fire_day"] for event in payload["events"]}, {"2026-10-15"})
+                for target, second in ((16, 27), (26, 34)):
+                    card = next(card for card in view["action_events"] if card["event_id"] == submitted_ids[target])
+                    self.assertEqual(card["status_label"], "已登打")
+                    self.assertEqual(card["started_at"], "2026-10-16T07:59:09")
+                    self.assertEqual(card["completed_at"], f"2026-10-16T08:01:{second}")
+                    self.assertEqual(card["completion_source_fire_day"], "2026-10-16")
+            next_day = store.read_day("2026-10-16", now=now)
+            self.assertEqual(next_day["admin_view"]["summary"]["submitted"], 2)
+            for card in next_day["admin_view"]["action_events"]:
+                self.assertEqual(card["started_at"], "2026-10-16T08:01:24")
+                self.assertEqual(card["completion_source_fire_day"], "")
+            self.assertEqual({path: path.read_bytes() for path in Path(tmp).glob("*.json")}, original_files)
+
+    def test_admin_view_borrows_next_day_terminal_results_with_existing_retry_priority(self):
+        now = datetime(2026, 10, 16, 9, 0)
+        queue = {"event_id": "queue", "record_type": "action_queued", "occurred_at": "2026-10-16T07:59:09",
+                 "status": "pending_write_automation", "snapshot": {"completion_key": "entry:2026-10-16:755:in:16:到勤"}}
+        for statuses, expected, expected_index in (
+            (("submitted", "failed"), "失敗", 1),
+            (("failed", "submitted"), "已登打", 1),
+            (("submitted", "skipped_duplicate"), "已登打", 0),
+            (("skipped_duplicate",), "已存在", 0),
+            (("failed",), "失敗", 0),
+            (("skipped_stale_schedule", "pending_write_automation", "submitted"), "已登打", 2),
+        ):
+            candidates = [{**queue, "event_id": f"result-{index}", "record_type": "action_result",
+                           "occurred_at": f"2026-10-16T08:01:{index:02d}", "status": status}
+                          for index, status in enumerate(statuses)]
+            for related in (candidates, list(reversed(candidates))):
+                with self.subTest(statuses=statuses, order=[event["event_id"] for event in related]), tempfile.TemporaryDirectory() as tmp:
+                    store = SinpoSmartBackendStore(Path(tmp))
+                    for event in [queue, *related]:
+                        store.upsert_event(event, now=now)
+                    view = store.read_day("2026-10-15", now=now)["admin_view"]
+                    self.assertEqual(len(view["action_events"]), 1)
+                    card = view["action_events"][0]
+                    self.assertEqual(card["status_label"], expected)
+                    self.assertEqual(card["event_id"], f"result-{expected_index}")
+                    self.assertEqual(card["completion_source_fire_day"], "2026-10-16")
+                    self.assertEqual(view["summary"]["submitted"], int(expected == "已登打"))
+
+    def test_admin_view_next_day_terminal_order_matches_same_day_priority(self):
+        now = datetime(2026, 10, 16, 9, 0)
+        queue = {"event_id": "queue", "record_type": "action_queued", "occurred_at": "2026-10-16T07:59:09",
+                 "status": "pending_write_automation", "snapshot": {"completion_key": "entry:2026-10-16:755:in:16:到勤"}}
+        for statuses, expected in ((("submitted", "failed", "skipped_duplicate"), "已存在"),
+                                   (("submitted", "skipped_duplicate", "failed"), "失敗"),
+                                   (("failed", "submitted", "skipped_duplicate"), "已登打")):
+            candidates = [normalize_sinposmart_event({**queue, "event_id": f"result-{index}", "record_type": "action_result",
+                "occurred_at": f"2026-10-16T08:0{index + 1}:00", "status": status}, now=now) for index, status in enumerate(statuses)]
+            for ordered in permutations(candidates):
+                with self.subTest(statuses=statuses, order=[event["event_id"] for event in ordered]):
+                    same_day = build_sinposmart_admin_view([
+                        normalize_sinposmart_event({**queue, "occurred_at": "2026-10-16T08:00:00"}, now=now), *ordered], now=now)["action_events"][0]
+                    borrowed = build_sinposmart_admin_view([normalize_sinposmart_event(queue, now=now)],
+                        related_results=list(ordered), now=now)["action_events"][0]
+                    self.assertEqual(same_day["status_label"], expected)
+                    self.assertEqual(borrowed["status_label"], same_day["status_label"])
+                    self.assertEqual(borrowed["event_id"], same_day["event_id"])
+                    self.assertEqual(borrowed["completed_at"], same_day["completed_at"])
+                    self.assertEqual(borrowed["completion_source_fire_day"], "2026-10-16")
+                    self.assertEqual(same_day["completion_source_fire_day"], "")
+
+    def test_admin_view_next_day_completion_rejects_weak_or_unrelated_evidence(self):
+        now = datetime(2026, 10, 16, 9, 0)
+        queue = {"event_id": "queue", "record_type": "action_queued", "occurred_at": "2026-10-16T07:59:09",
+                 "status": "pending_write_automation", "snapshot": {"completion_key": "entry:2026-10-16:755:in:16:到勤"}}
+        result = {**queue, "event_id": "result", "record_type": "action_result", "occurred_at": "2026-10-16T08:01:27", "status": "submitted"}
+        for queue_changes, result_changes in (
+            ({"snapshot": {}}, {}), ({}, {"snapshot": {}}),
+            ({}, {"snapshot": {"completion_key": "entry:2026-10-16:755:in:26:到勤"}}),
+            ({}, {"snapshot": {"completion_key": "entry:2026-10-15:755:in:16:到勤"}}),
+            ({}, {"fire_day": "2026-10-17"}), ({}, {"fire_day": "2026-10-15"}),
+            ({}, {"occurred_at": "2026-10-16T07:58:00", "fire_day": "2026-10-16"}),
+            ({}, {"record_type": "comparison_snapshot"}), ({}, {"status": "skipped_stale_schedule"}),
+            ({}, {"status": "pending_write_automation"}),
+            ({}, {"status": "not_submitted"}), ({}, {"status": "broken"}), ({}, {"status": "cancelled_ok"}),
+        ):
+            with self.subTest(queue=queue_changes, related=result_changes):
+                view = build_sinposmart_admin_view([normalize_sinposmart_event({**queue, **queue_changes}, now=now)],
+                    related_results=[normalize_sinposmart_event({**result, **result_changes}, now=now)], now=now)
+                self.assertEqual(len(view["action_events"]), 1)
+                self.assertEqual(view["action_events"][0]["status_label"], "等待完成回傳")
+                self.assertEqual(view["action_events"][0]["completion_source_fire_day"], "")
+        normalized_queue = normalize_sinposmart_event(queue, now=now)
+        normalized_result = normalize_sinposmart_event(result, now=now)
+        for changes in ({"snapshot": {**normalized_result["snapshot"], "completion_key_sha256": "f" * 64}},
+                        {"fire_day": "invalid"}, {"occurred_at": "invalid", "last_occurred_at": "invalid"}):
+            with self.subTest(invalid=changes):
+                view = build_sinposmart_admin_view([normalized_queue], related_results=[{**normalized_result, **changes}], now=now)
+                self.assertEqual(view["action_events"][0]["status_label"], "等待完成回傳")
+        empty = build_sinposmart_admin_view([], related_results=[normalize_sinposmart_event(result, now=now)], now=now)
+        self.assertEqual(empty["action_events"], [])
+
+    def test_admin_view_next_day_completion_preserves_every_local_result(self):
+        now = datetime(2026, 10, 16, 9, 0)
+        queue = {"event_id": "queue", "record_type": "action_queued", "occurred_at": "2026-10-16T07:59:09",
+                 "status": "pending_write_automation", "snapshot": {"completion_key": "entry:2026-10-16:755:in:16:到勤"}}
+        for status in ("failed", "submitted", "skipped_duplicate", "skipped_stale_schedule", "pending_write_automation"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                store = SinpoSmartBackendStore(Path(tmp))
+                for event in (queue, {**queue, "event_id": "local-result", "record_type": "action_result", "status": status,
+                                    "occurred_at": "2026-10-16T07:59:20"},
+                              {**queue, "event_id": "next-day-result", "record_type": "action_result", "status": "submitted",
+                               "occurred_at": "2026-10-16T08:01:27"}):
+                    store.upsert_event(event, now=now)
+                card = store.read_day("2026-10-15", now=now)["admin_view"]["action_events"][0]
+                self.assertEqual(card["event_id"], "local-result")
+                self.assertEqual(card["completion_source_fire_day"], "")
+
+    def test_admin_view_completion_source_requires_queue_and_two_valid_different_days(self):
+        now = datetime(2026, 10, 16, 9, 0)
+        queue = {"event_id": "queue", "record_type": "action_queued", "occurred_at": "2026-10-16T07:59:09",
+                 "snapshot": {"completion_key": "stable"}}
+        result = {**queue, "event_id": "result", "record_type": "action_result", "occurred_at": "2026-10-16T08:01:27", "status": "submitted"}
+        for inputs, expected in (([queue, result], "2026-10-16"), ([result], ""), ([queue], ""),
+                                 ([queue, {**result, "fire_day": "2026-10-15"}], "")):
+            with self.subTest(expected=expected, count=len(inputs)):
+                events = [normalize_sinposmart_event(event, now=now) for event in inputs]
+                card = build_sinposmart_admin_view(events, now=now)["action_events"][0]
+                self.assertEqual(card["completion_source_fire_day"], expected)
+        invalid = [normalize_sinposmart_event(event, now=now) for event in (queue, result)]
+        invalid[1]["fire_day"] = "invalid"
+        self.assertEqual(build_sinposmart_admin_view(invalid, now=now)["action_events"][0]["completion_source_fire_day"], "")
 
     def test_admin_view_finds_submission_before_fire_day_boundary_without_moving_events(self):
         now = datetime(2026, 9, 5, 8, 3)
