@@ -5928,6 +5928,88 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(day["events"]), 3)
         self.assertNotIn("image_png", json.dumps(day["events"]))
 
+    def test_sinposmart_login_capture_failure_reason_is_stored_and_rendered(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        cases = (
+            ("redaction_failed", "JavascriptException", "遮蔽頁面時發生錯誤，未執行截圖。"),
+            ("screenshot_failed", "NoSuchWindowException", "瀏覽器擷取截圖時發生錯誤。"),
+            ("redaction_rejected", "", "欄位或文字遮蔽檢查未通過，未執行截圖。"),
+        )
+        for index, (code, error_type, expected_reason) in enumerate(cases):
+            response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                "event_id": f"capture-error-{index}", "fire_day": fire_day, "occurred_at": f"{fire_day}T22:10:0{index}",
+                "record_type": "login_failed", "status": "failed", "error": "帳號密碼有誤或尚未申請帳號權限",
+                "snapshot": {"login_method": "automatic", "login_diagnostic": {
+                    "reason_code": "invalid_credentials", "stage": "login", "reason": "帳號密碼有誤或尚未申請帳號權限",
+                    "capture_status": "unavailable", "image_redacted": False,
+                    "capture_error_code": code, "capture_error_type": error_type,
+                    "capture_error": "<script>alert('xss')</script> private-capture-message token=private-token",
+                }},
+            })
+            self.assertEqual(response.status_code, 200)
+        day = app_module.sinposmart_store().read_day(fire_day)
+        diagnostic_by_id = {event["event_id"]: event["snapshot"]["login_diagnostic"] for event in day["events"]}
+        for index, (code, error_type, expected_reason) in enumerate(cases):
+            diagnostic = diagnostic_by_id[f"capture-error-{index}"]
+            self.assertEqual(diagnostic["capture_error_code"], code)
+            self.assertEqual(diagnostic["capture_error"], expected_reason)
+            self.assertEqual(diagnostic["capture_error_type"], error_type)
+            self.assertEqual(diagnostic["reason_code"], "invalid_credentials")
+        body = self.client.get(f"/admin/sinposmart?fire_day={fire_day}").get_data(as_text=True)
+        for code, error_type, expected_reason in cases:
+            self.assertIn(f"截圖失敗原因：{expected_reason}", body)
+            if error_type:
+                self.assertIn(f"例外類別：{error_type}", body)
+        stored = app_module.sinposmart_store().path_for_day(fire_day).read_text(encoding="utf-8")
+        for unsafe in ("<script>alert('xss')</script>", "private-capture-message", "private-token"):
+            self.assertNotIn(unsafe, body)
+            self.assertNotIn(unsafe, stored)
+        self.assertNotIn('class="login-page-image"', body)
+
+    def test_sinposmart_login_capture_legacy_failure_remains_unknown_without_rewriting_events(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        for index, status in enumerate(("unavailable", "oversize")):
+            response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                "event_id": f"legacy-capture-{index}", "fire_day": fire_day, "occurred_at": f"{fire_day}T22:10:0{index}",
+                "record_type": "login_failed", "status": "failed", "error": "登入失敗",
+                "snapshot": {"login_diagnostic": {"reason_code": "invalid_credentials", "reason": "帳號密碼有誤",
+                    "capture_status": status, "image_redacted": False}},
+            })
+            self.assertEqual(response.status_code, 200)
+        path = app_module.sinposmart_store().path_for_day(fire_day)
+        original = path.read_bytes()
+        page = self.client.get(f"/admin/sinposmart?fire_day={fire_day}")
+        self.assertEqual(page.status_code, 200)
+        body = page.get_data(as_text=True)
+        self.assertEqual(body.count("舊版未記錄截圖失敗細節，無法確認原因。"), 1)
+        self.assertIn("圖片超過保存限制", body)
+        self.assertEqual(path.read_bytes(), original)
+        diagnostic = next(event for event in app_module.sinposmart_store().read_day(fire_day)["events"] if event["event_id"] == "legacy-capture-0")["snapshot"]["login_diagnostic"]
+        self.assertFalse(diagnostic.get("capture_error_code"))
+        self.assertFalse(diagnostic.get("capture_error"))
+
+    def test_sinposmart_login_capture_server_rejection_is_visible_without_exposing_client_message(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+            "event_id": "server-image-rejected", "fire_day": fire_day, "occurred_at": f"{fire_day}T22:10:07",
+            "record_type": "login_failed", "status": "failed", "error": "帳號密碼有誤",
+            "snapshot": {"login_diagnostic": {"reason_code": "invalid_credentials", "reason": "帳號密碼有誤",
+                "capture_status": "captured", "image_redacted": True, "image_png": "not-png",
+                "capture_error_code": "driver_unavailable", "capture_error": "private-rejection-message",
+                "capture_error_type": "RuntimeError"}},
+        })
+        self.assertEqual(response.status_code, 200)
+        diagnostic = app_module.sinposmart_store().read_day(fire_day)["events"][0]["snapshot"]["login_diagnostic"]
+        self.assertEqual(diagnostic["capture_error_code"], "server_image_rejected")
+        self.assertEqual(diagnostic["capture_error_type"], "")
+        body = self.client.get(f"/admin/sinposmart?fire_day={fire_day}").get_data(as_text=True)
+        self.assertIn("截圖失敗原因：後台圖片安全或格式驗證未通過，未保存截圖。", body)
+        self.assertNotIn("private-rejection-message", body)
+        self.assertNotIn('class="login-page-image"', body)
+
     def test_sinposmart_admin_compacts_login_and_logout_badges(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()

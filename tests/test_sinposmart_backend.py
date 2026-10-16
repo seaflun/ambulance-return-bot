@@ -14,6 +14,7 @@ from ambulance_bot.sinposmart_backend import (
     build_sinposmart_admin_view,
     compact_sinposmart_events,
     normalize_sinposmart_event,
+    sanitize_login_diagnostic,
     sinposmart_fire_day_for,
     sinposmart_status_label,
 )
@@ -62,6 +63,139 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             self.assertEqual(card["status_class"], "failed")
             self.assertEqual(card["login_diagnostic"]["reason_code"], "password_change_required")
             self.assertEqual(event["record_type"], "login_failed")
+
+    def test_login_capture_errors_round_trip_with_fixed_reasons_and_original_login_reason(self):
+        reasons = {
+            "driver_unavailable": "瀏覽器尚未建立或已無法使用，無法擷取截圖。",
+            "frame_context_failed": "無法切回主頁面，未執行截圖。",
+            "redaction_rejected": "欄位或文字遮蔽檢查未通過，未執行截圖。",
+            "redaction_failed": "遮蔽頁面時發生錯誤，未執行截圖。",
+            "screenshot_failed": "瀏覽器擷取截圖時發生錯誤。",
+            "invalid_image": "瀏覽器未回傳有效的 PNG 圖片。",
+            "image_oversize": "圖片尺寸或容量超過保存限制。",
+            "server_image_rejected": "後台圖片安全或格式驗證未通過，未保存截圖。",
+        }
+        now = datetime(2026, 10, 16, 22, 11)
+        for code, expected in reasons.items():
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                store = SinpoSmartBackendStore(Path(tmp))
+                raw = {"event_id": f"capture-{code}", "record_type": "login_failed", "status": "failed",
+                    "occurred_at": "2026-10-16T22:10:07", "error": "帳密或權限錯誤",
+                    "snapshot": {"login_diagnostic": {"reason_code": "invalid_credentials", "reason": "帳密或權限錯誤",
+                        "capture_status": "oversize" if code == "image_oversize" else "unavailable", "image_redacted": False,
+                        "capture_error_code": code, "capture_error": "<script>private-message</script> password=private-secret",
+                        "capture_error_type": "WebDriverException", "capture_error_stack": "private-stack"}}}
+                original = json.dumps(raw, ensure_ascii=False)
+                event = store.upsert_event(raw, now=now)
+                source_bytes = store.path_for_day("2026-10-16").read_bytes()
+                payload = store.read_day("2026-10-16", now=now)
+                diagnostic = payload["events"][0]["snapshot"]["login_diagnostic"]
+                self.assertEqual(diagnostic["capture_error_code"], code)
+                self.assertEqual(diagnostic["capture_error"], expected)
+                self.assertEqual(diagnostic["capture_error_type"], "WebDriverException")
+                self.assertEqual(diagnostic["reason_code"], "invalid_credentials")
+                self.assertEqual(diagnostic["reason"], "帳密或權限錯誤")
+                self.assertEqual(event["error"], "帳密或權限錯誤")
+                self.assertEqual(payload["admin_view"]["login_events"][0]["login_diagnostic"], diagnostic)
+                self.assertEqual(sanitize_login_diagnostic(diagnostic), diagnostic)
+                self.assertEqual(store.path_for_day("2026-10-16").read_bytes(), source_bytes)
+                self.assertEqual(json.dumps(raw, ensure_ascii=False), original)
+                for secret in ("private-message", "private-secret", "private-stack", "capture_error_stack"):
+                    self.assertNotIn(secret, source_bytes.decode("utf-8"))
+
+    def test_login_capture_error_types_use_exact_allowlist_and_unknown_codes_stay_unknown(self):
+        types = ("Error", "TypeError", "ValueError", "RuntimeError", "TimeoutError", "AttributeError", "SecurityError",
+                 "InvalidStateError", "WebDriverException", "TimeoutException", "JavascriptException", "UnexpectedAlertPresentException",
+                 "NoSuchWindowException", "InvalidSessionIdException", "NoSuchFrameException", "StaleElementReferenceException", "InvalidArgumentException")
+        base = {"reason": "登入失敗", "capture_status": "unavailable", "capture_error_code": "screenshot_failed"}
+        for error_type in types:
+            with self.subTest(error_type=error_type):
+                clean = sanitize_login_diagnostic({**base, "capture_error_type": error_type})
+                self.assertEqual(clean["capture_error_type"], error_type)
+                self.assertEqual(clean["capture_error"], "瀏覽器擷取截圖時發生錯誤。")
+        for error_type in (None, [], {}, True, 12, "unknown", "WebDriverException: private-message", "runtimeerror", " RuntimeError "):
+            with self.subTest(rejected_type=error_type):
+                clean = sanitize_login_diagnostic({**base, "capture_error_type": error_type, "capture_error": "private-message"})
+                self.assertEqual(clean["capture_error_type"], "")
+                self.assertNotIn("private-message", json.dumps(clean))
+        for code in (None, [], {}, True, 12, "unknown", "Screenshot_failed", "screenshot_failed private-message"):
+            with self.subTest(unknown_code=code):
+                clean = sanitize_login_diagnostic({**base, "capture_error_code": code,
+                    "capture_error": "private-message", "capture_error_type": "RuntimeError"})
+                for field in ("capture_error_code", "capture_error", "capture_error_type"):
+                    self.assertNotIn(field, clean)
+
+    def test_login_capture_server_rejection_overrides_client_reason_and_forged_success(self):
+        png = base64.b64encode(self.login_page_png()).decode("ascii")
+        for image, redacted, reported_status, expected_code, expected_status in (
+            (png, False, "captured", "server_image_rejected", "unavailable"),
+            ("not-base64!", True, "captured", "server_image_rejected", "unavailable"),
+            (base64.b64encode(b"not a PNG").decode("ascii"), True, "oversize", "server_image_rejected", "unavailable"),
+            ([], True, "unavailable", "server_image_rejected", "unavailable"),
+            ({"raw": "private-message"}, True, "unavailable", "server_image_rejected", "unavailable"),
+            ("", True, "captured", "server_image_rejected", "unavailable"),
+            (None, True, "captured", "server_image_rejected", "unavailable"),
+            (base64.b64encode(b"x" * (512 * 1024 + 1)).decode("ascii"), True, "captured", "image_oversize", "oversize"),
+            (base64.b64encode(self.login_page_png(4097, 1)).decode("ascii"), True, "captured", "image_oversize", "oversize"),
+        ):
+            with self.subTest(image_type=type(image).__name__, reported_status=reported_status, expected_code=expected_code):
+                raw = {"reason_code": "invalid_credentials", "reason": "帳密或權限錯誤", "image_png": image,
+                    "image_redacted": redacted, "capture_status": reported_status, "capture_error_code": "driver_unavailable",
+                    "capture_error": "private-message", "capture_error_type": "RuntimeError"}
+                clean = sanitize_login_diagnostic(raw)
+                self.assertEqual(clean["capture_status"], expected_status)
+                self.assertEqual(clean["capture_error_code"], expected_code)
+                self.assertEqual(clean["capture_error_type"], "")
+                self.assertEqual(clean["reason"], "帳密或權限錯誤")
+                self.assertEqual(clean["reason_code"], "invalid_credentials")
+                self.assertNotIn("image_png", clean)
+                self.assertNotIn("private-message", json.dumps(clean))
+                self.assertEqual(sanitize_login_diagnostic(clean), clean)
+
+    def test_login_capture_valid_image_clears_all_claimed_error_fields(self):
+        png = base64.b64encode(self.login_page_png()).decode("ascii")
+        clean = sanitize_login_diagnostic({"reason": "帳密或權限錯誤", "reason_code": "invalid_credentials",
+            "image_png": png, "image_redacted": True, "capture_status": "oversize",
+            "capture_error_code": "server_image_rejected", "capture_error": "private-message", "capture_error_type": "RuntimeError"})
+        self.assertEqual(clean["capture_status"], "captured")
+        self.assertEqual(clean["image_png"], png)
+        self.assertEqual(clean["reason"], "帳密或權限錯誤")
+        for field in ("capture_error_code", "capture_error", "capture_error_type"):
+            self.assertEqual(clean[field], "")
+        self.assertEqual(sanitize_login_diagnostic(clean), clean)
+
+    def test_login_capture_old_events_remain_unknown_and_are_not_rewritten(self):
+        now = datetime(2026, 10, 16, 22, 11)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            for status in ("unavailable", "oversize"):
+                store.upsert_event({"event_id": f"old-{status}", "occurred_at": "2026-10-16T22:10:07",
+                    "record_type": "login_failed", "status": "failed", "snapshot": {"login_diagnostic": {
+                        "reason": "帳密或權限錯誤", "capture_status": status, "image_redacted": False}}}, now=now)
+            path = store.path_for_day("2026-10-16")
+            old_payload = json.loads(path.read_text(encoding="utf-8"))
+            for event in old_payload["events"]:
+                diagnostic = event["snapshot"]["login_diagnostic"]
+                for field in ("capture_error_code", "capture_error", "capture_error_type"):
+                    diagnostic.pop(field, None)
+            path.write_text(json.dumps(old_payload, ensure_ascii=False), encoding="utf-8")
+            original_bytes = path.read_bytes()
+            payload = store.read_day("2026-10-16", now=now)
+            for event in payload["events"]:
+                for field in ("capture_error_code", "capture_error", "capture_error_type"):
+                    self.assertNotIn(field, event["snapshot"]["login_diagnostic"])
+            for card in payload["admin_view"]["login_events"]:
+                diagnostic = card["login_diagnostic"]
+                self.assertEqual(sanitize_login_diagnostic(diagnostic), diagnostic)
+                if diagnostic["capture_status"] == "oversize":
+                    self.assertEqual(diagnostic["capture_error_code"], "image_oversize")
+                    self.assertEqual(diagnostic["capture_error"], "圖片尺寸或容量超過保存限制。")
+                else:
+                    self.assertNotIn("capture_error_code", diagnostic)
+                    self.assertNotIn("capture_error", diagnostic)
+                    self.assertNotIn("capture_error_type", diagnostic)
+            store.list_days(now=now)
+            self.assertEqual(path.read_bytes(), original_bytes)
 
     def test_login_failure_retains_reason_when_evidence_image_is_unsafe(self):
         valid = base64.b64encode(self.login_page_png()).decode("ascii")

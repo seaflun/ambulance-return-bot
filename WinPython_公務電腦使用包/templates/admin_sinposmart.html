@@ -561,6 +561,12 @@
                   <img class="login-page-image" src="data:image/png;base64,{{ diagnostic.image_png }}" alt="登入失敗頁面（輸入欄位已遮蔽）" loading="lazy" decoding="async">
                 {% else %}
                   <div class="event-detail">未取得可顯示的遮蔽截圖{% if diagnostic.capture_status == 'oversize' %}（圖片超過保存限制）{% endif %}；仍保留已取得的原因與頁面資訊。</div>
+                  {% if diagnostic.capture_error %}
+                    <div class="event-detail">截圖失敗原因：{{ diagnostic.capture_error }}</div>
+                    {% if diagnostic.capture_error_type %}<div class="event-detail">例外類別：{{ diagnostic.capture_error_type }}</div>{% endif %}
+                  {% elif diagnostic.capture_status != 'oversize' %}
+                    <div class="event-detail">舊版未記錄截圖失敗細節，無法確認原因。</div>
+                  {% endif %}
                 {% endif %}
               </details>
             {% endif %}

@@ -62,6 +62,21 @@ SENSITIVE_TEXT_PATTERN = re.compile(r"(?i)(password|token|secret|cookie|authoriz
 LOGIN_SENSITIVE_TEXT_PATTERN = re.compile(
     r'''(?i)(password|passwd|pwd|token|secret|cookie|authorization|credential|username|user_id|account|session[_-]?id|api[_-]?key|帳號|账号|密碼|密码|帳密|權杖|驗證碼|验证码|授權碼)["']?\s*[:=：]\s*(?:"[^"\n]*"|'[^'\n]*'|[^,;，；\r\n]+)'''
 )
+LOGIN_CAPTURE_ERRORS = {
+    "driver_unavailable": "瀏覽器尚未建立或已無法使用，無法擷取截圖。",
+    "frame_context_failed": "無法切回主頁面，未執行截圖。",
+    "redaction_rejected": "欄位或文字遮蔽檢查未通過，未執行截圖。",
+    "redaction_failed": "遮蔽頁面時發生錯誤，未執行截圖。",
+    "screenshot_failed": "瀏覽器擷取截圖時發生錯誤。",
+    "invalid_image": "瀏覽器未回傳有效的 PNG 圖片。",
+    "image_oversize": "圖片尺寸或容量超過保存限制。",
+    "server_image_rejected": "後台圖片安全或格式驗證未通過，未保存截圖。",
+}
+LOGIN_CAPTURE_ERROR_TYPES = {
+    "Error", "TypeError", "ValueError", "RuntimeError", "TimeoutError", "AttributeError", "SecurityError", "InvalidStateError",
+    "WebDriverException", "TimeoutException", "JavascriptException", "UnexpectedAlertPresentException", "NoSuchWindowException",
+    "InvalidSessionIdException", "NoSuchFrameException", "StaleElementReferenceException", "InvalidArgumentException",
+}
 TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
 SINPOSMART_RESULT_ADVISORY_SECONDS = 15 * 60
 _STORE_LOCKS_GUARD = Lock()
@@ -1737,10 +1752,28 @@ def sanitize_login_diagnostic(value: Any) -> dict[str, Any]:
         "captured_at": sanitize_login_text(value.get("captured_at"), 40),
         "image_redacted": value.get("image_redacted") is True,
     }
-    capture_status, image = sanitize_login_png(value.get("image_png"), value.get("image_redacted"))
-    clean["capture_status"] = "oversize" if not image and value.get("capture_status") == "oversize" else capture_status
+    raw_image = value.get("image_png")
+    capture_status, image = sanitize_login_png(raw_image, value.get("image_redacted"))
+    clean["capture_status"] = capture_status
     if image:
         clean["image_png"] = image
+        clean.update(capture_error_code="", capture_error="", capture_error_type="")
+    else:
+        code = value.get("capture_error_code")
+        code = code if isinstance(code, str) and code in LOGIN_CAPTURE_ERRORS else ""
+        server_rejected = (raw_image is not None and raw_image != "") or value.get("capture_status") == "captured"
+        if capture_status == "oversize":
+            code = "image_oversize"
+        elif server_rejected:
+            code = "server_image_rejected"
+        elif value.get("capture_status") == "oversize":
+            code = "image_oversize"
+            clean["capture_status"] = "oversize"
+        if code:
+            error_type = value.get("capture_error_type")
+            if server_rejected or code != value.get("capture_error_code") or not isinstance(error_type, str) or error_type not in LOGIN_CAPTURE_ERROR_TYPES:
+                error_type = ""
+            clean.update(capture_error_code=code, capture_error=LOGIN_CAPTURE_ERRORS[code], capture_error_type=error_type)
     return clean
 
 
