@@ -22,6 +22,179 @@ from ambulance_bot.sinposmart_backend import (
 
 class SinpoSmartBackendStoreTests(unittest.TestCase):
     @staticmethod
+    def daily_vehicle_report():
+        return {"target_date": "2026-10-17", "execution_mode": "automatic", "verified": True, "reason_code": "",
+                "items": [{"vehicle": "新坡91", "operation": operation, "status": "completed", "reason_code": "saved_verified"}
+                          for operation in ("maintenance", "equipment")]}
+
+    @staticmethod
+    def daily_vehicle_event(report):
+        return {"event_id": "vehicle-completion", "occurred_at": "2026-10-17T10:25:00", "record_type": "tool_action_finished",
+                "status": "ok", "snapshot": {"tool_name": "daily_vehicle", "tool_label": "車輛保養清點", "run_id": "vehicle-run",
+                "target_date": "115/10/17", "execution_mode": "automatic", "daily_vehicle_report": report}}
+
+    def test_daily_vehicle_report_survives_store_depth_and_preserves_verified_rows(self):
+        raw = self.daily_vehicle_event(self.daily_vehicle_report())
+        original = json.dumps(raw, ensure_ascii=False)
+        now = datetime(2026, 10, 17, 10, 26)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            stored = store.upsert_event(raw, now=now)
+            report = stored["snapshot"]["daily_vehicle_report"]
+            self.assertIs(report["verified"], True)
+            self.assertEqual(report["items"], raw["snapshot"]["daily_vehicle_report"]["items"])
+            before = store.path_for_day("2026-10-17").read_bytes()
+            day = store.read_day("2026-10-17", now=now)
+            card = day["admin_view"]["tool_events"][0]
+            self.assertEqual(card["status_label"], "完成")
+            self.assertTrue(card["daily_vehicle_report"]["verified"])
+            self.assertEqual(card["daily_vehicle_report"]["mode_label"], "自動")
+            self.assertEqual({row["operation_label"] for row in card["daily_vehicle_report"]["items"]}, {"車輛保養", "器材清點"})
+            self.assertEqual(store.path_for_day("2026-10-17").read_bytes(), before)
+        self.assertEqual(json.dumps(raw, ensure_ascii=False), original)
+        again = normalize_sinposmart_event(stored, now=now)["snapshot"]["daily_vehicle_report"]
+        self.assertEqual(again, report)
+
+    def test_daily_vehicle_report_cannot_claim_complete_without_strict_full_evidence(self):
+        base = self.daily_vehicle_report()
+        cases = [{"verified": value} for value in ("True", 1, False, None)] + [
+            {"target_date": ""}, {"target_date": "2026-02-30"}, {"target_date": "2026-10-18"},
+            {"execution_mode": "unknown"}, {"items": []}, {"items": base["items"][:1]},
+            {"verified": None, "items": []},
+            {"items": base["items"] + [base["items"][0]]},
+            {"items": [base["items"][0], {**base["items"][1], "status": "unconfirmed", "reason_code": "today_not_found"}]},
+            {"items": [base["items"][0], {**base["items"][1], "reason_code": "save_unconfirmed"}]},
+            {"items": [base["items"][0], {**base["items"][1], "operation": "unknown"}]},
+            {"reason_code": "unexpected_error"}, {"reason_code": "<script>client reason</script>"},
+        ]
+        for changes in cases:
+            with self.subTest(changes=changes):
+                event = normalize_sinposmart_event(self.daily_vehicle_event({**base, **changes}))
+                report = event["snapshot"]["daily_vehicle_report"]
+                self.assertIs(report["verified"], False)
+                self.assertNotIn("<script>", json.dumps(report))
+                self.assertEqual(build_sinposmart_admin_view([event])["tool_events"][0]["status_label"], "結果未確認")
+                self.assertEqual(normalize_sinposmart_event(event)["snapshot"]["daily_vehicle_report"], report)
+        for value in (None, "raw client report", [], {"verified": True}):
+            with self.subTest(invalid_type=value):
+                report = normalize_sinposmart_event(self.daily_vehicle_event(value))["snapshot"]["daily_vehicle_report"]
+                self.assertIs(report["verified"], False)
+                self.assertEqual(report["reason_code"], "report_invalid")
+
+    def test_daily_vehicle_unconfirmed_rows_cannot_keep_positive_reasons(self):
+        for code in ("verified_today", "saved_verified"):
+            for claimed in (False, True):
+                with self.subTest(code=code, claimed=claimed):
+                    raw = self.daily_vehicle_event(self.daily_vehicle_report())
+                    raw["snapshot"]["daily_vehicle_report"].update(verified=claimed, reason_code=code)
+                    raw["snapshot"]["daily_vehicle_report"]["items"][1].update(status="unconfirmed", reason_code=code)
+                    original = json.dumps(raw, ensure_ascii=False)
+                    event = normalize_sinposmart_event(raw)
+                    report = event["snapshot"]["daily_vehicle_report"]
+                    self.assertIs(report["verified"], False)
+                    self.assertEqual(report["reason_code"], "report_invalid")
+                    self.assertEqual(report["items"][1]["status"], "unconfirmed")
+                    self.assertEqual(report["items"][1]["reason_code"], "report_invalid")
+                    self.assertEqual(normalize_sinposmart_event(event)["snapshot"]["daily_vehicle_report"], report)
+                    self.assertEqual(json.dumps(raw, ensure_ascii=False), original)
+
+    def test_daily_vehicle_report_rejects_unsafe_vehicle_and_unknown_client_fields(self):
+        for vehicle in ("secret-car", "TOKEN 1", "password", "cookie", "account", "username", "帳號", "密碼",
+                        "https://example.test/token", "新坡91\n注入", "<img src=x onerror=alert(1)>", "車" * 33):
+            with self.subTest(vehicle=vehicle):
+                base = self.daily_vehicle_report()
+                base["items"][0] = {**base["items"][0], "vehicle": vehicle, "raw_text": "must-not-save"}
+                base["raw_html"] = "must-not-save"
+                report = normalize_sinposmart_event(self.daily_vehicle_event(base))["snapshot"]["daily_vehicle_report"]
+                self.assertFalse(report["verified"])
+                self.assertNotIn(vehicle, [row["vehicle"] for row in report["items"]])
+                self.assertNotIn("must-not-save", json.dumps(report))
+                self.assertTrue(all(row["status"] == "unconfirmed" for row in report["items"] if not row["vehicle"]))
+        base = self.daily_vehicle_report()
+        base["items"][0] = {**base["items"][0], "vehicle": "", "status": "unconfirmed", "reason_code": "empty_list"}
+        report = normalize_sinposmart_event(self.daily_vehicle_event(base))["snapshot"]["daily_vehicle_report"]
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["items"][0]["reason_code"], "empty_list")
+
+    def test_daily_vehicle_report_caps_rows_without_turning_partial_into_verified(self):
+        for count in (200, 201):
+            with self.subTest(count=count):
+                base = self.daily_vehicle_report()
+                base["items"] = [{"vehicle": f"車{index // 2}", "operation": "maintenance" if index % 2 == 0 else "equipment",
+                                  "status": "already_done", "reason_code": "verified_today"} for index in range(count)]
+                report = normalize_sinposmart_event(self.daily_vehicle_event(base))["snapshot"]["daily_vehicle_report"]
+                self.assertEqual(len(report["items"]), 200)
+                self.assertEqual(report["verified"], count == 200)
+                if count > 200:
+                    self.assertEqual(report["reason_code"], "row_limit")
+
+    def test_daily_vehicle_failed_report_keeps_partial_and_old_events_stay_unknown(self):
+        report = self.daily_vehicle_report()
+        report.update(verified=False, reason_code="save_unconfirmed")
+        report["items"][1].update(status="unconfirmed", reason_code="save_unconfirmed")
+        failed = self.daily_vehicle_event(report)
+        failed.update(status="failed", event_id="failed")
+        legacy = self.daily_vehicle_event(None)
+        legacy["snapshot"].pop("daily_vehicle_report")
+        legacy["snapshot"]["run_id"] = "old-vehicle-run"
+        legacy["event_id"] = "legacy"
+        view = build_sinposmart_admin_view([normalize_sinposmart_event(event) for event in (failed, legacy)])
+        cards = {card["event_id"]: card for card in view["tool_events"]}
+        self.assertEqual(cards["failed"]["status_label"], "失敗")
+        self.assertEqual(cards["failed"]["daily_vehicle_report"]["items"][0]["status"], "completed")
+        self.assertEqual(cards["failed"]["daily_vehicle_report"]["items"][1]["status"], "unconfirmed")
+        self.assertTrue(cards["legacy"]["daily_vehicle_report_missing"])
+        self.assertIsNone(cards["legacy"]["daily_vehicle_report"])
+        self.assertNotIn("daily_vehicle_report", normalize_sinposmart_event(legacy)["snapshot"])
+
+    def test_daily_vehicle_report_uses_historical_context_not_current_day(self):
+        raw = self.daily_vehicle_event(self.daily_vehicle_report())
+        for date_value in ("2026-10-17", "115/10/17", "1151017"):
+            with self.subTest(date_value=date_value):
+                raw["snapshot"]["target_date"] = date_value
+                event = normalize_sinposmart_event(raw, now=datetime(2026, 10, 20, 10))
+                self.assertTrue(event["snapshot"]["daily_vehicle_report"]["verified"])
+        raw["snapshot"].pop("target_date")
+        self.assertTrue(normalize_sinposmart_event(raw)["snapshot"]["daily_vehicle_report"]["verified"])
+        raw["occurred_at"] = "2026-10-18T00:01:00"
+        self.assertFalse(normalize_sinposmart_event(raw)["snapshot"]["daily_vehicle_report"]["verified"])
+        raw["snapshot"]["target_date"] = "115/10/17"
+        self.assertTrue(normalize_sinposmart_event(raw)["snapshot"]["daily_vehicle_report"]["verified"])
+
+    def test_daily_vehicle_empty_failed_report_preserves_reported_reason(self):
+        now = datetime(2026, 10, 17, 10, 26)
+        for code in ("report_missing", "unexpected_error", "execution_unconfirmed"):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                raw = self.daily_vehicle_event({**self.daily_vehicle_report(), "verified": False, "reason_code": code, "items": []})
+                raw["status"] = "failed"
+                store = SinpoSmartBackendStore(Path(tmp))
+                event = store.upsert_event(raw, now=now)
+                report = event["snapshot"]["daily_vehicle_report"]
+                self.assertEqual(report["reason_code"], code)
+                self.assertFalse(report["verified"])
+                self.assertEqual(normalize_sinposmart_event(event, now=now)["snapshot"]["daily_vehicle_report"], report)
+                payload = store.read_day("2026-10-17", now=now)
+                self.assertEqual(payload["events"][0]["snapshot"]["daily_vehicle_report"]["reason_code"], code)
+                self.assertEqual(payload["admin_view"]["tool_events"][0]["daily_vehicle_report"]["reason_code"], code)
+
+    def test_daily_vehicle_derived_status_cannot_claim_complete_for_conflicting_report(self):
+        valid = self.daily_vehicle_report()
+        for status, report, expected in (("ok", {**valid, "verified": False}, "結果未確認"),
+                                         ("completed", {**valid, "verified": "True"}, "結果未確認"),
+                                         ("failed", valid, "失敗")):
+            with self.subTest(status=status):
+                event = normalize_sinposmart_event({**self.daily_vehicle_event(report), "status": status})
+                original = json.dumps(event, ensure_ascii=False)
+                card = build_sinposmart_admin_view([event])["tool_events"][0]
+                self.assertEqual(card["status_label"], expected)
+                self.assertEqual(card["steps"][-1]["status_label"], expected)
+                self.assertFalse(card["daily_vehicle_report"]["verified"])
+                self.assertEqual(json.dumps(event, ensure_ascii=False), original)
+        other_tool = self.daily_vehicle_event({**valid, "verified": False})
+        other_tool["snapshot"]["tool_name"] = "duty_sheet"
+        self.assertEqual(build_sinposmart_admin_view([normalize_sinposmart_event(other_tool)])["tool_events"][0]["status_label"], "完成")
+
+    @staticmethod
     def login_page_png(width=512, height=1):
         def chunk(kind, content):
             return struct.pack(">I", len(content)) + kind + content + struct.pack(">I", zlib.crc32(kind + content))

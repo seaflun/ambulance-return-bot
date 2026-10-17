@@ -184,6 +184,8 @@
     .event-detail { margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
     .rescue-video-diagnostics { margin-top: 10px; }
     .rescue-video-diagnostics > summary { cursor: pointer; color: var(--ink); font-weight: 760; }
+    .daily-vehicle-details > summary { cursor: pointer; color: var(--ink); font-weight: 760; }
+    .daily-vehicle-row { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
     .rescue-video-diagnostic-row { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: var(--text-sm); }
     .event-steps { display: grid; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
     .event-step { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; gap: 10px; align-items: center; color: var(--muted); font-size: var(--text-sm); }
@@ -488,6 +490,24 @@
             {% endif %}
             {% if event.duty_sheet_summary %}
               <div class="event-detail">檔案：{{ event.duty_sheet_summary.workbook_name }}｜登打日期：{{ event.duty_sheet_summary.target_date }}｜執行模式：{{ event.duty_sheet_summary.mode_label }}</div>
+            {% endif %}
+            {% if event.daily_vehicle_report %}
+              {% set vehicle_report = event.daily_vehicle_report %}
+              <div class="event-detail">清點日期：{{ vehicle_report.target_date or '未提供日期' }}｜執行模式：{{ vehicle_report.mode_label }}</div>
+              <div class="event-detail">
+                <span class="status {{ 'complete' if vehicle_report.verified else 'attention' }}">{{ '已驗證全部完成' if vehicle_report.verified else '尚未確認全部完成' }}</span>
+                {% if vehicle_report.reason_label %}{{ vehicle_report.reason_label }}{% endif %}
+              </div>
+              <details class="event-detail daily-vehicle-details">
+                <summary>逐車保養與器材結果（{{ vehicle_report["items"] | length }} 筆）</summary>
+                {% for row in vehicle_report["items"] %}
+                  <div class="daily-vehicle-row">車輛：{{ row.vehicle or '車輛未確認' }}｜項目：{{ row.operation_label }}｜結果：{{ row.status_label }}｜原因：{{ row.reason_label }}</div>
+                {% else %}
+                  <div class="event-detail">沒有可供確認的逐車明細。</div>
+                {% endfor %}
+              </details>
+            {% elif event.daily_vehicle_report_missing %}
+              <div class="event-detail">舊紀錄無逐車明細，無法確認各車是否全部完成；原完成標籤僅保留當時的工具摘要。</div>
             {% endif %}
             {% if event.rescue_video_summary %}
               <div class="event-detail">

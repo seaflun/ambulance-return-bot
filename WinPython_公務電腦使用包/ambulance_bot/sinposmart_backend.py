@@ -77,6 +77,14 @@ LOGIN_CAPTURE_ERROR_TYPES = {
     "WebDriverException", "TimeoutException", "JavascriptException", "UnexpectedAlertPresentException", "NoSuchWindowException",
     "InvalidSessionIdException", "NoSuchFrameException", "StaleElementReferenceException", "InvalidArgumentException",
 }
+DAILY_VEHICLE_REASONS = {
+    "verified_today": "已確認今日清點紀錄。", "saved_verified": "儲存後已回查確認。",
+    "empty_list": "清單沒有可確認的車輛。", "today_not_found": "尚未找到今日紀錄。",
+    "state_unconfirmed": "清點狀態尚未確認。", "save_unconfirmed": "儲存結果尚未回查確認。",
+    "list_changed": "查詢期間清單已變更，需重新確認。", "execution_unconfirmed": "未能確認本次執行的全部結果。",
+    "report_missing": "此紀錄沒有逐車清點明細。", "report_invalid": "回報明細不完整或格式不符，無法確認全部完成。",
+    "unexpected_error": "清點期間發生未預期錯誤。", "row_limit": "明細超過 200 筆保存限制，無法確認全部完成。",
+}
 TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
 SINPOSMART_RESULT_ADVISORY_SECONDS = 15 * 60
 _STORE_LOCKS_GUARD = Lock()
@@ -1067,6 +1075,24 @@ def sinposmart_admin_tool_event(
     card["result_text"] = str(base_event.get("error") or base_event.get("content") or "")
     card["rescue_video_summary"] = sinposmart_rescue_video_summary(base_event)
     card["duty_sheet_summary"] = sinposmart_duty_sheet_summary(base_event)
+    snapshot = base_event.get("snapshot") if isinstance(base_event.get("snapshot"), dict) else {}
+    is_daily_vehicle = snapshot.get("tool_name") == "daily_vehicle"
+    card["daily_vehicle_report"] = None
+    card["daily_vehicle_report_missing"] = bool(is_daily_vehicle and finished_event and "daily_vehicle_report" not in snapshot)
+    if is_daily_vehicle and "daily_vehicle_report" in snapshot:
+        report = sanitize_daily_vehicle_report(snapshot["daily_vehicle_report"], expected_date=sinposmart_daily_vehicle_target_date(base_event))
+        if failed and report["verified"]:
+            report.update(verified=False, reason_code="execution_unconfirmed")
+        if finished_event and not failed and not report["verified"]:
+            card.update(status_label="結果未確認", status_class="attention")
+            steps[-1].update(status_label="結果未確認", status_class="attention")
+        report["mode_label"] = {"manual": "手動", "automatic": "自動"}.get(report["execution_mode"], "未記錄")
+        report["reason_label"] = DAILY_VEHICLE_REASONS.get(report["reason_code"], "")
+        for row in report["items"]:
+            row["operation_label"] = {"maintenance": "車輛保養", "equipment": "器材清點"}[row["operation"]]
+            row["status_label"] = {"completed": "已完成並回查", "already_done": "今日已完成", "unconfirmed": "未確認"}[row["status"]]
+            row["reason_label"] = DAILY_VEHICLE_REASONS[row["reason_code"]]
+        card["daily_vehicle_report"] = report
     card["waiting_age_seconds"] = 0
     card["waiting_overdue"] = False
     card["waiting_reason"] = ""
@@ -1501,6 +1527,10 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         "snapshot": snapshot,
     }
     event["merged_event_ids"] = [event["event_id"]]
+    if isinstance(raw_snapshot, dict) and "daily_vehicle_report" in raw_snapshot:
+        event["snapshot"]["daily_vehicle_report"] = sanitize_daily_vehicle_report(
+            raw_snapshot["daily_vehicle_report"], expected_date=sinposmart_daily_vehicle_target_date(event)
+        )
     if record_type == "login_failed" or (record_type == "error" and event["trigger_type"] == "login"):
         event["content"] = sanitize_login_text(raw_event.get("content"), 1200)
         event["error"] = sanitize_login_text(raw_event.get("error"), 1200)
@@ -1777,6 +1807,70 @@ def sanitize_login_diagnostic(value: Any) -> dict[str, Any]:
     return clean
 
 
+def sinposmart_daily_vehicle_target_date(event: dict[str, Any]) -> str:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    raw = snapshot.get("target_date") if "target_date" in snapshot else str(event.get("occurred_at") or "").split("T")[0]
+    if not isinstance(raw, str):
+        return ""
+    text = raw.strip()
+    roc = re.fullmatch(r"(\d{3})[/-](\d{1,2})[/-](\d{1,2})", text)
+    if roc:
+        text = f"{int(roc[1]) + 1911:04d}-{int(roc[2]):02d}-{int(roc[3]):02d}"
+    parsed = parse_sinposmart_snapshot_date(text)
+    return parsed.isoformat() if parsed else ""
+
+
+def sanitize_daily_vehicle_report(value: Any, *, expected_date: str | None = None) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    invalid = not isinstance(value, dict)
+    target_date = raw.get("target_date")
+    parsed_date = parse_sinposmart_snapshot_date(target_date) if isinstance(target_date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_date) else None
+    target_date = parsed_date.isoformat() if parsed_date else ""
+    mode = raw.get("execution_mode")
+    mode = mode if isinstance(mode, str) and mode in {"manual", "automatic"} else ""
+    reason = raw.get("reason_code", "")
+    if not isinstance(reason, str) or reason not in {"", *DAILY_VEHICLE_REASONS}:
+        reason, invalid = "report_invalid", True
+    if not target_date or not mode or not isinstance(raw.get("verified"), bool) or (expected_date is not None and target_date != expected_date):
+        invalid = True
+    rows = raw.get("items")
+    if not isinstance(rows, list):
+        rows, invalid = [], True
+    oversize = len(rows) > 200
+    items, seen = [], set()
+    positive = {"verified_today", "saved_verified"}
+    for row in rows[:200]:
+        if not isinstance(row, dict) or row.get("operation") not in ("maintenance", "equipment"):
+            invalid = True
+            continue
+        vehicle = row.get("vehicle")
+        safe_vehicle = isinstance(vehicle, str) and len(vehicle) <= 32 and re.fullmatch(r"[A-Za-z0-9\u3400-\u9fff -]*", vehicle) and not re.search(r"secret|token|password|cookie|account|username|帳號|密碼", vehicle, re.I)
+        vehicle = " ".join(vehicle.split()) if safe_vehicle else ""
+        status, row_reason = row.get("status"), row.get("reason_code")
+        if not safe_vehicle or status not in ("completed", "already_done", "unconfirmed") or not isinstance(row_reason, str) or row_reason not in DAILY_VEHICLE_REASONS:
+            status, row_reason, invalid = "unconfirmed", "report_invalid", True
+        if (status in {"completed", "already_done"} and (not vehicle or row_reason not in positive)) or (status == "unconfirmed" and row_reason in positive):
+            status, row_reason, invalid = "unconfirmed", "report_invalid", True
+        key = (vehicle.casefold(), row["operation"])
+        if key in seen:
+            invalid = True
+        seen.add(key)
+        items.append({"vehicle": vehicle, "operation": row["operation"], "status": status, "reason_code": row_reason})
+    operations = {row["operation"] for row in items}
+    if raw.get("verified") is True and items and (operations != {"maintenance", "equipment"} or reason not in {"", *positive}):
+        invalid = True
+    verified = raw.get("verified") is True and not invalid and not oversize and bool(items) and operations == {"maintenance", "equipment"} and all(row["vehicle"] and row["status"] in {"completed", "already_done"} and row["reason_code"] in positive for row in items)
+    if oversize:
+        reason = "row_limit"
+    elif invalid:
+        reason = "report_invalid"
+    elif not items and reason in {"", *positive}:
+        reason = "empty_list"
+    elif not verified and reason in {"", *positive}:
+        reason = next((row["reason_code"] for row in items if row["status"] == "unconfirmed"), "execution_unconfirmed")
+    return {"target_date": target_date, "execution_mode": mode, "verified": bool(verified), "reason_code": reason, "items": items}
+
+
 def sanitize_value(value: Any, depth: int = 0) -> Any:
     if depth > 4:
         return ""
@@ -1786,7 +1880,12 @@ def sanitize_value(value: Any, depth: int = 0) -> Any:
             key_text = str(key)
             if SENSITIVE_KEY_PATTERN.search(key_text):
                 continue
-            clean[key_text[:80]] = sanitize_login_diagnostic(item) if key_text == "login_diagnostic" else sanitize_value(item, depth + 1)
+            if key_text == "login_diagnostic":
+                clean[key_text] = sanitize_login_diagnostic(item)
+            elif key_text == "daily_vehicle_report":
+                clean[key_text] = sanitize_daily_vehicle_report(item)
+            else:
+                clean[key_text[:80]] = sanitize_value(item, depth + 1)
         return clean
     if isinstance(value, list):
         return [sanitize_value(item, depth + 1) for item in value[:200]]
