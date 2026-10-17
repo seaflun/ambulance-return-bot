@@ -674,8 +674,8 @@ class SavedRecordReadbackTests(unittest.TestCase):
                 stack.enter_context(patch.object(runtime, name))
             for name, value in {"_click_disinfection_query": True, "_open_disinfection_detail_for_case": True,
                                 "_set_disinfection_item_statuses": 8, "_save_disinfection_record_enabled": True,
-                                "_click_disinfection_save": True, "_accept_alert_if_present": "存檔完成",
-                                "_confirm_sweetalert_if_present": ""}.items():
+                                "_click_disinfection_save": True,
+                                "_wait_for_disinfection_save_confirmations": ["存檔完成"]}.items():
                 stack.enter_context(patch.object(runtime, name, return_value=value))
             detail = runtime._prepare_disinfection_record(driver, self.request(), Path("."))
         return detail, driver

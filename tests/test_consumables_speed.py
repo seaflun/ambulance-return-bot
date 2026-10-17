@@ -30,7 +30,7 @@ class ConsumablesSpeedTests(unittest.TestCase):
             consumables={"桃-9吋手套-L(雙)": 2},
         )
 
-    def test_complete_dataset_keeps_patients_across_pages_with_one_observation_window(self):
+    def test_complete_dataset_requeries_all_patients_without_fixed_observation(self):
         rows = [candidate("01"), candidate("02")]
         driver = Mock(current_url=module.ACS_URL)
         driver.execute_script.return_value = {"complete": True, "candidates": rows}
@@ -40,43 +40,42 @@ class ConsumablesSpeedTests(unittest.TestCase):
             result = module._collect_consumable_candidates(driver, self.request())
         self.assertEqual(result, rows)
         fallback.assert_not_called()
-        self.assertEqual(sleep.call_count, 32)
-        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 8)
+        sleep.assert_not_called()
         refresh.assert_called_once()
 
-    def test_patient_arriving_during_global_window_is_included_after_official_requery(self):
+    def test_patient_collection_change_in_official_requery_stops(self):
         first = [candidate("01")]
         full = [candidate("01"), candidate("02")]
         driver = Mock(current_url=module.ACS_URL)
-        snapshots = [first] * 10 + [full] * 24
+        snapshots = [first, full]
         with patch.object(module, "_read_complete_consumable_candidates", side_effect=snapshots), patch.object(
-            module.time, "sleep"
-        ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=True):
-            result = module._collect_consumable_candidates(driver, self.request())
-        self.assertEqual(result, full)
-
-    def test_patient_only_present_in_final_official_query_stops_instead_of_partial_plan(self):
-        first = [candidate("01")]
-        full = [candidate("01"), candidate("02")]
-        driver = Mock(current_url=module.ACS_URL)
-        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[first] * 33 + [full]), patch.object(
             module.time, "sleep"
         ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=True):
             with self.assertRaisesRegex(RuntimeError, "患者.*變動"):
                 module._collect_consumable_candidates(driver, self.request())
 
-    def test_last_moment_patient_change_retains_original_stability_guard(self):
+    def test_patient_only_present_in_final_official_query_stops_instead_of_partial_plan(self):
         first = [candidate("01")]
         full = [candidate("01"), candidate("02")]
         driver = Mock(current_url=module.ACS_URL)
-        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[first] * 31 + [full] * 3), patch.object(
+        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[first, full]), patch.object(
             module.time, "sleep"
-        ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=True) as refresh:
-            with self.assertRaisesRegex(RuntimeError, "仍未穩定"):
+        ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "患者.*變動"):
                 module._collect_consumable_candidates(driver, self.request())
-        refresh.assert_not_called()
 
-    def test_other_cases_do_not_restart_target_patient_observation(self):
+    def test_official_requery_failure_stops_instead_of_using_original_snapshot(self):
+        first = [candidate("01")]
+        full = [candidate("01"), candidate("02")]
+        driver = Mock(current_url=module.ACS_URL)
+        with patch.object(module, "_read_complete_consumable_candidates", return_value=first), patch.object(
+            module.time, "sleep"
+        ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=False) as refresh:
+            with self.assertRaisesRegex(RuntimeError, "正式重新查詢"):
+                module._collect_consumable_candidates(driver, self.request())
+        refresh.assert_called_once()
+
+    def test_unrelated_case_change_does_not_reject_same_patient_collection(self):
         first = [candidate("01")]
         other = {
             "href": "/ACS/ACS15002?emmTemsisid=2026071310100399999901",
@@ -85,21 +84,24 @@ class ConsumablesSpeedTests(unittest.TestCase):
         }
         final = first + [other]
         driver = Mock(current_url=module.ACS_URL)
-        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[first] * 31 + [final] * 3), patch.object(
+        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[first, final]), patch.object(
             module.time, "sleep"
         ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=True):
             self.assertEqual(module._collect_consumable_candidates(driver, self.request()), final)
 
-    def test_unknown_dataset_uses_original_full_observation(self):
+    def test_unknown_dataset_requires_ui_collection_and_official_requery(self):
         rows = [candidate("01")]
         driver = Mock(current_url=module.ACS_URL)
         driver.execute_script.return_value = {"complete": False}
         with patch.object(module, "_reset_consumable_page_to_first"), patch.object(
             module, "_stable_consumable_candidates", return_value=rows
-        ) as fallback:
+        ) as fallback, patch.object(module, "_prepare_consumable_list_snapshot", return_value=True) as refresh, patch.object(
+            module, "_click_next_consumable_page_if_present", return_value=False
+        ):
             result = module._collect_consumable_candidates(driver, self.request())
         self.assertEqual(result, rows)
-        fallback.assert_called_once_with(driver)
+        self.assertEqual(fallback.call_count, 2)
+        refresh.assert_called_once()
 
     def test_observed_failed_or_pending_query_cannot_fall_back_to_stale_dom(self):
         driver = Mock(current_url=module.ACS_URL)
@@ -109,6 +111,35 @@ class ConsumablesSpeedTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "耗材查詢"):
                     module._collect_consumable_candidates(driver, self.request())
                 fallback.assert_not_called()
+
+    def test_fallback_collects_same_case_patients_across_pages_before_and_after_requery(self):
+        first, second = [candidate("01")], [candidate("02")]
+        driver = Mock(current_url=module.ACS_URL)
+        with patch.object(module, "_read_complete_consumable_candidates", return_value=None), patch.object(
+            module, "_reset_consumable_page_to_first"
+        ), patch.object(module, "_stable_consumable_candidates", side_effect=[first, second, first, second]) as ready, patch.object(
+            module, "_click_next_consumable_page_if_present", side_effect=[True, False, True, False]
+        ), patch.object(module, "_wait_for_consumable_page_change", return_value=True), patch.object(
+            module, "_prepare_consumable_list_snapshot", return_value=True
+        ) as requery:
+            self.assertEqual(module._collect_consumable_candidates(driver, self.request()), first + second)
+        self.assertEqual(ready.call_count, 4)
+        requery.assert_called_once()
+
+    def test_fallback_requery_patient_change_stops_before_saving_any_patient(self):
+        first, full = [candidate("01")], [candidate("01"), candidate("02")]
+        driver = Mock(current_url=module.ACS_URL)
+        driver.find_elements.return_value = [object()]
+        with patch.object(module, "_open_consumable_maintenance_page"), patch.object(
+            module, "_read_complete_consumable_candidates", return_value=None
+        ), patch.object(module, "_reset_consumable_page_to_first"), patch.object(
+            module, "_stable_consumable_candidates", side_effect=[first, full]
+        ), patch.object(module, "_click_next_consumable_page_if_present", return_value=False), patch.object(
+            module, "_prepare_consumable_list_snapshot", return_value=True
+        ), patch.object(module, "_write_current_consumable_page") as write:
+            with self.assertRaisesRegex(RuntimeError, "患者.*變動"):
+                module._open_consumable_record_for_task(driver, self.request())
+        write.assert_not_called()
 
     def test_reuses_current_list_only_with_complete_dataset(self):
         driver = Mock(current_url=module.ACS_URL)
@@ -193,6 +224,79 @@ class ConsumablesSpeedTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is needed to execute the browser-side contract")
 class ConsumablesBrowserContractTests(unittest.TestCase):
+    def run_ui_readiness(self, **changes):
+        driver = Mock(current_url=module.ACS_URL)
+        driver.execute_script.return_value = True
+        module._consumable_list_ui_ready(driver)
+        source = driver.execute_script.call_args.args[0]
+        state = {"ready": "complete", "active": 0, "generation": 2, "completed": 2,
+                 "query": "same", "currentQuery": "same", "status": 200, "result": "success",
+                 "payload": [{"emmTemsisid": "test01"}], "rows": [{"emmTemsisid": "test01"}],
+                 "visible": ["test01"], "text": "loaded row", "nodeCount": 1,
+                 "start": 0, "end": 1, "recordsDisplay": 1, "drawing": False,
+                 "processing": False, "datatable": True, "serverSide": False, "recordsTotal": 1,
+                 "allRows": None}
+        state.update(changes)
+        harness = r"""
+const s = JSON.parse(process.argv[2]); global.window = global;
+global.location = {href: 'https://nfaemsap3.nfa.gov.tw/ACS/ACS15001', origin: 'https://nfaemsap3.nfa.gov.tw'};
+const links = s.visible.map(id => ({getAttribute: () => '/ACS/ACS15002?emmTemsisid=' + id,
+    closest: () => ({innerText: s.text})}));
+global.document = {readyState: s.ready, querySelectorAll: () => links,
+    querySelector: () => ({getClientRects: () => s.processing ? [{}] : []})};
+global.getComputedStyle = () => ({visibility: 'visible'});
+const api = {page: {info: () => ({start: s.start, end: s.end, recordsDisplay: s.recordsDisplay,
+    serverSide: s.serverSide, recordsTotal: s.recordsTotal})},
+    settings: () => [{bDrawing: s.drawing}], rows: options => ({
+        data: () => ({toArray: () => options.page === 'all' ? (s.allRows || s.rows) : s.rows}),
+        nodes: () => ({toArray: () => Array(s.nodeCount).fill({})})})};
+window.jQuery = () => ({DataTable: () => api});
+window.jQuery.active = s.active;
+window.jQuery.fn = {dataTable: {isDataTable: () => s.datatable}};
+window.__ambulanceAcsList = {generation: s.generation, completedGeneration: s.completed,
+    query: s.query, fingerprint: () => s.currentQuery, status: s.status,
+    payload: {result: s.result, list: s.payload}};
+try {process.stdout.write(JSON.stringify({ready: new Function(process.argv[1])()}));}
+catch(error) {process.stdout.write(JSON.stringify({error: error.message}));}
+"""
+        result = subprocess.run(
+            [shutil.which("node"), "-e", harness, source, json.dumps(state)],
+            text=True, encoding="utf-8", capture_output=True, check=True,
+        )
+        return json.loads(result.stdout)
+
+    def test_ui_readiness_accepts_complete_current_page_without_observation(self):
+        self.assertEqual(self.run_ui_readiness(), {"ready": True})
+
+    def test_ui_readiness_rejects_loading_ajax_pending_drawing_or_partial_rows(self):
+        for change in ({"ready": "loading"}, {"active": 1}, {"completed": 1},
+                       {"currentQuery": "changed"}, {"drawing": True}, {"processing": True},
+                       {"nodeCount": 0}, {"end": 2}, {"text": ""}, {"rows": [{"emmTemsisid": "old"}]}):
+            with self.subTest(change=change):
+                self.assertEqual(self.run_ui_readiness(**change), {"ready": False})
+
+    def test_ui_readiness_does_not_use_stale_rows_after_failed_or_invalid_query(self):
+        for change in ({"status": 500}, {"result": "fail"}, {"status": None},
+                       {"payload": [{"emmTemsisid": "test01"}, {"emmTemsisid": "test01"}]}):
+            with self.subTest(change=change):
+                self.assertIn("error", self.run_ui_readiness(**change))
+
+    def test_client_side_payload_patient_missing_or_filtered_from_datatable_is_not_ready(self):
+        payload = [{"emmTemsisid": "test01"}, {"emmTemsisid": "test02"}]
+        for change in ({"payload": payload}, {"payload": payload, "allRows": payload, "recordsTotal": 2}):
+            with self.subTest(change=change):
+                self.assertEqual(self.run_ui_readiness(**change), {"ready": False})
+
+    def test_legacy_without_datatables_requires_full_current_wire_and_dom_identity_match(self):
+        self.assertEqual(self.run_ui_readiness(datatable=False), {"ready": True})
+        self.assertEqual(self.run_ui_readiness(datatable=False, visible=[]), {"ready": False})
+
+    def test_empty_list_requires_positive_current_query_and_empty_table_evidence(self):
+        empty = {"payload": [], "rows": [], "visible": [], "nodeCount": 0, "end": 0,
+                 "recordsDisplay": 0, "recordsTotal": 0}
+        self.assertEqual(self.run_ui_readiness(**empty), {"ready": True})
+        self.assertEqual(self.run_ui_readiness(**dict(empty, completed=1)), {"ready": False})
+
     def test_query_observer_keeps_wire_payload_and_ignores_older_completions(self):
         driver = Mock()
         driver.execute_script.return_value = False

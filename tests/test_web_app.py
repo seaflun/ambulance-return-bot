@@ -6556,6 +6556,48 @@ class WebAppTests(unittest.TestCase):
         self.assertIsNone(response.get_json()["command"])
         self.assertEqual(app_module.read_remote_update_command()["status"], "timed_out")
 
+    def test_owned_duty_gui_staged_command_survives_offline_until_safe_handoff(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sinposmart-token"
+        headers = {"X-Credential-Sync-Token": "sinposmart-token"}
+        old = (datetime.now() - timedelta(hours=9)).isoformat(timespec="seconds")
+        for status in ("staged", "waiting_handoff"):
+            with self.subTest(status=status):
+                command = {"request_id": "same-offline-stage", "target": "duty_gui", "worker_id": "PC-01",
+                           "status": status, "requested_at": old, "updated_at": old, "last_seen_at": old}
+                app_module.write_json_atomic(app_module.remote_update_command_file("duty_gui"), command)
+                other = self.client.get("/api/sinposmart/remote-update?worker_id=PC-02", headers=headers)
+                self.assertIsNone(other.get_json()["command"])
+                self.assertEqual(app_module.read_remote_update_command("duty_gui")["status"], status)
+                response = self.client.get("/api/sinposmart/remote-update?worker_id=PC-01", headers=headers)
+                restored = response.get_json()["command"]
+                self.assertEqual(restored["request_id"], command["request_id"])
+                self.assertEqual(restored["worker_id"], "PC-01")
+                self.assertEqual(restored["status"], status)
+                self.assertEqual(restored["requested_at"], old)
+                self.assertGreater(restored["last_seen_at"], old)
+
+    def test_unclaimed_duty_gui_stage_and_other_states_keep_stale_deadline(self):
+        old = (datetime.now() - timedelta(hours=9)).isoformat(timespec="seconds")
+        for status in ("staged", "waiting_handoff"):
+            for owner in ("", "   "):
+                with self.subTest(status=status, owner=owner):
+                    self.assertTrue(app_module.remote_update_command_is_stale({
+                        "target": "duty_gui", "status": status, "worker_id": owner,
+                        "requested_at": old, "updated_at": old, "last_seen_at": old,
+                    }))
+        for target in ("duty_gui", "ambulance_worker"):
+            for status in ("pending", "preparing", "applying", "updating", "waiting_busy", "waiting_idle"):
+                with self.subTest(target=target, status=status):
+                    self.assertTrue(app_module.remote_update_command_is_stale({
+                        "target": target, "status": status, "worker_id": "PC-01",
+                        "requested_at": old, "updated_at": old, "last_seen_at": old,
+                    }))
+        for status in ("staged", "waiting_handoff"):
+            with self.subTest(target="ambulance_worker", status=status):
+                self.assertTrue(app_module.remote_update_command_is_stale({
+                    "target": "ambulance_worker", "status": status, "worker_id": "PC-01", "updated_at": old,
+                }))
+
     def test_duty_gui_waiting_command_uses_heartbeat_but_install_deadline_does_not(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sinposmart-token"
         old = (datetime.now() - timedelta(hours=9)).isoformat(timespec="seconds")
@@ -6570,7 +6612,8 @@ class WebAppTests(unittest.TestCase):
                                     headers={"X-Credential-Sync-Token": "sinposmart-token"})
                     saved = app_module.read_remote_update_command("duty_gui")
                     waiting = status in {"staged", "waiting_handoff", "waiting_busy", "waiting_idle"}
-                    self.assertEqual(saved["status"], status if waiting and heartbeat == fresh else "timed_out")
+                    staged = status in {"staged", "waiting_handoff"}
+                    self.assertEqual(saved["status"], status if staged or waiting and heartbeat == fresh else "timed_out")
 
     def test_duty_gui_expired_command_accepts_only_owned_install_proof(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sinposmart-token"

@@ -619,8 +619,8 @@ class SeleniumLocalTests(unittest.TestCase):
             selenium_local_module, "_set_disinfection_item_statuses", return_value=1
         ), patch.object(selenium_local_module, "_save_disinfection_record_enabled", return_value=True), patch.object(
             selenium_local_module, "_click_disinfection_save", return_value=True
-        ), patch.object(selenium_local_module, "_accept_alert_if_present", return_value=""), patch.object(
-            selenium_local_module, "_confirm_sweetalert_if_present", return_value=""
+        ), patch.object(
+            selenium_local_module, "_wait_for_disinfection_save_confirmations", return_value=[]
         ):
             detail = selenium_local_module._prepare_disinfection_record(
                 FakeDriver(), request, Path("artifacts")
@@ -671,8 +671,8 @@ class SeleniumLocalTests(unittest.TestCase):
         ), patch.object(selenium_local_module, "_save_disinfection_record_enabled", return_value=True), patch.object(
             selenium_local_module, "_click_disinfection_save", return_value=True
         ), patch.object(
-            selenium_local_module, "_accept_alert_if_present", return_value="權限狀態不明"
-        ), patch.object(selenium_local_module, "_confirm_sweetalert_if_present", return_value=""):
+            selenium_local_module, "_wait_for_disinfection_save_confirmations", return_value=["權限狀態不明"]
+        ):
             detail = selenium_local_module._prepare_disinfection_record(
                 FakeDriver(), request, Path("artifacts")
             )

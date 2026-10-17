@@ -2915,6 +2915,13 @@ def remote_update_stale_seconds() -> int:
 def remote_update_command_is_stale(command: dict, now: datetime | None = None) -> bool:
     if str(command.get("status") or "") not in REMOTE_UPDATE_ACTIVE_STATUSES:
         return False
+    if (
+        command.get("target") == "duty_gui"
+        and command.get("status") in {"staged", "waiting_handoff"}
+        and str(command.get("worker_id") or "").strip()
+    ):
+        # Downloaded packages wait for their owner's safe logout, including offline periods.
+        return False
     timestamp = str(command.get("updated_at") or command.get("requested_at") or "").strip()
     if not timestamp:
         return False

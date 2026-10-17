@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from selenium import webdriver
-from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException, TimeoutException, UnexpectedAlertPresentException, WebDriverException
+from selenium.common.exceptions import ElementClickInterceptedException, NoAlertPresentException, StaleElementReferenceException, TimeoutException, UnexpectedAlertPresentException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
@@ -3722,13 +3722,16 @@ def _prepare_disinfection_record(
 
     if _save_disinfection_record_enabled():
         _report_progress(progress, "儲存")
+        save_origin = _disinfection_save_document_origin(driver)
         if not _click_disinfection_save(driver, cancel_check=cancel_check):
             raise WebDriverException("missing disinfection save button")
-        alert_text = _accept_alert_if_present(driver)
-        sweetalert_text = _confirm_sweetalert_if_present(driver)
-        final_alert_text = _accept_alert_if_present(driver, timeout=1)
+        try:
+            confirmations = _wait_for_disinfection_save_confirmations(
+                driver, save_origin=save_origin, cancel_check=cancel_check,
+            )
+        except TimeoutException as exc:
+            return f"{WAITING_CONFIRMATION_MARKER} 消毒已嘗試儲存，但確認提示尚未結束：{exc}；重試前須先查既有紀錄。"
         _assert_disinfection_not_login(driver, "save")
-        confirmations = [text for text in (alert_text, sweetalert_text, final_alert_text) if text]
         confirmation = _save_confirmation_state(*confirmations)
         _report_progress(progress, "確認消毒紀錄")
         if confirmation == "failure":
@@ -4092,6 +4095,146 @@ def _set_disinfection_item_statuses(driver: webdriver.Chrome, items: list[str], 
 def normalize_hhmm_local(value: str) -> str:
     digits = "".join(ch for ch in str(value or "") if ch.isdigit())
     return digits[:4] if len(digits) >= 4 else digits
+
+
+def _disinfection_save_document_origin(driver: webdriver.Chrome) -> float | None:
+    try:
+        origin = driver.execute_script("return window.performance && window.performance.timeOrigin;")
+    except WebDriverException:
+        return None
+    if isinstance(origin, (int, float)) and not isinstance(origin, bool) and 0 < origin < float("inf"):
+        return float(origin)
+    return None
+
+
+def _wait_for_disinfection_save_confirmations(
+    driver: webdriver.Chrome,
+    *,
+    save_origin: float | None = None,
+    cancel_check: Callable[[], None] | None = None,
+    timeout: float = 9,
+) -> list[str]:
+    # Keep legacy follow-up windows; only a completed navigation permits an earlier readback.
+    started = time.monotonic()
+    base_deadline = started + timeout
+    hard_deadline = base_deadline + 1
+    first_native_at: float | None = None
+    native_tail_deadline: float | None = None
+    swal_tail_deadline: float | None = None
+    unknown_confirmation = False
+    confirmations: list[str] = []
+    terminal_success = False
+
+    def observation_deadline(visible: bool = False) -> float:
+        deadline = swal_tail_deadline or native_tail_deadline or base_deadline
+        if unknown_confirmation or visible:
+            deadline = max(base_deadline, swal_tail_deadline or base_deadline)
+        return min(deadline, hard_deadline)
+
+    def record(text: str, kind: str) -> None:
+        nonlocal terminal_success, first_native_at, native_tail_deadline, swal_tail_deadline, unknown_confirmation
+        if text:
+            confirmations.append(text)
+        if _save_confirmation_state(text) == "failure":
+            raise WebDriverException(f"disinfection save rejected: {text}")
+        terminal_success = bool(re.fullmatch(
+            r"(?:資料)?(?:儲存成功|存檔成功|存檔完成|成功儲存|操作成功|success)[!！。.\s]*",
+            text.strip(), re.IGNORECASE,
+        ))
+        now = time.monotonic()
+        if kind == "native" and first_native_at is None:
+            first_native_at = now
+            if terminal_success and now <= started + 4 and swal_tail_deadline is None:
+                native_tail_deadline = now + 5
+        if kind == "sweetalert":
+            native_phase_end = min(first_native_at, started + 4) if first_native_at is not None else started + 4
+            swal_tail_deadline = max(now, native_phase_end) + 2
+        if not terminal_success:
+            unknown_confirmation = True
+
+    while True:
+        if cancel_check:
+            cancel_check()
+        try:
+            alert = driver.switch_to.alert
+            text = str(alert.text or "")
+            alert.accept()
+            record(text, "native")
+        except NoAlertPresentException:
+            pass
+        else:
+            if time.monotonic() >= observation_deadline():
+                raise TimeoutException("disinfection save confirmation did not settle")
+            continue
+        try:
+            snapshot = driver.execute_script(
+                """
+                const overlay = document.querySelector('.swal-overlay--show-modal');
+                const state = {
+                  origin: window.performance && window.performance.timeOrigin,
+                  ready: document.readyState === 'complete',
+                  url: location.href,
+                  visible: !!overlay, clicked: false, handled: false, text: ''
+                };
+                if (!overlay) {
+                  window.__ambulanceDisinfectionSavePrompt = null;
+                  return state;
+                }
+                const modal = overlay.querySelector('.swal-modal') || overlay;
+                state.text = Array.from(modal.querySelectorAll('.swal-title, .swal-text, .swal-content'))
+                  .map(el => String(el.innerText || el.textContent || '').trim())
+                  .filter(Boolean).join(' ');
+                const buttons = Array.from(modal.querySelectorAll('button'));
+                const target = modal.querySelector('.swal-button--confirm') ||
+                  buttons.find(button => /^(是|確定|OK|Yes)$/i.test(String(button.innerText || button.textContent || button.value || '').trim()));
+                const previous = window.__ambulanceDisinfectionSavePrompt;
+                state.handled = !!previous && previous.overlay === overlay &&
+                  previous.target === target && previous.text === state.text;
+                if (target && !target.disabled && !state.handled) {
+                  window.__ambulanceDisinfectionSavePrompt = {overlay, target, text: state.text};
+                  target.click();
+                  state.clicked = true;
+                }
+                return state;
+                """
+            )
+        except UnexpectedAlertPresentException as exc:
+            if not exc.alert_text:
+                raise
+            record(str(exc.alert_text), "native")
+            if time.monotonic() >= observation_deadline():
+                raise TimeoutException("disinfection save confirmation did not settle")
+            continue
+        if isinstance(snapshot, dict):
+            text = str(snapshot.get("text") or "")
+            if snapshot.get("visible") and _save_confirmation_state(text) == "failure":
+                raise WebDriverException(f"disinfection save rejected: {text}")
+            if snapshot.get("clicked"):
+                record(text, "sweetalert")
+                if time.monotonic() >= observation_deadline(visible=True):
+                    raise TimeoutException("disinfection save confirmation did not settle")
+                continue
+            if snapshot.get("visible") and not snapshot.get("handled"):
+                terminal_success = False
+                unknown_confirmation = True
+            origin = snapshot.get("origin")
+            url = urlsplit(str(snapshot.get("url") or ""))
+            if (
+                terminal_success
+                and save_origin is not None
+                and isinstance(origin, (int, float)) and not isinstance(origin, bool)
+                and 0 < origin < float("inf") and origin != save_origin
+                and snapshot.get("ready") is True and snapshot.get("visible") is False
+                and url.hostname == "emsdt.tyfd.gov.tw" and url.path.startswith("/EmmWeb/")
+            ):
+                return confirmations
+        visible = isinstance(snapshot, dict) and bool(snapshot.get("visible"))
+        remaining = observation_deadline(visible=visible) - time.monotonic()
+        if remaining <= 0:
+            if visible or (swal_tail_deadline is not None and swal_tail_deadline > hard_deadline):
+                raise TimeoutException("disinfection save confirmation did not settle within observation budget")
+            return confirmations
+        time.sleep(min(0.2, remaining))
 
 
 def _accept_alert_if_present(driver: webdriver.Chrome, timeout: float = 4) -> str:

@@ -3,6 +3,7 @@ import inspect
 import tempfile
 import unittest
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -26,6 +27,17 @@ from consumables_login import (
     open_consumable_record_for_task,
     save_consumables_record_enabled,
 )
+
+
+def _ready_single_page_query(test):
+    """Keep row-matching fixtures separate from the independently tested browser contract."""
+    @wraps(test)
+    def run(*args, **kwargs):
+        with patch.object(consumables_login_module, "_consumable_list_ui_ready", return_value=True), patch.object(
+            consumables_login_module, "_prepare_consumable_list_snapshot", return_value=True
+        ), patch.object(consumables_login_module, "_click_next_consumable_page_if_present", return_value=False):
+            return test(*args, **kwargs)
+    return run
 
 
 class ConsumablesLoginTests(unittest.TestCase):
@@ -831,6 +843,7 @@ class ConsumablesLoginTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "TEMSISID.*患者序號"):
             _patient_sid_parts("20260713101003080319AA")
 
+    @_ready_single_page_query
     def test_consumable_detail_returns_all_same_vehicle_patient_pages(self):
         candidates = [
             {
@@ -930,6 +943,10 @@ class ConsumablesLoginTests(unittest.TestCase):
                 return [object()]
 
             def execute_script(self, script):
+                if "#result-datatable_first" in script:
+                    changed = self.page != 0
+                    self.page = 0
+                    return {"changed": changed}
                 if "result-datatable_next" in script:
                     if self.page == 0:
                         self.page = 1
@@ -950,12 +967,14 @@ class ConsumablesLoginTests(unittest.TestCase):
             case_reason="急病",
         )
 
-        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"), patch.object(
+            consumables_login_module, "_consumable_list_ui_ready", return_value=True
+        ), patch.object(consumables_login_module, "_prepare_consumable_list_snapshot", return_value=True):
             hrefs = _find_consumable_detail_hrefs(FakeDriver(), request)
 
         self.assertEqual(hrefs, [page_two[0]["href"]])
 
-    def test_consumable_detail_search_resets_to_first_page_and_stops_after_match(self):
+    def test_consumable_detail_search_resets_first_and_checks_remaining_pages_after_match(self):
         page_one = [
             {
                 "href": "/ACS/ACS15002?emmTemsisid=2026071308031900101",
@@ -991,6 +1010,8 @@ class ConsumablesLoginTests(unittest.TestCase):
 
             def execute_script(self, script):
                 if "#result-datatable_first" in script:
+                    if self.page == 0:
+                        return {"changed": False}
                     self.first_clicks += 1
                     self.page = 0
                     return {"changed": True}
@@ -1013,12 +1034,14 @@ class ConsumablesLoginTests(unittest.TestCase):
         )
         driver = FakeDriver()
 
-        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"):
+        with patch("consumables_login.WebDriverWait", FakeWait), patch("consumables_login.time.sleep"), patch.object(
+            consumables_login_module, "_consumable_list_ui_ready", return_value=True
+        ), patch.object(consumables_login_module, "_prepare_consumable_list_snapshot", return_value=True):
             hrefs = _find_consumable_detail_hrefs(driver, request)
 
         self.assertEqual(hrefs, [page_one[0]["href"]])
         self.assertEqual(driver.first_clicks, 1)
-        self.assertEqual(driver.next_clicks, 0)
+        self.assertEqual(driver.next_clicks, 2)
 
     def test_consumable_next_page_click_stops_at_disabled_control(self):
         class FakeDriver:
@@ -1032,138 +1055,57 @@ class ConsumablesLoginTests(unittest.TestCase):
         self.assertIn("result-datatable_next", driver.script)
         self.assertIn("classList.contains('disabled')", driver.script)
 
-    def test_consumable_candidate_list_waits_until_patient_links_are_stable(self):
-        first = {
-            "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031901",
-            "sid": "2026071310100308031901",
-            "text": "2026/07/13 08:05:05 桃園市中壢區月桃路一段和月山路的交叉路口",
-        }
-        second = {
-            "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031902",
-            "sid": "2026071310100308031902",
-            "text": first["text"],
-        }
+    def test_ready_consumable_list_returns_without_fixed_sleep(self):
+        rows = [{"href": "/ACS/ACS15002?emmTemsisid=test01", "sid": "test01", "text": "ready row"}]
+        with patch.object(consumables_login_module, "_consumable_list_ui_ready", return_value=True), patch.object(
+            consumables_login_module, "_read_consumable_candidates", return_value=rows
+        ), patch.object(consumables_login_module.time, "sleep") as sleep:
+            self.assertEqual(consumables_login_module._stable_consumable_candidates(Mock()), rows)
+        sleep.assert_not_called()
 
+    def test_consumable_list_waits_for_ajax_and_drawing_before_reading_rows(self):
+        ready_states = iter((False, False, True))
+        rows = [{"href": "/ACS/ACS15002?emmTemsisid=test01", "sid": "test01", "text": "ready row"}]
+        class FakeWait:
+            def __init__(self, driver, timeout):
+                self.driver = driver
+            def until(self, predicate):
+                self_results = [predicate(self.driver), predicate(self.driver), predicate(self.driver)]
+                if self_results != [False, False, True]:
+                    raise AssertionError(self_results)
+        with patch.object(consumables_login_module, "WebDriverWait", FakeWait), patch.object(
+            consumables_login_module, "_consumable_list_ui_ready", side_effect=lambda d: next(ready_states)
+        ), patch.object(consumables_login_module, "_read_consumable_candidates", return_value=rows) as read:
+            self.assertEqual(consumables_login_module._stable_consumable_candidates(Mock()), rows)
+        read.assert_called_once()
+
+    def test_unproven_consumable_list_readiness_times_out_before_using_old_rows(self):
         class FakeWait:
             def __init__(self, driver, timeout):
                 pass
-
             def until(self, predicate):
-                return True
+                raise consumables_login_module.TimeoutException("not ready")
+        with patch.object(consumables_login_module, "WebDriverWait", FakeWait), patch.object(
+            consumables_login_module, "_read_consumable_candidates"
+        ) as read:
+            with self.assertRaises(consumables_login_module.TimeoutException):
+                consumables_login_module._stable_consumable_candidates(Mock())
+        read.assert_not_called()
 
-        class FakeDriver:
-            def __init__(self):
-                self.reads = 0
+    def test_ready_marker_does_not_accept_incomplete_candidate_text(self):
+        rows = [{"href": "/ACS/ACS15002?emmTemsisid=test01", "sid": "test01", "text": ""}]
+        with patch.object(consumables_login_module, "_consumable_list_ui_ready", return_value=True), patch.object(
+            consumables_login_module, "_read_consumable_candidates", return_value=rows
+        ):
+            with self.assertRaisesRegex(RuntimeError, "尚未完整載入"):
+                consumables_login_module._stable_consumable_candidates(Mock())
 
-            def find_elements(self, by, value):
-                return [object()]
-
-            def execute_script(self, script):
-                if "a.btn_t02" not in script:
-                    return ""
-                self.reads += 1
-                return [first] if self.reads < 4 else [first, second]
-
-        with patch("consumables_login.time.sleep"):
-            candidates = consumables_login_module._stable_consumable_candidates(FakeDriver())
-
-        self.assertEqual(
-            [_emm_temsis_id_from_href(item["href"])[-2:] for item in candidates],
-            ["01", "02"],
-        )
-
-    def test_consumable_candidate_list_does_not_stop_before_late_patient_link(self):
-        first = {
-            "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031901",
-            "sid": "2026071310100308031901",
-            "text": "2026/07/13 08:05:05 桃園市中壢區月桃路一段",
-        }
-        second = {
-            "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031902",
-            "sid": "2026071310100308031902",
-            "text": first["text"],
-        }
-
-        class FakeDriver:
-            def __init__(self):
-                self.reads = 0
-
-            def execute_script(self, script):
-                self.reads += 1
-                return [first] if self.reads < 7 else [first, second]
-
-        with patch("consumables_login.time.sleep"):
-            candidates = consumables_login_module._stable_consumable_candidates(FakeDriver())
-
-        self.assertEqual(
-            [_emm_temsis_id_from_href(item["href"])[-2:] for item in candidates],
-            ["01", "02"],
-        )
-
-    def test_consumable_candidate_list_observes_full_window_before_accepting_quiet_snapshot(self):
-        first = {
-            "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031901",
-            "sid": "2026071310100308031901",
-            "text": "2026/07/13 08:05:05 桃園市中壢區月桃路一段",
-        }
-        second = {
-            "href": "/ACS/ACS15002?emmTemsisid=2026071310100308031902",
-            "sid": "2026071310100308031902",
-            "text": first["text"],
-        }
-
-        class FakeDriver:
-            def __init__(self):
-                self.reads = 0
-
-            def execute_script(self, script):
-                self.reads += 1
-                return [first] if self.reads < 10 else [first, second]
-
-        with patch("consumables_login.time.sleep"):
-            candidates = consumables_login_module._stable_consumable_candidates(FakeDriver())
-
-        self.assertEqual(
-            [_emm_temsis_id_from_href(item["href"])[-2:] for item in candidates],
-            ["01", "02"],
-        )
-
-    def test_consumable_candidate_list_waits_for_row_text_to_finish_loading(self):
-        href = "/ACS/ACS15002?emmTemsisid=2026071310100308031901"
-
-        class FakeDriver:
-            def __init__(self):
-                self.reads = 0
-
-            def execute_script(self, script):
-                self.reads += 1
-                text = "" if self.reads < 7 else "2026/07/13 08:05:05 桃園市中壢區月桃路一段"
-                return [{"href": href, "sid": _emm_temsis_id_from_href(href), "text": text}]
-
-        with patch("consumables_login.time.sleep"):
-            candidates = consumables_login_module._stable_consumable_candidates(FakeDriver())
-
-        self.assertIn("桃園市中壢區", candidates[0]["text"])
-
-    def test_consumable_candidate_list_fails_closed_when_it_never_stabilizes(self):
-        href = "/ACS/ACS15002?emmTemsisid=2026071310100308031901"
-
-        class FakeDriver:
-            def __init__(self):
-                self.reads = 0
-
-            def execute_script(self, script):
-                self.reads += 1
-                return [
-                    {
-                        "href": href,
-                        "sid": _emm_temsis_id_from_href(href),
-                        "text": f"2026/07/13 08:05:0{self.reads % 10}",
-                    }
-                ]
-
-        with patch("consumables_login.time.sleep"), self.assertRaisesRegex(RuntimeError, "候選.*未穩定"):
-            consumables_login_module._stable_consumable_candidates(FakeDriver())
+    def test_proven_empty_consumable_list_has_no_artificial_observation(self):
+        with patch.object(consumables_login_module, "_consumable_list_ui_ready", return_value=True), patch.object(
+            consumables_login_module, "_read_consumable_candidates", return_value=[]
+        ), patch.object(consumables_login_module.time, "sleep") as sleep:
+            self.assertEqual(consumables_login_module._stable_consumable_candidates(Mock()), [])
+        sleep.assert_not_called()
 
     def test_consumable_patient_group_rejects_multiple_temsis_bodies(self):
         scored = [
@@ -1175,6 +1117,7 @@ class ConsumablesLoginTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "多組.*TEMSISID"):
             consumables_login_module._select_consumable_patient_group(scored)
 
+    @_ready_single_page_query
     def test_consumable_detail_partitions_two_vehicles_before_patients(self):
         base = "20260713101003080319"
         candidates = [
@@ -1244,6 +1187,7 @@ class ConsumablesLoginTests(unittest.TestCase):
         self.assertEqual([_emm_temsis_id_from_href(href)[-2:] for href in hrefs_92], ["01", "02"])
         self.assertEqual([_emm_temsis_id_from_href(href)[-2:] for href in hrefs_93], ["03", "04", "05"])
 
+    @_ready_single_page_query
     def test_consumable_detail_keeps_patient_page_without_vehicle_text_when_detail_vehicle_matches(self):
         base = "20260713101003080319"
         candidates = [
@@ -1307,6 +1251,7 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual([_emm_temsis_id_from_href(href)[-2:] for href in hrefs], ["01", "02"])
 
+    @_ready_single_page_query
     def test_consumable_detail_filters_candidate_with_wrong_official_case_id(self):
         candidates = [
             {
@@ -1369,6 +1314,7 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(hrefs, [candidates[0]["href"]])
 
+    @_ready_single_page_query
     def test_consumable_detail_fails_closed_when_one_patient_page_never_loads(self):
         base = "20260713101003080319"
         candidates = [
@@ -1478,6 +1424,7 @@ class ConsumablesLoginTests(unittest.TestCase):
         href = "/ACS/ACS15002?emmTemsisid=2026060210100301165202"
         self.assertEqual(_emm_temsis_id_from_href(href), "2026060210100301165202")
 
+    @_ready_single_page_query
     def test_consumable_detail_prefers_matching_vehicle_text_for_two_vehicle_cases(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1541,6 +1488,7 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026060210100301165202")
 
+    @_ready_single_page_query
     def test_consumable_detail_matches_vehicle_by_ppe_plate_text(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1604,6 +1552,7 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026060210100301165202")
 
+    @_ready_single_page_query
     def test_consumable_detail_rejects_vehicle_only_old_case_match(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1638,6 +1587,7 @@ class ConsumablesLoginTests(unittest.TestCase):
         with patch("consumables_login.WebDriverWait", FakeWait), self.assertRaisesRegex(RuntimeError, "耗材列表找不到符合案件"):
             _find_consumable_detail_href(FakeDriver(), request)
 
+    @_ready_single_page_query
     def test_consumable_detail_rejects_old_case_even_when_time_and_vehicle_match(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1672,6 +1622,7 @@ class ConsumablesLoginTests(unittest.TestCase):
         with patch("consumables_login.WebDriverWait", FakeWait), self.assertRaisesRegex(RuntimeError, "耗材列表找不到符合案件"):
             _find_consumable_detail_href(FakeDriver(), request)
 
+    @_ready_single_page_query
     def test_consumable_detail_matches_case_row_created_after_midnight(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1720,6 +1671,7 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026092610100323580901")
 
+    @_ready_single_page_query
     def test_consumable_detail_rejects_single_candidate_without_case_evidence(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1754,6 +1706,7 @@ class ConsumablesLoginTests(unittest.TestCase):
         with patch("consumables_login.WebDriverWait", FakeWait), self.assertRaisesRegex(RuntimeError, "耗材列表找不到符合案件"):
             _find_consumable_detail_href(FakeDriver(), request)
 
+    @_ready_single_page_query
     def test_consumable_detail_can_use_colon_time_as_case_evidence(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1808,6 +1761,7 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026060210100301165202")
 
+    @_ready_single_page_query
     def test_consumable_detail_checks_detail_page_vehicle_when_list_rows_are_ambiguous(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1872,6 +1826,7 @@ class ConsumablesLoginTests(unittest.TestCase):
 
         self.assertEqual(href, "/ACS/ACS15002?emmTemsisid=2026062510100312223802")
 
+    @_ready_single_page_query
     def test_consumable_detail_checks_detail_vehicle_before_unique_sid_fallback(self):
         class FakeWait:
             def __init__(self, driver, timeout):
@@ -1949,6 +1904,7 @@ class ConsumablesLoginTests(unittest.TestCase):
             ],
         )
 
+    @_ready_single_page_query
     def test_consumable_detail_rejects_single_candidate_with_different_detail_vehicle(self):
         class FakeWait:
             def __init__(self, driver, timeout):

@@ -9,6 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urljoin, urlparse
+from uuid import uuid4
 
 import ddddocr
 from PIL import Image
@@ -116,6 +117,7 @@ def login_acs_and_get_driver(
             raise RuntimeError(f"一站通登入失敗，已嘗試 {MAX_LOGIN_ATTEMPTS} 次。{login_error}")
 
         _open_acs_system(driver, wait)
+        _remember_initial_consumable_list(driver, account_text, task)
         return driver
     except TaskCancellationError:
         raise
@@ -178,7 +180,10 @@ def _open_consumable_record_for_task(
     wait = WebDriverWait(driver, 15)
     if progress is not None:
         progress("開啟耗材紀錄")
-    _open_consumable_maintenance_page(driver, wait)
+    reuse_initial_query = _consume_initial_consumable_list(driver, task)
+    classification_context = _new_consumable_classification_context(driver, task)
+    if not reuse_initial_query:
+        _open_consumable_maintenance_page(driver, wait)
     if progress is not None:
         progress("查詢案件")
     hrefs = _find_consumable_detail_hrefs(driver, request)
@@ -217,6 +222,7 @@ def _open_consumable_record_for_task(
                 driver,
                 wait,
                 page_request,
+                **({"classification_context": classification_context} if classification_context is not None else {}),
                 **({"cancel_check": cancel_check} if cancel_check is not None else {}),
             )
             if progress is not None and save_consumables_record_enabled() and not _consumables_dry_run_enabled():
@@ -250,6 +256,7 @@ def _write_current_consumable_page(
     wait: WebDriverWait,
     request: AmbulanceReturnRequest,
     cancel_check: Callable[[], None] | None = None,
+    classification_context: dict[str, object] | None = None,
 ) -> str:
     added = ""
     if _needs_extra_consumable_row(request):
@@ -257,7 +264,9 @@ def _write_current_consumable_page(
         expected_sid = _emm_temsis_id_from_href(detail_url)
         if not expected_sid:
             raise RuntimeError("耗材內容頁缺少 emmTemsisid，停止填寫。")
-        item_quantities = _resolve_consumable_item_quantities(driver, request)
+        item_quantities = _resolve_consumable_item_quantities(
+            driver, request, classification_context=classification_context,
+        )
         if _consumables_dry_run_enabled():
             return f" 已唯讀核對耗材 {len(item_quantities)} 筆的品項與數量，未修改或儲存。"
         if save_consumables_record_enabled():
@@ -516,6 +525,70 @@ def _open_consumable_maintenance_page(driver: webdriver.Chrome, wait: WebDriverW
     )
 
 
+def _consumable_list_context(driver: webdriver.Chrome, document_token: str = "") -> dict | None:
+    state = driver.execute_script(
+        """
+        const state = window.__ambulanceAcsList;
+        if (!state || document.readyState !== 'complete' || !window.jQuery || window.jQuery.active !== 0 ||
+            !state.generation || state.generation !== state.completedGeneration ||
+            state.query !== state.fingerprint()) return null;
+        if (arguments[0]) state.documentToken = arguments[0];
+        if (!state.documentToken) return null;
+        return {url: location.href, query: state.query, generation: state.generation,
+            document: state.documentToken};
+        """,
+        document_token,
+    )
+    return state if isinstance(state, dict) else None
+
+
+def _consumable_task_key(task) -> str:
+    return str(task.task_id if isinstance(task, AmbulanceReturnRequest) else (task or {}).get("task_id") or "")
+
+
+def _remember_initial_consumable_list(driver: webdriver.Chrome, account: str, task=None) -> None:
+    driver._acs_authenticated_account = account
+    driver.__dict__.pop("_acs_initial_list_handoff", None)
+    task_key = _consumable_task_key(task)
+    if not task_key or _read_complete_consumable_candidates(driver) is None:
+        return
+    context = _consumable_list_context(driver, uuid4().hex)
+    if context is not None:
+        driver._acs_initial_list_handoff = {
+            "account": account, "session_id": driver.session_id, "context": context,
+            "window": driver.current_window_handle, "task_key": task_key,
+        }
+
+
+def _consume_initial_consumable_list(driver: webdriver.Chrome, task) -> bool:
+    handoff = driver.__dict__.pop("_acs_initial_list_handoff", None)
+    if not isinstance(handoff, dict):
+        return False
+    if handoff["task_key"] != _consumable_task_key(task):
+        return False
+    if _load_acs_credentials(task)[0] != handoff["account"]:
+        raise RuntimeError("耗材登入帳號與任務帳號不符，停止處理。")
+    if driver.__dict__.get("_acs_authenticated_account") != handoff["account"]:
+        raise RuntimeError("耗材登入帳號已變更，停止處理。")
+    if (driver.session_id != handoff["session_id"] or driver.current_window_handle != handoff["window"]
+            or _consumable_list_context(driver) != handoff["context"]):
+        return False
+    if _read_complete_consumable_candidates(driver) is None:
+        return False
+    return _consumable_list_context(driver) == handoff["context"]
+
+
+def _new_consumable_classification_context(driver: webdriver.Chrome, task) -> dict | None:
+    account = driver.__dict__.get("_acs_authenticated_account")
+    session_id = getattr(driver, "session_id", None)
+    if not isinstance(account, str) or not account or not isinstance(session_id, str) or not session_id:
+        return None
+    if _load_acs_credentials(task)[0] != account:
+        raise RuntimeError("耗材登入帳號與任務帳號不符，停止處理。")
+    return {"driver": driver, "account": account, "session_id": session_id,
+            "window": driver.current_window_handle, "maps": {}}
+
+
 def _navigation_current_url(driver: webdriver.Chrome) -> str:
     try:
         return str(driver.current_url or "").strip() or "空白"
@@ -704,6 +777,22 @@ def _collect_consumable_candidates(
     complete_candidates = _read_complete_consumable_candidates(driver)
     if complete_candidates is not None:
         return _observe_complete_consumable_candidates(driver, request, complete_candidates)
+    candidates = _collect_paginated_consumable_candidates(driver, request)
+    signature = _consumable_case_candidates_signature(request, candidates)
+    if not _prepare_consumable_list_snapshot(driver, WebDriverWait(driver, 15)):
+        raise RuntimeError("耗材清單無法完成當次正式重新查詢，停止辨識。")
+    refreshed = _read_complete_consumable_candidates(driver)
+    if refreshed is None:
+        refreshed = _collect_paginated_consumable_candidates(driver, request)
+    if _consumable_case_candidates_signature(request, refreshed) != signature:
+        raise RuntimeError("耗材同案患者清單於正式重新查詢後變動，停止整批填寫。")
+    return refreshed
+
+
+def _collect_paginated_consumable_candidates(
+    driver: webdriver.Chrome,
+    request: AmbulanceReturnRequest,
+) -> list[dict[str, str]]:
     _reset_consumable_page_to_first(driver)
     candidates = _stable_consumable_candidates(driver)
     if not candidates:
@@ -716,26 +805,18 @@ def _collect_consumable_candidates(
             if href and href not in seen_hrefs:
                 seen_hrefs.add(href)
                 collected.append(item)
-        page_has_case_match = any(
-            _consumable_sid_score(
-                request.case_id,
-                str(item.get("sid") or _emm_temsis_id_from_href(str(item.get("href") or ""))),
-            )
-            > 0
-            for item in candidates
-        )
-        if page_has_case_match:
-            return collected
         if _consumable_page_is_older_than_case(request.case_id, candidates):
             break
         previous_signature = _consumable_candidates_signature(candidates)
         if not _click_next_consumable_page_if_present(driver):
             break
         if not _wait_for_consumable_page_change(driver, previous_signature):
-            break
+            raise RuntimeError("耗材列表換頁未完成，停止辨識。")
         candidates = _stable_consumable_candidates(driver)
         if not candidates:
             break
+    else:
+        raise RuntimeError("耗材列表超過安全分頁上限，停止辨識。")
     return collected
 
 
@@ -764,21 +845,6 @@ def _observe_complete_consumable_candidates(
     candidates: list[dict[str, str]],
 ) -> list[dict[str, str]]:
     signature = _consumable_case_candidates_signature(request, candidates)
-    stable_rounds = 0
-    for _ in range(32):
-        time.sleep(0.25)
-        current = _read_complete_consumable_candidates(driver)
-        if current is None:
-            stable_rounds = 0
-            continue
-        current_signature = _consumable_case_candidates_signature(request, current)
-        if current_signature == signature:
-            stable_rounds += 1
-        else:
-            signature = current_signature
-            stable_rounds = 0
-    if stable_rounds < 8:
-        raise RuntimeError("耗材候選列表完整觀察後仍未穩定，停止辨識。")
     if not _prepare_consumable_list_snapshot(driver, WebDriverWait(driver, 15)):
         raise RuntimeError("耗材完整清單無法完成當次正式重新查詢，停止辨識。")
     refreshed = _read_complete_consumable_candidates(driver)
@@ -844,7 +910,7 @@ def _prepare_consumable_list_snapshot(driver: webdriver.Chrome, wait: WebDriverW
         )
         return True
     except Exception:
-        # Sites without this exact query contract retain the full DOM observation.
+        # Unknown contracts require separately verified UI readiness and a fresh query.
         return False
 
 
@@ -1019,25 +1085,71 @@ def _read_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]
     return [dict(item) for item in raw_candidates if isinstance(item, dict)]
 
 
+def _consumable_list_ui_ready(driver: webdriver.Chrome) -> bool:
+    if not _is_consumable_maintenance_page(driver):
+        return False
+    return driver.execute_script(
+        """
+        const $ = window.jQuery, state = window.__ambulanceAcsList;
+        if (document.readyState !== 'complete' || !$ || $.active !== 0 || !state ||
+            !state.generation || state.generation !== state.completedGeneration ||
+            state.query !== state.fingerprint()) return false;
+        if (!Number.isInteger(state.status) || state.status < 200 || state.status >= 300 || state.payload?.result !== 'success' ||
+            !Array.isArray(state.payload.list)) throw new Error('耗材當次正式查詢失敗');
+        const payload = new Map();
+        for (const row of state.payload.list) {
+            const sid = String(row?.emmTemsisid || '');
+            if (!sid || payload.has(sid)) throw new Error('耗材當次清單身分不完整');
+            payload.set(sid, JSON.stringify(row));
+        }
+        const visible = Array.from(document.querySelectorAll(
+            "#result-datatable a.btn_t02[href^='/ACS/ACS15002?emmTemsisid=']"));
+        const identities = links => links.map(link => {
+            const url = new URL(link.getAttribute('href'), location.href);
+            const ids = url.searchParams.getAll('emmTemsisid');
+            return url.origin === location.origin && url.pathname === '/ACS/ACS15002' &&
+                ids.length === 1 && ids[0] && String(link.closest('tr')?.innerText || '').trim() ? ids[0] : '';
+        });
+        const ids = identities(visible);
+        if (ids.some(id => !id) || new Set(ids).size !== ids.length) return false;
+        if ($.fn?.dataTable?.isDataTable('#result-datatable')) {
+            const api = $('#result-datatable').DataTable(), info = api.page.info();
+            const rows = api.rows({page: 'current'}).data().toArray();
+            const nodes = api.rows({page: 'current'}).nodes().toArray();
+            const processing = document.querySelector('#result-datatable_processing');
+            if (api.settings()[0]?.bDrawing || (processing && processing.getClientRects().length &&
+                getComputedStyle(processing).visibility !== 'hidden') ||
+                rows.length !== info.end - info.start || nodes.length !== rows.length ||
+                nodes.some(node => !node)) return false;
+            if (info.serverSide === false) {
+                const allRows = api.rows({page: 'all', search: 'none'}).data().toArray();
+                const allIds = allRows.map(row => String(row?.emmTemsisid || ''));
+                if (info.recordsTotal !== payload.size || info.recordsDisplay !== info.recordsTotal ||
+                    allRows.length !== payload.size || new Set(allIds).size !== payload.size ||
+                    allRows.some(row => payload.get(String(row?.emmTemsisid || '')) !== JSON.stringify(row))) return false;
+            } else if (info.serverSide !== true || rows.length !== payload.size) {
+                return false;
+            }
+            const expected = rows.map(row => String(row?.emmTemsisid || ''));
+            return rows.every(row => payload.get(String(row?.emmTemsisid || '')) === JSON.stringify(row)) &&
+                expected.every(id => id && ids.includes(id)) &&
+                JSON.stringify(expected.sort()) === JSON.stringify(ids.slice().sort()) &&
+                (rows.length > 0 || info.recordsDisplay === 0);
+        }
+        const payloadIds = state.payload.list.map(row => String(row?.emmTemsisid || ''));
+        return payloadIds.every(id => id && ids.includes(id)) &&
+            JSON.stringify(payloadIds.sort()) === JSON.stringify(ids.slice().sort());
+        """
+    ) is True
+
+
 def _stable_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]]:
+    WebDriverWait(driver, 15).until(_consumable_list_ui_ready)
     candidates = _read_consumable_candidates(driver)
-    signature = _consumable_candidates_signature(candidates)
-    stable_rounds = 0
-    for _ in range(32):
-        time.sleep(0.25)
-        current = _read_consumable_candidates(driver)
-        current_signature = _consumable_candidates_signature(current)
-        if current_signature == signature:
-            stable_rounds += 1
-        else:
-            candidates = current
-            signature = current_signature
-            stable_rounds = 0
-    if candidates and stable_rounds >= 8:
-        return candidates
-    if candidates:
-        raise RuntimeError("耗材候選列表完整觀察後仍未穩定，停止辨識。")
-    return []
+    if any(not item.get("href") or not item.get("sid") or not str(item.get("text") or "").strip()
+           for item in candidates):
+        raise RuntimeError("耗材候選列尚未完整載入，停止辨識。")
+    return candidates
 
 
 def _emm_temsis_id_from_href(href: str) -> str:
@@ -1311,6 +1423,7 @@ def _needs_extra_consumable_row(request: AmbulanceReturnRequest) -> bool:
 def _resolve_consumable_item_quantities(
     driver: webdriver.Chrome,
     request: AmbulanceReturnRequest,
+    classification_context: dict[str, object] | None = None,
 ) -> list[dict[str, str]]:
     inventory_by_name = {str(item["name"]): str(item["code"]) for item in consumable_inventory_options()}
     items: list[dict[str, str]] = []
@@ -1328,6 +1441,7 @@ def _resolve_consumable_item_quantities(
             series_prefix=series_prefix,
             item_prefix=item_prefix,
             item_name=name,
+            classification_context=classification_context,
         )
         items.append({"itemId": item_id, "quantity": str(int(qty)), "name": name})
     if not items:
@@ -1343,15 +1457,30 @@ def _resolve_consumable_item_id(
     series_prefix: str,
     item_prefix: str,
     item_name: str,
+    classification_context: dict[str, object] | None = None,
 ) -> str:
+    if classification_context is not None and (
+        classification_context["driver"] is not driver
+        or classification_context["session_id"] != driver.session_id
+        or classification_context["account"] != driver.__dict__.get("_acs_authenticated_account")
+        or classification_context["window"] != driver.current_window_handle
+    ):
+        raise RuntimeError("耗材分類查詢的登入帳號或 session 已變更，停止處理。")
     result = driver.execute_script(
         """
         const classType = arguments[0];
         const classIdPrefix = arguments[1];
         const seriesPrefix = arguments[2];
         const itemPrefix = arguments[3];
+        const maps = arguments[4] || {};
+        if (arguments[5] && (location.origin !== 'https://nfaemsap3.nfa.gov.tw' ||
+            location.pathname !== '/ACS/ACS15002' || !window.jQuery)) {
+            throw new Error('耗材分類查詢已離開原登入明細頁');
+        }
 
         function post(endpoint, data) {
+            const key = JSON.stringify([endpoint, Object.entries(data).sort()]);
+            if (Object.prototype.hasOwnProperty.call(maps, key)) return maps[key];
             let response = null;
             let error = null;
             window.jQuery.ajax({
@@ -1369,10 +1498,12 @@ def _resolve_consumable_item_id(
             if (error) {
                 throw new Error(error);
             }
-            if (!response || response.result === 'fail') {
+            if (!response || response.result !== 'success' || !response.map ||
+                typeof response.map !== 'object' || Array.isArray(response.map)) {
                 throw new Error((response && response.msg) || endpoint + ' failed');
             }
-            return response.map || {};
+            maps[key] = response.map;
+            return response.map;
         }
 
         function findKey(map, prefix) {
@@ -1397,16 +1528,20 @@ def _resolve_consumable_item_id(
         if (!itemId) {
             return {ok: false, detail: '找不到物品規格 ' + itemPrefix};
         }
-        return {ok: true, itemId: itemId};
+        return {ok: true, itemId: itemId, maps: maps};
         """,
         class_type,
         class_id_prefix,
         series_prefix,
         item_prefix,
+        classification_context["maps"] if classification_context is not None else {},
+        classification_context is not None,
     )
     if not isinstance(result, dict) or not result.get("ok"):
         detail = result.get("detail") if isinstance(result, dict) else str(result)
         raise RuntimeError(f"{item_name} 解析耗材 itemId 失敗：{detail}")
+    if classification_context is not None:
+        classification_context["maps"] = result["maps"]
     return str(result["itemId"])
 
 
