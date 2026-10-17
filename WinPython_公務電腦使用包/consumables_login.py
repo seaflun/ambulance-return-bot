@@ -621,23 +621,42 @@ def _is_consumable_detail_page(driver: webdriver.Chrome) -> bool:
 
 
 def _wait_for_consumable_detail_page(driver: webdriver.Chrome, wait: WebDriverWait) -> bool:
+    latest_state = None
+
+    def ready_or_sso(current_driver):
+        nonlocal latest_state
+        latest_state = _read_consumable_detail_state(current_driver)
+        if _has_consumable_navigation_state(latest_state):
+            return latest_state["isSsoPage"] or _consumable_detail_payload_ready(current_driver, state=latest_state)
+        return _is_sso_page(current_driver) or _consumable_detail_payload_ready(current_driver)
+
     try:
-        wait.until(lambda d: _is_sso_page(d) or _consumable_detail_payload_ready(d))
+        wait.until(ready_or_sso)
     except TimeoutException:
         return False
+    if _has_consumable_navigation_state(latest_state):
+        return not latest_state["isSsoPage"] and _consumable_detail_payload_ready(driver, state=latest_state)
     return not _is_sso_page(driver) and _is_consumable_detail_page(driver)
 
 
-def _consumable_detail_payload_ready(driver: webdriver.Chrome) -> bool:
-    if not _is_consumable_detail_page(driver):
-        return False
+def _has_consumable_navigation_state(state) -> bool:
+    return (isinstance(state, dict) and isinstance(state.get("currentUrl"), str)
+            and type(state.get("isSsoPage")) is bool and type(state.get("isDetailPage")) is bool)
+
+
+def _read_consumable_detail_state(driver: webdriver.Chrome) -> dict | None:
     try:
-        state = driver.execute_script(
+        return driver.execute_script(
             """
+            const currentUrl = location.href;
             const sidField = document.querySelector('#emmTemsisid');
             const caseField = document.querySelector('#csNo');
             const callNoField = document.querySelector('#callNo');
             return {
+                currentUrl: currentUrl,
+                isSsoPage: currentUrl.includes('/SSO/') || !!document.getElementById('verificationCode'),
+                isDetailPage: currentUrl.includes('ACS15002') ||
+                    /TEMSISID|emmTemsisid/.test(String(document.body?.innerText || '')),
                 hasEmmTemsisidField: !!sidField,
                 emmTemsisid: String(sidField?.value || '').trim(),
                 hasCaseIdField: !!caseField,
@@ -650,9 +669,22 @@ def _consumable_detail_payload_ready(driver: webdriver.Chrome) -> bool:
             """
         )
     except Exception:
-        return False
+        return None
+
+
+def _consumable_detail_payload_ready(driver: webdriver.Chrome, *, state: dict | None = None) -> bool:
+    if state is None:
+        state = _read_consumable_detail_state(driver)
     if not isinstance(state, dict):
         return False
+    if _has_consumable_navigation_state(state):
+        if state["isSsoPage"] or not state["isDetailPage"]:
+            return False
+        current_url = state["currentUrl"]
+    else:
+        if not _is_consumable_detail_page(driver):
+            return False
+        current_url = str(driver.current_url or "")
     if state.get("documentReady", "complete") != "complete" or state.get("ajaxActive", 0) != 0:
         return False
     if not all(
@@ -663,7 +695,7 @@ def _consumable_detail_payload_ready(driver: webdriver.Chrome) -> bool:
     actual_sid = str(state.get("emmTemsisid") or "").strip()
     actual_case_id = str(state.get("caseId") or "").strip()
     actual_call_no = str(state.get("callNo") or "").strip()
-    expected_sid = _emm_temsis_id_from_href(str(driver.current_url or ""))
+    expected_sid = _emm_temsis_id_from_href(current_url)
     return (
         bool(actual_sid and actual_case_id and actual_call_no)
         and (not expected_sid or actual_sid == expected_sid)
@@ -1877,11 +1909,12 @@ def _save_consumables(
         button,
     )
     alert_text = _accept_alert_if_present(driver, timeout_seconds=5)
-    time.sleep(1.0)
-    wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
     confirmation = _consumable_save_confirmation_state(alert_text)
     if confirmation == "failure":
         raise RuntimeError(f"耗材儲存失敗：{alert_text}")
+    if not re.fullmatch(r"(?:儲存成功|存檔成功|成功儲存|操作成功|儲存完成|存檔完成)[。.!！]?", alert_text.strip()):
+        time.sleep(1.0)
+    wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
     return alert_text
 
 

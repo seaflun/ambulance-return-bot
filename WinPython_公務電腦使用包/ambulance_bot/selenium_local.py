@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from selenium import webdriver
-from selenium.common.exceptions import ElementClickInterceptedException, NoAlertPresentException, StaleElementReferenceException, TimeoutException, UnexpectedAlertPresentException, WebDriverException
+from selenium.common.exceptions import ElementClickInterceptedException, NoAlertPresentException, NoSuchFrameException, StaleElementReferenceException, TimeoutException, UnexpectedAlertPresentException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
@@ -3683,7 +3683,7 @@ def _prepare_disinfection_record(
     _report_progress(progress, "查詢案件")
     driver.switch_to.default_content()
     driver.get(_ems_ap_url(EMS_DISINFECTION_AP))
-    _switch_to_disinfection_content_if_present(driver)
+    _switch_to_disinfection_content_if_present(driver, cancel_check=cancel_check)
     _wait_for_disinfection_query_fields(driver)
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_entry")
     _assert_disinfection_not_login(driver, "entry")
@@ -3741,12 +3741,40 @@ def _prepare_disinfection_record(
         ))
     return f"disinfection items updated={updated}; not saved."
 
-def _switch_to_disinfection_content_if_present(driver: webdriver.Chrome) -> None:
+def _switch_to_disinfection_content_if_present(
+    driver: webdriver.Chrome,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+    timeout: float = 4,
+) -> None:
     driver.switch_to.default_content()
-    try:
-        driver.switch_to.frame("R_content")
-    except Exception:
-        driver.switch_to.default_content()
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancel_check:
+            cancel_check()
+        try:
+            context = driver.execute_script(
+                """
+                return {
+                  frame: document.querySelector('frame#R_content, iframe#R_content, frame[name="R_content"], iframe[name="R_content"]'),
+                  query_ready: document.readyState === 'complete' &&
+                    !!document.getElementById('_txtFromDate') && !!document.getElementById('_txtToDate')
+                };
+                """
+            )
+            if isinstance(context, dict):
+                frame = context.get("frame")
+                if frame is not None:
+                    driver.switch_to.frame(frame)
+                    return
+                if context.get("query_ready") is True:
+                    return
+        except (NoSuchFrameException, StaleElementReferenceException):
+            driver.switch_to.default_content()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutException("disinfection content did not become ready")
+        time.sleep(min(0.2, remaining))
 
 
 def _ems_ap_url(ap_name: str) -> str:
@@ -4040,7 +4068,7 @@ def _verify_saved_disinfection_record(
         cancel_check()
     driver.switch_to.default_content()
     driver.get(_ems_ap_url(EMS_DISINFECTION_AP))
-    _switch_to_disinfection_content_if_present(driver)
+    _switch_to_disinfection_content_if_present(driver, cancel_check=cancel_check)
     _wait_for_disinfection_query_fields(driver)
     _assert_disinfection_not_login(driver, "readback query")
     _set_disinfection_query_date(driver, _disinfection_query_date(request))
