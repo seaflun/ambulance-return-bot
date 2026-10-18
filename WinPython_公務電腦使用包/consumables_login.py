@@ -44,6 +44,10 @@ CAPTCHA_PATH = OUTPUT_DIR / "nfa_acs_captcha.png"
 MAX_LOGIN_ATTEMPTS = 3
 SUPPLEMENTAL_GLOVE_NAME = "桃-9吋手套-L(雙)"
 
+class _ConsumableListPendingError(RuntimeError):
+    pass
+
+
 ocr = ddddocr.DdddOcr(show_ad=False)
 
 
@@ -855,20 +859,25 @@ def _collect_paginated_consumable_candidates(
 def _consumable_case_candidates_signature(
     request: AmbulanceReturnRequest,
     candidates: list[dict[str, str]],
-) -> tuple[tuple[str, str, str], ...]:
+) -> tuple[tuple[str, str, str, str, bool, bool], ...]:
     case_time = normalize_hhmm(request.case_time)
     address = clean_case_address(request.case_address)
     relevant = []
     for item in candidates:
-        sid = str(item.get("sid") or _emm_temsis_id_from_href(str(item.get("href") or "")))
+        href = str(item.get("href") or "")
+        sid = str(item.get("sid") or _emm_temsis_id_from_href(href))
         text = str(item.get("text") or "")
+        row_time = _hhmm_from_row_text(text)
+        address_matches = bool(address and address in clean_case_address(text))
         if _consumable_candidate_date_matches(request.case_id, sid, text) and (
             _consumable_sid_score(request.case_id, sid) > 0
-            or bool(case_time and _hhmm_from_row_text(text) == case_time)
-            or bool(address and address in clean_case_address(text))
+            or bool(case_time and row_time == case_time)
+            or address_matches
         ):
-            relevant.append(item)
-    return tuple(sorted(_consumable_candidates_signature(relevant)))
+            # Row numbers and saved-status labels can change without changing patients.
+            relevant.append((href, sid, _yyyymmdd_from_row_text(text), row_time,
+                             address_matches, bool(request.case_reason and request.case_reason in text)))
+    return tuple(sorted(relevant))
 
 
 def _observe_complete_consumable_candidates(
@@ -879,9 +888,22 @@ def _observe_complete_consumable_candidates(
     signature = _consumable_case_candidates_signature(request, candidates)
     if not _prepare_consumable_list_snapshot(driver, WebDriverWait(driver, 15)):
         raise RuntimeError("耗材完整清單無法完成當次正式重新查詢，停止辨識。")
-    refreshed = _read_complete_consumable_candidates(driver)
-    if refreshed is None or _consumable_case_candidates_signature(request, refreshed) != signature:
-        raise RuntimeError("耗材同案患者清單於正式重新查詢後變動或尚未完整，停止整批填寫。")
+    refreshed = None
+
+    def complete_list_ready(current):
+        nonlocal refreshed
+        try:
+            refreshed = _read_complete_consumable_candidates(current)
+        except _ConsumableListPendingError:
+            return False
+        return refreshed is not None
+
+    try:
+        WebDriverWait(driver, 15).until(complete_list_ready)
+    except TimeoutException as exc:
+        raise RuntimeError("耗材正式重新查詢結果尚未就緒，停止整批填寫。") from exc
+    if _consumable_case_candidates_signature(request, refreshed) != signature:
+        raise RuntimeError("耗材同案患者清單於正式重新查詢後變動，停止整批填寫。")
     return refreshed
 
 
@@ -1015,7 +1037,9 @@ def _read_complete_consumable_candidates(driver: webdriver.Chrome) -> list[dict[
         )
     except Exception:
         return None
-    if isinstance(state, dict) and (state.get("failed") or state.get("pending")):
+    if isinstance(state, dict) and state.get("pending"):
+        raise _ConsumableListPendingError("耗材查詢尚未完成，停止辨識，避免使用上次查詢資料。")
+    if isinstance(state, dict) and state.get("failed"):
         raise RuntimeError("耗材查詢失敗或尚未完成，停止辨識，避免使用上次查詢資料。")
     if not isinstance(state, dict) or state.get("complete") is not True:
         return None

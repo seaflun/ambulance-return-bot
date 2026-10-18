@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -2150,7 +2151,159 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("const localFalseAlarmOther=localFalseAlarm&&category.value==='轄內其他案件';", body)
         self.assertIn("subcategoryInput.value='誤報';", body)
         self.assertNotIn("\n      category.disabled=true;", body)
-        self.assertIn('<select name="team_leader">', body)
+        self.assertNotIn('name="team_leader"', body)
+        self.assertNotIn("帶隊官", body)
+
+    def _run_disaster_driver_options(self, initial, actions):
+        if not shutil.which("node"):
+            self.skipTest("Node.js required for disaster driver behavior tests")
+        template = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包" / "templates" / "disaster_task.html"
+        source = template.read_text(encoding="utf-8")
+        block = re.search(r"(?ms)^  function (?:updateDriverOptions|bindCard)\(.*?(?=^  function updatePreview\()", source)
+        self.assertIsNotNone(block)
+        script = r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const vm = require('vm');
+function control(value = '', values = null) {
+  const field = {value, type: 'text', checked: false, hidden: false, handlers: {},
+    addEventListener(type, fn) {(this.handlers[type] ||= []).push(fn);},
+    fire(type) {for (const fn of this.handlers[type] || []) fn({target: this});}};
+  if (values) {
+    field.options = values.map(value => ({value, hidden: false, disabled: false}));
+    Object.defineProperty(field, 'selectedIndex', {set(index) {this.value = this.options[index].value;}});
+  }
+  return field;
+}
+let cards = [];
+function card(driver) {
+  const fields = {'[name="driver"]': control(driver, ['', '甲', '乙', '丙', '丁']),
+    '[name="vehicle"]': control('車輛', ['', '車輛']), '.fuel-toggle': control(),
+    '[name="vehicle_return_date"]': control(), '[name="vehicle_return_time"]': control(),
+    '[name="fuel_quantity"]': control(), '[name="fuel_unit_price"]': control(),
+    '[data-vehicle-title]': control(), '[data-vehicle-return-now]': control(),
+    '.remove-vehicle': control(), '.fuel-fields': {hidden: true}};
+  fields['.fuel-toggle'].type = 'checkbox';
+  const item = {dataset: {}, fields, querySelector: selector => fields[selector],
+    querySelectorAll(selector) {
+      if (selector === 'select') return [fields['[name="vehicle"]'], fields['[name="driver"]']];
+      if (selector === 'input') return ['.fuel-toggle', '[name="vehicle_return_date"]',
+        '[name="vehicle_return_time"]', '[name="fuel_quantity"]', '[name="fuel_unit_price"]'].map(key => fields[key]);
+      return [fields['[name="fuel_quantity"]'], fields['[name="fuel_unit_price"]']];
+    },
+    remove() {cards.splice(cards.indexOf(this), 1);},
+    cloneNode() {
+      const copy = card(fields['[name="driver"]'].value);
+      copy.dataset.bound = this.dataset.bound;
+      copy.fields['[name="driver"]'].options = fields['[name="driver"]'].options.map(option => ({...option}));
+      return copy;
+    }};
+  return item;
+}
+cards = input.initial.map(card);
+const list = {get children() {return cards;}, get firstElementChild() {return cards[0];},
+  querySelectorAll: selector => selector === '.vehicle-card' ? cards : cards.map(item => item.fields['[name="driver"]']),
+  appendChild: item => cards.push(item)};
+const add = control(), commander = control('甲', ['', '甲', '乙', '丙', '丁']);
+const noop = () => {};
+const context = {list, document: {getElementById: () => add}, form: {elements: {commander}},
+  topReturnDate: {value: '2026/10/18'}, topReturn: {value: '1200'}, updateFuelFields: noop,
+  updateLastMileageHint: noop, updateCurrentPackages: noop, updateRequiredHints: noop,
+  updatePreview: noop, updateFolderPreview: noop, updateFuelTotal: noop, dateNow: noop, hhmmNow: noop};
+vm.runInNewContext(input.source, context);
+context.reindexCards();
+const snapshot = () => ({values: cards.map(item => item.fields['[name="driver"]'].value),
+  options: cards.map(item => Object.fromEntries(item.fields['[name="driver"]'].options.map(option =>
+    [option.value, [option.hidden, option.disabled]]))),
+  commander: {value: commander.value, options: commander.options}});
+const states = [snapshot()];
+for (const [type, index, value] of input.actions) {
+  if (type === 'change') {const field = cards[index].fields['[name="driver"]']; field.value = value; field.fire('change');}
+  if (type === 'remove') cards[index].fields['.remove-vehicle'].fire('click');
+  if (type === 'add') add.fire('click');
+  states.push(snapshot());
+}
+process.stdout.write(JSON.stringify(states));
+"""
+        result = subprocess.run([shutil.which("node"), "-e", script],
+                                input=json.dumps(dict(source=block.group(0), initial=initial, actions=actions)),
+                                text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_disaster_driver_choices_are_mutually_exclusive_for_every_vehicle(self):
+        states = self._run_disaster_driver_options(["", "", ""],
+                                                   [("change", 0, "甲"), ("change", 1, "乙"), ("change", 2, "丙")])
+        self.assertEqual([True, True], states[1]["options"][2]["甲"])
+        self.assertEqual([True, True], states[2]["options"][2]["乙"])
+        self.assertEqual(["甲", "乙", "丙"], states[-1]["values"])
+        for index, own in enumerate(("甲", "乙", "丙")):
+            self.assertEqual([False, False], states[-1]["options"][index][own])
+            self.assertEqual([False, False], states[-1]["options"][index][""])
+            for other in {"甲", "乙", "丙"} - {own}:
+                self.assertEqual([True, True], states[-1]["options"][index][other])
+        self.assertEqual(states[0]["commander"], states[-1]["commander"])
+
+    def test_disaster_driver_change_and_clear_release_choices_without_changing_other_drivers(self):
+        states = self._run_disaster_driver_options(["甲", "乙", "丙"], [("change", 0, "丁"), ("change", 1, "")])
+        self.assertEqual(["丁", "乙", "丙"], states[1]["values"])
+        self.assertEqual([False, False], states[1]["options"][1]["甲"])
+        self.assertEqual([True, True], states[1]["options"][2]["丁"])
+        self.assertEqual(["丁", "", "丙"], states[2]["values"])
+        self.assertEqual([False, False], states[2]["options"][0]["乙"])
+
+    def test_disaster_driver_remove_and_new_clone_recalculate_options(self):
+        states = self._run_disaster_driver_options(["甲", "乙", "丙"],
+                                                   [("remove", 1), ("add",), ("change", 2, "乙"), ("add",)])
+        self.assertEqual(["甲", "丙"], states[1]["values"])
+        self.assertEqual([False, False], states[1]["options"][0]["乙"])
+        self.assertEqual(["甲", "丙", ""], states[2]["values"])
+        self.assertEqual([True, True], states[2]["options"][2]["甲"])
+        self.assertEqual([True, True], states[2]["options"][2]["丙"])
+        self.assertEqual(["甲", "丙", "乙", ""], states[-1]["values"])
+        self.assertEqual([True, True], states[-1]["options"][3]["乙"])
+        self.assertEqual([False, False], states[-1]["options"][3]["丁"])
+
+    def test_disaster_duplicate_prefilled_driver_clears_only_later_duplicate(self):
+        state = self._run_disaster_driver_options(["甲", "甲", "乙"], [])[0]
+        self.assertEqual(["甲", "", "乙"], state["values"])
+        self.assertEqual([False, False], state["options"][0]["甲"])
+        self.assertEqual([True, True], state["options"][1]["甲"])
+
+    def _run_disaster_action_text(self, initial, additions):
+        if not shutil.which("node"):
+            self.skipTest("Node.js required for disaster action text behavior tests")
+        template = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包" / "templates" / "disaster_task.html"
+        block = re.search(r"(?ms)^  function appendActionText\(text\)\{.*?^  \}", template.read_text(encoding="utf-8"))
+        self.assertIsNotNone(block)
+        script = r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const note = {value: input.initial}, noop = () => {};
+const context = {document: {getElementById: () => note}, updatePreview: noop, updateRequiredHints: noop};
+require('vm').runInNewContext(input.source, context);
+const states = [];
+for (const text of input.additions) {context.appendActionText(text); states.push(note.value);}
+process.stdout.write(JSON.stringify(states));
+"""
+        result = subprocess.run([shutil.which("node"), "-e", script],
+                                input=json.dumps(dict(source=block.group(0), initial=initial, additions=additions)),
+                                text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_disaster_rank_package_leaves_one_space_for_typing_and_joins_next_name(self):
+        for rank in ("分隊長", "小隊長", "隊員"):
+            with self.subTest(rank=rank):
+                self.assertEqual([rank + " ", rank + " 甲"], self._run_disaster_action_text("", [rank, "甲"]))
+                self.assertEqual(["現場處理，" + rank + " ", "現場處理，" + rank + " 甲"],
+                                 self._run_disaster_action_text("現場處理", [rank, "甲"]))
+        self.assertEqual(["分隊長 小隊長 ", "分隊長 小隊長 乙"],
+                         self._run_disaster_action_text("分隊長 ", ["小隊長", "乙"]))
+
+    def test_disaster_package_spacing_keeps_commas_and_internal_handwritten_spaces(self):
+        self.assertEqual(["現場處理，乙", "現場處理，乙，乙"], self._run_disaster_action_text("現場處理", ["乙", "乙"]))
+        self.assertEqual(["既有   手打 分隊長 甲"], self._run_disaster_action_text("  既有   手打 分隊長   ", ["  甲  "]))
+        self.assertEqual(["", "甲", "甲"], self._run_disaster_action_text("  ", ["", "  甲  ", "   "]))
+        self.assertEqual(["分隊長 "], self._run_disaster_action_text("分隊長 ", [""]))
 
     def test_disaster_false_alarm_rejects_categories_other_than_local_other_or_support(self):
         task_request = AmbulanceReturnRequest(
@@ -2704,6 +2857,145 @@ class WebAppTests(unittest.TestCase):
         self.assertNotEqual(current["revision"], updated_payload["revision"])
         self.assertEqual(409, stale.status_code)
         self.assertEqual("revision_conflict", stale.get_json()["error"])
+
+    @staticmethod
+    def _disaster_title_snapshot():
+        return {"schema_version": 1, "source": "official_duty_staff", "target_date": "2026-10-18",
+                "complete": True, "members": [{"actor_no": "01", "name": "甲", "title": "分隊長"},
+                                               {"actor_no": "02", "name": "乙", "title": "隊員"}]}
+
+    @staticmethod
+    def _disaster_title_case(case_date="2026/10/18"):
+        return {"case_id": "disaster-personnel-titles", "case_date": case_date, "case_time": "1200",
+                "return_time": "1300", "address": "測試地點", "personnel": ["甲", "乙", "未知"],
+                "commander": "乙", "summary_type": "火災",
+                "vehicle_entries": [{"vehicle": "新坡11", "driver": "甲"}]}
+
+    def test_vehicle_settings_carries_official_titles_without_editable_revision_changes(self):
+        snapshot = self._disaster_title_snapshot()
+        settings = app_module.vehicle_settings_snapshot()
+        os.environ["WORKER_TOKEN"] = "test-token"
+        with mock.patch.object(app_module, "read_personnel_title_snapshot", return_value=snapshot, create=True) as read:
+            response = self.client.get("/worker/vehicle-settings", headers={"X-Worker-Token": "test-token"})
+            self.assertEqual(200, response.status_code)
+            payload = response.get_json()
+        self.assertEqual(snapshot, payload.get("disaster_personnel_titles"))
+        read.assert_called_once_with(app_module.artifacts_dir)
+        self.assertNotIn("disaster_personnel_titles", app_module.vehicle_settings_snapshot())
+        normalized = app_module.normalize_remote_vehicle_settings(payload)
+        self.assertEqual(snapshot, normalized["disaster_personnel_titles"])
+        self.assertEqual(app_module.vehicle_settings_revision(settings), app_module.vehicle_settings_revision(normalized))
+        with mock.patch.object(app_module, "read_personnel_title_snapshot", side_effect=AssertionError("no local title read"), create=True):
+            app_module.cache_nas_vehicle_settings(normalized)
+        self.assertEqual(snapshot, app_module.cached_nas_vehicle_settings()["disaster_personnel_titles"])
+
+    def test_remote_vehicle_settings_missing_or_invalid_titles_keeps_legacy_compatibility(self):
+        payload = app_module.vehicle_settings_snapshot()
+        for extra in ({}, {"disaster_personnel_titles": {"complete": False}}, {"disaster_personnel_titles": None}):
+            with self.subTest(extra=extra):
+                normalized = app_module.normalize_remote_vehicle_settings({**payload, **extra})
+                self.assertIsNotNone(normalized)
+                self.assertEqual({}, normalized.get("disaster_personnel_titles"))
+
+    def test_disaster_nas_render_titles_only_personnel_packages_and_filters_rank_packages(self):
+        packages = ["分隊長", "小隊長", "隊員", "現場待命", "小隊長協助現場"]
+        app_module.save_disaster_action_packages(packages, Path(self.tmp.name))
+        self.import_case_for_form(self._disaster_title_case())
+        self.client.set_cookie(app_module.SELECTED_CASE_PENDING_COOKIE, "1", domain="100.114.126.58")
+        with mock.patch.object(app_module, "read_personnel_title_snapshot", return_value=self._disaster_title_snapshot(), create=True):
+            body = html.unescape(self.client.get("/app/disaster", headers={"Host": "100.114.126.58:8080"}).get_data(as_text=True))
+        self.assertIn('data-action-text="分隊長 甲" data-current-personnel-package="甲">分隊長 甲</button>', body)
+        self.assertIn('data-action-text="隊員 乙" data-current-personnel-package="乙">隊員 乙</button>', body)
+        self.assertIn('data-action-text="未知" data-current-personnel-package="未知">未知</button>', body)
+        for rank in ("分隊長", "小隊長", "隊員"):
+            self.assertNotIn(f'data-action-text="{rank}"', body)
+        self.assertIn('data-action-text="小隊長協助現場"', body)
+        self.assertIn('name="personnel" value="甲,乙,未知"', body)
+        self.assertIn('<option value="甲" selected>甲</option>', body)
+        self.assertIn('<option value="乙" selected>乙</option>', body)
+        self.assertNotIn('<option value="分隊長 甲"', body)
+        self.assertEqual(packages, app_module.load_disaster_action_packages(Path(self.tmp.name)))
+
+    def test_disaster_local_render_uses_synced_titles_and_only_existing_settings_fetch(self):
+        with mock.patch.object(app_module, "read_personnel_title_snapshot", return_value=self._disaster_title_snapshot(), create=True):
+            remote = app_module.normalize_remote_vehicle_settings(app_module.vehicle_settings_api_payload())
+        self.import_case_for_form(self._disaster_title_case())
+        with mock.patch.object(app_module, "fetch_nas_vehicle_settings", return_value=remote) as fetch, mock.patch.object(
+            app_module, "read_personnel_title_snapshot", side_effect=AssertionError("local must use NAS payload"), create=True
+        ):
+            body = html.unescape(self.client.get("/app/disaster").get_data(as_text=True))
+        fetch.assert_called_once()
+        self.assertIn('data-action-text="分隊長 甲"', body)
+
+    def test_disaster_titles_date_mismatch_and_unavailable_snapshot_fall_back_to_names(self):
+        for snapshot in (self._disaster_title_snapshot(), {}):
+            with self.subTest(snapshot=bool(snapshot)):
+                self.import_case_for_form(self._disaster_title_case("2026/10/17"))
+                self.client.set_cookie(app_module.SELECTED_CASE_PENDING_COOKIE, "1", domain="100.114.126.58")
+                with mock.patch.object(app_module, "read_personnel_title_snapshot", return_value=snapshot, create=True):
+                    body = html.unescape(self.client.get("/app/disaster", headers={"Host": "100.114.126.58:8080"}).get_data(as_text=True))
+                self.assertIn('data-action-text="甲" data-current-personnel-package="甲">甲</button>', body)
+                self.assertNotIn('data-action-text="分隊長 甲"', body)
+
+    def test_disaster_validation_and_folder_error_renders_keep_personnel_titles(self):
+        data = MultiDict([("case_id", "disaster-title-error"), ("case_date", "2026/10/18"), ("case_time", "1200"),
+                          ("return_time", "1300"), ("case_address", "測試地點"), ("summary_type", "火災"),
+                          ("case_reason", "一般(集合)住宅"), ("personnel", "甲,乙,未知"), ("commander", "乙"),
+                          ("recorder_category", "轄內A3"), ("vehicle", "新坡11"), ("driver", "甲"),
+                          ("vehicle_return_time", "1300"), ("mileage", "100")])
+        for folder_error in (False, True):
+            with self.subTest(folder_error=folder_error), mock.patch.object(
+                app_module, "read_personnel_title_snapshot", return_value=self._disaster_title_snapshot(), create=True
+            ), mock.patch.object(app_module, "ensure_disaster_media_folders", side_effect=OSError("synthetic folder unavailable")):
+                if folder_error:
+                    data["action_note"] = "現場待命"
+                response = self.client.post("/tasks/disaster", data=data, headers={"Host": "100.114.126.58:8080"})
+                self.assertEqual(400, response.status_code)
+                self.assertIn('data-action-text="分隊長 甲"', html.unescape(response.get_data(as_text=True)))
+
+    def test_disaster_dynamic_personnel_buttons_keep_titles_and_original_values(self):
+        if not shutil.which("node"):
+            self.skipTest("Node.js required for disaster personnel title behavior tests")
+        template = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包" / "templates" / "disaster_task.html"
+        source = template.read_text(encoding="utf-8")
+        append = re.search(r"(?ms)^  function appendActionText\(text\)\{.*?^  \}", source)
+        buttons = re.search(r"(?ms)^  function updateCurrentPackageButtons\(.*?(?=^  function escapeHtml\()", source)
+        self.assertIsNotNone(append)
+        self.assertIsNotNone(buttons)
+        script = r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8')), noop = () => {};
+function container() {return {children: [], replaceChildren() {this.children = [];}, appendChild(button) {this.children.push(button);}};}
+const currentVehiclePackages = {}, currentPersonnelPackages = {};
+const currentVehicleButtons = container(), currentPersonnelButtons = container();
+const personnel = {value: '甲,乙,未知,constructor'}, note = {value: ''};
+const form = {elements: {personnel}, querySelectorAll: () => [{value: '新坡11'}]};
+const document = {getElementById: () => note, createElement: () => ({dataset: {}, handlers: {},
+  addEventListener(type, fn) {this.handlers[type] = fn;}})};
+const context = {form, document, currentVehiclePackages, currentPersonnelPackages, currentVehicleButtons,
+  currentPersonnelButtons, personnelTitles: {甲: '分隊長', 乙: '隊員'}, updatePreview: noop, updateRequiredHints: noop};
+require('vm').runInNewContext(input.source, context);
+context.updateCurrentPackages();
+const initial = currentPersonnelButtons.children.map(button => ({label: button.textContent, action: button.dataset.actionText,
+  person: button.dataset.currentPersonnelPackage}));
+currentPersonnelButtons.children[0].handlers.click();
+personnel.value = '乙,未知,constructor';
+context.updateCurrentPackages();
+currentPersonnelButtons.children[0].handlers.click();
+process.stdout.write(JSON.stringify({initial, note: note.value, personnel: personnel.value,
+  dynamic: currentPersonnelButtons.children.map(button => button.textContent), vehicle: currentVehicleButtons.children[0].textContent}));
+"""
+        result = subprocess.run([shutil.which("node"), "-e", script], input=json.dumps({"source": append.group(0) + "\n" + buttons.group(0)}),
+                                text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        state = json.loads(result.stdout)
+        self.assertEqual([{"label": "分隊長 甲", "action": "分隊長 甲", "person": "甲"},
+                          {"label": "隊員 乙", "action": "隊員 乙", "person": "乙"},
+                          {"label": "未知", "action": "未知", "person": "未知"},
+                          {"label": "constructor", "action": "constructor", "person": "constructor"}], state["initial"])
+        self.assertEqual("分隊長 甲，隊員 乙", state["note"])
+        self.assertEqual(["隊員 乙", "未知", "constructor"], state["dynamic"])
+        self.assertEqual("乙,未知,constructor", state["personnel"])
+        self.assertEqual("新坡11", state["vehicle"])
 
     def test_local_vehicle_setting_edit_writes_to_nas_and_keeps_nas_snapshot(self):
         os.environ["WORKER_SERVER_URL"] = "http://nas.test:8080"

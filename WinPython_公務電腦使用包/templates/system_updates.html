@@ -148,6 +148,24 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.18.1352">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <h2 class="update-card__title">修正耗材清單誤判與簡化救災登打</h2>
+        </div>
+        <span class="update-card__versions">2026.10.18.1352</span>
+      </header>
+      <ul class="update-card__items">
+        <li>耗材正式重查後，等待本次完整清單就緒便立即繼續，避免清單仍在繪製時誤判沒有案件。</li>
+        <li>患者集合以案件匹配依據與患者紀錄辨識，畫面序號或登打狀態更新不再誤判患者增減；真正集合變動仍停止填寫。</li>
+        <li>失敗原因分別顯示清單未就緒或患者集合變動，保留多患者分配、單次儲存與正式儲存後回查核對。</li>
+        <li>移除救災登打表單的帶隊官欄位，保留既有紀錄相容性與其餘登打流程。</li>
+        <li>救災各車的司機選單互相排除已選人員，改選或移除車輛後同步釋出；新增第三車及後續車輛也適用。</li>
+        <li>值班台同步官方勤務表的當日完整職稱資料，救災出勤人員套餐自動帶入「職稱 姓名」；不明、過期或對應衝突時保留姓名，不推測職稱。</li>
+        <li>移除分隊長、小隊長、隊員的獨立職稱套餐，保留自行編輯處理情形；司機、指揮官與出勤人員的原始資料維持不變。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.18.1045">
       <header class="update-card__heading">
         <div>

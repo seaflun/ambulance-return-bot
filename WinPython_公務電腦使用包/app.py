@@ -141,6 +141,9 @@ from ambulance_bot.site_diagnostics import (
 )
 from ambulance_bot.sinposmart_backend import (
     SinpoSmartBackendStore,
+    normalize_personnel_title_snapshot,
+    personnel_titles_for_case,
+    read_personnel_title_snapshot,
     sinposmart_fire_day_label,
     sinposmart_person_label,
     sinposmart_record_type_label,
@@ -391,6 +394,7 @@ def disaster_task():
         case_lookup=prepared_case_lookup("disaster"),
         person_options=person_options,
         vehicle_options=vehicle_options,
+        personnel_titles=effective_disaster_personnel_titles(selected_case, nas_settings),
         vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
         disaster_reason_options=DISASTER_REASON_OPTIONS,
         disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
@@ -559,6 +563,7 @@ def create_disaster_task():
             recent_tasks=recent_tasks_for_task_form("disaster"),
             case_lookup=prepared_case_lookup("disaster"),
             person_options=person_options_from_personnel(task_request.personnel),
+            personnel_titles=effective_disaster_personnel_titles(task_request.to_dict(), nas_settings),
             vehicle_options=[record["label"] for record in vehicle_records],
             vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
@@ -586,6 +591,7 @@ def create_disaster_task():
             recent_tasks=recent_tasks_for_task_form("disaster"),
             case_lookup=prepared_case_lookup("disaster"),
             person_options=person_options_from_personnel(task_request.personnel),
+            personnel_titles=effective_disaster_personnel_titles(task_request.to_dict(), nas_settings),
             vehicle_options=[record["label"] for record in vehicle_records],
             vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
@@ -4128,6 +4134,11 @@ def normalize_manual_refresh_commands(value: object) -> list[dict[str, str]]:
 
 def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -> dict[str, object]:
     snapshot = dict(settings or vehicle_settings_snapshot())
+    personnel_snapshot = (
+        normalize_personnel_title_snapshot(snapshot.get("disaster_personnel_titles"))
+        if "disaster_personnel_titles" in snapshot
+        else read_personnel_title_snapshot(artifacts_dir)
+    )
     daily_snapshot = daily_vehicle_mileage_snapshot_from_settings(snapshot)
     if daily_snapshot is None:
         daily_snapshot = read_daily_vehicle_mileage_snapshot()
@@ -4141,6 +4152,7 @@ def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -
         "ems_vehicles": list(snapshot.get("ems_vehicles") or []),
         "disaster_vehicles": list(snapshot.get("disaster_vehicles") or []),
         "disaster_action_packages": list(snapshot.get("disaster_action_packages") or []),
+        "disaster_personnel_titles": personnel_snapshot,
         "frequent_civilpower_member_ids": normalize_frequent_member_ids(
             snapshot.get("frequent_civilpower_member_ids")
         ),
@@ -4163,6 +4175,7 @@ def normalize_remote_vehicle_settings(payload: object) -> dict[str, object] | No
         "ems_vehicles": ems_vehicles,
         "disaster_vehicles": disaster_vehicles,
         "disaster_action_packages": disaster_action_packages,
+        "disaster_personnel_titles": normalize_personnel_title_snapshot(payload.get("disaster_personnel_titles")),
         "frequent_civilpower_member_ids": normalize_frequent_member_ids(
             payload.get("frequent_civilpower_member_ids")
         ),
@@ -4951,6 +4964,18 @@ def effective_disaster_action_packages(settings: dict[str, object] | None = None
     if settings is not None:
         return list(settings["disaster_action_packages"])
     return load_disaster_action_packages(artifacts_dir)
+
+
+def effective_disaster_personnel_titles(
+    case: Mapping[str, object],
+    settings: Mapping[str, object] | None = None,
+) -> dict[str, str]:
+    if request_is_local_host():
+        snapshot = settings.get("disaster_personnel_titles") if settings is not None else {}
+    else:
+        snapshot = read_personnel_title_snapshot(artifacts_dir)
+    personnel = [name for name, _ in person_options_from_personnel(case.get("personnel"))]
+    return personnel_titles_for_case(snapshot, selected_case_date_input(dict(case)), personnel)
 
 
 def effective_disaster_vehicle_recorder_codes() -> dict[str, str]:

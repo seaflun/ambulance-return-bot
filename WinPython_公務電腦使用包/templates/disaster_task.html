@@ -223,6 +223,7 @@
         {% endif %}
       {% endfor %}
       {% set current_personnel = selected_case.personnel or [] %}
+      {% set personnel_titles = personnel_titles | default({}) %}
       {% if current_personnel is string %}
         {% set current_personnel = current_personnel.split(',') %}
       {% endif %}
@@ -244,7 +245,6 @@
         <label class="field-visual" data-required-message="請選擇正確案件類型"><span class="field-label-title">案件類型<span class="field-error-mark" aria-hidden="true">*</span></span><select name="summary_type" required><option value="火災"{% if selected_summary_type == '火災' %} selected{% endif %}>火災</option><option value="災害搶救"{% if selected_summary_type == '災害搶救' %} selected{% endif %}>災害搶救</option><option value="救護"{% if selected_summary_type == '救護' %} selected{% endif %}>救護</option></select></label>
         <label class="field-visual{% if not selected_reason %} is-pending{% endif %}" data-required-message="請選擇正確事由"><span class="field-label-title">事由<span class="field-error-mark" aria-hidden="true">*</span></span><select name="case_reason" id="case-reason" required><option value="">請選擇</option>{% for reason in selected_reason_options %}<option value="{{ reason }}"{% if selected_reason == reason %} selected{% endif %}>{{ reason }}</option>{% endfor %}{% if selected_reason and selected_reason not in selected_reason_options %}<option value="{{ selected_reason }}" selected>{{ selected_reason }}</option>{% endif %}</select></label>
         <label class="field-visual{% if not selected_case.commander %} is-pending{% endif %}" data-required-message="請選擇指揮官"><span class="field-label-title">指揮官<span class="field-error-mark" aria-hidden="true">*</span></span><select name="commander" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if selected_case.commander == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
-        <label class="field-visual"><span class="field-label-title">帶隊官</span><select name="team_leader"><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if selected_case.team_leader == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
         <label class="field-visual full{% if selected_summary_type == '火災' and selected_reason == '其他' and not selected_case.reason_other %} is-pending{% endif %}" id="reason-other-field" data-required-message="事由選擇其他時請填寫說明"{% if selected_summary_type != '火災' or selected_reason != '其他' %} hidden{% endif %}><span class="field-label-title">其他事由說明<span class="field-error-mark" aria-hidden="true">*</span></span><input name="reason_other" value="{{ selected_case.reason_other or '' }}"></label>
       </div>
       <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
@@ -275,7 +275,7 @@
     <section class="panel">
       <h2>工作紀錄</h2>
       <div class="package-cluster">
-        <span class="package-group-label">套餐帶入</span><div class="package-buttons" aria-label="處理情形套餐">{% for text in disaster_action_packages %}<button type="button" class="secondary package-button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
+        <span class="package-group-label">套餐帶入</span><div class="package-buttons" aria-label="處理情形套餐">{% for text in disaster_action_packages if text not in ['分隊長','小隊長','隊員'] %}<button type="button" class="secondary package-button" data-action-text="{{ text }}">{{ text }}</button>{% endfor %}</div>
       </div>
       <div class="package-cluster" id="current-vehicle-packages"{% if not current_vehicle_count.value %} hidden{% endif %}>
         <span class="package-group-label">本次出勤車輛</span>
@@ -293,7 +293,8 @@
           {% for person in current_personnel %}
             {% set person_name = person | string | trim %}
             {% if person_name %}
-              <button type="button" class="secondary package-button" data-action-text="{{ person_name }}" data-current-personnel-package="{{ person_name }}">{{ person_name }}</button>
+              {% set person_label = ((personnel_titles.get(person_name) ~ ' ') if personnel_titles.get(person_name) else '') ~ person_name %}
+              <button type="button" class="secondary package-button" data-action-text="{{ person_label }}" data-current-personnel-package="{{ person_name }}">{{ person_label }}</button>
             {% endif %}
           {% endfor %}
         </div>
@@ -355,6 +356,7 @@
   const category = document.getElementById('recorder-category');
   const reason = document.getElementById('case-reason');
   const reasonOptionsByType = {{ disaster_reason_options_by_type | tojson }};
+  const personnelTitles = {{ personnel_titles | default({}) | tojson }};
   const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
   const lastVehicleMileageTimes = {{ last_vehicle_mileage_times() | tojson }};
   const maxVehicleMileageChangeKm = 300;
@@ -432,10 +434,26 @@
     const mileage=String(lastVehicleMileages[vehicle.value]||'').trim();
     hint.textContent=/^\d+$/.test(mileage)?`上次該車輛登打的里程：${mileage}（最近同步參考，非即時官網資料）`:'';
   }
+  function updateDriverOptions(){
+    const drivers=Array.from(list.querySelectorAll('[name="driver"]'));
+    const selected=new Set();
+    drivers.forEach(driver=>{
+      if(driver.value&&selected.has(driver.value)) driver.value='';
+      if(driver.value) selected.add(driver.value);
+    });
+    drivers.forEach(driver=>{
+      Array.from(driver.options).forEach(option=>{
+        const used=Boolean(option.value&&option.value!==driver.value&&selected.has(option.value));
+        option.hidden=used;
+        option.disabled=used;
+      });
+    });
+  }
   function bindCard(card){
     if(card.dataset.bound==='1') return;
     card.dataset.bound='1';
     card.querySelector('[name="vehicle"]').addEventListener('change',()=>updateLastMileageHint(card));
+    card.querySelector('[name="driver"]').addEventListener('change',()=>{updateDriverOptions();updateRequiredHints();});
     card.querySelector('[data-vehicle-return-now]').addEventListener('click',()=>{ card.querySelector('[name="vehicle_return_date"]').value=dateNow(); card.querySelector('[name="vehicle_return_time"]').value=hhmmNow(); updateRequiredHints(); });
     card.querySelector('.fuel-toggle').addEventListener('change',()=>updateFuelFields(card));
     card.querySelectorAll('[name="fuel_quantity"],[name="fuel_unit_price"]').forEach(input=>input.addEventListener('input',()=>updateFuelTotal(card)));
@@ -450,6 +468,7 @@
       updateFuelFields(card);
       updateLastMileageHint(card);
     });
+    updateDriverOptions();
     updateCurrentPackages();
     updateRequiredHints();
   }
@@ -475,7 +494,11 @@
   }
   function appendActionText(text){
     const note=document.getElementById('action-note');
-    note.value=[note.value.trim(),text].filter(Boolean).join('，');
+    const rankEnding=/(?:分隊長|小隊長|隊員)$/;
+    const current=note.value.trim();
+    const next=String(text||'').trim();
+    note.value=[current,next].filter(Boolean).join(rankEnding.test(current)?' ':'，');
+    if(rankEnding.test(note.value)) note.value+=' ';
     updatePreview();
     updateRequiredHints();
   }
@@ -483,12 +506,13 @@
     buttons.replaceChildren();
     values.forEach(value=>{
       const button=document.createElement('button');
+      const label=dataKey==='currentPersonnelPackage'&&Object.hasOwn(personnelTitles,value)&&personnelTitles[value]?`${personnelTitles[value]} ${value}`:value;
       button.type='button';
       button.className='secondary package-button';
-      button.dataset.actionText=value;
+      button.dataset.actionText=label;
       button.dataset[dataKey]=value;
-      button.textContent=value;
-      button.addEventListener('click',()=>appendActionText(value));
+      button.textContent=label;
+      button.addEventListener('click',()=>appendActionText(label));
       buttons.appendChild(button);
     });
     container.hidden=values.length===0;

@@ -119,6 +119,70 @@ class SiteDiagnosticsTests(unittest.TestCase):
         self.assertIn("患者序號", payload["next_action"])
         self.assertNotIn("按鈕", payload["failure_reason"])
 
+    def test_consumables_requery_not_ready_is_not_a_missing_case(self):
+        payload = diagnostic_payload(
+            "consumables", "consumables_failed",
+            "一站通耗材: 登入帳號：耗材=公務電腦同步帳號。耗材正式重新查詢結果尚未就緒，停止整批填寫。",
+        )
+        self.assertEqual(payload["exception_type"], "consumables_query_not_ready")
+        self.assertEqual(payload["failure_stage"], "查詢案件")
+        self.assertIn("查詢結果尚未就緒", payload["failure_reason"])
+        self.assertIn("尚未寫入", payload["failure_reason"])
+        self.assertNotIn("患者清單變動", payload["failure_reason"])
+        self.assertNotIn("沒有取得可用結果", payload["failure_reason"])
+
+    def test_consumables_requery_patient_change_is_reported_separately(self):
+        payload = diagnostic_payload(
+            "consumables", "consumables_failed",
+            "耗材同案患者清單於正式重新查詢後變動，停止整批填寫。",
+        )
+        self.assertEqual(payload["exception_type"], "consumables_patient_set_changed")
+        self.assertEqual(payload["failure_stage"], "查詢案件")
+        self.assertIn("患者清單於正式重新查詢後變動", payload["failure_reason"])
+        self.assertIn("尚未寫入", payload["failure_reason"])
+        self.assertNotIn("或尚未完整", payload["failure_reason"])
+        self.assertNotIn("沒有取得可用結果", payload["failure_reason"])
+
+    def test_consumables_legacy_mixed_requery_keeps_its_uncertainty(self):
+        payload = diagnostic_payload(
+            "consumables", "consumables_failed",
+            "耗材同案患者清單於正式重新查詢後變動或尚未完整，停止整批填寫。",
+        )
+        self.assertEqual(payload["exception_type"], "consumables_patient_list_unverified")
+        self.assertIn("變動或尚未完整", payload["failure_reason"])
+        self.assertIn("尚未寫入", payload["failure_reason"])
+        self.assertNotIn("已確認變動", payload["failure_reason"])
+        self.assertNotIn("沒有取得可用結果", payload["failure_reason"])
+
+    def test_consumables_requery_replaces_legacy_generic_query_diagnostics_for_display(self):
+        for detail, category in (
+            ("耗材正式重新查詢結果尚未就緒，停止整批填寫。", "consumables_query_not_ready"),
+            ("耗材同案患者清單於正式重新查詢後變動，停止整批填寫。", "consumables_patient_set_changed"),
+            ("耗材同案患者清單於正式重新查詢後變動或尚未完整，停止整批填寫。", "consumables_patient_list_unverified"),
+        ):
+            with self.subTest(category=category):
+                fields = merge_diagnostic_fields({
+                    "key": "consumables", "status": "consumables_failed", "detail": detail,
+                    "failure_stage": "查詢案件", "failure_reason": "查詢案件時沒有取得可用結果。",
+                    "next_action": "重新送出", "exception_type": "query",
+                })
+                self.assertEqual(fields["exception_type"], category)
+                self.assertIn("尚未寫入", fields["failure_reason"])
+                self.assertIn("確認查詢已完成", fields["next_action"])
+                self.assertIn("再重新查詢", fields["next_action"])
+                self.assertIn("保留既有資料", fields["next_action"])
+                self.assertNotIn("重新送出", fields["next_action"])
+                self.assertNotIn("清除", fields["next_action"])
+
+    def test_consumables_requery_wording_does_not_reclassify_other_sites_or_success(self):
+        detail = "耗材同案患者清單於正式重新查詢後變動或尚未完整，停止整批填寫。"
+        for site_key in ("duty_work_log", "vehicle_mileage", "fuel_record", "disinfection", "volunteer_assist"):
+            with self.subTest(site_key=site_key):
+                payload = diagnostic_payload(site_key, site_key + "_failed", detail)
+                self.assertEqual(payload["exception_type"], "query")
+        payload = diagnostic_payload("consumables", "consumables_saved", detail)
+        self.assertTrue(all(value == "" for value in payload.values()))
+
     def test_login_failure_points_to_site_login_stage(self):
         payload = diagnostic_payload("consumables", "consumables_failed", "SSO login failed")
 

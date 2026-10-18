@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 import struct
 import tempfile
@@ -8,6 +9,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from itertools import permutations
 from pathlib import Path
+from unittest.mock import patch
+
+import ambulance_bot.sinposmart_backend as backend
 
 from ambulance_bot.sinposmart_backend import (
     SinpoSmartBackendStore,
@@ -18,6 +22,194 @@ from ambulance_bot.sinposmart_backend import (
     sinposmart_fire_day_for,
     sinposmart_status_label,
 )
+
+
+class PersonnelTitleSnapshotTests(unittest.TestCase):
+    @staticmethod
+    def roster(**changes):
+        raw = {"schema_version": 1, "source": "official_duty_staff", "target_date": "2026-10-18",
+               "complete": True, "members": [{"actor_no": "1", "name": "甲", "title": "分隊長"},
+                                             {"actor_no": "2", "name": "乙", "title": "隊員"}]}
+        raw.update(changes)
+        return raw
+
+    @staticmethod
+    def event(roster, occurred_at="2026-10-18T12:00:00", **changes):
+        raw = {"record_type": "schedule_snapshot", "occurred_at": occurred_at, "status": "ok",
+               "snapshot": {"personnel_titles": roster}}
+        raw.update(changes)
+        return raw
+
+    def test_normalizer_keeps_only_safe_schema_without_mutating_input(self):
+        raw = self.roster(password="private", extra=True)
+        raw["members"][0].update(name="  甲  ", account="private", password="private")
+        original = copy.deepcopy(raw)
+        result = backend.normalize_personnel_title_snapshot(raw)
+        self.assertEqual(result, self.roster())
+        self.assertIs(result["complete"], True)
+        self.assertIs(type(result["schema_version"]), int)
+        self.assertEqual(raw, original)
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(backend.normalize_personnel_title_snapshot(result), result)
+
+    def test_normalizer_rejects_wrong_schema_types_dates_and_oversize_instead_of_truncating(self):
+        for changes in ({"schema_version": True}, {"schema_version": "1"}, {"complete": "true"},
+                        {"complete": 1}, {"complete": False}, {"source": "local_cache"},
+                        {"target_date": "2026-02-30"}, {"target_date": "2026/10/18"},
+                        {"members": {}}, {"members": self.roster()["members"] * 101}):
+            with self.subTest(changes=changes):
+                self.assertEqual(backend.normalize_personnel_title_snapshot(self.roster(**changes)), {})
+        self.assertEqual(backend.normalize_personnel_title_snapshot(None), {})
+
+    def test_normalizer_rejects_bad_member_values_and_does_not_guess_unknown_titles(self):
+        member = {"actor_no": "1", "name": "甲", "title": "分隊長"}
+        for changes in ({"actor_no": True}, {"actor_no": "user1"}, {"actor_no": ""},
+                        {"name": "<script>"}, {"name": "private123"}, {"name": "甲\n乙"},
+                        {"name": ""}, {"name": "甲" * 81}, {"title": True}):
+            with self.subTest(changes=changes):
+                self.assertEqual(backend.normalize_personnel_title_snapshot(
+                    self.roster(members=[{**member, **changes}])), {})
+        for title in ("", "同仁", "副分隊長"):
+            with self.subTest(title=title):
+                result = backend.normalize_personnel_title_snapshot(self.roster(members=[{**member, "title": title}]))
+                self.assertEqual(result["members"], [{**member, "title": ""}])
+
+    def test_event_normalizer_preserves_bool_and_explicit_incomplete_tombstone_only_for_schedule(self):
+        now = datetime(2026, 10, 18, 12)
+        for roster in (self.roster(), self.roster(complete=False, members=[])):
+            result = normalize_sinposmart_event(self.event(roster), now=now)
+            self.assertEqual(result["snapshot"]["personnel_titles"], roster)
+            self.assertEqual(normalize_sinposmart_event(result, now=now)["snapshot"]["personnel_titles"], roster)
+        for record_type in ("login", "comparison_snapshot", "tool_action_finished"):
+            with self.subTest(record_type=record_type):
+                result = normalize_sinposmart_event(self.event(self.roster(), record_type=record_type), now=now)
+                self.assertNotIn("personnel_titles", result["snapshot"])
+        oversized = self.roster(members=self.roster()["members"] * 101)
+        result = normalize_sinposmart_event(self.event(oversized), now=now)["snapshot"]["personnel_titles"]
+        self.assertEqual(result, self.roster(complete=False, members=[]))
+
+    def test_event_normalizer_does_not_refresh_roster_from_an_invalid_occurrence_time(self):
+        for timestamp in ("", "bad time", None):
+            with self.subTest(timestamp=timestamp):
+                event = normalize_sinposmart_event(self.event(self.roster(), timestamp), now=datetime(2026, 10, 18, 13))
+                self.assertEqual(event["snapshot"]["personnel_titles"], self.roster(complete=False, members=[]))
+
+    def read_events(self, events, now=None, fire_day="2026-10-18"):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "sinposmart"
+            folder.mkdir()
+            path = folder / (fire_day + ".json")
+            path.write_text(json.dumps({"events": events}), encoding="utf-8")
+            untouched = folder / "2000-01-01.json"
+            untouched.write_text("old data", encoding="utf-8")
+            before = path.read_bytes()
+            with patch.object(SinpoSmartBackendStore, "list_days", side_effect=AssertionError("read-only")), patch.object(
+                SinpoSmartBackendStore, "cleanup", side_effect=AssertionError("read-only")
+            ):
+                result = backend.read_personnel_title_snapshot(root, now=now or datetime(2026, 10, 18, 13))
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(untouched.read_text(encoding="utf-8"), "old data")
+            return result
+
+    def test_reader_reads_current_roster_from_previous_fire_day_without_writes_or_cleanup(self):
+        event = self.event(self.roster(), "2026-10-18T02:30:00+08:00")
+        self.assertEqual(self.read_events([event], now=datetime(2026, 10, 18, 3), fire_day="2026-10-17"), self.roster())
+
+    def test_reader_missing_or_malformed_file_is_unknown_and_does_not_create_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "missing"
+            self.assertEqual(backend.read_personnel_title_snapshot(root, now=datetime(2026, 10, 18, 13)), {})
+            self.assertFalse(root.exists())
+            root.mkdir()
+            (root / "sinposmart").mkdir()
+            path = root / "sinposmart/2026-10-18.json"
+            for text in ("invalid JSON", "[]", '{"events": {}}'):
+                path.write_text(text, encoding="utf-8")
+                self.assertEqual(backend.read_personnel_title_snapshot(root, now=datetime(2026, 10, 18, 13)), {})
+
+    def test_reader_uses_latest_whole_roster_across_workstations_without_filling_old_members(self):
+        old = self.event(self.roster(), "2026-10-18T11:00:00")
+        fresh = self.roster(members=[{"actor_no": "2", "name": "乙", "title": ""}])
+        newer = self.event(fresh, "2026-10-18T04:00:00Z", source="another-workstation")
+        self.assertEqual(self.read_events([newer, old]), fresh)
+        self.assertEqual(backend.personnel_titles_for_case(fresh, "2026-10-18", ["甲", "乙"]), {})
+
+    def test_reader_latest_incomplete_invalid_or_empty_roster_revokes_old_and_missing_key_does_not(self):
+        old = self.event(self.roster(), "2026-10-18T11:00:00")
+        for roster in (self.roster(complete=False, members=[]), self.roster(members=[]),
+                       self.roster(members=[{"actor_no": "1", "name": "<bad>", "title": "隊員"}])):
+            with self.subTest(roster=roster):
+                newest = normalize_sinposmart_event(self.event(roster), now=datetime(2026, 10, 18, 13))
+                self.assertEqual(self.read_events([old, newest]), {})
+        ordinary = self.event(self.roster(), "2026-10-18T12:30:00")
+        ordinary["snapshot"].pop("personnel_titles")
+        self.assertEqual(self.read_events([old, ordinary]), self.roster())
+
+    def test_reader_rejects_wrong_day_expired_future_and_invalid_times_or_untrusted_source(self):
+        for roster, timestamp in ((self.roster(target_date="2026-10-17"), "2026-10-18T12:00:00"),
+                                  (self.roster(), "2026-10-17T12:59:59"),
+                                  (self.roster(), "2026-10-18T13:00:01"),
+                                  (self.roster(), "bad time"),
+                                  (self.roster(source="local_cache"), "2026-10-18T12:00:00")):
+            with self.subTest(timestamp=timestamp, source=roster["source"]):
+                self.assertEqual(self.read_events([self.event(roster, timestamp)]), {})
+
+    def test_reader_equal_time_conflicts_are_unknown_but_order_only_changes_are_equal(self):
+        first = self.event(self.roster())
+        reversed_rows = self.roster(members=list(reversed(self.roster()["members"])))
+        self.assertEqual(self.read_events([first, self.event(reversed_rows)]), self.roster())
+        conflict = self.roster(members=[{"actor_no": "1", "name": "甲", "title": "小隊長"}])
+        for events in ([first, self.event(conflict)], [self.event(conflict), first],
+                       [first, self.event(self.roster(complete=False, members=[]))]):
+            with self.subTest(events=events):
+                self.assertEqual(self.read_events(events), {})
+
+    def test_selector_matches_case_date_formats_and_preserves_original_personnel(self):
+        personnel = ["甲", "乙", "未同步"]
+        for case_date in ("2026-10-18", "2026/10/18", "20261018", "1151018"):
+            with self.subTest(case_date=case_date):
+                self.assertEqual(backend.personnel_titles_for_case(self.roster(), case_date, personnel),
+                                 {"甲": "分隊長", "乙": "隊員"})
+        self.assertEqual(personnel, ["甲", "乙", "未同步"])
+        for case_date in ("2026-10-17", "2026-02-30", "", "bad"):
+            self.assertEqual(backend.personnel_titles_for_case(self.roster(), case_date, personnel), {})
+
+    def test_selector_does_not_guess_duplicate_names_actor_reuse_or_conflicting_titles(self):
+        for extra in ({"actor_no": "3", "name": "甲", "title": "分隊長"},
+                      {"actor_no": "1", "name": "丙", "title": "隊員"},
+                      {"actor_no": "01", "name": "丙", "title": "隊員"},
+                      {"actor_no": "1", "name": "甲", "title": "隊員"},
+                      {"actor_no": "1", "name": "甲", "title": ""}):
+            raw = self.roster(members=[*self.roster()["members"], extra])
+            with self.subTest(extra=extra):
+                self.assertEqual(backend.personnel_titles_for_case(raw, "2026-10-18", ["甲", "乙", "丙"]), {"乙": "隊員"})
+
+    def test_store_and_compact_keep_newest_roster_and_explicit_clear_despite_out_of_order_arrival(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = SinpoSmartBackendStore(root / "sinposmart")
+            now = datetime(2026, 10, 18, 13)
+            newer = self.roster(members=[{"actor_no": "1", "name": "甲", "title": "小隊長"}])
+            for number, (roster, timestamp) in enumerate(((self.roster(), "2026-10-18T11:00:00"),
+                    (newer, "2026-10-18T12:00:00"), (newer, "2026-10-18T10:00:00"))):
+                store.upsert_event(self.event(roster, timestamp, event_id=str(number)), now=now)
+            self.assertEqual(backend.read_personnel_title_snapshot(root, now=now), newer)
+            tombstone = self.roster(complete=False, members=[])
+            store.upsert_event(self.event(tombstone, "2026-10-18T12:30:00", event_id="clear"), now=now)
+            payload = json.loads((root / "sinposmart/2026-10-18.json").read_text(encoding="utf-8"))
+            payload["events"] = compact_sinposmart_events(payload["events"])
+            (root / "sinposmart/2026-10-18.json").write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(backend.read_personnel_title_snapshot(root, now=now), {})
+
+    def test_store_does_not_merge_away_equal_time_roster_conflicts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = SinpoSmartBackendStore(root / "sinposmart")
+            other = self.roster(members=[{"actor_no": "1", "name": "甲", "title": "小隊長"}])
+            for number, roster in enumerate((self.roster(), other)):
+                store.upsert_event(self.event(roster, event_id=str(number)), now=datetime(2026, 10, 18, 13))
+            self.assertEqual(backend.read_personnel_title_snapshot(root, now=datetime(2026, 10, 18, 13)), {})
 
 
 class SinpoSmartBackendStoreTests(unittest.TestCase):

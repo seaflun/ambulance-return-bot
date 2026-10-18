@@ -89,6 +89,107 @@ class ConsumablesSpeedTests(unittest.TestCase):
         ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=True):
             self.assertEqual(module._collect_consumable_candidates(driver, self.request()), final)
 
+    def test_final_requery_waits_for_complete_rows_after_ajax_before_planning(self):
+        rows = [candidate("01"), candidate("02")]
+        driver = Mock(current_url=module.ACS_URL)
+        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[rows, None, rows]) as read, patch.object(
+            module, "_prepare_consumable_list_snapshot", return_value=True
+        ) as query, patch.object(module, "WebDriverWait", return_value=self.ready_wait()), patch.object(
+            module, "_collect_paginated_consumable_candidates"
+        ) as stale_fallback:
+            self.assertEqual(module._collect_consumable_candidates(driver, self.request()), rows)
+        self.assertEqual(read.call_count, 3)
+        query.assert_called_once()
+        stale_fallback.assert_not_called()
+
+    def test_final_requery_ignores_row_number_status_and_visual_sid_wrapping(self):
+        first = [candidate("01")]
+        first[0]["text"] = "1 " + first[0]["sid"] + " 2026/07/13 08:05:05 測試案件 未登打 內容"
+        final = copy.deepcopy(first)
+        final[0]["text"] = "2 " + first[0]["sid"][:16] + "\n" + first[0]["sid"][16:] + " 2026/07/13 08:05:05 測試案件 已登打 內容"
+        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[first, final]), patch.object(
+            module, "_prepare_consumable_list_snapshot", return_value=True
+        ), patch.object(module, "WebDriverWait", return_value=self.ready_wait()):
+            self.assertEqual(module._collect_consumable_candidates(Mock(), self.request()), final)
+
+    def test_final_requery_still_rejects_removed_patient_or_changed_matching_time(self):
+        first = [candidate("01"), candidate("02")]
+        changed_time = copy.deepcopy(first)
+        changed_time[0]["text"] = "2026/07/13 09:05:05 測試案件"
+        for final in ([candidate("01")], [], changed_time, [candidate("01"), candidate("03")]):
+            with self.subTest(final=final), patch.object(
+                module, "_read_complete_consumable_candidates", side_effect=[first, final]
+            ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=True), patch.object(
+                module, "WebDriverWait", return_value=self.ready_wait()
+            ):
+                with self.assertRaisesRegex(RuntimeError, "患者.*變動"):
+                    module._collect_consumable_candidates(Mock(), self.request())
+
+    def test_final_requery_waits_for_pending_current_query_instead_of_using_visible_old_rows(self):
+        rows = [candidate("01")]
+        driver = Mock(current_url=module.ACS_URL)
+        driver.execute_script.side_effect = [
+            {"complete": True, "candidates": rows},
+            {"complete": False, "pending": True},
+            {"complete": True, "candidates": rows},
+        ]
+        with patch.object(module, "_prepare_consumable_list_snapshot", return_value=True) as query, patch.object(
+            module, "WebDriverWait", return_value=self.ready_wait(driver)
+        ), patch.object(module, "_collect_paginated_consumable_candidates") as stale_fallback:
+            self.assertEqual(module._collect_consumable_candidates(driver, self.request()), rows)
+        query.assert_called_once()
+        stale_fallback.assert_not_called()
+
+    def test_final_requery_still_rejects_changed_address_or_reason_matching_evidence(self):
+        request = self.request()
+        request.case_address = "測試案件"
+        request.case_reason = "發燒"
+        first = [candidate("01")]
+        first[0]["text"] += " 發燒"
+        for text in ("2026/07/13 08:05:05 其他地點 發燒", "2026/07/13 08:05:05 測試案件 頭暈"):
+            final = copy.deepcopy(first)
+            final[0]["text"] = text
+            with self.subTest(text=text), patch.object(
+                module, "_read_complete_consumable_candidates", side_effect=[first, final]
+            ), patch.object(module, "_prepare_consumable_list_snapshot", return_value=True), patch.object(
+                module, "WebDriverWait", return_value=self.ready_wait()
+            ):
+                with self.assertRaisesRegex(RuntimeError, "患者.*變動"):
+                    module._collect_consumable_candidates(Mock(), request)
+
+    def test_final_requery_not_ready_has_bounded_wait_and_never_uses_old_rows(self):
+        rows = [candidate("01")]
+        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[rows, None, None, None]), patch.object(
+            module, "_prepare_consumable_list_snapshot", return_value=True
+        ) as query, patch.object(module, "WebDriverWait", return_value=self.ready_wait()), patch.object(
+            module, "_collect_paginated_consumable_candidates"
+        ) as stale_fallback:
+            with self.assertRaisesRegex(RuntimeError, "正式重新查詢結果尚未就緒"):
+                module._collect_consumable_candidates(Mock(), self.request())
+        query.assert_called_once()
+        stale_fallback.assert_not_called()
+
+    def test_final_requery_explicit_failure_does_not_poll_until_a_later_success(self):
+        rows = [candidate("01")]
+        failure = RuntimeError("耗材查詢失敗或尚未完成，停止辨識，避免使用上次查詢資料。")
+        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[rows, failure, rows]) as read, patch.object(
+            module, "_prepare_consumable_list_snapshot", return_value=True
+        ), patch.object(module, "WebDriverWait", return_value=self.ready_wait()):
+            with self.assertRaisesRegex(RuntimeError, "耗材查詢失敗"):
+                module._collect_consumable_candidates(Mock(), self.request())
+        self.assertEqual(read.call_count, 2)
+
+    @staticmethod
+    def ready_wait(driver=None):
+        class ReadyWait:
+            def until(self, condition):
+                for _ in range(3):
+                    result = condition(driver if driver is not None else Mock())
+                    if result:
+                        return result
+                raise module.TimeoutException("synthetic list redraw did not finish")
+        return ReadyWait()
+
     def test_unknown_dataset_requires_ui_collection_and_official_requery(self):
         rows = [candidate("01")]
         driver = Mock(current_url=module.ACS_URL)

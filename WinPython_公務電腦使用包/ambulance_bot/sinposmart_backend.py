@@ -398,6 +398,111 @@ def parse_sinposmart_snapshot_date(value: Any) -> date | None:
     return None
 
 
+def _personnel_title_snapshot(raw: Any, *, allow_incomplete: bool = False) -> dict[str, Any]:
+    if (not isinstance(raw, dict) or type(raw.get("schema_version")) is not int
+            or raw["schema_version"] != 1 or raw.get("source") != "official_duty_staff"
+            or type(raw.get("complete")) is not bool):
+        return {}
+    target = raw.get("target_date")
+    if (not isinstance(target, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", target)
+            or parse_sinposmart_snapshot_date(target) is None):
+        return {}
+    envelope = {"schema_version": 1, "source": "official_duty_staff", "target_date": target,
+                "complete": False, "members": []}
+    unknown = envelope if allow_incomplete else {}
+    rows = raw.get("members")
+    if not raw["complete"] or not isinstance(rows, list) or len(rows) > 200:
+        return unknown
+    members = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return unknown
+        actor, name, title = row.get("actor_no"), row.get("name"), row.get("title")
+        if (not isinstance(actor, str) or not re.fullmatch(r"[0-9]{1,4}", actor.strip())
+                or not isinstance(name, str) or not name.strip() or len(name) > 80
+                or not all(char.isalpha() or char in " ·．・-'’" for char in name)
+                or not any(char.isalpha() for char in name) or not isinstance(title, str)):
+            return unknown
+        members.append({"actor_no": actor.strip(), "name": " ".join(name.split()),
+                        "title": title.strip() if title.strip() in {"分隊長", "小隊長", "隊員"} else ""})
+    return {**envelope, "complete": True, "members": members}
+
+
+def normalize_personnel_title_snapshot(raw: Any) -> dict[str, Any]:
+    """Return an official complete roster without credentials, or an unknown empty result."""
+    return _personnel_title_snapshot(raw)
+
+
+def _personnel_title_snapshot_key(snapshot: dict[str, Any]) -> tuple:
+    return (snapshot["target_date"], snapshot["complete"], tuple(sorted(
+        (row["actor_no"], row["name"], row["title"]) for row in snapshot["members"])))
+
+
+def read_personnel_title_snapshot(artifacts_dir: Path, now: datetime | None = None) -> dict[str, Any]:
+    """Read today's newest complete roster directly, without store cleanup or writes."""
+    current = taipei_local_datetime(now or datetime.now(TAIPEI_TIMEZONE))
+    cutoff = current - timedelta(hours=24)
+    days = {sinposmart_fire_day_for(current), sinposmart_fire_day_for(cutoff)}
+    candidates = []
+    for day in sorted(days):
+        path = Path(artifacts_dir) / "sinposmart" / f"{day}.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
+            return {}
+        for event in payload["events"]:
+            if not isinstance(event, dict) or event.get("record_type") != "schedule_snapshot":
+                continue
+            raw_snapshot = event.get("snapshot")
+            if not isinstance(raw_snapshot, dict) or "personnel_titles" not in raw_snapshot:
+                continue
+            snapshot = _personnel_title_snapshot(raw_snapshot["personnel_titles"], allow_incomplete=True)
+            if not snapshot or snapshot["target_date"] != current.date().isoformat():
+                continue
+            try:
+                occurred = taipei_local_datetime(datetime.fromisoformat(sinposmart_event_time(event)))
+            except (TypeError, ValueError, OverflowError):
+                return {}
+            if occurred > current:
+                return {}
+            if occurred >= cutoff:
+                candidates.append((occurred, snapshot))
+    if not candidates:
+        return {}
+    latest_at = max(occurred for occurred, _snapshot in candidates)
+    latest = [snapshot for occurred, snapshot in candidates if occurred == latest_at]
+    if len({_personnel_title_snapshot_key(snapshot) for snapshot in latest}) != 1:
+        return {}
+    snapshot = normalize_personnel_title_snapshot(latest[0])
+    return snapshot if snapshot and snapshot["members"] else {}
+
+
+def personnel_titles_for_case(snapshot: Any, case_date: Any, personnel: list[str]) -> dict[str, str]:
+    """Select unambiguous titles for the exact case day without changing personnel values."""
+    roster = normalize_personnel_title_snapshot(snapshot)
+    case_day = parse_sinposmart_snapshot_date(str(case_date or "").replace("/", "-"))
+    if (not roster or case_day is None or case_day.isoformat() != roster["target_date"]
+            or not isinstance(personnel, (list, tuple))):
+        return {}
+    by_name, actor_names = {}, {}
+    for member in roster["members"]:
+        actor = str(int(member["actor_no"]))
+        by_name.setdefault(member["name"], set()).add((actor, member["title"]))
+        actor_names.setdefault(actor, set()).add(member["name"])
+    selected = {}
+    for name in personnel:
+        if not isinstance(name, str) or len(by_name.get(name, ())) != 1:
+            continue
+        actor, title = next(iter(by_name[name]))
+        if title and len(actor_names[actor]) == 1:
+            selected[name] = title
+    return selected
+
+
 def sinposmart_snapshot_target_dates(event: dict[str, Any]) -> list[date | None]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     days = snapshot.get("days") if isinstance(snapshot, dict) else []
@@ -1539,6 +1644,16 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         "snapshot": snapshot,
     }
     event["merged_event_ids"] = [event["event_id"]]
+    if isinstance(snapshot, dict):
+        snapshot.pop("personnel_titles", None)
+        if record_type == "schedule_snapshot" and isinstance(raw_snapshot, dict) and "personnel_titles" in raw_snapshot:
+            personnel_titles = _personnel_title_snapshot(raw_snapshot["personnel_titles"], allow_incomplete=True)
+            if personnel_titles:
+                try:
+                    datetime.fromisoformat(str(raw_event.get("occurred_at") or ""))
+                except (ValueError, TypeError, OverflowError):
+                    personnel_titles = {**personnel_titles, "complete": False, "members": []}
+                snapshot["personnel_titles"] = personnel_titles
     if isinstance(raw_snapshot, dict) and "daily_vehicle_report" in raw_snapshot:
         event["snapshot"]["daily_vehicle_report"] = sanitize_daily_vehicle_report(
             raw_snapshot["daily_vehicle_report"], expected_date=sinposmart_daily_vehicle_target_date(event)
@@ -1559,7 +1674,7 @@ def sinposmart_event_merge_key(event: dict[str, Any]) -> tuple[str, ...]:
     tool_label = sanitize_scalar(snapshot.get("tool_label"), 120) if snapshot else ""
     queue_id = sanitize_scalar(snapshot.get("queue_id"), 120) if snapshot else ""
     run_id = sanitize_scalar(snapshot.get("run_id"), 120) if snapshot else ""
-    return (
+    key = (
         str(event.get("record_type") or ""),
         str(event.get("actor_no") or ""),
         str(event.get("display_name") or ""),
@@ -1576,6 +1691,12 @@ def sinposmart_event_merge_key(event: dict[str, Any]) -> tuple[str, ...]:
         queue_id,
         run_id,
     )
+    personnel_titles = (_personnel_title_snapshot(snapshot.get("personnel_titles"), allow_incomplete=True)
+                        if event.get("record_type") == "schedule_snapshot" else {})
+    if personnel_titles:
+        fingerprint = json.dumps(_personnel_title_snapshot_key(personnel_titles), ensure_ascii=False)
+        return (*key, hashlib.sha256(fingerprint.encode("utf-8")).hexdigest())
+    return key
 
 
 def sinposmart_event_keeps_individual_record(event: dict[str, Any]) -> bool:
@@ -1612,6 +1733,20 @@ def merge_sinposmart_event(existing: dict[str, Any], event: dict[str, Any]) -> d
     for key in ("result_ref", "snapshot"):
         if event.get(key):
             merged[key] = event[key]
+    if (existing.get("record_type") == event.get("record_type") == "schedule_snapshot"
+            and isinstance(existing.get("snapshot"), dict) and isinstance(event.get("snapshot"), dict)
+            and _personnel_title_snapshot(existing["snapshot"].get("personnel_titles"), allow_incomplete=True)
+            and _personnel_title_snapshot(event["snapshot"].get("personnel_titles"), allow_incomplete=True)):
+        try:
+            existing_at = taipei_local_datetime(datetime.fromisoformat(sinposmart_event_time(existing)))
+            incoming_at = taipei_local_datetime(datetime.fromisoformat(sinposmart_event_time(event)))
+        except (TypeError, ValueError, OverflowError):
+            pass
+        else:
+            if existing_at > incoming_at:
+                merged["last_occurred_at"] = sinposmart_event_time(existing)
+                merged["occurred_at"] = merged["last_occurred_at"]
+                merged["snapshot"] = existing["snapshot"]
     return merged
 
 

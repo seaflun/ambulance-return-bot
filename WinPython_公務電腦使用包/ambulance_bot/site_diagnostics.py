@@ -278,6 +278,9 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         "mileage_sequence",
         "element_missing",
         "case_not_found",
+        "consumables_query_not_ready",
+        "consumables_patient_set_changed",
+        "consumables_patient_list_unverified",
     }
 
     def value_for(field: str) -> str:
@@ -401,6 +404,13 @@ def _diagnostic_category(
         return "ppe_driver"
     if "同案多患者耗材分配／確認失敗" in analysis_detail:
         return "multi_patient_consumables"
+    if site_key == "consumables":
+        if "耗材正式重新查詢結果尚未就緒，停止整批填寫" in analysis_detail:
+            return "consumables_query_not_ready"
+        if "耗材同案患者清單於正式重新查詢後變動或尚未完整，停止整批填寫" in analysis_detail:
+            return "consumables_patient_list_unverified"
+        if "耗材同案患者清單於正式重新查詢後變動，停止整批填寫" in analysis_detail:
+            return "consumables_patient_set_changed"
     if (
         "耗材列表找不到符合案件的內容列" in analysis_detail
         or "missing disinfection detail: query returned no data" in text
@@ -548,7 +558,7 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return "核對前後里程"
     if category == "fuel_period":
         return SITE_DEFAULT_FAILURE_STAGE.get(site_key, "開啟登打油耗")
-    if category == "query":
+    if category in {"query", "consumables_query_not_ready", "consumables_patient_set_changed", "consumables_patient_list_unverified"}:
         return "查詢案件"
     if category == "validation":
         if site_key == "consumables":
@@ -646,6 +656,9 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "stale_element": "網頁正在重新整理，程式持有的舊頁面元件已失效。",
         "element_intercepted": "頁面載入遮罩或其他元素擋住了要按下的控制項，這次操作未完成。",
         "multi_patient_consumables": "同案多患者耗材頁的辨識、分配、儲存或讀回確認未全部完成。",
+        "consumables_query_not_ready": "耗材正式重新查詢結果尚未就緒，程式已停止整批填寫，尚未寫入。",
+        "consumables_patient_set_changed": "耗材同案患者清單於正式重新查詢後變動，程式已停止整批填寫，尚未寫入。",
+        "consumables_patient_list_unverified": "耗材同案患者清單於正式重新查詢後變動或尚未完整，程式已停止整批填寫，尚未寫入。",
         "vehicle_candidate": "同案查到其他車輛，原車紀錄可能尚未同步；這不代表原車填錯，需由使用者選擇本次查找車輛。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
         "mileage_overlap": "同一車輛已有用車紀錄與本案件時間重疊，程式已停止補登，避免覆蓋既有資料。",
@@ -683,6 +696,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "確認 NAS 網址與 WORKER_TOKEN，重啟 worker 後重試登打流程。"
     if category == "multi_patient_consumables":
         return "依患者序號查看成功與失敗頁面；修正一站通資料後可單獨重跑耗材。"
+    if category in {"consumables_query_not_ready", "consumables_patient_set_changed", "consumables_patient_list_unverified"}:
+        return "保持原登入帳號，先核對同案患者清單並確認查詢已完成，再重新查詢；未確認前不要填寫或儲存，保留既有資料。"
     if category == "vehicle_candidate":
         return "可選擇保留原車重新查找；只有確認車號有誤時才改選候選車輛，再以「單獨登打」重試此站。"
     if category == "civilpower_io_verify":
