@@ -148,6 +148,22 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.18.1900">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <h2 class="update-card__title">新增值班台獨立存活與更新交接狀態</h2>
+        </div>
+        <span class="update-card__versions">2026.10.18.1900</span>
+      </header>
+      <ul class="update-card__items">
+        <li>值班後台分別顯示值班台 GUI、更新安裝器與救護 Worker 的存活狀態；登入前、閒置或沒有勤務事件時，仍可查看 GUI 的獨立回報。</li>
+        <li>顯示最後回報時間、距今秒數、實際執行版本、登入狀態與處理階段；超過 45 秒沒有新心跳時顯示失聯，保留最後已知資料並標示無法確認程式是否開啟。</li>
+        <li>更新安裝器獨立回報對應更新請求、進度及固定失敗原因；新版啟動確認需同一更新命令成功、版本一致與新版 GUI 的即時心跳證據。</li>
+        <li>後台每 10 秒更新存活資訊，連線中斷會清除過期的在線顯示；重複、亂序或已被取代程序的舊心跳不會覆蓋新狀態。</li>
+        <li>心跳僅回報必要技術狀態，不含帳密、人名、番號或勤務內容；保留既有登入、登打與自然閒置安全交接流程。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.18.1352">
       <header class="update-card__heading">
         <div>

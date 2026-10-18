@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import zlib
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from itertools import permutations
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +22,165 @@ from ambulance_bot.sinposmart_backend import (
     sinposmart_fire_day_for,
     sinposmart_status_label,
 )
+
+
+class DutyGuiHeartbeatTests(unittest.TestCase):
+    SERVER = "b32a71f7-4d56-4dab-bc5d-a36be124370a"
+    INSTANCE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+    @classmethod
+    def pulse(cls, **changes):
+        raw = {"schema_version": 1, "workstation": "SP-TEST", "component": "gui",
+               "instance_id": cls.INSTANCE, "process_started_at": "2026-10-18T01:00:00+00:00",
+               "process_id": 123, "sequence": 1, "app_version": "2026.10.18.1350",
+               "state": "idle", "login_state": "logged_out", "phase": "idle",
+               "update_request_id": "", "target_version": "", "result_code": "",
+               "exit_code": None, "progress_percent": None,
+               "route": {"name": "lan", "identity_status": "verified", "instance_id": cls.SERVER}}
+        raw.update(changes)
+        return raw
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = backend.DutyGuiHeartbeatStore(Path(self.tmp.name) / "sinposmart_heartbeat.json")
+        self.now = datetime(2026, 10, 18, 1, 0, 10, tzinfo=timezone.utc)
+
+    def put(self, raw, now=None):
+        return self.store.upsert(raw, server_instance_id=self.SERVER, now=now or self.now)
+
+    def test_strict_private_schema_and_identity(self):
+        raw = self.pulse()
+        original = copy.deepcopy(raw)
+        self.assertTrue(self.put(raw))
+        self.assertEqual(raw, original)
+        for patch in ({"password": "private"}, {"sequence": True}, {"process_id": False},
+                      {"exit_code": True}, {"progress_percent": -1}, {"sequence": 0},
+                      {"state": "some task name"}, {"login_state": "actor 24"},
+                      {"process_started_at": "2026-10-18T09:00:00"}, {"workstation": "甲"},
+                      {"app_version": "https://private.test/?token=private"},
+                      {"route": {"name": "lan", "identity_status": "verified", "instance_id": self.INSTANCE}},
+                      {"component": "installer"}):
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                self.put(self.pulse(**patch))
+        self.assertNotIn("private", self.store.path.read_text(encoding="utf-8"))
+
+    def test_server_age_boundaries_and_startup_grace_do_not_extend_alive(self):
+        self.put(self.pulse(state="starting", phase="startup"))
+        self.assertTrue(self.store.admin_view(now=self.now + timedelta(seconds=45))["gui"]["alive"])
+        stale = self.store.admin_view(now=self.now + timedelta(seconds=46))["gui"]
+        self.assertFalse(stale["alive"])
+        self.assertIn("失聯", stale["status_label"])
+        self.assertEqual(stale["login_label"], "未登入（最後回報）")
+        self.assertEqual(stale["phase_label"], "啟動中（最後回報）")
+        self.assertEqual(stale["last_known_label"], "以下為最後回報")
+        self.put(self.pulse(sequence=2, state="starting", phase="startup"), self.now + timedelta(seconds=60))
+        self.assertEqual(self.store.admin_view(now=self.now + timedelta(seconds=60))["gui"]["startup_label"], "啟動中")
+        self.assertEqual(self.store.admin_view(now=self.now + timedelta(seconds=60))["gui"]["last_known_label"], "")
+        self.assertEqual(self.store.admin_view(now=self.now + timedelta(seconds=61))["gui"]["startup_label"], "啟動仍未完成")
+
+    def test_duplicates_old_sequence_metadata_and_retired_instance_never_refresh(self):
+        self.put(self.pulse(sequence=4))
+        for pulse in (self.pulse(sequence=4), self.pulse(sequence=3),
+                      self.pulse(sequence=5, app_version="2026.10.18.1400"),
+                      self.pulse(sequence=5, process_id=456)):
+            self.assertFalse(self.put(pulse, self.now + timedelta(seconds=30)))
+        self.assertEqual(self.store.admin_view(now=self.now)["gui"]["last_seen_at"], self.now.isoformat(timespec="seconds"))
+        new = self.pulse(instance_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                         process_started_at="2026-10-18T01:01:00+00:00")
+        self.assertTrue(self.put(new, self.now + timedelta(seconds=60)))
+        self.assertFalse(self.put(self.pulse(sequence=99), self.now + timedelta(seconds=70)))
+        self.assertFalse(self.put(self.pulse(instance_id="cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                                            process_started_at=new["process_started_at"]), self.now + timedelta(seconds=70)))
+        view = self.store.admin_view(now=self.now + timedelta(seconds=70))["gui"]
+        self.assertEqual(view["instance_id"], new["instance_id"])
+        self.assertEqual(view["retired_count"], 1)
+
+    def test_timezone_ordering_and_installer_request_immutability(self):
+        self.put(self.pulse(process_started_at="2026-10-18T09:00:00+08:00"))
+        self.assertTrue(self.put(self.pulse(instance_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                                            process_started_at="2026-10-18T01:00:01+00:00")))
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        installer = self.pulse(component="installer", update_request_id=request_id, login_state="unknown")
+        self.assertTrue(self.put(installer))
+        installer.update(sequence=2, update_request_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+        self.assertFalse(self.put(installer))
+
+    def test_gui_request_changes_keep_the_same_instance_and_fixed_running_version(self):
+        self.put(self.pulse())
+        first = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        second = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        for sequence, request_id in ((2, first), (3, second), (4, "")):
+            self.assertTrue(self.put(self.pulse(sequence=sequence, update_request_id=request_id),
+                                     self.now + timedelta(seconds=sequence)))
+            view = self.store.admin_view(now=self.now + timedelta(seconds=sequence))["gui"]
+            self.assertEqual(view["instance_id"], self.INSTANCE)
+            self.assertEqual(view["update_request_id"], request_id)
+            self.assertEqual(view["app_version"], "2026.10.18.1350")
+
+    def test_contract_accepts_safe_leading_punctuation_and_positive_integers(self):
+        for workstation in ("_PC", ".PC", "-PC"):
+            with self.subTest(workstation=workstation):
+                self.assertTrue(self.put(self.pulse(workstation=workstation, process_id=2 ** 53,
+                                                    sequence=2 ** 53)))
+
+    def test_malformed_control_status_does_not_hide_gui_or_installer_health(self):
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        self.put(self.pulse(update_request_id=request_id))
+        self.put(self.pulse(component="installer", login_state="unknown", update_request_id=request_id))
+        health = self.store.admin_view(now=self.now)
+        for status in ([], {}, None, True):
+            with self.subTest(status=status):
+                command = {"request_id": request_id, "worker_id": "SP-TEST", "status": status,
+                           "exit_code": 0, "installed_version": "2026.10.18.1350"}
+                proof = backend.duty_gui_installation_view(health, command)
+                self.assertFalse(proof["verified"])
+                self.assertTrue(health["gui"]["alive"])
+                self.assertTrue(health["installer"]["alive"])
+
+    def test_failed_installer_remains_observable_and_keeps_gui_unknown(self):
+        self.put(self.pulse(component="installer", state="failed", phase="failed", login_state="unknown",
+                            update_request_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd", result_code="gui_ready_timeout",
+                            exit_code=-1, progress_percent=90))
+        view = self.store.admin_view(now=self.now)
+        self.assertFalse(view["gui"]["alive"])
+        self.assertTrue(view["installer"]["alive"])
+        self.assertEqual(view["installer"]["result_label"], "等待新版啟動逾時")
+        self.assertEqual(view["installer"]["progress_label"], "90%")
+
+    def test_malformed_and_future_server_timestamps_fail_closed(self):
+        self.put(self.pulse())
+        original = json.loads(self.store.path.read_text(encoding="utf-8"))
+        for timestamp in ("broken", "2026-10-18T01:00:10", "2027-10-18T01:00:10+00:00"):
+            payload = copy.deepcopy(original)
+            record = payload["workstations"]["SP-TEST"]["gui"]
+            record.update(received_at=timestamp, first_received_at=timestamp, retired_instances=42)
+            self.store.path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertFalse(self.store.admin_view(now=self.now)["gui"]["alive"])
+
+    def test_no_business_events_installer_and_worker_cannot_make_gui_alive(self):
+        empty = self.store.admin_view(now=self.now)
+        self.assertFalse(empty["gui"]["alive"])
+        self.assertIn("狀態未知", empty["gui"]["status_label"])
+        self.put(self.pulse())
+        later = self.now + timedelta(seconds=46)
+        self.put(self.pulse(component="installer", login_state="unknown", state="updating", phase="installing",
+                            update_request_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd"), later)
+        view = self.store.admin_view(now=later)
+        self.assertFalse(view["gui"]["alive"])
+        self.assertTrue(view["installer"]["alive"])
+        self.assertEqual(view["installer"]["phase_label"], "安裝中")
+
+    def test_normal_close_and_invalid_or_unavailable_storage_are_not_online(self):
+        self.put(self.pulse(state="stopping", phase="stopping", result_code="closed"))
+        closed = self.store.admin_view(now=self.now)["gui"]
+        self.assertFalse(closed["alive"])
+        self.assertEqual(closed["status_label"], "已回報關閉")
+        self.store.path.write_text("broken", encoding="utf-8")
+        self.assertFalse(self.store.admin_view(now=self.now)["gui"]["alive"])
+        with self.assertRaises(OSError):
+            self.put(self.pulse(sequence=2))
+        self.assertEqual(self.store.path.read_text(encoding="utf-8"), "broken")
 
 
 class PersonnelTitleSnapshotTests(unittest.TestCase):

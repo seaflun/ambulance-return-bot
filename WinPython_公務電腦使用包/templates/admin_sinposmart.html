@@ -127,6 +127,12 @@
     .unreturned-return-meta { margin-top: 5px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .version-strip { margin-bottom: 14px; }
     .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
+    .heartbeat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .heartbeat-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .heartbeat-card h2 { margin-bottom: 8px; font-size: 18px; }
+    .heartbeat-card .status { white-space: normal; text-align: center; }
+    .heartbeat-card details { margin-top: 8px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .heartbeat-card summary { cursor: pointer; }
     .remote-update-card {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -217,6 +223,7 @@
       header { align-items: stretch; flex-direction: column; }
       .button { width: 100%; }
       .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .heartbeat-grid { grid-template-columns: 1fr; }
       details.section > summary.section-head {
         grid-template-columns: minmax(0, 1fr);
         gap: 6px;
@@ -261,6 +268,41 @@
         {% endif %}
       </section>
     {% endif %}
+
+    <section class="heartbeat-grid" aria-label="值班台存活狀態" aria-live="polite">
+      {% for key, title in [('gui', '值班台 GUI'), ('installer', '更新安裝器'), ('worker', '救護 Worker')] %}
+        {% set health = duty_gui_health[key] %}
+        <article class="heartbeat-card">
+          <h2>{{ title }}</h2>
+          <span class="status {{ health.status_class }}" data-health-status="{{ key }}" data-health-field="{{ key }}.status_label">{{ health.status_label }}</span>
+          <div class="event-meta" data-health-field="{{ key }}.last_known_label">{{ health.last_known_label }}</div>
+          <div class="event-meta">最後回報：<span data-health-field="{{ key }}.last_seen_at">{{ health.last_seen_at }}</span></div>
+          <div class="event-meta" data-health-field="{{ key }}.age_label">{{ health.age_label }}</div>
+          <div class="event-meta">執行版本：<span data-health-field="{{ key }}.app_version">{{ health.app_version }}</span></div>
+          <div class="event-meta">階段：<span data-health-field="{{ key }}.state_label">{{ health.state_label }}</span>{% if key != 'worker' %} · <span data-health-field="{{ key }}.phase_label">{{ health.phase_label }}</span>{% endif %}</div>
+          {% if key == 'gui' %}
+            <div class="event-meta">登入：<span data-health-field="gui.login_label">{{ health.login_label }}</span></div>
+            <div class="event-meta" data-health-field="gui.startup_label">{{ health.startup_label }}</div>
+            <div class="event-meta" data-health-field="installation.status_label">{{ duty_gui_health.installation.status_label }}</div>
+          {% elif key == 'installer' %}
+            <div class="event-meta">進度：<span data-health-field="installer.progress_label">{{ health.progress_label }}</span></div>
+            <div class="event-meta" data-health-field="installer.result_label">{{ health.result_label }}</div>
+            <div class="event-meta" data-health-field="installation.installer_request_label">{{ duty_gui_health.installation.installer_request_label }}</div>
+          {% endif %}
+          {% if key != 'worker' %}
+            <details>
+              <summary>程序資訊</summary>
+              <div>電腦：<span data-health-field="{{ key }}.workstation">{{ health.workstation }}</span></div>
+              <div>實例：<span data-health-field="{{ key }}.instance_id">{{ health.instance_id }}</span></div>
+              <div>啟動：<span data-health-field="{{ key }}.process_started_at">{{ health.process_started_at }}</span></div>
+              <div>已取代實例：<span data-health-field="{{ key }}.retired_count">{{ health.retired_count }}</span></div>
+              <div>更新請求：<span data-health-field="{{ key }}.update_request_id">{{ health.update_request_id }}</span></div>
+              {% if key == 'installer' %}<div>目標版本：<span data-health-field="installer.target_version">{{ health.target_version }}</span></div>{% endif %}
+            </details>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </section>
 
     {% if duty_gui_remote_update_enabled %}
       <section class="remote-update-card" aria-label="值班台遠端更新">
@@ -649,5 +691,48 @@
       <section class="empty">目前尚未收到 SinpoSmart 值班事件。</section>
     {% endif %}
   </main>
+  <script>
+    (() => {
+      let inFlight = false;
+      const fields = Array.from(document.querySelectorAll("[data-health-field]"));
+      const statuses = Array.from(document.querySelectorAll("[data-health-status]"));
+      async function refreshHealth() {
+        if (inFlight) return;
+        inFlight = true;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        try {
+          const response = await fetch("/api/sinposmart/health", {cache: "no-store", signal: controller.signal});
+          if (!response.ok) throw new Error("health_unavailable");
+          const health = await response.json();
+          if (health.ok !== true || !health.gui || !health.installer || !health.worker || !health.installation) {
+            throw new Error("invalid_health");
+          }
+          fields.forEach(node => {
+            const [group, field] = node.dataset.healthField.split(".");
+            const value = health[group][field];
+            node.textContent = value === null || value === undefined ? "" : String(value);
+          });
+          statuses.forEach(node => {
+            const value = health[node.dataset.healthStatus].status_class;
+            node.className = "status " + (["complete", "failed", "running", "attention"].includes(value) ? value : "");
+          });
+        } catch (_) {
+          statuses.forEach(node => {
+            node.textContent = "狀態未知／重新連線中";
+            node.className = "status attention";
+          });
+          fields.filter(node => node.dataset.healthField === "installation.status_label")
+            .forEach(node => { node.textContent = "尚未確認新版啟動"; });
+          fields.filter(node => node.dataset.healthField.endsWith(".last_known_label"))
+            .forEach(node => { node.textContent = "以下為最後回報"; });
+        } finally {
+          clearTimeout(timeout);
+          inFlight = false;
+        }
+      }
+      setInterval(refreshHealth, 10000);
+    })();
+  </script>
 </body>
 </html>

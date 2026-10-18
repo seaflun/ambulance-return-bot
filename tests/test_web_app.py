@@ -174,6 +174,114 @@ class WebAppTests(unittest.TestCase):
             json=payload,
         )
 
+    def _gui_heartbeat_payload(self, **changes):
+        from tests.test_sinposmart_backend import DutyGuiHeartbeatTests
+        server = self.client.get("/api/sinposmart/identity", headers={
+            "X-Credential-Sync-Token": "sync-token"}).get_json()["server"]
+        payload = DutyGuiHeartbeatTests.pulse()
+        payload["route"]["instance_id"] = server["instance_id"]
+        payload.update(changes)
+        return payload
+
+    def test_gui_heartbeat_requires_sync_identity_auth_and_strict_small_body(self):
+        self.assertEqual(self.client.get("/api/sinposmart/identity").status_code, 403)
+        self.assertEqual(self.client.post("/api/sinposmart/heartbeat", json={}).status_code, 403)
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "worker-token"
+        wrong = self.client.get("/api/sinposmart/identity", headers={"X-Worker-Token": "worker-token"})
+        self.assertEqual(wrong.status_code, 403)
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        payload = self._gui_heartbeat_payload()
+        response = self.client.post("/api/sinposmart/heartbeat", headers=headers, json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["accepted"])
+        self.assertEqual(response.get_json()["server"]["instance_id"], payload["route"]["instance_id"])
+        for invalid in ([], {**payload, "password": "private"}, {**payload, "sequence": True}):
+            self.assertEqual(self.client.post("/api/sinposmart/heartbeat", headers=headers, json=invalid).status_code, 400)
+        oversized = self.client.post("/api/sinposmart/heartbeat", headers=headers,
+                                     data=" " * 4097, content_type="application/json")
+        self.assertEqual(oversized.status_code, 413)
+        encoded = json.dumps(payload).encode("utf-8")
+        at_limit = self.client.post("/api/sinposmart/heartbeat", headers=headers,
+                                    data=encoded + b" " * (4096 - len(encoded)), content_type="application/json")
+        self.assertEqual(at_limit.status_code, 200)
+        self.assertFalse(at_limit.get_json()["accepted"])
+        self.assertNotIn("private", app_module.duty_gui_heartbeat_store().path.read_text(encoding="utf-8"))
+
+    def test_gui_heartbeat_health_never_claims_expires_or_changes_control_and_events(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        command = {"request_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "target": "duty_gui",
+                   "status": "pending", "requested_at": "2020-01-01T00:00:00", "updated_at": "2020-01-01T00:00:00",
+                   "worker_id": "", "installed_version": "", "detail": "private detail"}
+        path = app_module.remote_update_command_file("duty_gui")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(command), encoding="utf-8")
+        before = path.read_bytes()
+        response = self.client.post("/api/sinposmart/heartbeat", headers={"X-Credential-Sync-Token": "sync-token"},
+                                    json=self._gui_heartbeat_payload())
+        self.assertEqual(response.status_code, 200)
+        health = self.client.get("/api/sinposmart/health")
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(health.headers["Cache-Control"], "no-store")
+        view = health.get_json()
+        self.assertTrue(view["gui"]["alive"])
+        self.assertFalse(view["installer"]["alive"])
+        self.assertFalse(view["installation"]["verified"])
+        self.assertNotIn("private", health.data.decode("utf-8"))
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse((app_module.artifacts_dir / "sinposmart").exists())
+
+    def test_gui_installation_proof_requires_request_exit_version_and_live_gui(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        pulse = self._gui_heartbeat_payload(update_request_id=request_id)
+        self.client.post("/api/sinposmart/heartbeat", headers=headers, json=pulse)
+        command = {"request_id": request_id, "target": "duty_gui", "status": "completed",
+                   "exit_code": 0, "worker_id": "SP-TEST", "installed_version": pulse["app_version"]}
+        path = app_module.remote_update_command_file("duty_gui")
+        for changes, verified in (({}, True), ({"exit_code": None}, False), ({"exit_code": True}, False),
+                                  ({"status": "applying"}, False), ({"installed_version": "2026.10.18.1400"}, False),
+                                  ({"request_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}, False)):
+            with self.subTest(changes=changes):
+                path.write_text(json.dumps({**command, **changes}), encoding="utf-8")
+                self.assertEqual(self.client.get("/api/sinposmart/health").get_json()["installation"]["verified"], verified)
+
+    def test_gui_liveness_is_visible_without_business_events_and_poll_failure_clears_online(self):
+        os.environ["REMOTE_UPDATE_ADMIN_TOKEN"] = ""
+        with mock.patch.object(app_module, "sinposmart_admin_version_info", return_value={}):
+            body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn('aria-label="值班台存活狀態"', body)
+        self.assertIn("尚未收到心跳／狀態未知", body)
+        for title in ("值班台 GUI", "更新安裝器", "救護 Worker"):
+            self.assertIn(title, body)
+        self.assertIn('fetch("/api/sinposmart/health"', body)
+        self.assertIn("setInterval(refreshHealth, 10000)", body)
+        self.assertIn("狀態未知／重新連線中", body)
+        self.assertIn('endsWith(".last_known_label")', body)
+        self.assertIn("以下為最後回報", body)
+        self.assertNotIn(".innerHTML", body)
+
+    def test_gui_heartbeat_store_unavailable_is_safe_503(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        payload = self._gui_heartbeat_payload()
+        with mock.patch.object(app_module.DutyGuiHeartbeatStore, "upsert", side_effect=OSError("private /path token=value")):
+            response = self.client.post("/api/sinposmart/heartbeat", headers={"X-Credential-Sync-Token": "sync-token"}, json=payload)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json(), {"ok": False, "error": "heartbeat_unavailable"})
+
+    def test_gui_health_worker_and_business_events_are_independent_sources(self):
+        worker = self._valid_control_payload()
+        app_module._upsert_worker_heartbeat_unlocked(worker, datetime.now())
+        app_module.sinposmart_store().upsert_event({"event_id": "old-business", "record_type": "login",
+                                                  "occurred_at": datetime.now().isoformat(),
+                                                  "snapshot": {"app_version": "2026.10.18.1350"}})
+        view = self.client.get("/api/sinposmart/health").get_json()
+        self.assertEqual(view["worker"]["status_label"], "在線")
+        self.assertFalse(view["gui"]["alive"])
+        self.assertFalse(view["installer"]["alive"])
+        self.assertIn("狀態未知", view["gui"]["status_label"])
+
     def _valid_control_payload(self, *, route: dict | None = None) -> dict:
         return {
             "worker_id": "PC-01",

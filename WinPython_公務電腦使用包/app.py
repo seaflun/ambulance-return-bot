@@ -140,7 +140,9 @@ from ambulance_bot.site_diagnostics import (
     site_stage_from_detail,
 )
 from ambulance_bot.sinposmart_backend import (
+    DutyGuiHeartbeatStore,
     SinpoSmartBackendStore,
+    duty_gui_installation_view,
     normalize_personnel_title_snapshot,
     personnel_titles_for_case,
     read_personnel_title_snapshot,
@@ -1117,6 +1119,56 @@ def sinposmart_events():
     return jsonify({"ok": True, "ack_id": event["event_id"], "fire_day": event["fire_day"]})
 
 
+@app.get("/api/sinposmart/identity")
+def sinposmart_identity():
+    if not credential_sync_authorized():
+        abort(403)
+    try:
+        with _public_pc_report_lock:
+            server = _worker_server_identity_unlocked()
+    except OSError:
+        return jsonify({"ok": False, "error": "heartbeat_unavailable"}), 503
+    response = jsonify({"ok": True, "server": server})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/api/sinposmart/heartbeat")
+def sinposmart_heartbeat():
+    if not credential_sync_authorized():
+        abort(403)
+    if request.content_length is not None and request.content_length > 4096:
+        return jsonify({"ok": False, "error": "heartbeat_too_large"}), 413
+    body = request.stream.read(4097)
+    if len(body) > 4096:
+        return jsonify({"ok": False, "error": "heartbeat_too_large"}), 413
+    try:
+        data = json.loads(body)
+    except (ValueError, UnicodeError):
+        return jsonify({"ok": False, "error": "invalid_heartbeat"}), 400
+    received_at = datetime.now().astimezone()
+    try:
+        with _public_pc_report_lock:
+            server = _worker_server_identity_unlocked()
+        accepted = duty_gui_heartbeat_store().upsert(data, server_instance_id=server["instance_id"], now=received_at)
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid_heartbeat"}), 400
+    except OSError:
+        return jsonify({"ok": False, "error": "heartbeat_unavailable"}), 503
+    response = jsonify({"ok": True, "accepted": accepted, "server": server,
+                        "received_at": received_at.isoformat(timespec="seconds")})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/sinposmart/health")
+def sinposmart_health():
+    # The public admin page has the same read-only policy; no browser-side secret.
+    response = jsonify({"ok": True, **duty_gui_health_view()})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/admin/vehicles")
 def admin_vehicles():
     if request_is_local_host():
@@ -1433,6 +1485,7 @@ def admin_sinposmart():
         selected_day=selected_day,
         selected_fire_day=selected_fire_day,
         version_info=sinposmart_admin_version_info(selected_day),
+        duty_gui_health=duty_gui_health_view(),
         credential_sync_status=credential_sync_admin_view(days),
         duty_gui_remote_update=(
             remote_update_admin_view("duty_gui") if duty_gui_remote_update_enabled else {}
@@ -2511,6 +2564,30 @@ def _record_credential_sync_result_unlocked(record: dict, status: str) -> None:
 
 def sinposmart_store() -> SinpoSmartBackendStore:
     return SinpoSmartBackendStore(artifacts_dir / "sinposmart")
+
+
+def duty_gui_heartbeat_store() -> DutyGuiHeartbeatStore:
+    return DutyGuiHeartbeatStore(artifacts_dir / "public_pc" / "sinposmart_heartbeat.json")
+
+
+def duty_gui_health_view(now: datetime | None = None) -> dict[str, object]:
+    health = duty_gui_heartbeat_store().admin_view(now=now)
+    with _public_pc_report_lock:
+        command = _read_remote_update_command_unlocked("duty_gui")
+    try:
+        worker = worker_heartbeat_admin_view([], now=now)
+    except (OSError, TypeError, ValueError):
+        worker = {"status_label": "狀態未知", "status_class": "", "last_seen_at": "", "package_version": "", "state": ""}
+    worker_version = str(worker["package_version"] or "")
+    if not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{4}", worker_version):
+        worker_version = "未知"
+    worker_state = {"starting": "啟動中", "idle": "閒置", "busy": "處理中", "update_handoff": "更新交接",
+                    "recovering": "恢復中", "stopping": "關閉中"}.get(worker["state"], "未知")
+    return {**health, "installation": duty_gui_installation_view(health, command),
+            "worker": {"status_label": worker["status_label"], "status_class": worker["status_class"],
+                       "last_seen_at": worker["last_seen_at"] or "尚未收到", "age_label": "",
+                       "last_known_label": "以下為最後回報" if worker["last_seen_at"] and worker["status_label"] != "在線" else "",
+                       "app_version": worker_version, "state_label": worker_state}}
 
 
 def credential_sync_token() -> str:

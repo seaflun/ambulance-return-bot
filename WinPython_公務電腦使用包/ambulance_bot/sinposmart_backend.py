@@ -8,12 +8,12 @@ import json
 import re
 import struct
 import zlib
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 
@@ -106,6 +106,251 @@ def taipei_local_datetime(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value
     return value.astimezone(TAIPEI_TIMEZONE).replace(tzinfo=None)
+
+
+GUI_HEARTBEAT_ONLINE_SECONDS = 45
+GUI_HEARTBEAT_STARTUP_SECONDS = 60
+GUI_HEARTBEAT_FIELDS = frozenset({
+    "schema_version", "workstation", "component", "instance_id", "process_started_at", "process_id",
+    "sequence", "app_version", "state", "login_state", "phase", "update_request_id", "target_version",
+    "result_code", "exit_code", "progress_percent", "route",
+})
+GUI_HEARTBEAT_PHASE_LABELS = {
+    "startup": "啟動中", "idle": "閒置", "busy": "處理中", "preparing": "準備更新",
+    "staged": "更新已備妥", "waiting_handoff": "等待交接", "waiting_parent": "等待值班台退出",
+    "preflight": "更新前檢查", "waiting_busy": "等待作業完成", "applying": "套用更新",
+    "installing": "安裝中", "environment_check": "檢查執行環境", "restarting": "重新啟動",
+    "waiting_gui": "等待新版啟動", "completed": "安裝器步驟完成", "failed": "失敗",
+    "stopping": "關閉中", "unknown": "未知",
+}
+
+
+def _heartbeat_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _heartbeat_now(value: datetime | None = None) -> datetime:
+    current = value or datetime.now(timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        current = current.replace(tzinfo=TAIPEI_TIMEZONE)
+    return current.astimezone(timezone.utc)
+
+
+def _heartbeat_uuid(value: Any, *, optional: bool = False) -> str:
+    if optional and value == "":
+        return ""
+    if not isinstance(value, str) or len(value) != 36:
+        raise ValueError("invalid_heartbeat")
+    try:
+        return str(UUID(value))
+    except ValueError:
+        raise ValueError("invalid_heartbeat") from None
+
+
+def normalize_duty_gui_heartbeat(raw: Any, server_instance_id: str) -> dict[str, Any]:
+    if not isinstance(raw, dict) or set(raw) != GUI_HEARTBEAT_FIELDS:
+        raise ValueError("invalid_heartbeat")
+    if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+        raise ValueError("invalid_heartbeat")
+    workstation = raw["workstation"]
+    if not isinstance(workstation, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", workstation):
+        raise ValueError("invalid_heartbeat")
+    for key in ("process_id", "sequence"):
+        if type(raw[key]) is not int or raw[key] <= 0:
+            raise ValueError("invalid_heartbeat")
+    for key in ("app_version", "target_version"):
+        value = raw[key]
+        if key == "target_version" and value == "":
+            continue
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{4}", value):
+            raise ValueError("invalid_heartbeat")
+    choices = {
+        "component": {"gui", "installer"},
+        "state": {"starting", "idle", "busy", "updating", "failed", "stopping"},
+        "login_state": {"unknown", "logged_out", "logging_in", "logged_in"},
+        "phase": set(GUI_HEARTBEAT_PHASE_LABELS),
+        "result_code": {"", "installer_failed", "gui_start_failed", "gui_ready_timeout", "update_completed", "closed"},
+    }
+    for key, allowed in choices.items():
+        if not isinstance(raw[key], str) or raw[key] not in allowed:
+            raise ValueError("invalid_heartbeat")
+    for key, lower, upper in (("exit_code", -1, 65535), ("progress_percent", 0, 100)):
+        if raw[key] is not None and (type(raw[key]) is not int or not lower <= raw[key] <= upper):
+            raise ValueError("invalid_heartbeat")
+    started = _heartbeat_datetime(raw["process_started_at"])
+    if started is None:
+        raise ValueError("invalid_heartbeat")
+    request_id = _heartbeat_uuid(raw["update_request_id"], optional=True)
+    if raw["component"] == "installer" and (not request_id or raw["login_state"] != "unknown"):
+        raise ValueError("invalid_heartbeat")
+    route = raw["route"]
+    if (not isinstance(route, dict) or set(route) != {"name", "identity_status", "instance_id"}
+            or not isinstance(route["name"], str) or route["name"] not in {"lan", "tailscale", "configured"}
+            or route["identity_status"] != "verified"
+            or _heartbeat_uuid(route["instance_id"]) != _heartbeat_uuid(server_instance_id)):
+        raise ValueError("invalid_heartbeat")
+    result = dict(raw)
+    result.update(instance_id=_heartbeat_uuid(raw["instance_id"]), update_request_id=request_id,
+                  process_started_at=started.isoformat(), route=dict(route))
+    result["route"]["instance_id"] = _heartbeat_uuid(route["instance_id"])
+    return result
+
+
+class DutyGuiHeartbeatStore:
+    """Technical telemetry only; never reads or writes event/update control records."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = shared_store_lock(path.parent)
+
+    def _read(self) -> dict[str, Any]:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"schema_version": 1, "workstations": {}}
+        except (OSError, ValueError):
+            raise OSError("heartbeat_store_unavailable") from None
+        if (not isinstance(payload, dict) or type(payload.get("schema_version")) is not int or payload["schema_version"] != 1
+                or not isinstance(payload.get("workstations"), dict)):
+            raise OSError("heartbeat_store_unavailable")
+        return payload
+
+    def upsert(self, raw: Any, *, server_instance_id: str, now: datetime | None = None) -> bool:
+        incoming = normalize_duty_gui_heartbeat(raw, server_instance_id)
+        received = _heartbeat_now(now).isoformat(timespec="seconds")
+        with self._lock:
+            payload = self._read()
+            stations = payload["workstations"]
+            station = stations.get(incoming["workstation"], {})
+            if not isinstance(station, dict):
+                raise OSError("heartbeat_store_unavailable")
+            if incoming["workstation"] not in stations and len(stations) >= 32:
+                return False
+            current = station.get(incoming["component"], {})
+            retired: list[str] = []
+            if current:
+                try:
+                    normalized = normalize_duty_gui_heartbeat(
+                        {key: current[key] for key in GUI_HEARTBEAT_FIELDS}, current["route"]["instance_id"])
+                    retired = [_heartbeat_uuid(item) for item in current.get("retired_instances", [])][-16:]
+                except (KeyError, TypeError, ValueError):
+                    raise OSError("heartbeat_store_unavailable") from None
+                if incoming["instance_id"] == normalized["instance_id"]:
+                    immutable = ["process_started_at", "process_id", "app_version"]
+                    if incoming["component"] == "installer":
+                        immutable += ["update_request_id", "target_version"]
+                    if (incoming["sequence"] <= normalized["sequence"]
+                            or any(incoming[key] != normalized[key] for key in immutable)):
+                        return False
+                else:
+                    if (incoming["instance_id"] in retired
+                            or _heartbeat_datetime(incoming["process_started_at"]) <=
+                            _heartbeat_datetime(normalized["process_started_at"])):
+                        return False
+                    retired = (retired + [normalized["instance_id"]])[-16:]
+            first_received = (current.get("first_received_at") if current
+                              and current.get("instance_id") == incoming["instance_id"] else received)
+            station[incoming["component"]] = {
+                **incoming, "received_at": received, "first_received_at": first_received,
+                "retired_instances": retired,
+            }
+            stations[incoming["workstation"]] = station
+            write_json_atomic(self.path, payload)
+        return True
+
+    def admin_view(self, *, now: datetime | None = None) -> dict[str, Any]:
+        current = _heartbeat_now(now)
+        try:
+            with self._lock:
+                stations = self._read()["workstations"]
+        except OSError:
+            stations = {}
+        result = {}
+        for component in ("gui", "installer"):
+            valid = []
+            for station in stations.values():
+                record = station.get(component) if isinstance(station, dict) else None
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    normalized = normalize_duty_gui_heartbeat(
+                        {key: record[key] for key in GUI_HEARTBEAT_FIELDS}, record["route"]["instance_id"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                received = _heartbeat_datetime(record.get("received_at"))
+                first = _heartbeat_datetime(record.get("first_received_at"))
+                if received is not None and first is not None and first <= received:
+                    valid.append((received, first, normalized, record))
+            latest = max(valid, key=lambda item: item[0], default=None)
+            if latest is None:
+                result[component] = {"alive": False, "fresh": False, "status_class": "",
+                                     "status_label": "尚未收到心跳／狀態未知", "last_seen_at": "尚未收到",
+                                     "age_seconds": None, "age_label": "未知", "app_version": "未知",
+                                     "state_label": "未知", "login_label": "未知", "phase_label": "未知",
+                                     "instance_id": "", "process_started_at": "", "workstation": "",
+                                     "startup_label": "", "retired_count": 0, "update_request_id": "",
+                                     "result_label": "", "result_code": "", "exit_code": None,
+                                     "target_version": "", "progress_label": "", "last_known_label": ""}
+                continue
+            received, first, normalized, record = latest
+            age = (current - received).total_seconds()
+            fresh = 0 <= age <= GUI_HEARTBEAT_ONLINE_SECONDS
+            stopping = normalized["state"] == "stopping"
+            alive = fresh and not stopping
+            status = "已回報關閉" if stopping else "在線" if alive else "失聯／無法確認程式是否開啟"
+            state_label = {"starting": "啟動中", "idle": "閒置", "busy": "處理中", "updating": "更新中",
+                           "failed": "失敗", "stopping": "關閉中"}[normalized["state"]]
+            login = {"unknown": "未知", "logged_out": "未登入", "logging_in": "登入中",
+                     "logged_in": "已登入"}[normalized["login_state"]]
+            startup = ""
+            if normalized["state"] == "starting":
+                startup = "啟動中" if (current - first).total_seconds() <= GUI_HEARTBEAT_STARTUP_SECONDS else "啟動仍未完成"
+            result[component] = {
+                "alive": alive, "fresh": fresh, "status_class": "complete" if alive else "" if stopping else "failed",
+                "status_label": status, "last_seen_at": received.isoformat(timespec="seconds"),
+                "age_seconds": int(age) if age >= 0 else None, "age_label": f"{int(age)} 秒前" if age >= 0 else "時間待確認",
+                "app_version": normalized["app_version"], "state_label": state_label + ("（最後回報）" if not fresh else ""),
+                "login_label": login + ("（最後回報）" if not fresh else ""),
+                "phase_label": GUI_HEARTBEAT_PHASE_LABELS[normalized["phase"]] + ("（最後回報）" if not fresh else ""),
+                "last_known_label": "" if fresh else "以下為最後回報",
+                "instance_id": normalized["instance_id"], "process_started_at": normalized["process_started_at"],
+                "workstation": normalized["workstation"], "startup_label": startup,
+                "retired_count": len(record["retired_instances"]) if isinstance(record.get("retired_instances"), list) else 0,
+                "update_request_id": normalized["update_request_id"], "result_code": normalized["result_code"],
+                "exit_code": normalized["exit_code"],
+                "result_label": {"": "", "installer_failed": "安裝失敗", "gui_start_failed": "新版啟動失敗",
+                                 "gui_ready_timeout": "等待新版啟動逾時", "update_completed": "安裝器步驟完成",
+                                 "closed": "已回報關閉"}[normalized["result_code"]],
+                "target_version": normalized["target_version"],
+                "progress_label": f"{normalized['progress_percent']}%" if normalized["progress_percent"] is not None else "",
+            }
+        return result
+
+
+def duty_gui_installation_view(health: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
+    gui, installer = health["gui"], health["installer"]
+    request_id = str(command.get("request_id") or "")
+    owner = str(command.get("worker_id") or "")
+    installer_current = bool(request_id and installer["update_request_id"] == request_id
+                             and (not owner or installer["workstation"] == owner))
+    installed = command.get("installed_version")
+    verified = bool(gui["alive"] and request_id and gui["update_request_id"] == request_id
+                    and (not owner or gui["workstation"] == owner)
+                    and isinstance(command.get("status"), str) and command["status"] in {"completed", "up_to_date"}
+                    and type(command.get("exit_code")) is int and command["exit_code"] == 0
+                    and installed and gui["app_version"] == installed)
+    return {"verified": verified, "status_label": "已確認新版啟動" if verified else "尚未確認新版啟動",
+            "installer_current": installer_current,
+            "installer_request_label": "對應目前更新命令" if installer_current else
+            "其他更新請求" if installer["update_request_id"] else "尚未回報更新請求"}
 
 
 def sinposmart_fire_day_for(value: datetime | None = None) -> str:
