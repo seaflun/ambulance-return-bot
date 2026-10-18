@@ -1101,6 +1101,31 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         )
         self.assertEqual(view["tool_events"][0]["status_label"], "失敗")
         self.assertEqual(view["tool_events"][0]["waiting_reason"], "")
+        stages = {
+            "maintenance_page_ready": "等待保養頁初始化",
+            "maintenance_query_start": "啟動保養查詢",
+            "maintenance_query_wait": "等待保養查詢結果",
+            "maintenance_query_verify": "核對保養本次查詢",
+            "maintenance_inventory_verify": "核對保養完整清單",
+            "equipment_page_ready": "等待器材頁初始化",
+            "equipment_query_start": "啟動器材查詢",
+            "equipment_query_wait": "等待器材查詢結果",
+            "equipment_query_verify": "核對器材本次查詢",
+            "equipment_inventory_verify": "核對器材完整清單",
+            "maintenance_unknown": "",
+            "equipment_query_wait<script>fixture</script>": "",
+        }
+        for stage, expected in stages.items():
+            with self.subTest(stage=stage):
+                event = normalize_sinposmart_event({
+                    "event_id": "evt-query-stage", "occurred_at": "2026-10-18T10:03:29",
+                    "record_type": "tool_action_finished", "status": "failed",
+                    "snapshot": {"tool_name": "daily_vehicle", "failure_stage": stage},
+                })
+                card = build_sinposmart_admin_view([event])["tool_events"][0]
+                self.assertEqual(card["failure_stage_label"], expected)
+                self.assertEqual(card["status_label"], "失敗")
+                self.assertEqual(event["snapshot"]["failure_stage"], stage)
 
     def test_admin_view_marks_tool_waiting_as_attention_without_calling_it_failed(self):
         event = normalize_sinposmart_event(
