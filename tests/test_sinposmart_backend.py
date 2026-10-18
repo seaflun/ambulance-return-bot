@@ -171,6 +171,135 @@ class DutyGuiHeartbeatTests(unittest.TestCase):
         self.assertTrue(view["installer"]["alive"])
         self.assertEqual(view["installer"]["phase_label"], "安裝中")
 
+    def test_installer_display_is_neutral_without_an_executing_host(self):
+        health = self.store.admin_view(now=self.now)
+        original = copy.deepcopy(health)
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        for status in (None, "pending", "preparing", "staged", "waiting_handoff", "completed", "up_to_date"):
+            with self.subTest(status=status):
+                command = {} if status is None else {"request_id": request_id, "worker_id": "SP-TEST", "status": status}
+                view = backend.duty_gui_installer_activity_view(health["installer"], command)
+                self.assertEqual(view["status_label"], "未執行更新")
+                self.assertEqual(view["status_class"], "")
+                self.assertEqual(view["progress_label"], "")
+                self.assertFalse(view["alive"])
+                self.assertFalse(view["fresh"])
+        self.assertEqual(health, original)
+
+    def test_installer_display_warns_when_an_applying_host_is_missing_or_stale(self):
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        command = {"request_id": request_id, "worker_id": "SP-TEST", "status": "applying"}
+        missing = self.store.admin_view(now=self.now)["installer"]
+        self.assertEqual(backend.duty_gui_installer_activity_view(missing, command)["status_label"], "更新狀態待確認")
+        self.put(self.pulse(component="installer", state="updating", phase="installing", login_state="unknown",
+                            update_request_id=request_id, progress_percent=70))
+        original_bytes = self.store.path.read_bytes()
+        for status in ("applying", "updating"):
+            with self.subTest(status=status):
+                original = self.store.admin_view(now=self.now + timedelta(seconds=46))["installer"]
+                view = backend.duty_gui_installer_activity_view(original, {**command, "status": status})
+                self.assertEqual(view["status_label"], "更新狀態待確認")
+                self.assertEqual(view["status_class"], "attention")
+                self.assertEqual(view["progress_label"], "")
+                for key in ("alive", "fresh", "last_seen_at", "age_seconds", "instance_id", "phase_label"):
+                    self.assertEqual(view[key], original[key])
+        self.assertEqual(self.store.path.read_bytes(), original_bytes)
+
+    def test_installer_display_shows_matching_fresh_activity_and_failure(self):
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        command = {"request_id": request_id, "worker_id": "SP-TEST", "status": "applying"}
+        self.put(self.pulse(component="installer", state="updating", phase="installing", login_state="unknown",
+                            update_request_id=request_id, progress_percent=70))
+        raw = self.store.admin_view(now=self.now)["installer"]
+        view = backend.duty_gui_installer_activity_view(raw, command)
+        self.assertEqual(view["status_label"], "更新中")
+        self.assertEqual(view["status_class"], "running")
+        self.assertEqual(view["progress_label"], "70%")
+        self.assertTrue(view["alive"])
+        self.put(self.pulse(component="installer", state="failed", phase="failed", login_state="unknown",
+                            update_request_id=request_id, result_code="gui_ready_timeout", sequence=2, exit_code=0))
+        raw = self.store.admin_view(now=self.now)["installer"]
+        view = backend.duty_gui_installer_activity_view(raw, command)
+        self.assertEqual(view["status_label"], "更新失敗")
+        self.assertEqual(view["status_class"], "failed")
+        self.assertEqual(view["result_label"], "等待新版啟動逾時")
+        self.assertTrue(view["alive"])
+        for status in ("failed", "completed", "up_to_date"):
+            with self.subTest(status=status):
+                view = backend.duty_gui_installer_activity_view(raw, {**command, "status": status})
+                self.assertEqual(view["status_label"], "更新失敗")
+                self.assertEqual(view["result_label"], "等待新版啟動逾時")
+
+    def test_installer_display_does_not_adopt_other_request_or_owner(self):
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        self.put(self.pulse(component="installer", state="updating", phase="installing", login_state="unknown",
+                            update_request_id=request_id, progress_percent=70))
+        health = self.store.admin_view(now=self.now)
+        for command in (
+            {"request_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "worker_id": "SP-TEST", "status": "applying"},
+            {"request_id": request_id, "worker_id": "OTHER-PC", "status": "updating"},
+        ):
+            with self.subTest(command=command):
+                view = backend.duty_gui_installer_activity_view(health["installer"], command)
+                self.assertEqual(view["status_label"], "更新狀態待確認")
+                self.assertEqual(view["status_class"], "attention")
+                self.assertEqual(view["progress_label"], "")
+                self.assertEqual(view["update_request_id"], request_id)
+                self.assertFalse(backend.duty_gui_installation_view(health, command)["verified"])
+        self.put(self.pulse(component="installer", state="failed", phase="failed", login_state="unknown",
+                            update_request_id=request_id, result_code="installer_failed", sequence=2, exit_code=1))
+        raw = self.store.admin_view(now=self.now)["installer"]
+        view = backend.duty_gui_installer_activity_view(raw, {
+            "request_id": request_id, "worker_id": "OTHER-PC", "status": "applying",
+        })
+        self.assertEqual(view["status_label"], "更新狀態待確認")
+        self.assertEqual(view["result_label"], "安裝失敗")
+
+    def test_installer_finished_command_does_not_report_an_old_working_host_lost(self):
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        self.put(self.pulse(component="installer", state="updating", phase="installing", login_state="unknown",
+                            update_request_id=request_id, progress_percent=70))
+        raw = self.store.admin_view(now=self.now + timedelta(seconds=46))["installer"]
+        for status in (None, "completed", "up_to_date", "pending", "preparing", "staged", "waiting_handoff"):
+            with self.subTest(status=status):
+                command = {} if status is None else {"request_id": request_id, "worker_id": "SP-TEST", "status": status}
+                view = backend.duty_gui_installer_activity_view(raw, command)
+                self.assertEqual(view["status_label"], "未執行更新")
+                self.assertEqual(view["status_class"], "")
+                self.assertFalse(view["fresh"])
+                self.assertEqual(view["last_seen_at"], raw["last_seen_at"])
+
+    def test_installer_display_tolerates_malformed_status_without_changing_raw_health(self):
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        self.put(self.pulse(component="installer", state="updating", phase="installing", login_state="unknown",
+                            update_request_id=request_id, progress_percent=70))
+        raw = self.store.admin_view(now=self.now)["installer"]
+        for status in ([], {}, None, True):
+            with self.subTest(status=status):
+                view = backend.duty_gui_installer_activity_view(raw, {"request_id": request_id, "status": status})
+                self.assertEqual(view["alive"], raw["alive"])
+                self.assertEqual(view["fresh"], raw["fresh"])
+                self.assertEqual(view["update_request_id"], raw["update_request_id"])
+
+    def test_installer_idle_or_closed_history_is_neutral_without_hiding_stale_gui(self):
+        request_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        self.put(self.pulse())
+        self.put(self.pulse(component="installer", state="idle", phase="completed", login_state="unknown",
+                            update_request_id=request_id, result_code="update_completed", progress_percent=100))
+        for status in (None, "completed", "up_to_date", "pending", "staged", "waiting_handoff"):
+            with self.subTest(status=status):
+                command = {} if status is None else {"request_id": request_id, "worker_id": "SP-TEST", "status": status}
+                health = self.store.admin_view(now=self.now + timedelta(seconds=46))
+                view = backend.duty_gui_installer_activity_view(health["installer"], command)
+                self.assertEqual(view["status_label"], "未執行更新")
+                self.assertEqual(view["status_class"], "")
+                self.assertIn("失聯", health["gui"]["status_label"])
+                self.assertFalse(health["gui"]["alive"])
+        self.put(self.pulse(component="installer", state="stopping", phase="stopping", login_state="unknown",
+                            update_request_id=request_id, result_code="closed", sequence=2))
+        fresh = self.store.admin_view(now=self.now)["installer"]
+        self.assertEqual(backend.duty_gui_installer_activity_view(fresh, {})["status_label"], "未執行更新")
+
     def test_normal_close_and_invalid_or_unavailable_storage_are_not_online(self):
         self.put(self.pulse(state="stopping", phase="stopping", result_code="closed"))
         closed = self.store.admin_view(now=self.now)["gui"]

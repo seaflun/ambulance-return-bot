@@ -143,6 +143,7 @@ from ambulance_bot.sinposmart_backend import (
     DutyGuiHeartbeatStore,
     SinpoSmartBackendStore,
     duty_gui_installation_view,
+    duty_gui_installer_activity_view,
     normalize_personnel_title_snapshot,
     personnel_titles_for_case,
     read_personnel_title_snapshot,
@@ -2574,6 +2575,8 @@ def duty_gui_health_view(now: datetime | None = None) -> dict[str, object]:
     health = duty_gui_heartbeat_store().admin_view(now=now)
     with _public_pc_report_lock:
         command = _read_remote_update_command_unlocked("duty_gui")
+    installation = duty_gui_installation_view(health, command)
+    health["installer"] = duty_gui_installer_activity_view(health["installer"], command)
     try:
         worker = worker_heartbeat_admin_view([], now=now)
     except (OSError, TypeError, ValueError):
@@ -2583,7 +2586,7 @@ def duty_gui_health_view(now: datetime | None = None) -> dict[str, object]:
         worker_version = "未知"
     worker_state = {"starting": "啟動中", "idle": "閒置", "busy": "處理中", "update_handoff": "更新交接",
                     "recovering": "恢復中", "stopping": "關閉中"}.get(worker["state"], "未知")
-    return {**health, "installation": duty_gui_installation_view(health, command),
+    return {**health, "installation": installation,
             "worker": {"status_label": worker["status_label"], "status_class": worker["status_class"],
                        "last_seen_at": worker["last_seen_at"] or "尚未收到", "age_label": "",
                        "last_known_label": "以下為最後回報" if worker["last_seen_at"] and worker["status_label"] != "在線" else "",

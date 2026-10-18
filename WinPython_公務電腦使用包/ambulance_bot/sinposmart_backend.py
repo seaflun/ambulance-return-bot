@@ -298,7 +298,8 @@ class DutyGuiHeartbeatStore:
                                      "instance_id": "", "process_started_at": "", "workstation": "",
                                      "startup_label": "", "retired_count": 0, "update_request_id": "",
                                      "result_label": "", "result_code": "", "exit_code": None,
-                                     "target_version": "", "progress_label": "", "last_known_label": ""}
+                                     "target_version": "", "progress_label": "", "last_known_label": "",
+                                     "state": "unknown", "phase": "unknown"}
                 continue
             received, first, normalized, record = latest
             age = (current - received).total_seconds()
@@ -331,8 +332,33 @@ class DutyGuiHeartbeatStore:
                                  "closed": "已回報關閉"}[normalized["result_code"]],
                 "target_version": normalized["target_version"],
                 "progress_label": f"{normalized['progress_percent']}%" if normalized["progress_percent"] is not None else "",
+                "state": normalized["state"], "phase": normalized["phase"],
             }
         return result
+
+
+def duty_gui_installer_activity_view(installer: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
+    """Describe update activity without changing process freshness or install proof."""
+    view = {**installer, "status_label": "未執行更新", "status_class": "", "progress_label": ""}
+    request_id = str(command.get("request_id") or "")
+    owner = str(command.get("worker_id") or "")
+    status = command.get("status")
+    status = status if isinstance(status, str) else ""
+    applying = status in {"applying", "updating"}
+    matching = bool(request_id and installer.get("update_request_id") == request_id
+                    and (not owner or installer.get("workstation") == owner))
+    fresh_host = installer.get("alive") is True and installer.get("fresh") is True
+    if matching and fresh_host:
+        if installer.get("state") == "failed" or installer.get("phase") == "failed":
+            view.update(status_label="更新失敗", status_class="failed", progress_label=installer.get("progress_label", ""))
+            return view
+        if (installer.get("state") in {"starting", "busy", "updating"}
+                and status not in {"completed", "up_to_date"}):
+            view.update(status_label="更新中", status_class="running", progress_label=installer.get("progress_label", ""))
+            return view
+    if applying:
+        view.update(status_label="更新狀態待確認", status_class="attention")
+    return view
 
 
 def duty_gui_installation_view(health: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
