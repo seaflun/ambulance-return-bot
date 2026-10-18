@@ -457,7 +457,7 @@ try {
         )
         self.assertIn("不唯一", result.stdout)
 
-    def run_snapshot(self, changes=None):
+    def run_snapshot(self, changes=None, *, complete=True):
         rows = [candidate("01"), candidate("02")]
         state = {
             "generation": 2,
@@ -477,7 +477,8 @@ try {
         if changes:
             state.update(changes)
         driver = Mock(current_url=module.ACS_URL)
-        module._read_complete_consumable_candidates(driver)
+        reader = module._read_complete_consumable_candidates if complete else module._read_consumable_candidates
+        reader(driver)
         source = driver.execute_script.call_args.args[0]
         harness = r"""
 const s = JSON.parse(process.argv[1]);
@@ -485,9 +486,24 @@ global.window = global;
 global.location = {href: 'https://nfaemsap3.nfa.gov.tw/ACS/ACS15001',
     origin: 'https://nfaemsap3.nfa.gov.tw', pathname: '/ACS/ACS15001'};
 function link(row) { return {href: new URL(row.href, location.href).href,
-    getAttribute: () => row.href}; }
-function node(row) { return {innerText: row.text, textContent: row.text,
-    querySelectorAll: () => [link(row)]}; }
+    getAttribute: () => row.href, closest: () => node(row)}; }
+function cell(value) {
+    const parts = Array.isArray(value) ? value : [value];
+    return {textContent: parts.join(''), cloneNode: () => {
+        const clone = {textContent: parts.join('')};
+        clone.querySelectorAll = () => parts.slice(1).map(() => ({replaceWith: separator => {
+            clone.textContent = parts.join(separator);
+        }}));
+        return clone;
+    }};
+}
+function node(row) {
+    const cells = (row.cells || [row.text]).map(cell);
+    const content = cells.map(value => value.textContent).join('');
+    return {innerText: s.detachedSids?.includes(row.sid) ? content : row.text,
+        textContent: content, cells: s.noCells ? [] : cells,
+        querySelectorAll: () => [link(row)]};
+}
 function raw(row) {
     const value = {emmTemsisid: row.sid, attendanceDate: row.text};
     if (!s.omitReportUrl) value.url = Object.prototype.hasOwnProperty.call(s, 'reportUrlOverride')
@@ -531,6 +547,42 @@ process.stdout.write(JSON.stringify(result));
         result = self.run_snapshot()
         self.assertTrue(result["complete"])
         self.assertEqual([row["sid"] for row in result["candidates"]], [candidate("01")["sid"], candidate("02")["sid"]])
+
+    def test_patient_moving_to_another_page_keeps_same_text_and_collection(self):
+        rows = [candidate("01"), candidate("02")]
+        for index, row in enumerate(rows, 1):
+            row["cells"] = [str(index), row["sid"], "2026/07/13 08:05:05", "測試案件", "未登打", "內容"]
+            row["text"] = "\t".join(row["cells"])
+        before = self.run_snapshot({"rows": rows, "payloadRows": rows,
+                                    "currentPage": [rows[0]], "domPage": [rows[0]],
+                                    "detachedSids": [rows[1]["sid"]]})["candidates"]
+        after = self.run_snapshot({"rows": rows, "payloadRows": rows,
+                                   "currentPage": [rows[1]], "domPage": [rows[1]],
+                                   "detachedSids": [rows[0]["sid"]]})["candidates"]
+        request = ConsumablesSpeedTests().request()
+        with patch.object(module, "_read_complete_consumable_candidates", side_effect=[before, after]), patch.object(
+            module, "_prepare_consumable_list_snapshot", return_value=True
+        ), patch.object(module, "WebDriverWait", return_value=ConsumablesSpeedTests.ready_wait()):
+            self.assertEqual(module._collect_consumable_candidates(Mock(), request), after)
+        for row in before + after:
+            self.assertEqual(module._yyyymmdd_from_row_text(row["text"]), "20260713")
+            self.assertEqual(module._hhmm_from_row_text(row["text"]), "0805")
+
+    def test_cell_breaks_preserve_date_time_and_page_readers_use_same_text(self):
+        row = candidate("01")
+        row["cells"] = ["1", row["sid"], ["2026/07/13", "08:05:05"], "測試案件", "未登打", "內容"]
+        row["text"] = "1\t" + row["sid"] + "\t2026/07/13\n08:05:05\t測試案件\t未登打\t內容"
+        changes = {"rows": [row], "payloadRows": [row], "recordsTotal": 1,
+                   "currentPage": [row], "domPage": [row], "detachedSids": [row["sid"]]}
+        full = self.run_snapshot(changes)["candidates"]
+        page = self.run_snapshot(changes, complete=False)
+        self.assertEqual(full, page)
+        self.assertEqual(module._yyyymmdd_from_row_text(full[0]["text"]), "20260713")
+        self.assertEqual(module._hhmm_from_row_text(full[0]["text"]), "0805")
+
+    def test_missing_table_cells_cannot_be_accepted_as_complete_candidates(self):
+        self.assertFalse(self.run_snapshot({"noCells": True})["complete"])
+        self.assertTrue(all(not row["text"] for row in self.run_snapshot({"noCells": True}, complete=False)))
 
     def test_external_report_url_does_not_replace_official_node_navigation_identity(self):
         result = self.run_snapshot({"externalReportUrls": True})

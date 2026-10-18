@@ -1021,9 +1021,17 @@ def _read_complete_consumable_candidates(driver: webdriver.Chrome) -> list[dict[
                 // ACS renders this anchor from emmTemsisid; row.url points to an external report.
                 if (!sid || seen.has(sid) || payload.get(sid) !== JSON.stringify(row) ||
                     links.length !== 1 || identity(links[0].getAttribute('href')) !== sid) return unavailable;
+                const cells = Array.from(nodes[i].cells || []);
+                if (!cells.length) return unavailable;
+                // Detached DataTables rows lose innerText cell separators; keep a stable representation.
+                const text = cells.map(cell => {
+                    const copy = cell.cloneNode(true);
+                    copy.querySelectorAll('br').forEach(br => br.replaceWith(' '));
+                    return String(copy.textContent || '').replace(/\\s+/g, ' ').trim();
+                }).join(' ').trim();
+                if (!text) return unavailable;
                 seen.add(sid);
-                candidates.push({href: links[0].getAttribute('href'), sid: sid,
-                    text: String(nodes[i].innerText || nodes[i].textContent || '').trim()});
+                candidates.push({href: links[0].getAttribute('href'), sid: sid, text: text});
             }
             const current = api.rows({page: 'current'}).data().toArray()
                 .map(row => String(row.emmTemsisid)).sort();
@@ -1128,10 +1136,15 @@ def _read_consumable_candidates(driver: webdriver.Chrome) -> list[dict[str, str]
         """
         return Array.from(document.querySelectorAll("a.btn_t02[href^='/ACS/ACS15002?emmTemsisid=']")).map((link) => {
             const row = link.closest("tr");
+            const text = Array.from(row?.cells || [], cell => {
+                const copy = cell.cloneNode(true);
+                copy.querySelectorAll('br').forEach(br => br.replaceWith(' '));
+                return String(copy.textContent || '').replace(/\\s+/g, ' ').trim();
+            }).join(' ').trim();
             return {
                 href: link.getAttribute("href"),
                 sid: new URL(link.href, window.location.href).searchParams.get('emmTemsisid') || '',
-                text: row ? row.innerText : link.innerText
+                text: text
             };
         });
         """
