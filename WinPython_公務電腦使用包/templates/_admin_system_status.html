@@ -1,5 +1,5 @@
-{% macro system_overview(compact=false) -%}
-<section class="system-overview-card{% if compact %} system-overview-card--compact{% endif %}" aria-label="系統狀態">
+{% macro system_overview() -%}
+<section class="system-overview-card" aria-label="系統狀態">
   <div class="system-overview-head"><h2>系統狀態</h2></div>
   <div class="system-overview-grid">
     {{ caller() }}

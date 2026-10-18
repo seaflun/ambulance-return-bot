@@ -1,5 +1,9 @@
 .system-overview-card {
-  --status-accent: var(--admin-accent, var(--page-accent, var(--brand)));
+  --status-accent: var(--admin-accent, var(--ems));
+  --surface: rgba(255, 255, 255, .82);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
   margin-bottom: 18px;
   padding: 18px;
   border: 1px solid rgba(255, 255, 255, .9);
@@ -14,7 +18,7 @@
 .system-overview-head { margin-bottom: 12px; }
 .system-overview-card h2,
 .system-overview-card h3,
-.system-overview-card p { margin: 0; }
+.system-overview-card p { margin: 0; color: var(--label); line-height: 1.5; letter-spacing: normal; }
 .system-overview-head h2 { font-size: 1.15rem; font-weight: 760; }
 
 .system-overview-grid {
@@ -68,6 +72,7 @@
 
 .system-health-meta .worker-health-version { color: var(--label); font-weight: 700; }
 .system-health-meta .version-difference { color: var(--status-accent); font-weight: 650; }
+.system-health-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .system-health-meta details { margin-top: 4px; }
 .system-health-meta summary { min-height: 32px; padding: 5px 0; cursor: pointer; }
 
@@ -117,7 +122,7 @@
   overflow-wrap: anywhere;
 }
 
-.system-overview-card .remote-update-label { display: block; color: var(--secondary-label); font-size: .82rem; }
+.system-overview-card .remote-update-label { display: block; color: var(--secondary-label); font-size: .82rem; font-weight: 400; line-height: 1.5; }
 .system-overview-card .remote-update-secret {
   width: 100%;
   min-height: 44px;
@@ -128,9 +133,10 @@
   background: var(--surface-solid);
   color: var(--label);
   font: inherit;
+  box-shadow: none;
 }
 
-.system-overview-card button {
+.system-overview-card .remote-update-card button {
   width: 100%;
   min-height: var(--control-height);
   padding: 10px 18px;
@@ -141,11 +147,19 @@
   font: inherit;
   font-weight: 720;
   white-space: normal;
+  box-shadow: none;
   cursor: pointer;
+  transition: transform 120ms ease-out, box-shadow 160ms ease, background-color 160ms ease;
 }
 
-.system-overview-card button[disabled],
-.system-overview-card button[disabled]:hover {
+.system-overview-card .remote-update-card button:hover {
+  box-shadow: 0 9px 22px color-mix(in srgb, var(--status-accent) 22%, transparent);
+  transform: none;
+}
+.system-overview-card .remote-update-card button:active { transform: scale(.97); }
+
+.system-overview-card .remote-update-card button[disabled],
+.system-overview-card .remote-update-card button[disabled]:hover {
   background: #d1d1d6;
   color: #6e6e73;
   box-shadow: none;
@@ -154,56 +168,17 @@
 }
 
 .system-overview-card .remote-update-secret:focus,
-.system-overview-card button:focus-visible,
+.system-overview-card .remote-update-card button:focus-visible,
 .system-overview-card summary:focus-visible {
   outline: 4px solid color-mix(in srgb, var(--status-accent) 24%, transparent);
   outline-offset: 3px;
 }
 
-.system-overview-card--compact { padding: 16px; }
-.system-overview-card--compact .system-overview-head { margin-bottom: 8px; }
-.system-overview-card--compact .system-overview-grid,
-.system-overview-card--compact .system-health-grid { gap: 10px; }
-.system-overview-card--compact .system-health-grid {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 21rem), 1fr));
-  align-items: start;
+@media (max-width: 760px) {
+  .workspace-page--duty main {
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
 }
-.system-overview-card--compact .version-card {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.system-overview-card--compact .version-value { margin: 0; font-size: .85rem; }
-.system-overview-card--compact .version-card .system-health-meta { margin: 0; }
-.system-overview-card--compact .system-health-card { padding: 12px 14px; }
-.system-overview-card--compact .system-health-head h3 { font-size: .98rem; }
-.system-overview-card--compact .system-health-meta { margin-top: 6px; }
-.system-overview-card--compact .system-health-line {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 12px;
-}
-.system-overview-card--compact .system-health-details { margin: 0; }
-.system-overview-card--compact .system-health-details > div { margin-top: 4px; }
-.system-overview-card--compact .system-installer-progress:empty { display: none; }
-.system-overview-card--compact .system-update-details {
-  min-width: 0;
-  border-top: 1px solid var(--separator);
-}
-.system-overview-card--compact .system-update-details > summary {
-  min-height: 44px;
-  padding: 8px 0 0;
-  color: var(--label);
-  font-size: .85rem;
-  font-weight: 650;
-  cursor: pointer;
-}
-.system-overview-card--compact .system-update-details > summary .status { margin-left: 8px; }
-.system-overview-card--compact .system-update-details[open] > summary { margin-bottom: 10px; }
 
 @media (max-width: 720px) {
   .system-overview-card { padding: 15px; }
@@ -211,8 +186,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .system-overview-card button { transition: none; }
-  .system-overview-card button:active { transform: none; }
+  .system-overview-card .remote-update-card button { transition: none; }
+  .system-overview-card .remote-update-card button:active { transform: none; }
 }
 
 @media (prefers-reduced-transparency: reduce) {

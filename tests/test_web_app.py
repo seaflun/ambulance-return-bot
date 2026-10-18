@@ -253,7 +253,7 @@ class WebAppTests(unittest.TestCase):
             body = self.client.get("/admin/sinposmart").data.decode("utf-8")
         self.assertIn('aria-label="值班台存活狀態"', body)
         self.assertIn("尚未收到心跳／狀態未知", body)
-        for title in ("值班台 GUI", "更新安裝器"):
+        for title in ("公務電腦狀態", "更新安裝器"):
             self.assertIn(title, body)
         self.assertNotIn('data-health-status="worker"', body)
         self.assertNotIn("救護 Worker", body)
@@ -271,8 +271,6 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(route=route):
                 body = html.unescape(self.client.get(route).data.decode("utf-8"))
                 overview_class = "system-overview-card"
-                if route == "/admin/sinposmart":
-                    overview_class += " system-overview-card--compact"
                 self.assertIn(f'<section class="{overview_class}" aria-label="系統狀態">', body)
                 self.assertIn('href="/static/admin-system-status.css"', body)
                 self.assertIn('class="system-health-card', body)
@@ -286,42 +284,38 @@ class WebAppTests(unittest.TestCase):
                     self.assertIn('name="target" value="ambulance_worker"', body)
                     self.assertIn(f'name="return_service" value="{route.rsplit("/", 1)[-1]}"', body)
 
-    def test_duty_status_keeps_primary_health_visible_and_details_collapsed(self):
+    def test_duty_status_shares_rescue_card_structure_and_visible_update_controls(self):
         os.environ["WORKER_TOKEN"] = "test-token"
-        body = self.client.get("/admin/sinposmart").get_data(as_text=True)
+        with mock.patch.object(app_module, "package_version", return_value="2026.10.18.2100"):
+            body = self.client.get("/admin/sinposmart").get_data(as_text=True)
         self.assertEqual(self.client.get("/api/sinposmart/health").get_json()["installer"]["status_label"], "未執行更新")
         cards = re.findall(r'<section class="system-health-card".*?</section>', body, re.S)
-        self.assertEqual(len(cards), 2)
-        for card, key in zip(cards, ("gui", "installer")):
-            with self.subTest(component=key):
-                detail = re.search(r'<details class="system-health-details">(.*?)</details>', card, re.S)
-                self.assertIsNotNone(detail)
-                self.assertIn("詳細資訊", detail.group(1))
-                self.assertIn(f'data-health-field="{key}.instance_id"', detail.group(1))
-                self.assertIn(f'data-health-field="{key}.phase_label"', detail.group(1))
-                primary = card[:detail.start()]
-                self.assertIn(f'data-health-status="{key}"', primary)
-                if key == "gui":
-                    self.assertIn('data-health-field="gui.app_version"', primary)
-                    self.assertIn('data-health-field="gui.login_label"', primary)
-                    self.assertIn('data-health-field="gui.last_seen_at"', primary)
-                else:
-                    self.assertIn("未執行更新", primary)
-                    self.assertIn('data-health-field="installer.progress_label"', primary)
-                    self.assertNotIn("失聯", primary)
-        update = re.search(r'<details class="system-update-details">(.*?)</details>', body, re.S)
-        self.assertIsNotNone(update)
-        summary = re.search(r'<summary>(.*?)</summary>', update.group(1), re.S).group(1)
-        self.assertIn("值班台遠端更新", summary)
-        self.assertIn('class="status ', summary)
-        self.assertIn('action="/admin/sinposmart/remote-update"', update.group(1))
-        self.assertIn('name="csrf_token"', update.group(1))
-        self.assertIn('name="fire_day"', update.group(1))
-        self.assertIn('name="admin_token"', update.group(1))
+        self.assertEqual(len(cards), 1)
+        card = cards[0]
+        detail = re.search(r'<details class="system-health-details">(.*?)</details>', card, re.S)
+        self.assertIsNotNone(detail)
+        primary = card[:detail.start()]
+        self.assertIn("公務電腦狀態", primary)
+        self.assertIn("NAS 後台版本：2026.10.18.2100", primary)
+        for key in ("gui", "installer"):
+            self.assertIn(f'data-health-status="{key}"', primary)
+            self.assertIn(f'data-health-field="{key}.instance_id"', detail.group(1))
+            self.assertIn(f'data-health-field="{key}.phase_label"', detail.group(1))
+        for field in ("gui.app_version", "gui.login_label", "gui.last_seen_at", "installer.progress_label"):
+            self.assertIn(f'data-health-field="{field}"', primary)
+        self.assertIn("未執行更新", primary)
+        self.assertIn('data-health-field="gui.workstation" data-health-empty="尚未辨識"', primary)
+        self.assertNotIn("system-overview-card--compact", body)
+        self.assertNotIn("system-update-details", body)
+        update = re.search(r'<section class="remote-update-card".*?</section>', body, re.S).group(0)
+        for field in ("csrf_token", "fire_day", "admin_token"):
+            self.assertIn(f'name="{field}"', update)
+        self.assertIn('action="/admin/sinposmart/remote-update"', update)
         fields = re.findall(r'data-health-field="([^"]+)"', body)
         self.assertEqual(len(fields), len(set(fields)))
         rescue = self.client.get("/admin/ems").get_data(as_text=True)
-        self.assertNotIn('class="system-update-details"', rescue)
+        self.assertEqual(len(re.findall(r'<section class="system-health-card"', rescue)), 1)
+        self.assertIn('<section class="system-overview-card" aria-label="系統狀態">', rescue)
 
     def test_admin_status_active_updates_disable_both_password_and_submit(self):
         os.environ["WORKER_TOKEN"] = "test-token"
@@ -7792,7 +7786,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertEqual(duty_update.status_code, 302)
         self.assertEqual(duty_update.headers["Location"], "/admin/sinposmart")
         duty_body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
-        self.assertIn("值班台遠端更新", duty_body)
+        self.assertIn("遠端更新公務電腦", duty_body)
         self.assertIn('action="/admin/sinposmart/remote-update"', duty_body)
         self.assertIn("等待公務電腦接收", duty_body)
 
@@ -7808,7 +7802,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn('action="/admin/public-pc/remote-update"', local_body)
         self.assertNotIn("公務電腦狀態", local_body)
         duty_body_when_reporting = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
-        self.assertIn("值班台遠端更新", duty_body_when_reporting)
+        self.assertIn("遠端更新公務電腦", duty_body_when_reporting)
 
     def test_admin_system_overview_deduplicates_matching_versions(self):
         version = "2026.07.23.0300"

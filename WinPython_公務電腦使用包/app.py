@@ -1486,6 +1486,7 @@ def admin_sinposmart():
         selected_day=selected_day,
         selected_fire_day=selected_fire_day,
         version_info=sinposmart_admin_version_info(selected_day),
+        nas_version=package_version(),
         duty_gui_health=duty_gui_health_view(),
         credential_sync_status=credential_sync_admin_view(days),
         duty_gui_remote_update=(

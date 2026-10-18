@@ -1,5 +1,5 @@
 {% from "_page_chrome.html" import page_chrome %}
-{% from "_admin_system_status.html" import system_overview, version_card, health_card, remote_update_card %}
+{% from "_admin_system_status.html" import system_overview, health_card, remote_update_card %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -219,56 +219,53 @@
       <a class="button secondary header-navigation-button" href="/">返回首頁</a>
     {% endcall %}
 
-    {% call system_overview(compact=true) %}
-      {% if version_info %}{{ version_card(version_info, '系統版本') }}{% endif %}
+    {% call system_overview() %}
       <div class="system-health-grid" aria-label="值班台存活狀態" aria-live="polite">
-        {% for key, title in [('gui', '值班台 GUI'), ('installer', '更新安裝器')] %}
-          {% set health = duty_gui_health[key] %}
-          {% call health_card(title, health, key) %}
-            {% if key == 'gui' %}
-              <div class="system-health-line">
-                <span>版本 <span data-health-field="gui.app_version">{{ health.app_version }}</span></span>
-                <span data-health-field="gui.login_label">{{ health.login_label }}</span>
-              </div>
-              <div class="system-health-line">
-                <span>最後回報 <span data-health-field="gui.last_seen_at">{{ health.last_seen_at }}</span></span>
-                <span data-health-field="gui.age_label">{{ health.age_label }}</span>
-              </div>
-            {% else %}
-              <div class="system-installer-progress" data-health-field="installer.progress_label">{{ health.progress_label }}</div>
-            {% endif %}
-            <details class="system-health-details">
-              <summary>詳細資訊</summary>
+        {% set gui = duty_gui_health.gui %}
+        {% set installer = duty_gui_health.installer %}
+        {% call health_card('公務電腦狀態', gui, 'gui') %}
+          <div>公務電腦：<span data-health-field="gui.workstation" data-health-empty="尚未辨識">{{ gui.workstation or '尚未辨識' }}</span></div>
+          <div>最後心跳：<span data-health-field="gui.last_seen_at">{{ gui.last_seen_at }}</span>・<span data-health-field="gui.age_label">{{ gui.age_label }}</span>・<span data-health-field="gui.login_label">{{ gui.login_label }}</span></div>
+          <div class="worker-health-version">公務電腦版本：<span data-health-field="gui.app_version">{{ gui.app_version }}</span></div>
+          <div class="version-difference">NAS 後台版本：{{ nas_version }}</div>
+          <div class="system-health-row">
+            <span>更新安裝器：</span>
+            <span class="status {{ installer.status_class }}" data-health-status="installer" data-health-field="installer.status_label">{{ installer.status_label }}</span>
+            <span data-health-field="installer.progress_label">{{ installer.progress_label }}</span>
+          </div>
+          <details class="system-health-details">
+            <summary>詳細資訊</summary>
+            {% if version_info %}<div>系統版本紀錄：{{ version_info.label }}｜{{ version_info.version }}・{{ version_info.detail }}</div>{% endif %}
+            {% for key, title in [('gui', '值班台 GUI'), ('installer', '更新安裝器')] %}
+              {% set health = duty_gui_health[key] %}
+              <div><strong>{{ title }}</strong></div>
               <div data-health-field="{{ key }}.last_known_label">{{ health.last_known_label }}</div>
               {% if key == 'installer' %}
-                <div>最後回報：<span data-health-field="installer.last_seen_at">{{ health.last_seen_at }}</span> · <span data-health-field="installer.age_label">{{ health.age_label }}</span></div>
+                <div>最後回報：<span data-health-field="installer.last_seen_at">{{ health.last_seen_at }}</span>・<span data-health-field="installer.age_label">{{ health.age_label }}</span></div>
                 <div>執行版本：<span data-health-field="installer.app_version">{{ health.app_version }}</span></div>
+                <div>電腦：<span data-health-field="installer.workstation">{{ health.workstation }}</span></div>
                 <div data-health-field="installer.result_label">{{ health.result_label }}</div>
                 <div data-health-field="installation.installer_request_label">{{ duty_gui_health.installation.installer_request_label }}</div>
+                <div>目標版本：<span data-health-field="installer.target_version">{{ health.target_version }}</span></div>
               {% else %}
                 <div data-health-field="gui.startup_label">{{ health.startup_label }}</div>
                 <div data-health-field="installation.status_label">{{ duty_gui_health.installation.status_label }}</div>
               {% endif %}
-              <div>階段：<span data-health-field="{{ key }}.state_label">{{ health.state_label }}</span> · <span data-health-field="{{ key }}.phase_label">{{ health.phase_label }}</span></div>
-              <div>電腦：<span data-health-field="{{ key }}.workstation">{{ health.workstation }}</span></div>
+              <div>階段：<span data-health-field="{{ key }}.state_label">{{ health.state_label }}</span>・<span data-health-field="{{ key }}.phase_label">{{ health.phase_label }}</span></div>
               <div>實例：<span data-health-field="{{ key }}.instance_id">{{ health.instance_id }}</span></div>
               <div>啟動：<span data-health-field="{{ key }}.process_started_at">{{ health.process_started_at }}</span></div>
               <div>已取代實例：<span data-health-field="{{ key }}.retired_count">{{ health.retired_count }}</span></div>
               <div>更新請求：<span data-health-field="{{ key }}.update_request_id">{{ health.update_request_id }}</span></div>
-              {% if key == 'installer' %}<div>目標版本：<span data-health-field="installer.target_version">{{ health.target_version }}</span></div>{% endif %}
-            </details>
-          {% endcall %}
-        {% endfor %}
+            {% endfor %}
+          </details>
+        {% endcall %}
       </div>
       {% if duty_gui_remote_update_enabled %}
-        <details class="system-update-details">
-          <summary>值班台遠端更新 <span class="status {{ duty_gui_remote_update.status_class }}">{{ duty_gui_remote_update.status_label }}</span></summary>
-        {{ remote_update_card('值班台遠端更新', duty_gui_remote_update,
+        {{ remote_update_card('遠端更新公務電腦', duty_gui_remote_update,
              url_for('admin_sinposmart_remote_update'), remote_update_csrf_token,
-             '先在背景準備套件；值班台下次交接自動登出或按下「登出並更新」時才會套用並重啟。',
+             '值班台先在背景準備套件，於交接自動登出或按下「登出並更新」後套用並重啟。',
              '確定下達值班台遠端更新？值班台會先在背景準備，交接登出時才套用。',
              [('fire_day', selected_fire_day)]) }}
-        </details>
       {% endif %}
     {% endcall %}
 
@@ -649,7 +646,8 @@
           fields.forEach(node => {
             const [group, field] = node.dataset.healthField.split(".");
             const value = health[group][field];
-            node.textContent = value === null || value === undefined ? "" : String(value);
+            const label = value === null || value === undefined ? "" : String(value);
+            node.textContent = label || node.dataset.healthEmpty || "";
           });
           statuses.forEach(node => {
             const value = health[node.dataset.healthStatus].status_class;
