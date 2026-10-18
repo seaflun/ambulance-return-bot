@@ -5415,6 +5415,72 @@ class WebAppTests(unittest.TestCase):
             self.assertIn(text, body)
         self.assertEqual(app_module.sinposmart_store().path_for_day(day).read_bytes(), before)
 
+    def test_sinposmart_daily_vehicle_not_required_api_round_trip_and_neutral_summary(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        day = datetime.now().date().isoformat()
+        report = {"target_date": day, "execution_mode": "manual", "verified": True, "reason_code": "",
+                  "items": [{"vehicle": "BGV2310", "operation": "maintenance", "status": "not_required", "reason_code": "not_required"},
+                            {"vehicle": "BGV2310", "operation": "equipment", "status": "completed", "reason_code": "saved_verified"}]}
+        response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+            "event_id": "vehicle-not-required", "occurred_at": f"{day}T10:25:00", "fire_day": day,
+            "record_type": "tool_action_finished", "status": "completed", "snapshot": {"tool_name": "daily_vehicle",
+            "run_id": "vehicle-not-required", "target_date": day, "daily_vehicle_report": report}})
+        self.assertEqual(response.status_code, 200)
+        payload = app_module.sinposmart_store().read_day(day)
+        self.assertEqual(payload["events"][0]["snapshot"]["daily_vehicle_report"], report)
+        self.assertTrue(payload["admin_view"]["tool_events"][0]["daily_vehicle_report"]["verified"])
+        before = app_module.sinposmart_store().path_for_day(day).read_bytes()
+        body = self.client.get(f"/admin/sinposmart?fire_day={day}").get_data(as_text=True)
+        for text in ("不用保養", "網站標示今日不用保養", "已確認全部作業結果", "BGV2310", "器材清點"):
+            self.assertIn(text, body)
+        self.assertNotIn("已驗證全部完成", body)
+        self.assertEqual(app_module.sinposmart_store().path_for_day(day).read_bytes(), before)
+
+    def test_sinposmart_daily_vehicle_partial_not_required_preserves_failure(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        day = datetime.now().date().isoformat()
+        report = {"target_date": day, "execution_mode": "automatic", "verified": False, "reason_code": "save_unconfirmed",
+                  "items": [{"vehicle": "BGV2310", "operation": "maintenance", "status": "not_required", "reason_code": "not_required"},
+                            {"vehicle": "BGV2310", "operation": "equipment", "status": "unconfirmed", "reason_code": "save_unconfirmed"}]}
+        response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+            "event_id": "vehicle-partial-not-required", "occurred_at": f"{day}T10:25:00", "fire_day": day,
+            "record_type": "tool_action_finished", "status": "failed", "snapshot": {"tool_name": "daily_vehicle",
+            "run_id": "vehicle-partial-not-required", "target_date": day, "daily_vehicle_report": report}})
+        self.assertEqual(response.status_code, 200)
+        payload = app_module.sinposmart_store().read_day(day)
+        self.assertEqual(payload["events"][0]["snapshot"]["daily_vehicle_report"], report)
+        self.assertEqual(payload["admin_view"]["tool_events"][0]["status_label"], "失敗")
+        body = self.client.get(f"/admin/sinposmart?fire_day={day}").get_data(as_text=True)
+        self.assertIn("不用保養", body)
+        self.assertIn("尚未確認全部完成", body)
+        self.assertIn("儲存結果尚未回查確認", body)
+        self.assertNotIn("已確認全部作業結果", body)
+        self.assertNotIn("已驗證全部完成", body)
+
+    def test_sinposmart_daily_vehicle_not_required_invalid_pair_and_overall_are_rejected(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        day = datetime.now().date().isoformat()
+        for index, (operation, reason) in enumerate((("equipment", ""), ("maintenance", "not_required"))):
+            with self.subTest(operation=operation, overall_reason=reason):
+                response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                    "event_id": f"vehicle-na-invalid-{index}", "occurred_at": f"{day}T10:25:00", "fire_day": day,
+                    "record_type": "tool_action_finished", "status": "completed", "snapshot": {"tool_name": "daily_vehicle",
+                    "run_id": f"vehicle-na-invalid-{index}", "target_date": day, "daily_vehicle_report": {
+                        "target_date": day, "execution_mode": "manual", "verified": True, "reason_code": reason,
+                        "items": [{"vehicle": "BGV2310", "operation": operation, "status": "not_required", "reason_code": "not_required"},
+                                  {"vehicle": "新坡91", "operation": "equipment", "status": "completed", "reason_code": "saved_verified"}]}}})
+                self.assertEqual(response.status_code, 200)
+                payload = app_module.sinposmart_store().read_day(day)
+                event = next(item for item in payload["events"] if item["event_id"] == f"vehicle-na-invalid-{index}")
+                self.assertEqual(event["status"], "completed")
+                self.assertFalse(event["snapshot"]["daily_vehicle_report"]["verified"])
+                self.assertEqual(event["snapshot"]["daily_vehicle_report"]["reason_code"], "report_invalid")
+                card = next(item for item in payload["admin_view"]["tool_events"] if item["event_id"] == event["event_id"])
+                self.assertEqual(card["status_label"], "結果未確認")
+        body = self.client.get(f"/admin/sinposmart?fire_day={day}").get_data(as_text=True)
+        self.assertNotIn("已確認全部作業結果", body)
+        self.assertNotIn("已驗證全部完成", body)
+
     def test_sinposmart_daily_vehicle_invalid_success_is_unconfirmed_and_safe(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         day = datetime.now().date().isoformat()

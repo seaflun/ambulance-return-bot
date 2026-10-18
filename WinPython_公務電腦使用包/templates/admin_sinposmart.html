@@ -495,7 +495,7 @@
               {% set vehicle_report = event.daily_vehicle_report %}
               <div class="event-detail">清點日期：{{ vehicle_report.target_date or '未提供日期' }}｜執行模式：{{ vehicle_report.mode_label }}</div>
               <div class="event-detail">
-                <span class="status {{ 'complete' if vehicle_report.verified else 'attention' }}">{{ '已驗證全部完成' if vehicle_report.verified else '尚未確認全部完成' }}</span>
+                <span class="status {{ 'complete' if vehicle_report.verified else 'attention' }}">{{ vehicle_report.verified_label if vehicle_report.verified else '尚未確認全部完成' }}</span>
                 {% if vehicle_report.reason_label %}{{ vehicle_report.reason_label }}{% endif %}
               </div>
               <details class="event-detail daily-vehicle-details">

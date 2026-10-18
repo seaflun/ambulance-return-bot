@@ -79,6 +79,7 @@ LOGIN_CAPTURE_ERROR_TYPES = {
 }
 DAILY_VEHICLE_REASONS = {
     "verified_today": "已確認今日清點紀錄。", "saved_verified": "儲存後已回查確認。",
+    "not_required": "網站標示今日不用保養",
     "empty_list": "清單沒有可確認的車輛。", "today_not_found": "尚未找到今日紀錄。",
     "state_unconfirmed": "清點狀態尚未確認。", "save_unconfirmed": "儲存結果尚未回查確認。",
     "list_changed": "查詢期間清單已變更，需重新確認。", "execution_unconfirmed": "未能確認本次執行的全部結果。",
@@ -1088,9 +1089,10 @@ def sinposmart_admin_tool_event(
             steps[-1].update(status_label="結果未確認", status_class="attention")
         report["mode_label"] = {"manual": "手動", "automatic": "自動"}.get(report["execution_mode"], "未記錄")
         report["reason_label"] = DAILY_VEHICLE_REASONS.get(report["reason_code"], "")
+        report["verified_label"] = "已確認全部作業結果" if any(row["status"] == "not_required" for row in report["items"]) else "已驗證全部完成"
         for row in report["items"]:
             row["operation_label"] = {"maintenance": "車輛保養", "equipment": "器材清點"}[row["operation"]]
-            row["status_label"] = {"completed": "已完成並回查", "already_done": "今日已完成", "unconfirmed": "未確認"}[row["status"]]
+            row["status_label"] = {"completed": "已完成並回查", "already_done": "今日已完成", "not_required": "不用保養", "unconfirmed": "未確認"}[row["status"]]
             row["reason_label"] = DAILY_VEHICLE_REASONS[row["reason_code"]]
         card["daily_vehicle_report"] = report
     card["waiting_age_seconds"] = 0
@@ -1829,7 +1831,7 @@ def sanitize_daily_vehicle_report(value: Any, *, expected_date: str | None = Non
     mode = raw.get("execution_mode")
     mode = mode if isinstance(mode, str) and mode in {"manual", "automatic"} else ""
     reason = raw.get("reason_code", "")
-    if not isinstance(reason, str) or reason not in {"", *DAILY_VEHICLE_REASONS}:
+    if not isinstance(reason, str) or reason not in {"", *DAILY_VEHICLE_REASONS} or reason == "not_required":
         reason, invalid = "report_invalid", True
     if not target_date or not mode or not isinstance(raw.get("verified"), bool) or (expected_date is not None and target_date != expected_date):
         invalid = True
@@ -1847,9 +1849,12 @@ def sanitize_daily_vehicle_report(value: Any, *, expected_date: str | None = Non
         safe_vehicle = isinstance(vehicle, str) and len(vehicle) <= 32 and re.fullmatch(r"[A-Za-z0-9\u3400-\u9fff -]*", vehicle) and not re.search(r"secret|token|password|cookie|account|username|帳號|密碼", vehicle, re.I)
         vehicle = " ".join(vehicle.split()) if safe_vehicle else ""
         status, row_reason = row.get("status"), row.get("reason_code")
-        if not safe_vehicle or status not in ("completed", "already_done", "unconfirmed") or not isinstance(row_reason, str) or row_reason not in DAILY_VEHICLE_REASONS:
+        if not safe_vehicle or status not in ("completed", "already_done", "not_required", "unconfirmed") or not isinstance(row_reason, str) or row_reason not in DAILY_VEHICLE_REASONS:
             status, row_reason, invalid = "unconfirmed", "report_invalid", True
-        if (status in {"completed", "already_done"} and (not vehicle or row_reason not in positive)) or (status == "unconfirmed" and row_reason in positive):
+        if ((status in {"completed", "already_done"} and (not vehicle or row_reason not in positive))
+                or (status == "unconfirmed" and row_reason in positive)
+                or (status == "not_required" and (not vehicle or row["operation"] != "maintenance" or row_reason != "not_required"))
+                or (status != "not_required" and row_reason == "not_required")):
             status, row_reason, invalid = "unconfirmed", "report_invalid", True
         key = (vehicle.casefold(), row["operation"])
         if key in seen:
@@ -1859,7 +1864,7 @@ def sanitize_daily_vehicle_report(value: Any, *, expected_date: str | None = Non
     operations = {row["operation"] for row in items}
     if raw.get("verified") is True and items and (operations != {"maintenance", "equipment"} or reason not in {"", *positive}):
         invalid = True
-    verified = raw.get("verified") is True and not invalid and not oversize and bool(items) and operations == {"maintenance", "equipment"} and all(row["vehicle"] and row["status"] in {"completed", "already_done"} and row["reason_code"] in positive for row in items)
+    verified = raw.get("verified") is True and not invalid and not oversize and bool(items) and operations == {"maintenance", "equipment"} and all(row["vehicle"] and row["status"] in {"completed", "already_done", "not_required"} for row in items)
     if oversize:
         reason = "row_limit"
     elif invalid:
