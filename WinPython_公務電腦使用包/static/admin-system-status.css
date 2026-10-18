@@ -1,0 +1,182 @@
+.system-overview-card {
+  --status-accent: var(--admin-accent, var(--page-accent, var(--brand)));
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, .9);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+  color: var(--label);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+.system-overview-head { margin-bottom: 12px; }
+.system-overview-card h2,
+.system-overview-card h3,
+.system-overview-card p { margin: 0; }
+.system-overview-head h2 { font-size: 1.15rem; font-weight: 760; }
+
+.system-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.system-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.system-overview-card .version-card,
+.system-overview-card .system-health-card,
+.system-overview-card .remote-update-card {
+  min-width: 0;
+  margin: 0;
+  padding: 17px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-medium);
+  background: rgba(255, 255, 255, .72);
+  box-shadow: none;
+  overflow-wrap: anywhere;
+}
+
+.system-overview-card .version-label { color: var(--secondary-label); font-size: .82rem; }
+.system-overview-card .version-value { margin-top: 3px; font-size: 1.08rem; font-weight: 760; }
+
+.system-health-head,
+.system-overview-card .remote-update-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.system-health-head h3,
+.system-overview-card .remote-update-title h3 { font-size: 1.08rem; font-weight: 760; }
+
+.system-health-meta {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  color: var(--secondary-label);
+  font-size: .82rem;
+}
+
+.system-health-meta .worker-health-version { color: var(--label); font-weight: 700; }
+.system-health-meta .version-difference { color: var(--status-accent); font-weight: 650; }
+.system-health-meta details { margin-top: 4px; }
+.system-health-meta summary { min-height: 32px; padding: 5px 0; cursor: pointer; }
+
+.system-overview-card .status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--secondary-label);
+  font-size: .76rem;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: normal;
+  text-align: center;
+}
+
+.system-overview-card .status.complete { background: #eaf7ee; color: #32804a; }
+.system-overview-card .status.failed { background: #fff0ee; color: #c9342f; }
+.system-overview-card .status.running { background: #edf7ff; color: #176fa6; }
+.system-overview-card .status.attention { background: #fff6df; color: #865b00; }
+
+.system-overview-card .remote-update-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 310px);
+  gap: 18px;
+  align-items: center;
+}
+
+.system-overview-card .remote-update-card > div { min-width: 0; }
+.system-overview-card .remote-update-title { justify-content: flex-start; }
+.system-overview-card .remote-update-detail { margin-top: 8px; color: var(--secondary-label); font-size: .82rem; }
+.system-overview-card .remote-update-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin-top: 8px;
+  color: var(--secondary-label);
+  font-size: .76rem;
+}
+
+.remote-update-meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.system-overview-card .remote-update-label { display: block; color: var(--secondary-label); font-size: .82rem; }
+.system-overview-card .remote-update-secret {
+  width: 100%;
+  min-height: 44px;
+  margin: 4px 0 8px;
+  padding: 0 13px;
+  border: 1px solid var(--separator-strong);
+  border-radius: var(--radius-small);
+  background: var(--surface-solid);
+  color: var(--label);
+  font: inherit;
+}
+
+.system-overview-card button {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 10px 18px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--status-accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 720;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.system-overview-card button[disabled],
+.system-overview-card button[disabled]:hover {
+  background: #d1d1d6;
+  color: #6e6e73;
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
+
+.system-overview-card .remote-update-secret:focus,
+.system-overview-card button:focus-visible,
+.system-overview-card summary:focus-visible {
+  outline: 4px solid color-mix(in srgb, var(--status-accent) 24%, transparent);
+  outline-offset: 3px;
+}
+
+@media (max-width: 720px) {
+  .system-overview-card { padding: 15px; }
+  .system-overview-card .remote-update-card { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .system-overview-card button { transition: none; }
+  .system-overview-card button:active { transform: none; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .system-overview-card,
+  .system-overview-card .version-card,
+  .system-overview-card .system-health-card,
+  .system-overview-card .remote-update-card {
+    background: var(--surface-solid);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

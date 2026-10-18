@@ -1,0 +1,54 @@
+{% macro system_overview() -%}
+<section class="system-overview-card" aria-label="系統狀態">
+  <div class="system-overview-head"><h2>系統狀態</h2></div>
+  <div class="system-overview-grid">
+    {{ caller() }}
+  </div>
+</section>
+{%- endmacro %}
+
+{% macro version_card(info, label='NAS 後台版本') -%}
+<section class="version-card" aria-label="系統版本">
+  <div class="version-label">{{ label }}</div>
+  <div class="version-value">{{ info.label }}｜{{ info.version }}</div>
+  {% if info.detail and info.detail != 'NAS 後台' %}<div class="system-health-meta">{{ info.detail }}</div>{% endif %}
+</section>
+{%- endmacro %}
+
+{% macro health_card(title, health, key='') -%}
+<section class="system-health-card" aria-label="{{ title }}">
+  <div class="system-health-head">
+    <h3>{{ title }}</h3>
+    <span class="status {{ health.status_class }}"{% if key %} data-health-status="{{ key }}" data-health-field="{{ key }}.status_label"{% endif %}>{{ health.status_label }}</span>
+  </div>
+  <div class="system-health-meta">{{ caller() }}</div>
+</section>
+{%- endmacro %}
+
+{% macro remote_update_card(title, update, action, csrf_token, description, confirmation, hidden_fields) -%}
+<section class="remote-update-card" aria-label="{{ title }}">
+  <div>
+    <div class="remote-update-title">
+      <h3>{{ title }}</h3>
+      <span class="status {{ update.status_class }}">{{ update.status_label }}</span>
+    </div>
+    <p class="remote-update-detail">{{ description }}</p>
+    {% if update.detail %}<p class="remote-update-detail">{{ update.detail }}</p>{% endif %}
+    <div class="remote-update-meta">
+      {% if update.requested_at %}<span>下達：{{ update.requested_at }}</span>{% endif %}
+      {% if update.updated_at %}<span>更新：{{ update.updated_at }}</span>{% endif %}
+      {% if update.request_id %}<span>命令：{{ update.request_id }}</span>{% endif %}
+    </div>
+  </div>
+  <form action="{{ action }}" method="post" onsubmit="return confirm({{ confirmation|tojson|forceescape }});">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% for name, value in hidden_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    <label class="remote-update-label">遠端更新管理密碼
+      <input class="remote-update-secret" type="password" name="admin_token" autocomplete="current-password" placeholder="遠端更新管理密碼" required{% if update.active %} disabled{% endif %}>
+    </label>
+    <button class="button" type="submit"{% if update.active %} disabled aria-disabled="true"{% endif %}>
+      {% if update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
+    </button>
+  </form>
+</section>
+{%- endmacro %}

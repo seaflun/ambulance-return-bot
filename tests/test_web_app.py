@@ -253,14 +253,48 @@ class WebAppTests(unittest.TestCase):
             body = self.client.get("/admin/sinposmart").data.decode("utf-8")
         self.assertIn('aria-label="值班台存活狀態"', body)
         self.assertIn("尚未收到心跳／狀態未知", body)
-        for title in ("值班台 GUI", "更新安裝器", "救護 Worker"):
+        for title in ("值班台 GUI", "更新安裝器"):
             self.assertIn(title, body)
+        self.assertNotIn('data-health-status="worker"', body)
+        self.assertNotIn("救護 Worker", body)
+        self.assertNotIn("!health.worker", body)
         self.assertIn('fetch("/api/sinposmart/health"', body)
         self.assertIn("setInterval(refreshHealth, 10000)", body)
         self.assertIn("狀態未知／重新連線中", body)
         self.assertIn('endsWith(".last_known_label")', body)
         self.assertIn("以下為最後回報", body)
         self.assertNotIn(".innerHTML", body)
+
+    def test_admin_status_uses_shared_layout_without_mixing_update_targets(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        for route in ("/admin/sinposmart", "/admin/ems", "/admin/disaster"):
+            with self.subTest(route=route):
+                body = html.unescape(self.client.get(route).data.decode("utf-8"))
+                self.assertIn('<section class="system-overview-card" aria-label="系統狀態">', body)
+                self.assertIn('href="/static/admin-system-status.css"', body)
+                self.assertIn('class="system-health-card', body)
+                self.assertIn('class="remote-update-secret"', body)
+                if route == "/admin/sinposmart":
+                    self.assertIn('action="/admin/sinposmart/remote-update"', body)
+                    self.assertIn('name="fire_day"', body)
+                    self.assertNotIn('name="target" value="ambulance_worker"', body)
+                else:
+                    self.assertIn('action="/admin/public-pc/remote-update"', body)
+                    self.assertIn('name="target" value="ambulance_worker"', body)
+                    self.assertIn(f'name="return_service" value="{route.rsplit("/", 1)[-1]}"', body)
+
+    def test_admin_status_active_updates_disable_both_password_and_submit(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.post_remote_update()
+        self.client.post("/admin/sinposmart/remote-update", data={
+            "csrf_token": app_module.remote_update_csrf_token(), "admin_token": "test-admin-token",
+        })
+        for route in ("/admin/sinposmart", "/admin/ems"):
+            with self.subTest(route=route):
+                body = self.client.get(route).data.decode("utf-8")
+                self.assertRegex(body, r'<input class="remote-update-secret"[^>]* required disabled>')
+                self.assertRegex(body, r'<button[^>]*type="submit"[^>]* disabled aria-disabled="true">')
+                self.assertIn("更新命令進行中", body)
 
     def test_gui_heartbeat_store_unavailable_is_safe_503(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
@@ -7722,7 +7756,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn('action="/admin/sinposmart/remote-update"', duty_body)
         self.assertIn("等待公務電腦接收", duty_body)
 
-        admin_css = self.client.get("/static/sinposmart-admin.css").data.decode("utf-8")
+        admin_css = self.client.get("/static/admin-system-status.css").data.decode("utf-8")
         self.assertIn(".system-overview-card {", admin_css)
         self.assertIn(".system-overview-grid {", admin_css)
         self.assertIn(".system-overview-card .remote-update-card {", admin_css)
@@ -7838,7 +7872,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn('<section class="remote-update-card"', duty_body)
 
     def test_admin_public_pc_remote_update_meta_wraps_on_mobile(self):
-        response = self.client.get("/static/sinposmart-admin.css")
+        response = self.client.get("/static/admin-system-status.css")
         try:
             css = response.data.decode("utf-8")
             self.assertEqual(200, response.status_code)

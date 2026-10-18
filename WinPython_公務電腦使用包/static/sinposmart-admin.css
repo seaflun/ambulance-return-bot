@@ -70,9 +70,6 @@
   outline-offset: 3px;
 }
 
-.version-card,
-.worker-health-card,
-.remote-update-card,
 .task-card,
 .empty {
   border: 1px solid rgba(255, 255, 255, .9);
@@ -81,191 +78,6 @@
   box-shadow: var(--shadow-card);
   backdrop-filter: blur(18px) saturate(145%);
   -webkit-backdrop-filter: blur(18px) saturate(145%);
-}
-
-.system-overview-card {
-  margin-bottom: 18px;
-  padding: 18px;
-  border: 1px solid rgba(255, 255, 255, .9);
-  border-radius: var(--radius-medium);
-  background: var(--surface);
-  box-shadow: var(--shadow-card);
-  backdrop-filter: blur(18px) saturate(145%);
-  -webkit-backdrop-filter: blur(18px) saturate(145%);
-}
-
-.system-overview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.system-overview-head h2 {
-  font-size: 1.15rem;
-  font-weight: 760;
-}
-
-.system-overview-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.system-overview-card .version-card,
-.system-overview-card .worker-health-card,
-.system-overview-card .remote-update-card {
-  margin: 0;
-  border-color: var(--separator);
-  background: rgba(255, 255, 255, .72);
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-.system-overview-card .version-card,
-.system-overview-card .worker-health-card {
-  min-height: 100%;
-}
-
-.system-overview-card .worker-health-card,
-.system-overview-card > .system-overview-grid > .version-card {
-  grid-column: 1 / -1;
-}
-
-.system-overview-card .remote-update-card {
-  grid-column: 1 / -1;
-}
-
-.version-card {
-  margin-bottom: 14px;
-  padding: 15px 17px;
-}
-
-.version-label {
-  color: var(--secondary-label);
-  font-size: .82rem;
-}
-
-.version-value {
-  margin-top: 3px;
-  font-size: 1.08rem;
-  font-weight: 760;
-  overflow-wrap: anywhere;
-}
-
-.worker-health-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
-  align-items: start;
-  margin-bottom: 14px;
-  padding: 17px;
-}
-
-.worker-health-card.online {
-  border-color: rgba(50, 128, 74, .25);
-}
-
-.worker-health-card.offline {
-  border-color: rgba(201, 52, 47, .22);
-}
-
-.worker-health-title {
-  font-size: 1.08rem;
-  font-weight: 760;
-}
-
-.worker-health-meta {
-  display: grid;
-  gap: 4px;
-  margin-top: 9px;
-  color: var(--secondary-label);
-  font-size: .82rem;
-}
-
-.worker-health-version {
-  color: var(--label);
-  font-weight: 700;
-}
-
-.version-difference {
-  color: color-mix(in srgb, var(--admin-accent) 76%, var(--label));
-  font-weight: 650;
-}
-
-.remote-update-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 310px);
-  gap: 18px;
-  align-items: center;
-  margin-bottom: 14px;
-  padding: 18px;
-}
-
-.remote-update-card > div {
-  min-width: 0;
-}
-
-.remote-update-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.remote-update-title h2 {
-  font-size: 1.08rem;
-  font-weight: 760;
-}
-
-.remote-update-detail {
-  margin-top: 8px !important;
-  color: var(--secondary-label);
-  font-size: .82rem;
-}
-
-.remote-update-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px 14px;
-  margin-top: 8px;
-  color: var(--secondary-label);
-  font-size: .76rem;
-}
-
-.remote-update-meta span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.remote-update-secret {
-  width: 100%;
-  min-height: 44px;
-  margin-bottom: 8px;
-  padding: 0 13px;
-  border: 1px solid var(--separator-strong);
-  border-radius: var(--radius-small);
-  background: var(--surface-solid);
-  color: var(--label);
-  font: inherit;
-}
-
-.remote-update-secret:focus {
-  outline: 4px solid color-mix(in srgb, var(--admin-accent) 22%, transparent);
-  outline-offset: 2px;
-}
-
-.remote-update-card button,
-.remote-update-card form {
-  width: 100%;
-}
-
-.remote-update-card button[disabled] {
-  background: #d1d1d6;
-  color: #6e6e73;
-  box-shadow: none;
-  cursor: not-allowed;
 }
 
 .result-filters {
@@ -596,22 +408,8 @@
 }
 
 @media (max-width: 720px) {
-  .card-head,
-  .worker-health-card,
-  .remote-update-card {
+  .card-head {
     grid-template-columns: 1fr;
-  }
-
-  .system-overview-card {
-    padding: 15px;
-  }
-
-  .system-overview-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .system-overview-card .remote-update-card {
-    grid-column: auto;
   }
 
   .result-filters[aria-label="執行結果分類"] {
@@ -665,10 +463,6 @@
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .system-overview-card,
-  .version-card,
-  .worker-health-card,
-  .remote-update-card,
   .task-card,
   .empty {
     background: var(--surface-solid);

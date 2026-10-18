@@ -1,4 +1,5 @@
 {% from "_page_chrome.html" import page_chrome %}
+{% from "_admin_system_status.html" import system_overview, version_card, health_card, remote_update_card %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -125,45 +126,6 @@
     .unreturned-return-list { display: grid; gap: 8px; margin-top: 10px; }
     .unreturned-return-item { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
     .unreturned-return-meta { margin-top: 5px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
-    .version-strip { margin-bottom: 14px; }
-    .version-value { margin-top: 3px; font-size: 18px; font-weight: 820; overflow-wrap: anywhere; }
-    .heartbeat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
-    .heartbeat-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-    .heartbeat-card h2 { margin-bottom: 8px; font-size: 18px; }
-    .heartbeat-card .status { white-space: normal; text-align: center; }
-    .heartbeat-card details { margin-top: 8px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-    .heartbeat-card summary { cursor: pointer; }
-    .remote-update-card {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 16px;
-      align-items: center;
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 16px;
-      margin-bottom: 14px;
-      box-shadow: var(--shadow);
-    }
-    .remote-update-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-    .remote-update-title h2 { font-size: 18px; font-weight: 820; }
-    .remote-update-card > div { min-width: 0; }
-    .remote-update-detail { margin-top: 8px; color: var(--muted); font-size: var(--text-sm); }
-    .remote-update-meta { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 8px; color: var(--muted); font-size: 12px; }
-    .remote-update-meta span { min-width: 0; overflow-wrap: anywhere; }
-    .remote-update-password {
-      width: 100%;
-      min-height: 42px;
-      margin-bottom: 8px;
-      padding: 0 12px;
-      border: 1px solid var(--line-strong);
-      border-radius: 10px;
-      background: #fff;
-      color: var(--ink);
-      font: inherit;
-    }
-    .remote-update-password:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
-    .remote-update-card button[disabled] { background: #d7d2ca; color: #706d68; box-shadow: none; cursor: not-allowed; }
     .event-list { display: grid; gap: 10px; }
     .event-card { padding: 14px; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
     .event-card:hover { border-color: var(--line-strong); box-shadow: 0 18px 36px rgba(39, 49, 43, .09); }
@@ -223,7 +185,6 @@
       header { align-items: stretch; flex-direction: column; }
       .button { width: 100%; }
       .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .heartbeat-grid { grid-template-columns: 1fr; }
       details.section > summary.section-head {
         grid-template-columns: minmax(0, 1fr);
         gap: 6px;
@@ -242,8 +203,6 @@
       .event-step { grid-template-columns: 1fr; gap: 4px; align-items: start; }
       .credential-sync-row { grid-template-columns: 1fr; gap: 4px; align-items: start; }
       .credential-sync-statuses { justify-content: flex-start; }
-      .remote-update-card { grid-template-columns: 1fr; }
-      .remote-update-card form, .remote-update-card button { width: 100%; }
     }
     @media (prefers-reduced-motion: reduce) {
       .button, .event-card { transition: none; }
@@ -252,6 +211,7 @@
   </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin-system-status.css') }}">
 </head>
 <body class="workspace-page workspace-page--duty">
   <main>
@@ -259,37 +219,26 @@
       <a class="button secondary header-navigation-button" href="/">返回首頁</a>
     {% endcall %}
 
-    {% if version_info %}
-      <section class="summary-card version-strip" aria-label="系統版本">
-        <div class="summary-label">系統版本</div>
-        <div class="version-value">{{ version_info.label }}｜{{ version_info.version }}</div>
-        {% if version_info.detail %}
-          <div class="event-meta">{{ version_info.detail }}</div>
-        {% endif %}
-      </section>
-    {% endif %}
-
-    <section class="heartbeat-grid" aria-label="值班台存活狀態" aria-live="polite">
-      {% for key, title in [('gui', '值班台 GUI'), ('installer', '更新安裝器'), ('worker', '救護 Worker')] %}
-        {% set health = duty_gui_health[key] %}
-        <article class="heartbeat-card">
-          <h2>{{ title }}</h2>
-          <span class="status {{ health.status_class }}" data-health-status="{{ key }}" data-health-field="{{ key }}.status_label">{{ health.status_label }}</span>
-          <div class="event-meta" data-health-field="{{ key }}.last_known_label">{{ health.last_known_label }}</div>
-          <div class="event-meta">最後回報：<span data-health-field="{{ key }}.last_seen_at">{{ health.last_seen_at }}</span></div>
-          <div class="event-meta" data-health-field="{{ key }}.age_label">{{ health.age_label }}</div>
-          <div class="event-meta">執行版本：<span data-health-field="{{ key }}.app_version">{{ health.app_version }}</span></div>
-          <div class="event-meta">階段：<span data-health-field="{{ key }}.state_label">{{ health.state_label }}</span>{% if key != 'worker' %} · <span data-health-field="{{ key }}.phase_label">{{ health.phase_label }}</span>{% endif %}</div>
-          {% if key == 'gui' %}
-            <div class="event-meta">登入：<span data-health-field="gui.login_label">{{ health.login_label }}</span></div>
-            <div class="event-meta" data-health-field="gui.startup_label">{{ health.startup_label }}</div>
-            <div class="event-meta" data-health-field="installation.status_label">{{ duty_gui_health.installation.status_label }}</div>
-          {% elif key == 'installer' %}
-            <div class="event-meta">進度：<span data-health-field="installer.progress_label">{{ health.progress_label }}</span></div>
-            <div class="event-meta" data-health-field="installer.result_label">{{ health.result_label }}</div>
-            <div class="event-meta" data-health-field="installation.installer_request_label">{{ duty_gui_health.installation.installer_request_label }}</div>
-          {% endif %}
-          {% if key != 'worker' %}
+    {% call system_overview() %}
+      {% if version_info %}{{ version_card(version_info, '系統版本') }}{% endif %}
+      <div class="system-health-grid" aria-label="值班台存活狀態" aria-live="polite">
+        {% for key, title in [('gui', '值班台 GUI'), ('installer', '更新安裝器')] %}
+          {% set health = duty_gui_health[key] %}
+          {% call health_card(title, health, key) %}
+            <div data-health-field="{{ key }}.last_known_label">{{ health.last_known_label }}</div>
+            <div>最後回報：<span data-health-field="{{ key }}.last_seen_at">{{ health.last_seen_at }}</span></div>
+            <div data-health-field="{{ key }}.age_label">{{ health.age_label }}</div>
+            <div>執行版本：<span data-health-field="{{ key }}.app_version">{{ health.app_version }}</span></div>
+            <div>階段：<span data-health-field="{{ key }}.state_label">{{ health.state_label }}</span> · <span data-health-field="{{ key }}.phase_label">{{ health.phase_label }}</span></div>
+            {% if key == 'gui' %}
+              <div>登入：<span data-health-field="gui.login_label">{{ health.login_label }}</span></div>
+              <div data-health-field="gui.startup_label">{{ health.startup_label }}</div>
+              <div data-health-field="installation.status_label">{{ duty_gui_health.installation.status_label }}</div>
+            {% else %}
+              <div>進度：<span data-health-field="installer.progress_label">{{ health.progress_label }}</span></div>
+              <div data-health-field="installer.result_label">{{ health.result_label }}</div>
+              <div data-health-field="installation.installer_request_label">{{ duty_gui_health.installation.installer_request_label }}</div>
+            {% endif %}
             <details>
               <summary>程序資訊</summary>
               <div>電腦：<span data-health-field="{{ key }}.workstation">{{ health.workstation }}</span></div>
@@ -299,40 +248,17 @@
               <div>更新請求：<span data-health-field="{{ key }}.update_request_id">{{ health.update_request_id }}</span></div>
               {% if key == 'installer' %}<div>目標版本：<span data-health-field="installer.target_version">{{ health.target_version }}</span></div>{% endif %}
             </details>
-          {% endif %}
-        </article>
-      {% endfor %}
-    </section>
-
-    {% if duty_gui_remote_update_enabled %}
-      <section class="remote-update-card" aria-label="值班台遠端更新">
-        <div>
-          <div class="remote-update-title">
-            <h2>值班台遠端更新</h2>
-            <span class="status {{ duty_gui_remote_update.status_class }}">{{ duty_gui_remote_update.status_label }}</span>
-          </div>
-          <p class="remote-update-detail">
-            先在背景準備套件；值班台下次交接自動登出或按下「登出並更新」時才會套用並重啟。
-          </p>
-          {% if duty_gui_remote_update.detail %}
-            <p class="remote-update-detail">{{ duty_gui_remote_update.detail }}</p>
-          {% endif %}
-          <div class="remote-update-meta">
-            {% if duty_gui_remote_update.requested_at %}<span>下達：{{ duty_gui_remote_update.requested_at }}</span>{% endif %}
-            {% if duty_gui_remote_update.updated_at %}<span>更新：{{ duty_gui_remote_update.updated_at }}</span>{% endif %}
-            {% if duty_gui_remote_update.request_id %}<span>命令：{{ duty_gui_remote_update.request_id }}</span>{% endif %}
-          </div>
-        </div>
-        <form action="{{ url_for('admin_sinposmart_remote_update') }}" method="post" onsubmit="return confirm('確定下達值班台遠端更新？值班台會先在背景準備，交接登出時才套用。');">
-          <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
-          <input type="hidden" name="fire_day" value="{{ selected_fire_day }}">
-          <input class="remote-update-password" type="password" name="admin_token" autocomplete="current-password" placeholder="遠端更新管理密碼" required{% if duty_gui_remote_update.active %} disabled{% endif %}>
-          <button class="button" type="submit"{% if duty_gui_remote_update.active %} disabled aria-disabled="true"{% endif %}>
-            {% if duty_gui_remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
-          </button>
-        </form>
-      </section>
-    {% endif %}
+          {% endcall %}
+        {% endfor %}
+      </div>
+      {% if duty_gui_remote_update_enabled %}
+        {{ remote_update_card('值班台遠端更新', duty_gui_remote_update,
+             url_for('admin_sinposmart_remote_update'), remote_update_csrf_token,
+             '先在背景準備套件；值班台下次交接自動登出或按下「登出並更新」時才會套用並重啟。',
+             '確定下達值班台遠端更新？值班台會先在背景準備，交接登出時才套用。',
+             [('fire_day', selected_fire_day)]) }}
+      {% endif %}
+    {% endcall %}
 
     {% if days %}
       <nav class="day-nav" aria-label="消防日">
@@ -705,7 +631,7 @@
           const response = await fetch("/api/sinposmart/health", {cache: "no-store", signal: controller.signal});
           if (!response.ok) throw new Error("health_unavailable");
           const health = await response.json();
-          if (health.ok !== true || !health.gui || !health.installer || !health.worker || !health.installation) {
+          if (health.ok !== true || !health.gui || !health.installer || !health.installation) {
             throw new Error("invalid_health");
           }
           fields.forEach(node => {

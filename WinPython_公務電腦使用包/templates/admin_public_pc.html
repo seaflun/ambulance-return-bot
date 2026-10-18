@@ -1,10 +1,14 @@
 {% extends "sinposmart_base.html" %}
+{% from "_admin_system_status.html" import system_overview, version_card, health_card, remote_update_card %}
 {% set page_accent = service_filter if service_filter in ('disaster', 'ems') else 'brand' %}
 {% block page_title %}{{ admin_page_title }}{% endblock %}
 {% block body_class %}admin-report-page admin-report-page--{{ service_filter }}{% endblock %}
 {% block eyebrow %}{% if service_filter == 'disaster' %}救災任務管理{% elif service_filter == 'ems' %}救護任務管理{% else %}救災救護任務管理{% endif %}{% endblock %}
 {% block page_heading %}{{ admin_page_title }}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-admin.css') }}">{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-admin.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='admin-system-status.css') }}">
+{% endblock %}
 {% block header_actions %}<a class="button secondary header-navigation-button" href="/">返回首頁</a>{% endblock %}
 
 <!doctype html>
@@ -314,73 +318,31 @@
 
     {% block content %}
     {% if version_info or worker_health_enabled or remote_update_enabled %}
-      <section class="system-overview-card" aria-label="系統狀態">
-        <div class="system-overview-head">
-          <h2>系統狀態</h2>
-        </div>
-        <div class="system-overview-grid">
-    {% if version_info and not worker_health_enabled %}
-      <section class="version-card" aria-label="系統版本">
-        <div class="version-label">NAS 後台版本</div>
-        <div class="version-value">{{ version_info.label }}｜{{ version_info.version }}</div>
-        {% if version_info.detail and version_info.detail != 'NAS 後台' %}
-          <div class="meta">{{ version_info.detail }}</div>
+      {% call system_overview() %}
+        {% if version_info and not worker_health_enabled %}{{ version_card(version_info) }}{% endif %}
+        {% if worker_health_enabled %}
+          <div class="system-health-grid">
+            {% call health_card('公務電腦狀態', worker_health) %}
+              <div>公務電腦：{{ worker_health.worker_id or '尚未辨識' }}</div>
+              <div>最後心跳：{{ worker_health.last_seen_at or '尚未收到' }}・路徑：{{ worker_health.route_label }}</div>
+              <div class="worker-health-version">公務電腦版本：{{ worker_health.package_version or '未標示' }}</div>
+              {% if version_info and version_info.version and version_info.version != worker_health.package_version %}
+                <div class="version-difference">NAS 後台版本：{{ version_info.version }}</div>
+              {% endif %}
+              {% if worker_health.last_task_report_version and worker_health.last_task_report_version != worker_health.package_version %}
+                <div class="version-difference">最後任務回報版本：{{ worker_health.last_task_report_version }}</div>
+              {% endif %}
+            {% endcall %}
+          </div>
         {% endif %}
-      </section>
-    {% endif %}
-
-    {% if worker_health_enabled %}
-      <section class="worker-health-card {{ 'online' if worker_health.online else 'offline' }}" aria-label="公務電腦狀態">
-        <div>
-          <div class="worker-health-title">公務電腦狀態</div>
-          <div class="worker-health-meta">
-            <div>公務電腦：{{ worker_health.worker_id or '尚未辨識' }}</div>
-            <div>最後心跳：{{ worker_health.last_seen_at or '尚未收到' }}・路徑：{{ worker_health.route_label }}</div>
-            <div class="worker-health-version">公務電腦版本：{{ worker_health.package_version or '未標示' }}</div>
-            {% if version_info and version_info.version and version_info.version != worker_health.package_version %}
-              <div class="version-difference">NAS 後台版本：{{ version_info.version }}</div>
-            {% endif %}
-            {% if worker_health.last_task_report_version and worker_health.last_task_report_version != worker_health.package_version %}
-              <div class="version-difference">最後任務回報版本：{{ worker_health.last_task_report_version }}</div>
-            {% endif %}
-          </div>
-        </div>
-        <span class="status {{ worker_health.status_class }}">{{ worker_health.status_label }}</span>
-      </section>
-    {% endif %}
-
-    {% if remote_update_enabled %}
-      <section class="remote-update-card" aria-label="遠端更新公務電腦">
-        <div>
-          <div class="remote-update-title">
-            <h2>遠端更新公務電腦</h2>
-            <span class="status {{ remote_update.status_class }}">{{ remote_update.status_label }}</span>
-          </div>
-          <p class="remote-update-detail">
-            案件與登打優先；勤務完成並閒置 120 秒後，才會在背景更新，不顯示黑色視窗。
-          </p>
-          {% if remote_update.detail %}
-            <p class="remote-update-detail">{{ remote_update.detail }}</p>
-          {% endif %}
-          <div class="remote-update-meta">
-            {% if remote_update.requested_at %}<span>下達：{{ remote_update.requested_at }}</span>{% endif %}
-            {% if remote_update.updated_at %}<span>更新：{{ remote_update.updated_at }}</span>{% endif %}
-            {% if remote_update.request_id %}<span>命令：{{ remote_update.request_id }}</span>{% endif %}
-          </div>
-        </div>
-        <form action="{{ url_for('admin_public_pc_remote_update') }}" method="post" onsubmit="return confirm('確定下達遠端更新？系統會等待勤務完成且電腦閒置後才在背景執行。');">
-          <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
-          <input type="hidden" name="target" value="ambulance_worker">
-          {% if service_filter_locked %}<input type="hidden" name="return_service" value="{{ service_filter }}">{% endif %}
-          <input class="remote-update-secret" type="password" name="admin_token" autocomplete="current-password" placeholder="遠端更新管理密碼" required{% if remote_update.active %} disabled{% endif %}>
-          <button type="submit"{% if remote_update.active %} disabled aria-disabled="true"{% endif %}>
-            {% if remote_update.active %}更新命令進行中{% else %}下達遠端更新{% endif %}
-          </button>
-        </form>
-      </section>
-    {% endif %}
-        </div>
-      </section>
+        {% if remote_update_enabled %}
+          {% set update_fields = [('target', 'ambulance_worker')] + ([('return_service', service_filter)] if service_filter_locked else []) %}
+          {{ remote_update_card('遠端更新公務電腦', remote_update,
+               url_for('admin_public_pc_remote_update'), remote_update_csrf_token,
+               '案件與登打優先；勤務完成並閒置 120 秒後，才會在背景更新，不顯示黑色視窗。',
+               '確定下達遠端更新？系統會等待勤務完成且電腦閒置後才在背景執行。', update_fields) }}
+        {% endif %}
+      {% endcall %}
     {% endif %}
 
     {% if not service_filter_locked %}<nav class="result-filters" aria-label="救災救護分類">
