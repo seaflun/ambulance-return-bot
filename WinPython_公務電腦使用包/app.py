@@ -29,6 +29,7 @@ from flask import Flask, abort, g, has_request_context, jsonify, make_response, 
 
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
 from ambulance_bot.browser_case_selection import BrowserCaseSelectionStore
+from ambulance_bot.failure_evidence import collect_task_failure_evidence, store_task_failure_evidence
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.civilpower_roster import (
     ROSTER_LOADED_STATUS,
@@ -1499,8 +1500,35 @@ def admin_ems():
     return render_admin_public_pc(locked_service="ems")
 
 
-def render_admin_public_pc(*, locked_service: str = ""):
+def admin_task_reports() -> list[dict]:
     reports = reconcile_public_pc_report_retries(public_pc_reports())
+    if public_pc_reporting_enabled():
+        return reports
+    known_ids = {str(item.get("task_id") or dict(item.get("task") or {}).get("task_id") or "") for item in reports}
+    snapshots = _recent_public_pc_reports(store.list_recent_read_only(limit=None), datetime.now())
+    for payload in snapshots:
+        task = payload.get("task")
+        if not isinstance(task, dict) or not isinstance(payload.get("site_statuses"), dict):
+            continue
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id or task_id in known_ids:
+            continue
+        reports.append({
+            **payload,
+            "task_id": task_id,
+            "title": task_title(task),
+            "operator": "區網登打",
+            "worker_id": worker_queue_state(payload).get("worker_id", ""),
+            "report_origin": "nas",
+            "events": [{**event, "action": event.get("action") or status_label(event.get("status"))}
+                       for event in payload.get("events") or [] if isinstance(event, dict)],
+        })
+        known_ids.add(task_id)
+    return sorted(reports, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+
+
+def render_admin_public_pc(*, locked_service: str = ""):
+    reports = admin_task_reports()
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()
     worker_health_enabled = not public_pc_reporting_enabled()
@@ -1537,10 +1565,12 @@ def render_admin_public_pc(*, locked_service: str = ""):
         task = item.get("task") if isinstance(item.get("task"), dict) else {}
         task_id = str(task.get("task_id") or item.get("task_id") or "").strip()
         if task_id:
-            try:
-                retry_payload = store.get(task_id)
-            except FileNotFoundError:
-                retry_payload = item
+            retry_payload = item
+            if item.get("report_origin") != "nas":
+                try:
+                    retry_payload = store.get(task_id)
+                except FileNotFoundError:
+                    pass
             if task_payload_is_active(retry_payload):
                 active_task_ids.add(task_id)
                 retry_sites_by_task[task_id] = []
@@ -2018,6 +2048,8 @@ def worker_claim_task(task_id: str):
 def worker_task_status(task_id: str):
     if not worker_authorized():
         abort(403)
+    if request.content_length and request.content_length > PUBLIC_PC_FAILURE_REPORT_MAX_BYTES:
+        abort(413)
     data = request.get_json(silent=True) or {}
     status_text = str(data.get("status") or "").strip()
     detail = str(data.get("detail") or "").strip()
@@ -2067,6 +2099,7 @@ def worker_task_status(task_id: str):
             claim_id=claim_id,
             worker_id=worker_id,
             enforce_claim_identity=True,
+            failure_evidence=data.get("failure_evidence"),
         )
         report = public_pc_report_for_task(task_id)
         if report is not None:
@@ -3745,170 +3778,18 @@ def _store_public_pc_failure_evidence(
     existing_site_statuses: object,
     now: datetime,
 ) -> dict:
-    statuses = {
-        str(site_key): dict(site)
-        for site_key, site in site_statuses.items()
-        if isinstance(site, dict)
-    }
-    existing_statuses = existing_site_statuses if isinstance(existing_site_statuses, dict) else {}
-    for site_key, existing_site in existing_statuses.items():
-        if not isinstance(existing_site, dict):
-            continue
-        current = statuses.setdefault(str(site_key), dict(existing_site))
-        if "failure_screenshots" not in current and isinstance(existing_site.get("failure_screenshots"), list):
-            current["failure_screenshots"] = list(existing_site["failure_screenshots"])
-        if "failure_screenshot_error" not in current and existing_site.get("failure_screenshot_error"):
-            current["failure_screenshot_error"] = str(existing_site["failure_screenshot_error"])
-
-    evidence_by_site = failure_evidence if isinstance(failure_evidence, dict) else {}
     _cleanup_public_pc_failure_screenshots(now)
-    remaining = PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT
-    for raw_site_key, raw_evidence in evidence_by_site.items():
-        site_key = str(raw_site_key)
-        if site_key not in PUBLIC_PC_FAILURE_SITE_KEYS or not isinstance(raw_evidence, dict):
-            continue
-        site = statuses.setdefault(site_key, {"key": site_key, "status": f"{site_key}_failed"})
-        stored_images = [
-            dict(item)
-            for item in site.get("failure_screenshots", [])
-            if isinstance(item, dict) and str(item.get("url") or "")
-        ]
-        errors: list[str] = []
-        capture_error = str(raw_evidence.get("screenshot_error") or "").strip()
-        if capture_error:
-            errors.append(capture_error)
-        screenshots = raw_evidence.get("screenshots") if isinstance(raw_evidence.get("screenshots"), list) else []
-        for item in screenshots:
-            if remaining <= 0:
-                errors.append("失敗截圖超過 5 張上限，後續圖片未保存。")
-                break
-            if not isinstance(item, dict):
-                continue
-            try:
-                encoded = str(item.get("content_base64") or "")
-                max_encoded_length = ((PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES + 2) // 3) * 4
-                if len(encoded) > max_encoded_length:
-                    raise ValueError("PNG Base64 超過 2 MB 上限")
-                image_bytes = base64.b64decode(encoded, validate=True)
-                if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-                    raise ValueError("檔案不是有效 PNG")
-                if len(image_bytes) > PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES:
-                    raise ValueError("PNG 超過 2 MB 上限")
-            except (ValueError, binascii.Error) as exc:
-                errors.append(f"截圖驗證失敗：{exc}")
-                continue
-
-            root = public_pc_failure_screenshot_dir()
-            root.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256(image_bytes).hexdigest()[:20]
-            safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id).strip("._")[:80] or "task"
-            safe_vehicle = re.sub(
-                r"[^A-Za-z0-9_.-]+",
-                "_",
-                str(item.get("vehicle") or ""),
-            ).strip("._")[:40]
-            vehicle_suffix = f"-{safe_vehicle}" if safe_vehicle else ""
-            filename = f"{safe_task}-{site_key}{vehicle_suffix}-{digest}.png"
-            target = root / filename
-            if not target.exists():
-                target.write_bytes(image_bytes)
-            metadata = {
-                "url": f"/admin/public-pc/failure-screenshots/{filename}",
-                "vehicle": str(item.get("vehicle") or ""),
-                "captured_at": str(item.get("captured_at") or ""),
-                "sha256": hashlib.sha256(image_bytes).hexdigest(),
-            }
-            stored_images = [
-                existing
-                for existing in stored_images
-                if str(existing.get("url") or "") != metadata["url"]
-            ]
-            stored_images.append(metadata)
-            remaining -= 1
-        site["failure_screenshots"] = stored_images[-PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT:]
-        site["failure_screenshot_error"] = "；".join(dict.fromkeys(errors))
-    return statuses
+    return store_task_failure_evidence(
+        artifacts_dir, task_id, site_statuses, failure_evidence, existing_site_statuses,
+        max_bytes=PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES, max_count=PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT,
+    )
 
 
 def _collect_public_pc_failure_evidence(task_id: str, site_statuses: object) -> dict[str, dict]:
-    statuses = site_statuses if isinstance(site_statuses, dict) else {}
-    failed_site_keys = {
-        str(site_key)
-        for site_key, site in statuses.items()
-        if (
-            str(site_key) in PUBLIC_PC_FAILURE_SITE_KEYS
-            and isinstance(site, dict)
-            and (
-                str(site.get("status") or "").endswith("_failed")
-                or "error" in str(site.get("status") or "").lower()
-            )
-        )
-    }
-    if not failed_site_keys:
-        return {}
-
-    root = (artifacts_dir / "selenium").resolve()
-    collected = {
-        site_key: {"screenshots": [], "screenshot_error": ""}
-        for site_key in failed_site_keys
-    }
-    if not root.exists():
-        for value in collected.values():
-            value["screenshot_error"] = "公務電腦找不到失敗截圖目錄。"
-        return collected
-
-    metadata_paths = sorted(
-        root.glob("*.json"),
-        key=lambda path: path.stat().st_mtime if path.exists() else 0,
-        reverse=True,
+    return collect_task_failure_evidence(
+        artifacts_dir, task_id, site_statuses,
+        max_bytes=PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES, max_count=PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT,
     )
-    remaining = PUBLIC_PC_FAILURE_SCREENSHOT_MAX_COUNT
-    for metadata_path in metadata_paths[:200]:
-        if remaining <= 0:
-            break
-        try:
-            if metadata_path.stat().st_size > 64 * 1024:
-                continue
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(metadata, dict) or str(metadata.get("task_id") or "") != task_id:
-            continue
-        site_key = str(metadata.get("site_key") or "")
-        if site_key not in collected:
-            continue
-        screenshot_error = str(metadata.get("screenshot_error") or "").strip()
-        if screenshot_error and not collected[site_key]["screenshot_error"]:
-            collected[site_key]["screenshot_error"] = screenshot_error
-        raw_path = str(metadata.get("screenshot_path") or "").strip()
-        if not raw_path:
-            continue
-        try:
-            screenshot_path = Path(raw_path).resolve()
-            if root not in screenshot_path.parents or screenshot_path.suffix.lower() != ".png":
-                continue
-            image_bytes = screenshot_path.read_bytes()
-        except OSError:
-            continue
-        if (
-            not image_bytes.startswith(b"\x89PNG\r\n\x1a\n")
-            or len(image_bytes) > PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES
-        ):
-            continue
-        collected[site_key]["screenshots"].append(
-            {
-                "filename": screenshot_path.name,
-                "content_base64": base64.b64encode(image_bytes).decode("ascii"),
-                "vehicle": str(metadata.get("vehicle") or ""),
-                "captured_at": str(metadata.get("captured_at") or ""),
-            }
-        )
-        remaining -= 1
-
-    for value in collected.values():
-        if not value["screenshots"] and not value["screenshot_error"]:
-            value["screenshot_error"] = "公務電腦未能取得失敗畫面，可能是 Chrome 已中斷。"
-    return collected
 
 
 def _enqueue_public_pc_report(payload: dict) -> None:

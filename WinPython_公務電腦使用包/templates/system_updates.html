@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.20.0108">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.20.0108') }}</p>
+          <h2 class="update-card__title">補齊區網後台紀錄與診斷，修正救災站別</h2>
+        </div>
+        <span class="update-card__versions">2026.10.20.0108</span>
+      </header>
+      <ul class="update-card__items">
+        <li>救災 Worker 只執行工作、里程與已啟用的加油；救護四站及選用加油、民力、單站重試與先後順序維持原流程。</li>
+        <li>救災與救護後台合併顯示既有區網案件，沿用分類、成功失敗統計與重試；相同案件不重複計算，不必重新登打。</li>
+        <li>區網 Worker 失敗截圖與診斷隨狀態回報保存，重試成功仍保留失敗歷程；過期、重複回報及圖片格式與大小限制維持保護。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.19.2340">
       <header class="update-card__heading">
         <div>

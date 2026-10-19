@@ -36,7 +36,7 @@ from ambulance_bot.daily_vehicle_mileage import (
     vehicle_mileage_sync_due,
 )
 from ambulance_bot.duty_credentials import save_credential_sync_payload
-from ambulance_bot.failure_evidence import browser_session_recovery_attempts, is_browser_session_recovery_error
+from ambulance_bot.failure_evidence import browser_session_recovery_attempts, collect_task_failure_evidence, is_browser_session_recovery_error
 from ambulance_bot.login_audit import login_audit_for_site, with_login_audit
 from ambulance_bot.manual_task_lock import (
     acquire_manual_task_lock,
@@ -2295,12 +2295,14 @@ def _run_all_sites_task_impl(
                 ),
             )
         )
+    active_site_keys = set(request.active_site_keys())
     if only_site_keys is not None:
-        site_groups = [
-            [entry for entry in site_group if entry[0] in only_site_keys]
-            for site_group in site_groups
-        ]
-        site_groups = [site_group for site_group in site_groups if site_group]
+        active_site_keys.intersection_update(only_site_keys)
+    site_groups = [
+        [entry for entry in site_group if entry[0] in active_site_keys]
+        for site_group in site_groups
+    ]
+    site_groups = [site_group for site_group in site_groups if site_group]
     last_result = None
     failed_results = []
     group_results: list[tuple[object | None, list[object]] | None] = [None] * len(site_groups)
@@ -3485,6 +3487,14 @@ def post_status(
             value = str(explicit.get(field) or computed.get(field) or "").strip()
             if value:
                 payload[field] = value
+        if status.endswith("_failed") or "error" in status.lower():
+            try:
+                payload["failure_evidence"] = collect_task_failure_evidence(
+                    Path(os.getenv("ARTIFACTS_DIR", "artifacts")), task_id,
+                    {site_key: {"status": status}},
+                )
+            except (OSError, ValueError) as exc:
+                payload["failure_evidence"] = {site_key: {"screenshot_error": f"失敗截圖讀取失敗：{type(exc).__name__}"}}
     if overall_status:
         payload["overall_status"] = overall_status
         payload["overall_detail"] = overall_detail or detail

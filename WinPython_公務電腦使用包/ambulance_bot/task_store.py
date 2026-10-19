@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import re
 import threading
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
+from .failure_evidence import store_task_failure_evidence
 from .models import AmbulanceReturnRequest
 from .site_diagnostics import DIAGNOSTIC_FIELDS, diagnostic_payload, result_with_diagnostics
 from .vehicle_reconciliation import (
@@ -730,7 +732,7 @@ class JsonTaskStore:
             self.save_payload(task_id, payload)
             return payload
 
-    def list_recent_read_only(self, limit: int = 10) -> list[dict[str, Any]]:
+    def list_recent_read_only(self, limit: int | None = 10) -> list[dict[str, Any]]:
         """Read snapshots without retention cleanup, quarantine or normalization writes."""
         with self._lock:
             candidates = []
@@ -747,7 +749,7 @@ class JsonTaskStore:
                     continue
                 if isinstance(payload, dict):
                     recent.append(payload)
-                    if len(recent) >= limit:
+                    if limit is not None and len(recent) >= limit:
                         break
             return recent
 
@@ -1293,6 +1295,7 @@ class JsonTaskStore:
         claim_id: str = "",
         worker_id: str = "",
         enforce_claim_identity: bool = True,
+        failure_evidence: object = None,
     ) -> tuple[dict[str, Any], bool]:
         with self._lock:
             payload = self.get(task_id)
@@ -1321,6 +1324,7 @@ class JsonTaskStore:
                     "目前 worker claim 已失效或任務已結束，拒絕新的狀態回報。",
                 )
             if result is not None:
+                event_offset = len(payload.get("events") or [])
                 self.update_site_result(
                     task_id,
                     result,
@@ -1329,6 +1333,28 @@ class JsonTaskStore:
                     _payload=payload,
                     _save=False,
                 )
+                evidence = failure_evidence.get(result.key) if isinstance(failure_evidence, dict) else None
+                site = payload["site_statuses"][result.key]
+                if (isinstance(evidence, dict) and site.get("status") != "completed_by_user"
+                        and (result.status.endswith("_failed") or "error" in result.status.lower())):
+                    previous_captures = {(image.get("sha256"), image.get("captured_at"))
+                                         for image in site.get("failure_screenshots") or [] if isinstance(image, dict)}
+                    try:
+                        stored = store_task_failure_evidence(
+                            self.tasks_dir.parent, task_id, {result.key: site}, {result.key: evidence}, {},
+                        )
+                        site.update(stored[result.key])
+                    except OSError:
+                        site["failure_screenshot_error"] = "NAS 無法保存失敗截圖，登打狀態已保留。"
+                    failure = deepcopy(site)
+                    failure["failure_screenshots"] = [image for image in site.get("failure_screenshots") or []
+                        if (image.get("sha256"), image.get("captured_at")) not in previous_captures]
+                    for event in payload["events"][event_offset:]:
+                        if event.get("status") == result.status:
+                            event["failure_sites"] = {result.key: failure}
+                    attempts = payload.get("site_attempts", {}).get(result.key, [])
+                    if attempts and attempts[-1].get("status") == result.status:
+                        attempts[-1].update({key: failure.get(key) for key in ("failure_screenshots", "failure_screenshot_error")})
             snapshot = task_completion_snapshot(payload)
             if overall_status and not snapshot["all_complete"]:
                 effective_status = overall_status
