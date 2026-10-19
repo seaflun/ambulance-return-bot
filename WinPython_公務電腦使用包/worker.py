@@ -3460,6 +3460,7 @@ def post_status(
         "detail": detail,
         "site_key": site_key,
         "site_name": site_name,
+        "package_version": current_package_version(),
     }
     if vehicle_key:
         payload["vehicle_key"] = vehicle_key

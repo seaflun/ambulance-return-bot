@@ -3056,7 +3056,7 @@ process.stdout.write(JSON.stringify(states));
             self.assertEqual(200, response.status_code)
             payload = response.get_json()
         self.assertEqual(snapshot, payload.get("disaster_personnel_titles"))
-        read.assert_called_once_with(app_module.artifacts_dir)
+        read.assert_called_once_with(app_module.artifacts_dir, target_date=app_module.sinposmart_fire_day_for())
         self.assertNotIn("disaster_personnel_titles", app_module.vehicle_settings_snapshot())
         normalized = app_module.normalize_remote_vehicle_settings(payload)
         self.assertEqual(snapshot, normalized["disaster_personnel_titles"])

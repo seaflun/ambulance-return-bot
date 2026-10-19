@@ -709,9 +709,14 @@ def _personnel_title_snapshot_key(snapshot: dict[str, Any]) -> tuple:
         (row["actor_no"], row["name"], row["title"]) for row in snapshot["members"])))
 
 
-def read_personnel_title_snapshot(artifacts_dir: Path, now: datetime | None = None) -> dict[str, Any]:
-    """Read today's newest complete roster directly, without store cleanup or writes."""
+def read_personnel_title_snapshot(
+    artifacts_dir: Path, now: datetime | None = None, *, target_date: str | None = None,
+) -> dict[str, Any]:
+    """Read the requested day's newest complete roster without cleanup or writes."""
     current = taipei_local_datetime(now or datetime.now(TAIPEI_TIMEZONE))
+    target = current.date() if target_date is None else parse_sinposmart_snapshot_date(target_date)
+    if target is None or target > current.date():
+        return {}
     cutoff = current - timedelta(hours=24)
     days = {sinposmart_fire_day_for(current), sinposmart_fire_day_for(cutoff)}
     candidates = []
@@ -732,7 +737,7 @@ def read_personnel_title_snapshot(artifacts_dir: Path, now: datetime | None = No
             if not isinstance(raw_snapshot, dict) or "personnel_titles" not in raw_snapshot:
                 continue
             snapshot = _personnel_title_snapshot(raw_snapshot["personnel_titles"], allow_incomplete=True)
-            if not snapshot or snapshot["target_date"] != current.date().isoformat():
+            if not snapshot or snapshot["target_date"] != target.isoformat():
                 continue
             try:
                 occurred = taipei_local_datetime(datetime.fromisoformat(sinposmart_event_time(event)))

@@ -151,6 +151,7 @@ from ambulance_bot.sinposmart_backend import (
     personnel_titles_for_case,
     personnel_actor_numbers_for_case,
     read_personnel_title_snapshot,
+    sinposmart_fire_day_for,
     sinposmart_fire_day_label,
     sinposmart_person_label,
     sinposmart_record_type_label,
@@ -2100,6 +2101,7 @@ def worker_task_status(task_id: str):
             worker_id=worker_id,
             enforce_claim_identity=True,
             failure_evidence=data.get("failure_evidence"),
+            package_version=data.get("package_version"),
         )
         report = public_pc_report_for_task(task_id)
         if report is not None:
@@ -3464,12 +3466,10 @@ def _latest_task_report_version(reports: Sequence[Mapping[str, object]]) -> tupl
     latest_at = ""
     for report in reports:
         version = str(report.get("package_version") or "").strip()
-        if not version:
-            continue
         report_at = str(
             report.get("updated_at") or report.get("time") or report.get("created_at") or ""
         ).strip()
-        if not latest_version or report_at >= latest_at:
+        if not latest_at or report_at >= latest_at:
             latest_version = version
             latest_at = report_at
     return latest_version, latest_at
@@ -4290,7 +4290,7 @@ def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -
     personnel_snapshot = (
         normalize_personnel_title_snapshot(snapshot.get("disaster_personnel_titles"))
         if "disaster_personnel_titles" in snapshot
-        else read_personnel_title_snapshot(artifacts_dir)
+        else read_personnel_title_snapshot(artifacts_dir, target_date=sinposmart_fire_day_for())
     )
     daily_snapshot = daily_vehicle_mileage_snapshot_from_settings(snapshot)
     if daily_snapshot is None:
@@ -5119,21 +5119,38 @@ def effective_disaster_action_packages(settings: dict[str, object] | None = None
     return load_disaster_action_packages(artifacts_dir)
 
 
-def _disaster_personnel_snapshot(settings: Mapping[str, object] | None = None) -> dict:
+def _disaster_personnel_target_date(case: Mapping[str, object]) -> str:
+    day = parse_case_date(selected_case_date_input(dict(case)))
+    if day is None:
+        return ""
+    time_text = normalize_hhmm(str(case.get("case_time_hhmm") or case.get("case_time") or ""))
+    if re.fullmatch(r"(?:[01]\d|2[0-3])[0-5]\d", time_text):
+        return sinposmart_fire_day_for(day.replace(hour=int(time_text[:2]), minute=int(time_text[2:])))
+    return day.date().isoformat()
+
+
+def _disaster_personnel_snapshot(
+    settings: Mapping[str, object] | None = None, *, case: Mapping[str, object],
+) -> dict:
     if not has_request_context() or request_is_local_host():
         return (settings or {}).get("disaster_personnel_titles") or {}
     if not hasattr(g, "disaster_personnel_snapshot"):
-        g.disaster_personnel_snapshot = read_personnel_title_snapshot(artifacts_dir)
-    return g.disaster_personnel_snapshot
+        g.disaster_personnel_snapshot = {}
+    target_date = _disaster_personnel_target_date(case)
+    if target_date not in g.disaster_personnel_snapshot:
+        g.disaster_personnel_snapshot[target_date] = read_personnel_title_snapshot(
+            artifacts_dir, target_date=target_date,
+        )
+    return g.disaster_personnel_snapshot[target_date]
 
 
 def effective_disaster_personnel_titles(
     case: Mapping[str, object],
     settings: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
-    snapshot = _disaster_personnel_snapshot(settings)
+    snapshot = _disaster_personnel_snapshot(settings, case=case)
     personnel = [name for name, _ in person_options_from_personnel(case.get("personnel"))]
-    return personnel_titles_for_case(snapshot, selected_case_date_input(dict(case)), personnel)
+    return personnel_titles_for_case(snapshot, _disaster_personnel_target_date(case), personnel)
 
 
 def disaster_personnel_display_options(
@@ -5142,9 +5159,9 @@ def disaster_personnel_display_options(
 ) -> dict[str, object]:
     titles = effective_disaster_personnel_titles(case, settings)
     people = person_options_from_personnel(case.get("personnel"))
-    snapshot = _disaster_personnel_snapshot(settings)
+    snapshot = _disaster_personnel_snapshot(settings, case=case)
     actor_numbers = personnel_actor_numbers_for_case(
-        snapshot, selected_case_date_input(dict(case)), [name for name, _ in people],
+        snapshot, _disaster_personnel_target_date(case), [name for name, _ in people],
     )
     options = case.get("person_options") or people
     leader_order = {"分隊長": 0, "小隊長": 1, "隊員": 2}
@@ -6480,7 +6497,7 @@ def sync_public_pc_report_retry_task(
             "operator": str(report.get("operator") or report.get("user") or ""),
             "synced_account": str(report.get("synced_account") or ""),
             "worker_id": worker_id or str(report.get("worker_id") or ""),
-            "package_version": str(report.get("package_version") or ""),
+            "package_version": str(payload.get("package_version") or report.get("package_version") or ""),
             "action": action,
             "status": site_result.status if site_result is not None else effective_task_status(dict(payload)),
             "detail": detail,

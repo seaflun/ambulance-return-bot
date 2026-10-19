@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.20.0147">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.20.0147') }}</p>
+          <h2 class="update-card__title">修復跨午夜人員排序與區網任務版號回報</h2>
+        </div>
+        <span class="update-card__versions">2026.10.20.0147</span>
+      </header>
+      <ul class="update-card__items">
+        <li>救災職稱與番號依案件所屬消防日讀取完整官方名冊，午夜後仍可接續前一消防日；保留 08:00 換日、過期、衝突與身分核對。</li>
+        <li>本次出勤、司機與 Firecam 維持各自職稱順序，同職稱依數字番號排序；原姓名值、選取結果與登打內容不變。</li>
+        <li>區網 Worker 狀態回報攜帶執行版本，經佇列保存至 NAS 任務、事件與後台；最新舊案件未記錄版號時顯示「未回報」，重試採當次實際版本。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.20.0108">
       <header class="update-card__heading">
         <div>

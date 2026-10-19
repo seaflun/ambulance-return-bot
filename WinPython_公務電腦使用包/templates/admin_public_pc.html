@@ -329,8 +329,8 @@
               {% if version_info and version_info.version and version_info.version != worker_health.package_version %}
                 <div class="version-difference">NAS 後台版本：{{ version_info.version }}</div>
               {% endif %}
-              {% if worker_health.last_task_report_version and worker_health.last_task_report_version != worker_health.package_version %}
-                <div class="version-difference">最後任務回報版本：{{ worker_health.last_task_report_version }}</div>
+              {% if (worker_health.last_task_report_at and not worker_health.last_task_report_version) or (worker_health.last_task_report_version and worker_health.last_task_report_version != worker_health.package_version) %}
+                <div class="version-difference">最後任務回報版本：{{ worker_health.last_task_report_version or '未回報' }}</div>
               {% endif %}
             {% endcall %}
           </div>

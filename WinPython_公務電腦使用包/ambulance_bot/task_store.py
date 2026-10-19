@@ -1296,6 +1296,7 @@ class JsonTaskStore:
         worker_id: str = "",
         enforce_claim_identity: bool = True,
         failure_evidence: object = None,
+        package_version: object = None,
     ) -> tuple[dict[str, Any], bool]:
         with self._lock:
             payload = self.get(task_id)
@@ -1323,8 +1324,8 @@ class JsonTaskStore:
                     "worker_claim_inactive",
                     "目前 worker claim 已失效或任務已結束，拒絕新的狀態回報。",
                 )
+            event_offset = len(payload.get("events") or [])
             if result is not None:
-                event_offset = len(payload.get("events") or [])
                 self.update_site_result(
                     task_id,
                     result,
@@ -1376,6 +1377,11 @@ class JsonTaskStore:
                 detail=overall_detail,
             )
             self._remember_status_event_id(payload, event_id)
+            version = package_version.strip() if isinstance(package_version, str) else ""
+            if re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,127}", version):
+                payload["package_version"] = version
+                for event in payload.get("events", [])[event_offset:]:
+                    event["package_version"] = version
             self.save_payload(task_id, payload)
             return payload, False
 
