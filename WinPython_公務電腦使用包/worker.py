@@ -15,7 +15,7 @@ import urllib.request
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 from uuid import uuid4
@@ -62,7 +62,7 @@ from ambulance_bot.selenium_local import (
     run_local_selenium_task,
     run_vehicle_mileage_task,
 )
-from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, diagnostic_payload, make_site_result
+from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, diagnostic_payload, make_site_result, site_stage_from_detail
 from ambulance_bot.status_outbox import WorkerStatusOutbox
 from ambulance_bot.task_cancellation import (
     TaskCancellationError,
@@ -678,6 +678,54 @@ def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     os.replace(temp_path, path)
 
 
+def recent_slow_consumables_stages() -> str:
+    """Read existing local history; export only allowlisted stages and timestamps."""
+    tasks_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts")) / "tasks"
+    latest: tuple[float, dict[str, object]] | None = None
+    try:
+        paths = sorted(tasks_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:50]
+    except OSError:
+        return ""
+    for path in paths:
+        try:
+            if path.stat().st_size > 4 * 1024 * 1024:
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            attempts = payload.get("site_attempts", {}).get("consumables", [])
+            if not isinstance(attempts, list) or len(attempts) > 2000:
+                continue
+            start = None
+            stages: list[list[str]] = []
+            for attempt in attempts:
+                if not isinstance(attempt, dict):
+                    continue
+                raw_time = str(attempt.get("time") or "")
+                if len(raw_time) > 64:
+                    continue
+                at = datetime.fromisoformat(raw_time)
+                at = at.replace(tzinfo=timezone(timedelta(hours=8))) if at.tzinfo is None else at
+                status = attempt.get("status")
+                detail = str(attempt.get("detail") or "")
+                if status == "consumables_running":
+                    if "本機快速執行中" in detail:
+                        start, stages = at, []
+                    stage = site_stage_from_detail("consumables", detail)
+                    if start is not None and stage and stage not in {item[0] for item in stages}:
+                        stages.append([stage, at.isoformat(timespec="seconds")])
+                elif status == "consumables_saved" and start is not None:
+                    seconds = (at - start).total_seconds()
+                    if seconds >= 120 and (latest is None or at.timestamp() > latest[0]):
+                        latest = (at.timestamp(), {"start": start.isoformat(timespec="seconds"),
+                                                  "end": at.isoformat(timespec="seconds"),
+                                                  "seconds": seconds, "stages": list(stages)})
+                    start = None
+                elif status in {"consumables_failed", "consumables_waiting_confirmation"}:
+                    start = None
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return json.dumps(latest[1], ensure_ascii=False, separators=(",", ":")) if latest else ""
+
+
 def report_remote_update_result(
     server_url: str,
     worker_id: str,
@@ -700,12 +748,17 @@ def report_remote_update_result(
         return False
     post = post_command_status or post_remote_update_status
     timestamp = (reported_at or (lambda: time.strftime("%Y-%m-%dT%H:%M:%S")))()
+    detail = str(payload.get("detail") or "遠端更新已結束。")
+    if status in {"completed", "up_to_date"}:
+        diagnostic = recent_slow_consumables_stages()
+        if diagnostic:
+            detail += "；耗材慢速階段=" + diagnostic
     try:
         post(
             server_url,
             request_id,
             status,
-            str(payload.get("detail") or "遠端更新已結束。"),
+            detail,
             worker_id=worker_id,
             before_version=str(payload.get("before_version") or ""),
             installed_version=str(payload.get("installed_version") or ""),
