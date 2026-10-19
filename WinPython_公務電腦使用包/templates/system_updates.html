@@ -148,18 +148,18 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
-    <article class="update-card" data-release-version="2026.10.20.0703">
+    <article class="update-card" data-release-version="2026.10.20.0717">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">{{ update_release_datetime('2026.10.20.0703') }}</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.20.0717') }}</p>
           <h2 class="update-card__title">完整比對本機與區網並補齊資料與人工確認</h2>
         </div>
-        <span class="update-card__versions">2026.10.20.0703</span>
+        <span class="update-card__versions">2026.10.20.0717</span>
       </header>
       <ul class="update-card__items">
         <li>本機里程提示同步 NAS 新案件及更正後里程，依案件時間選取參考值；區網與本機讀到同一份最新歷史，不再只剩早上快照。</li>
         <li>08:00 換日後帶入前一消防日救災案件，向 NAS 讀取對應日期名冊，保留分隊長、小隊長、隊員及番號排序。</li>
-        <li>登打明細補上逐車「確認既有里程」，核對 PPE 並勾選後只標示指定車輛人工完成；執行中不可操作，原有成功車輛保持原結果。</li>
+        <li>登打明細補上逐車「確認既有里程」，核對 PPE 並勾選後只標示指定車輛人工完成；執行中不可操作，原有成功車輛保持原結果；即使加油也失敗，里程確認入口仍獨立顯示。</li>
         <li>比對單車、雙車、救災三車、加油、民力、候選車輛、結案、編輯、啟動、中止與共享設定，保留原本登打與排隊流程。</li>
       </ul>
     </article>

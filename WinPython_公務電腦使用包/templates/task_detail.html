@@ -425,8 +425,9 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
 </head>
-{% macro manual_confirmation_forms(task_id, site_key, site, task_active) -%}
-  {% if not task_active and site_key == 'vehicle_mileage' %}
+{% macro mileage_overlap_confirmation_forms(task_id, site, task_active) -%}
+  {% set site_key = 'vehicle_mileage' %}
+  {% if not task_active %}
     {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}
       {% if mileage_overlap_confirmation_available(site_key, vehicle_result) and site_manual_complete_token(task_id, site_key, vehicle_key) %}
         <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
@@ -439,6 +440,8 @@
       {% endif %}
     {% endfor %}
   {% endif %}
+{%- endmacro %}
+{% macro manual_confirmation_forms(task_id, site_key, site, task_active) -%}
   {% if not task_active and site_waits_for_confirmation(site.status) %}
     {% set confirmation = namespace(has_vehicle=false) %}
     {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}
@@ -625,6 +628,7 @@
         {% set mileage_run_site_key = mileage_site.run_site_key or 'vehicle_mileage' %}
         <article class="task-card {{ status_class(mileage_site.status) }}">
           {{ task_card_head(payload.task.task_id, mileage_run_site_key, mileage_site, '里程+加油' if task_has_active_fuel_site(payload.task, payload.site_statuses) else '里程', task_card_station_label(payload.task, payload.site_statuses, 'vehicle_mileage'), task_active, completion) }}
+          {{ mileage_overlap_confirmation_forms(payload.task.task_id, payload.site_statuses.get('vehicle_mileage', {}), task_active) }}
           <ul class="line-list">
             {% if vehicle_entries|length > 1 %}
               {% for entry in vehicle_entries %}

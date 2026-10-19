@@ -149,7 +149,7 @@ class EntryControlParityTests(unittest.TestCase):
                     if rich:
                         vehicles = ["新坡95", "新坡92"] if service == "ems" else ["新坡11", "新坡15", "新坡16"]
                         task.update(two_vehicle=service == "ems", vehicle_entries=[{"vehicle": vehicle,
-                            "driver": "甲乙丙"[i], "mileage": str(120 + i), "fuel_record": {"quantity": "10", "unit_price": "30"}}
+                            "driver": "甲乙丙"[i], "mileage": str(120 + i), "fuel_record": {"enabled": True, "date": "2026-06-07", "time": "1200", "quantity": "10", "unit_price": "30"}}
                             for i, vehicle in enumerate(vehicles)])
                         if service == "ems":
                             task.update(volunteer_assist=True, volunteer_assist_member_name="隔離義消",
@@ -197,6 +197,8 @@ class EntryControlParityTests(unittest.TestCase):
         self.assertIn("確認新坡95既有里程", labels)
         self.assertIn("確認新坡11既有里程", labels)
         self.assertIn("確認使用新坡96", labels)
+        self.assertIn("六站登打啟動", labels)
+        self.assertIn("三站登打啟動", labels)
 
 
 if __name__ == "__main__":

@@ -180,16 +180,32 @@ class EntryMileageConfirmationTests(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
-    def create_overlap(self, task_id):
+    def create_overlap(self, task_id, *, with_fuel=False):
         model = runtime.AmbulanceReturnRequest.from_dict({"task_id": task_id,
             "created_at": datetime.now().isoformat(), "service_type": "disaster",
-            "vehicle_entries": [{"vehicle": "新坡11"}, {"vehicle": "新坡15"}]})
+            "vehicle_entries": [{"vehicle": vehicle, "fuel_record": {"enabled": with_fuel, "quantity": "10", "unit_price": "30"}}
+                                for vehicle in ("新坡11", "新坡15")]})
         self.fixture.store.create(model)
         for vehicle, status, detail in (("新坡11", "vehicle_mileage_failed", "案件與既有用車時間重疊，停止補登。"),
                                          ("新坡15", "vehicle_mileage_saved", "原成功")):
             self.fixture.store.update_site_result(task_id, runtime.SiteAutomationResult(
                 "vehicle_mileage", "里程", status, detail), vehicle_key=vehicle)
+        if with_fuel:
+            for vehicle, status in (("新坡11", "fuel_record_failed"), ("新坡15", "fuel_record_saved")):
+                self.fixture.store.update_site_result(task_id, runtime.SiteAutomationResult(
+                    "fuel_record", "加油", status, "隔離加油結果"), vehicle_key=vehicle)
         return self.fixture.store.get(task_id)
+
+    def test_mileage_confirmation_remains_visible_when_fuel_failure_heads_combined_card(self):
+        task_id = "isolated-overlap-and-fuel-failure"
+        original = self.create_overlap(task_id, with_fuel=True)
+        self.assertTrue(original["task"]["vehicle_entries"][0]["fuel_record"]["enabled"])
+        for mode in ("local", "nas"):
+            with self.subTest(mode=mode):
+                body = self.fixture.client.get("/tasks/" + task_id, **EntryDataParityTests.options[mode]).get_data(as_text=True)
+                self.assertIn("里程+加油", body)
+                self.assertIn("確認新坡11既有里程", body)
+                self.assertNotIn("確認新坡15既有里程", body)
 
     def test_entry_confirmation_checks_ack_token_and_preserves_other_vehicle(self):
         for mode in ("local", "nas"):
