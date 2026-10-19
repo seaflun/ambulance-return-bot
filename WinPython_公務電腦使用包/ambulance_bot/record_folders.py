@@ -224,6 +224,9 @@ def ensure_ems_record_folders(request, root: Path = DEFAULT_EMS_RECORD_ROOT) -> 
         folder = Path(root) / relative
         existed = folder.is_dir()
         for child in ("1", "2", "車"):
-            (folder / child).mkdir(parents=True, exist_ok=True)
+            child_path = folder / child
+            child_path.mkdir(parents=True, exist_ok=True)
+            if not child_path.is_dir():
+                raise RecordFolderError(f"資料夾建立後無法驗證：{child_path}")
         results.append(FolderResult(entry.vehicle, folder, "reused" if existed else "created"))
     return results

@@ -730,6 +730,27 @@ class JsonTaskStore:
             self.save_payload(task_id, payload)
             return payload
 
+    def list_recent_read_only(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Read snapshots without retention cleanup, quarantine or normalization writes."""
+        with self._lock:
+            candidates = []
+            for path in self.tasks_dir.glob("*.json"):
+                try:
+                    candidates.append((path.stat().st_mtime, path))
+                except OSError:
+                    continue
+            recent = []
+            for _mtime, path in sorted(candidates, reverse=True):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                except (OSError, UnicodeError, ValueError):
+                    continue
+                if isinstance(payload, dict):
+                    recent.append(payload)
+                    if len(recent) >= limit:
+                        break
+            return recent
+
     def list_recent(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
             self.cleanup()

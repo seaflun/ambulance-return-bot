@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.19.2340">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.19.2340') }}</p>
+          <h2 class="update-card__title">同步區網里程、救護資料夾與番號排序</h2>
+        </div>
+        <span class="update-card__versions">2026.10.19.2340</span>
+      </header>
+      <ul class="update-card__items">
+        <li>救災三處人員選項維持各自職稱順序，同職稱再依番號由小到大排列；原姓名值與選取結果不變。</li>
+        <li>登打里程參考合併本機回傳與 NAS 案件紀錄，切換區網入口可接續今日最新里程；表單每 30 秒及切回頁面時更新提示，不覆寫已輸入里程。</li>
+        <li>救護 Worker 排隊任務補齊 NAS 資料夾建立與紀錄，沿用既有命名及 1、2、車子資料夾，重試可重用；建立失敗時明確停止並回報。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.19.2240">
       <header class="update-card__heading">
         <div>

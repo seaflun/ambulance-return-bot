@@ -130,6 +130,9 @@ class WorkerTests(unittest.TestCase):
         login.assert_not_called()
 
     def setUp(self):
+        folders = mock.patch.object(worker_module, "ensure_ems_record_folders", return_value=[])
+        folders.start()
+        self.addCleanup(folders.stop)
         worker_module.MANUAL_TASK_ACTIVE.clear()
         worker_module._TASK_CLAIM_CONTEXT.clear()
         stale_claims = getattr(worker_module, "_STALE_TASK_CLAIMS", None)

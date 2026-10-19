@@ -903,6 +903,7 @@
   </main>
   {% include "_task_form_error_dialog.html" %}
   {% set auto_refresh = case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
+  <script src="{{ url_for('static', filename='task-entry-mileages.js', v=task_entry_asset_version) }}"></script>
   <script>
     const shouldAutoRefresh = {{ auto_refresh | tojson }};
     const formErrors = {{ form_errors | tojson }};
@@ -2184,6 +2185,12 @@
     updateConsumablePackageUi();
     updateConsumablePackageUi2();
     updateFieldVisualHints();
+    if (taskForm) startVehicleMileageSync(data => {
+      Object.assign(lastVehicleMileages, data.mileages);
+      Object.assign(lastVehicleMileageTimes, data.times);
+      Object.assign(vehicleMileageHintHistory, data.history);
+      updateLastMileageHints();
+    });
     const addConsumableButton = document.getElementById("add-consumable");
     if (addConsumableButton) {
       addConsumableButton.addEventListener("click", () => addConsumableRow());

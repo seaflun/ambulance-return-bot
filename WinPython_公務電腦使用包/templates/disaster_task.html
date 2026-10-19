@@ -325,6 +325,7 @@
   {% endif %}
 </main>
 {% include "_task_form_error_dialog.html" %}
+<script src="{{ url_for('static', filename='task-entry-mileages.js', v=task_entry_asset_version) }}"></script>
 <script>
   const lookupForm=document.getElementById('lookup-form');
   const lookupStatus=document.getElementById('lookup-status');
@@ -358,6 +359,7 @@
   const reason = document.getElementById('case-reason');
   const reasonOptionsByType = {{ disaster_reason_options_by_type | tojson }};
   const personnelTitles = {{ personnel_titles | default({}) | tojson }};
+  const personnelActorNumbers = {{ personnel_actor_numbers | default({}) | tojson }};
   const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
   const lastVehicleMileageTimes = {{ last_vehicle_mileage_times() | tojson }};
   const maxVehicleMileageChangeKm = 300;
@@ -526,10 +528,16 @@
     const rank=['分隊長','小隊長','隊員'].indexOf(title);
     return rank<0?3:rank;
   }
+  function personnelDisplayActorNumber(value){
+    const numbers=typeof personnelActorNumbers==='undefined'?{}:personnelActorNumbers;
+    const number=Object.hasOwn(numbers,value)?Number(numbers[value]):NaN;
+    return Number.isSafeInteger(number)&&number>0?number:Number.MAX_SAFE_INTEGER;
+  }
   function updateCurrentPackages(){
     const vehicles=[...new Set(currentFormValues('vehicle'))];
     const personnel=[...new Set(String(form.elements.personnel.value||'').split(',').map(value=>value.trim()).filter(Boolean))];
-    personnel.sort((left,right)=>personnelDisplayRank(left)-personnelDisplayRank(right));
+    personnel.sort((left,right)=>personnelDisplayRank(left)-personnelDisplayRank(right)
+      ||personnelDisplayActorNumber(left)-personnelDisplayActorNumber(right));
     updateCurrentPackageButtons(currentVehiclePackages,currentVehicleButtons,vehicles,'currentVehiclePackage');
     updateCurrentPackageButtons(currentPersonnelPackages,currentPersonnelButtons,personnel,'currentPersonnelPackage');
   }
@@ -640,6 +648,11 @@
   updatePreview();
   updateFolderPreview();
   updateRequiredHints();
+  startVehicleMileageSync(data=>{
+    Object.assign(lastVehicleMileages,data.mileages);
+    Object.assign(lastVehicleMileageTimes,data.times);
+    list.querySelectorAll('.vehicle-card').forEach(updateLastMileageHint);
+  });
   {% endif %}
   {% if case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
   window.setTimeout(()=>{ if(!document.querySelector('form:focus-within')&&!document.getElementById('client-form-errors').open) window.location.reload(); },2000);

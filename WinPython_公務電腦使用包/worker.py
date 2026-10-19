@@ -54,6 +54,7 @@ from ambulance_bot.manual_refresh import (
     normalize_manual_refresh_command,
 )
 from ambulance_bot.models import AmbulanceReturnRequest
+from ambulance_bot.record_folders import RecordFolderError, ensure_ems_record_folders
 from ambulance_bot.selenium_local import (
     query_daily_vehicle_mileages,
     query_duty_emergency_cases,
@@ -2168,6 +2169,18 @@ def _run_all_sites_task_impl(
         post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
         return result
     _assert_task_payload_claim_current(request.task_id, payload)
+    _raise_if_task_cancelled(request.task_id, cancellation_event)
+    if request.service_type != "disaster":
+        try:
+            folders = ensure_ems_record_folders(request)
+        except (OSError, RecordFolderError, ValueError) as exc:
+            detail = f"NAS 救護資料夾建立失敗，已停止本次登打：{exc}"
+            post_status(server_url, request.task_id, "desktop_fast_completed_with_errors", detail)
+            return make_site_result("record_folders", "NAS 資料夾", "record_folders_failed", detail, exc)
+        _raise_if_task_cancelled(request.task_id, cancellation_event)
+        if folders:
+            post_status(server_url, request.task_id, "desktop_fast_running",
+                        "record folders ready: " + " | ".join(str(folder.path) for folder in folders))
     site_groups = [
         [
             (

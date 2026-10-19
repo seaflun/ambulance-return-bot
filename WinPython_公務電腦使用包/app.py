@@ -148,6 +148,7 @@ from ambulance_bot.sinposmart_backend import (
     duty_gui_installer_activity_view,
     normalize_personnel_title_snapshot,
     personnel_titles_for_case,
+    personnel_actor_numbers_for_case,
     read_personnel_title_snapshot,
     sinposmart_fire_day_label,
     sinposmart_person_label,
@@ -410,7 +411,7 @@ def restrict_task_entry_console():
         return "", 204
     allowed = {
         "task_entry", "new_task", "disaster_task", "query_cases", "import_case", "clear_imported_case",
-        "record_folder_preview", "create_task", "create_disaster_task", "edit_task", "update_task",
+        "record_folder_preview", "vehicle_mileage_references", "create_task", "create_disaster_task", "edit_task", "update_task",
         "task_detail", "confirm_ems_case_closed", "run_task", "run_task_site", "select_site_vehicle_candidate",
         "complete_site", "abort_task", "static",
         "admin_vehicles", "create_vehicle_option", "delete_vehicle_option", "request_vehicle_mileage_query",
@@ -553,6 +554,15 @@ def query_cases():
     else:
         _case_lookup_start_error = ""
     return redirect(task_form_url())
+
+
+@app.get("/api/vehicle-mileages")
+def vehicle_mileage_references():
+    settings = fetch_nas_vehicle_settings() if request_is_local_host() else None
+    response = jsonify({"mileages": last_vehicle_mileages(nas_settings=settings),
+                        "times": last_vehicle_mileage_times(), "history": vehicle_mileage_hint_history()})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/api/record-folder-preview")
@@ -5228,14 +5238,19 @@ def effective_disaster_action_packages(settings: dict[str, object] | None = None
     return load_disaster_action_packages(artifacts_dir)
 
 
+def _disaster_personnel_snapshot(settings: Mapping[str, object] | None = None) -> dict:
+    if not has_request_context() or request_is_local_host():
+        return (settings or {}).get("disaster_personnel_titles") or {}
+    if not hasattr(g, "disaster_personnel_snapshot"):
+        g.disaster_personnel_snapshot = read_personnel_title_snapshot(artifacts_dir)
+    return g.disaster_personnel_snapshot
+
+
 def effective_disaster_personnel_titles(
     case: Mapping[str, object],
     settings: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
-    if request_is_local_host():
-        snapshot = settings.get("disaster_personnel_titles") if settings is not None else {}
-    else:
-        snapshot = read_personnel_title_snapshot(artifacts_dir)
+    snapshot = _disaster_personnel_snapshot(settings)
     personnel = [name for name, _ in person_options_from_personnel(case.get("personnel"))]
     return personnel_titles_for_case(snapshot, selected_case_date_input(dict(case)), personnel)
 
@@ -5246,14 +5261,22 @@ def disaster_personnel_display_options(
 ) -> dict[str, object]:
     titles = effective_disaster_personnel_titles(case, settings)
     people = person_options_from_personnel(case.get("personnel"))
+    snapshot = _disaster_personnel_snapshot(settings)
+    actor_numbers = personnel_actor_numbers_for_case(
+        snapshot, selected_case_date_input(dict(case)), [name for name, _ in people],
+    )
     options = case.get("person_options") or people
     leader_order = {"分隊長": 0, "小隊長": 1, "隊員": 2}
     driver_order = {"隊員": 0, "小隊長": 1, "分隊長": 2}
     return {
         "personnel_titles": titles,
-        "current_personnel_options": sorted(people, key=lambda person: leader_order.get(titles.get(person[0]), 3)),
-        "driver_person_options": sorted(options, key=lambda person: driver_order.get(titles.get(person[0]), 3)),
-        "firecam_person_options": sorted(options, key=lambda person: leader_order.get(titles.get(person[0]), 3)),
+        "personnel_actor_numbers": actor_numbers,
+        "current_personnel_options": sorted(people, key=lambda person: (
+            leader_order.get(titles.get(person[0]), 3), actor_numbers.get(person[0], float("inf")))),
+        "driver_person_options": sorted(options, key=lambda person: (
+            driver_order.get(titles.get(person[0]), 3), actor_numbers.get(person[0], float("inf")))),
+        "firecam_person_options": sorted(options, key=lambda person: (
+            leader_order.get(titles.get(person[0]), 3), actor_numbers.get(person[0], float("inf")))),
     }
 
 
@@ -7464,13 +7487,23 @@ def _last_vehicle_mileage_sort_key(payload: object) -> tuple[datetime, datetime]
     return case_datetime, created_at
 
 
+def _vehicle_mileage_history_payloads(limit: int = 300) -> list[dict]:
+    # Read reports without retention cleanup; NAS tasks remain authoritative for the same ID.
+    payloads, task_ids = [], set()
+    for payload in list(store.list_recent_read_only(limit=limit)) + _load_public_pc_reports():
+        if not isinstance(payload, dict) or not isinstance(payload.get("task"), dict):
+            continue
+        task_id = str(payload["task"].get("task_id") or payload.get("task_id") or "")
+        if task_id and task_id in task_ids:
+            continue
+        task_ids.add(task_id)
+        payloads.append(payload)
+    return sorted(payloads, key=_last_vehicle_mileage_sort_key, reverse=True)[:limit]
+
+
 def _stored_last_vehicle_mileage_records(limit: int, before: datetime | None = None) -> dict[str, tuple[str, datetime]]:
     mileages: dict[str, tuple[str, datetime]] = {}
-    recent_payloads = sorted(
-        store.list_recent(limit=limit),
-        key=_last_vehicle_mileage_sort_key,
-        reverse=True,
-    )
+    recent_payloads = _vehicle_mileage_history_payloads(limit)
     for payload in recent_payloads:
         if not isinstance(payload, dict):
             continue
@@ -7567,7 +7600,7 @@ def last_vehicle_mileages(
 
 def vehicle_mileage_hint_history() -> dict[str, list[dict[str, str]]]:
     history: dict[str, list[dict[str, str]]] = {}
-    for payload in store.list_recent(limit=300):
+    for payload in _vehicle_mileage_history_payloads():
         if not isinstance(payload, dict) or not isinstance(payload.get("task"), dict):
             continue
         occurred_at = _last_vehicle_mileage_sort_key(payload)[0]
@@ -8191,6 +8224,7 @@ def update_release_datetime(version: object, fallback: object = "") -> str:
 def template_helpers() -> dict:
     return {
         "update_release_datetime": update_release_datetime,
+        "task_entry_asset_version": package_version(),
         "last_vehicle_mileage_times": last_vehicle_mileage_times,
         "vehicle_mileage_hint_history": vehicle_mileage_hint_history,
         "case_time_range": case_time_range,

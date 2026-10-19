@@ -774,6 +774,14 @@ def personnel_titles_for_case(snapshot: Any, case_date: Any, personnel: list[str
     return selected
 
 
+def personnel_actor_numbers_for_case(snapshot: Any, case_date: Any, personnel: list[str]) -> dict[str, int]:
+    """Use the same date, completeness and identity guards as displayed titles."""
+    titles = personnel_titles_for_case(snapshot, case_date, personnel)
+    roster = normalize_personnel_title_snapshot(snapshot)
+    return {member["name"]: int(member["actor_no"]) for member in (roster or {}).get("members", [])
+            if member["name"] in titles}
+
+
 def sinposmart_snapshot_target_dates(event: dict[str, Any]) -> list[date | None]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     days = snapshot.get("days") if isinstance(snapshot, dict) else []
