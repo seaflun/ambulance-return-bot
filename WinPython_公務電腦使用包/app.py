@@ -27,7 +27,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from flask import Flask, abort, g, has_request_context, jsonify, make_response, redirect, render_template, request, send_from_directory, url_for
 
-from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
+from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult
 from ambulance_bot.browser_case_selection import BrowserCaseSelectionStore
 from ambulance_bot.failure_evidence import collect_task_failure_evidence, store_task_failure_evidence
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
@@ -7927,6 +7927,9 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
 
 def public_pc_event_rows(report: dict) -> list[dict]:
     rows = []
+    events = public_pc_report_display_events(report)
+    has_worker_queue = bool(worker_queue_state(report).get("queued_at")) or any(
+        event.get("status") == "queued_for_worker" for event in events)
     folders = report.get("record_folders") or confirmed_record_folders(report)
     folder_row = None
     folder_row_added = False
@@ -7934,10 +7937,20 @@ def public_pc_event_rows(report: dict) -> list[dict]:
         if public_pc_report_service_type(report) == "ems":
             folders = folders[:1]
         folder_row = {"time": "", "action": "已建立的資料夾", "detail": "", "folder_paths": folders}
-    for raw in public_pc_report_display_events(report):
+    for raw in events:
         if not isinstance(raw, dict):
             continue
         event = dict(raw)
+        site_name, separator, preparation_detail = str(event.get("detail") or "").partition(": ")
+        if (has_worker_queue and event.get("status") in {"local_pc_ready", "manual_captcha_required"}
+                and separator and site_name in {site.name for site in SITE_DEFINITIONS}
+                and preparation_detail.startswith((
+                    "已建立本機電腦操作任務，第一版不自動送出。",
+                    "此站有驗證碼；本機電腦瀏覽器開啟後請人工登入並登打",
+                ))):
+            event.update(action="排隊前準備", detail=f"{site_name}：舊版排隊前提示；實際結果以後續 Worker 回報為準。")
+            rows.append(event)
+            continue
         action = str(event.get("action") or "更新")
         status = str(event.get("status") or "")
         detail = str(event.get("detail") or "")
@@ -8210,7 +8223,8 @@ def show_task_entry_controls() -> bool:
 
 
 def should_auto_queue_task_on_create() -> bool:
-    return effective_task_execution_mode() == "worker_queue" and not request_is_local_host()
+    return (effective_task_execution_mode() == "worker_queue"
+            and not request_is_local_host() and not task_entry_console_request())
 
 
 def created_task_auto_start_mode() -> str:
@@ -8249,27 +8263,6 @@ def start_task_auto_start_scheduler() -> tuple[threading.Event, threading.Thread
 
 
 def queue_task_for_worker(task_id: str, run_site_key: str = "") -> None:
-    request_payload = store.request_for(task_id)
-    payload = store.get(task_id)
-    site_statuses = dict(payload.get("site_statuses") or {})
-    target_site_keys = set(request_payload.active_site_keys())
-    if run_site_key:
-        target_site_keys = {run_site_key}
-        if run_site_key in {"vehicle_mileage", "fuel_record"} and request_payload.has_fuel_record():
-            target_site_keys.update({"vehicle_mileage", "fuel_record"})
-    for adapter in default_adapters():
-        if adapter.key not in target_site_keys:
-            continue
-        site = dict(site_statuses.get(adapter.key) or {})
-        status = str(site.get("status") or "")
-        should_prepare = (
-            status in {"", "not_started"}
-            or "failed" in status
-            or "error" in status
-            or status.endswith("_needs_update")
-        )
-        if should_prepare:
-            store.update_site_result(task_id, adapter.run(request_payload))
     store.queue_for_worker(task_id, run_site_key=run_site_key)
 
 

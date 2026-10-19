@@ -44,6 +44,7 @@ Waitress／Flask 程序與 Worker 佇列處理，不另開第二個 Flask 程序
 - 專用網域根路徑會導向救災／救護選單；只允許登打、查案、任務明細／編輯／重試與必要靜態資源，首頁、管理後台及 Worker API 會回覆 403。
 - 原管理／Worker 位址保持原樣，**不可**列入 `TASK_ENTRY_HOSTS`；Worker 仍用原 `WORKER_SERVER_URL` 及 `WORKER_TOKEN` 領取與回報任務。
 - 多台電腦的案件帶入以一次性、不含案件資料的 cookie token 隔離；有效期五分鐘。同案送出沿用救災按案件、救護按案件及車輛的查重規則，並將查重與建立串行化。
+- 專用入口沿用本機操作：救護建立後先確認「是否已結案」，再按登打；救災建立後可直接按登打。建立滿 10 分鐘仍未開始時，沿用自動排隊備援；實際登打均由公務電腦 Worker 執行。原管理入口的立即排隊流程不變。
 - NAS 設定 `TASK_ENTRY_URL` 為完整專用網址，新版 GUI 會在 NAS 身分確認後，以 Worker 驗證讀取 `/worker/task-entry-settings` 並比對 instance_id，再決定開 NAS 或本機頁。GUI 不需要透過更新器覆寫 `.env`。本機明填的 `TASK_ENTRY_URL` 優先。
 - 使用有效 NAS 入口時，新版 GUI 啟動、按鈕與 Chrome 修復都不啟動本機 8090；Worker、查案與帳密同步照常運作。舊 NAS 回 404、未設定入口或讀取失敗時可回原本機備援；NAS 明確回報無效設定或身分不符時會提示，Worker 仍啟動，並阻擋本機回退。
 - 設定無效網址時 GUI 會提示錯誤，Worker 仍可運作；不會退回開啟本機服務。`DESKTOP_WEB_OPEN_BROWSER=false` 可取消自動開頁，手動按鈕仍可開 NAS。

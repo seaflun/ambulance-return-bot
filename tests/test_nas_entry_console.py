@@ -154,6 +154,8 @@ class NasEntryConsoleTests(unittest.TestCase):
             response = self.client.post("/tasks", headers=self.host, data=self.fixture.valid_task_data())
         self.assertEqual(302, response.status_code)
         task_id = response.headers["Location"].split("/")[-1]
+        self.assertEqual("idle", self.store.get(task_id)["worker_queue"]["status"])
+        self.client.post(response.headers["Location"] + "/run", headers=self.host)
         self.assertEqual("queued", self.store.get(task_id)["worker_queue"]["status"])
         self.assertEqual([], app_module.desktop_runner.started)
 
@@ -208,6 +210,8 @@ class NasEntryConsoleTests(unittest.TestCase):
                 locations = list(pool.map(lambda _: submit(), range(2)))
         self.assertEqual(locations[0], locations[1])
         self.assertEqual(1, len(self.store.list_recent(limit=10)))
+        self.assertEqual("idle", self.store.list_recent(limit=10)[0]["worker_queue"]["status"])
+        self.client.post(locations[0] + "/run", headers=self.host)
         self.assertEqual("queued", self.store.list_recent(limit=10)[0]["worker_queue"]["status"])
 
     def test_same_case_for_distinct_ems_vehicles_still_creates_distinct_tasks(self):
@@ -243,6 +247,8 @@ class NasEntryConsoleTests(unittest.TestCase):
         self.assertEqual(locations[0], locations[1])
         self.assertEqual(1, folder_call.call_count)
         self.assertEqual(1, len(self.store.list_recent()))
+        self.assertEqual("idle", self.store.list_recent()[0]["worker_queue"]["status"])
+        self.client.post(locations[0] + "/run", headers=self.host)
         self.assertEqual("queued", self.store.list_recent()[0]["worker_queue"]["status"])
 
     def test_entry_tasks_remain_queued_until_authenticated_worker_claims_them(self):
@@ -250,6 +256,8 @@ class NasEntryConsoleTests(unittest.TestCase):
         b = self.client.post("/tasks", headers=self.host, data=self.fixture.valid_task_data(case_id="queue-B"))
         a_id = a.headers["Location"].split("/")[-1]
         b_id = b.headers["Location"].split("/")[-1]
+        self.client.post(a.headers["Location"] + "/run", headers=self.host)
+        self.client.post(b.headers["Location"] + "/run", headers=self.host)
         self.assertEqual("queued", self.store.get(a_id)["worker_queue"]["status"])
         self.assertEqual("queued", self.store.get(b_id)["worker_queue"]["status"])
         with mock.patch.dict(os.environ, {"WORKER_TOKEN": "test-entry-worker"}):

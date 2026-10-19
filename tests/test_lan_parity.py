@@ -130,6 +130,7 @@ class LanAdminHistoryTests(unittest.TestCase):
         headers = {"X-Worker-Token": os.environ["WORKER_TOKEN"]}
         created = self.client.post("/tasks", data=self.fixture.valid_task_data(), **self.entry)
         task_id = created.headers["Location"].rsplit("/", 1)[-1]
+        self.client.post(created.headers["Location"] + "/run", **self.entry)
         claim = self.client.get("/worker/next-task?worker_id=audit", headers=headers, **self.original).json["payload"]
         posted = self.client.post(f"/worker/tasks/{task_id}/status", headers=headers, json={
             "site_key": "disinfection", "status": "disinfection_failed", "detail": "隔離登入失敗",
@@ -190,6 +191,7 @@ class LanFailureEvidenceTests(unittest.TestCase):
         self.headers = {"X-Worker-Token": os.environ["WORKER_TOKEN"]}
         created = self.client.post("/tasks", data=self.fixture.valid_task_data(), **self.entry)
         self.task_id = created.headers["Location"].rsplit("/", 1)[-1]
+        self.client.post(created.headers["Location"] + "/run", **self.entry)
         claimed = self.client.get("/worker/next-task?worker_id=evidence-worker", headers=self.headers, **self.original)
         self.claim_id = claimed.json["payload"]["worker_queue"]["claim_id"]
 

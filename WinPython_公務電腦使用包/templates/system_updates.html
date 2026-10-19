@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.20.0615">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.20.0615') }}</p>
+          <h2 class="update-card__title">補齊區網結案確認與本機操作流程</h2>
+        </div>
+        <span class="update-card__versions">2026.10.20.0615</span>
+      </header>
+      <ul class="update-card__items">
+        <li>區網救護建立後保留「是否已結案」、返回編輯與手動啟動；救災也保留手動啟動，兩者沿用建立滿 10 分鐘自動排隊備援。</li>
+        <li>排隊不再產生早期人工登打及驗證碼提示；實際結果由公務電腦 Worker 回報，重試前保留原站別結果與失敗原因。</li>
+        <li>後台將舊版準備訊息標明為「排隊前準備」，保留原始案件事件、真正失敗與驗證碼處理紀錄。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.20.0147">
       <header class="update-card__heading">
         <div>

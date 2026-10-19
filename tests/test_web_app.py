@@ -13696,7 +13696,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertEqual(updated["overall_status"], "claimed_by_worker")
         self.assertEqual(updated["site_statuses"]["duty_work_log"]["status"], "duty_work_log_saved")
 
-    def test_worker_queue_retry_preserves_saved_sites_and_prepares_only_unfinished_sites(self):
+    def test_worker_queue_retry_preserves_saved_sites_and_previous_failure_until_worker_runs(self):
         create_response = self.client.post("/tasks", data=self.valid_task_data())
         task_id = create_response.headers["Location"].rstrip("/").split("/")[-1]
         payload = self.store.get(task_id)
@@ -13725,7 +13725,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertEqual(queued["worker_queue"]["status"], "queued")
         self.assertEqual(queued["site_statuses"]["vehicle_mileage"]["status"], "vehicle_mileage_saved")
         self.assertEqual(queued["site_statuses"]["vehicle_mileage"]["detail"], "已完成的里程紀錄")
-        self.assertEqual(queued["site_statuses"]["duty_work_log"]["status"], "local_pc_ready")
+        self.assertEqual(queued["site_statuses"]["duty_work_log"]["status"], "duty_work_log_failed")
+        self.assertEqual(queued["site_statuses"]["duty_work_log"]["detail"], "前次失敗")
         self.assertEqual(
             queued["site_statuses"]["consumables"]["status"],
             "completed_by_user",
