@@ -227,6 +227,7 @@
       {% if current_personnel is string %}
         {% set current_personnel = current_personnel.split(',') %}
       {% endif %}
+      {% set current_personnel_display = current_personnel_options | default(current_personnel) %}
   {% set selected_summary_type = selected_case.summary_type if selected_case.summary_type in disaster_reason_options_by_type else '火災' %}
   {% set selected_reason = selected_case.reason or selected_case.case_reason or '' %}
   {% set selected_reason_options = disaster_reason_options_by_type[selected_summary_type] %}
@@ -261,7 +262,7 @@
           <div class="section-head"><strong class="vehicle-card-title" data-vehicle-title>{{ loop.index }}車</strong><button type="button" class="remove-vehicle">移除車輛</button></div>
           <div class="grid">
             <label class="field-visual{% if not entry.vehicle %} is-pending{% endif %}" data-required-message="請選擇車輛"><span class="field-label-title">車輛<span class="field-error-mark" aria-hidden="true">*</span></span><select name="vehicle" required><option value="">請選擇</option>{% for vehicle in vehicle_options %}<option value="{{ vehicle }}"{% if entry.vehicle == vehicle %} selected{% endif %}>{{ vehicle }}{% if vehicle_plate_names.get(vehicle) %} | {{ vehicle_plate_names[vehicle] }}{% endif %}</option>{% endfor %}</select></label>
-            <label class="field-visual{% if not entry.driver %} is-pending{% endif %}" data-required-message="請選擇司機"><span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span><select name="driver" required><option value="">請選擇</option>{% for value,label in person_options %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+            <label class="field-visual{% if not entry.driver %} is-pending{% endif %}" data-required-message="請選擇司機"><span class="field-label-title">司機<span class="field-error-mark" aria-hidden="true">*</span></span><select name="driver" required><option value="">請選擇</option>{% for value,label in driver_person_options | default(person_options) %}<option value="{{ label }}"{% if entry.driver == label %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
             <label class="field-visual{% if not (entry.return_time or selected_return_time_input(selected_case)) %} is-pending{% endif %}" data-required-message="請填寫正確返隊日期與時間"><span class="field-label-title">返隊時間<span class="field-error-mark" aria-hidden="true">*</span></span><div class="time-field return-time-field"><input type="text" name="vehicle_return_date" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD" value="{{ entry.return_date or selected_return_date_input(selected_case) }}" required><input name="vehicle_return_time" inputmode="numeric" maxlength="4" pattern="(?:[01]\d|2[0-3])[0-5]\d" placeholder="hhmm" value="{{ entry.return_time or selected_return_time_input(selected_case) }}" required><button type="button" class="clock-button" data-vehicle-return-now aria-label="帶入現在時間"><span class="clock-glyph"></span></button></div></label>
             <label class="field-visual{% if not entry.mileage %} is-pending{% endif %}" data-required-message="請填寫數字里程"><span class="field-label-title">里程<span class="field-error-mark" aria-hidden="true">*</span></span><input name="mileage" inputmode="numeric" pattern="\d+" value="{{ entry.mileage or '' }}" required><span class="mileage-hint" data-last-mileage-for="vehicle" aria-live="polite"></span></label>
             <label class="check-item fuel-record-toggle full"><input type="checkbox" class="fuel-toggle" name="fuel_enabled" value="{{ loop.index0 }}"{% if fuel.enabled %} checked{% endif %}><span>登打加油紀錄</span></label>
@@ -287,11 +288,11 @@
           {% endfor %}
         </div>
       </div>
-      <div class="package-cluster" id="current-personnel-packages"{% if not current_personnel %} hidden{% endif %}>
+      <div class="package-cluster" id="current-personnel-packages"{% if not current_personnel_display %} hidden{% endif %}>
         <span class="package-group-label">本次出勤人員</span>
         <div class="package-buttons" aria-label="本次出勤人員">
-          {% for person in current_personnel %}
-            {% set person_name = person | string | trim %}
+          {% for person in current_personnel_display %}
+            {% set person_name = (person[0] if current_personnel_options is defined else person) | string | trim %}
             {% if person_name %}
               {% set person_label = ((personnel_titles.get(person_name) ~ ' ') if personnel_titles.get(person_name) else '') ~ person_name %}
               <button type="button" class="secondary package-button" data-action-text="{{ person_label }}" data-current-personnel-package="{{ person_name }}">{{ person_label }}</button>
@@ -308,7 +309,7 @@
         <label class="field-visual{% if not selected_case.recorder_category %} is-pending{% endif %}" data-required-message="請選擇行車紀錄器分類"><span class="field-label-title">行車紀錄器分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_category" id="recorder-category" required><option value="">請選擇</option>{% for category in ['轄內A2','轄內A3','轄內其他案件','支援他轄'] %}<option value="{{ category }}"{% if selected_case.recorder_category == category %} selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
         <label class="field-visual{% if selected_case.recorder_category == '轄內其他案件' and not selected_case.recorder_subcategory %} is-pending{% endif %}" id="subcategory-field" data-required-message="請選擇轄內其他案件子分類"{% if selected_case.recorder_category != '轄內其他案件' %} hidden{% endif %}><span class="field-label-title">子分類<span class="field-error-mark" aria-hidden="true">*</span></span><select name="recorder_subcategory"><option value="">請選擇</option>{% for subcategory in ['其他','誤報','溺水','破門','警報器誤動作','車禍救助','輸電線災害','電梯受困','電線桿災害'] %}<option value="{{ subcategory }}"{% if selected_case.recorder_subcategory == subcategory %} selected{% endif %}>{{ subcategory }}</option>{% endfor %}</select></label>
         <input type="hidden" name="recorder_subcategory" id="locked-recorder-subcategory" value="誤報" disabled>
-        <div class="full firecam-selector"><span class="field-section-label firecam-selector-title">Firecam（可複選）</span><div class="check-grid">{% for value,label in person_options %}<label class="check-item"><input type="checkbox" name="firecam_person" value="{{ label }}"{% if label in (selected_case.firecam_people or []) %} checked{% endif %}><span>{{ label }}</span></label>{% endfor %}</div></div>
+        <div class="full firecam-selector"><span class="field-section-label firecam-selector-title">Firecam（可複選）</span><div class="check-grid">{% for value,label in firecam_person_options | default(person_options) %}<label class="check-item"><input type="checkbox" name="firecam_person" value="{{ label }}"{% if label in (selected_case.firecam_people or []) %} checked{% endif %}><span>{{ label }}</span></label>{% endfor %}</div></div>
         <div class="folder-preview-output"><div data-folder-empty>請先完成案件與車輛資料。</div><section class="folder-preview-group" data-folder-recorder-group hidden><h3>行車紀錄器</h3><ul data-folder-recorder-list></ul></section><section class="folder-preview-group" data-folder-firecam-group hidden><h3>Firecam</h3><ul data-folder-firecam-list></ul></section></div>
       </div>
     </section>
@@ -520,9 +521,15 @@
   function currentFormValues(name){
     return Array.from(form.querySelectorAll(`[name="${name}"]`)).map(input=>input.value.trim()).filter(Boolean);
   }
+  function personnelDisplayRank(value){
+    const title=Object.hasOwn(personnelTitles,value)?personnelTitles[value]:'';
+    const rank=['分隊長','小隊長','隊員'].indexOf(title);
+    return rank<0?3:rank;
+  }
   function updateCurrentPackages(){
     const vehicles=[...new Set(currentFormValues('vehicle'))];
     const personnel=[...new Set(String(form.elements.personnel.value||'').split(',').map(value=>value.trim()).filter(Boolean))];
+    personnel.sort((left,right)=>personnelDisplayRank(left)-personnelDisplayRank(right));
     updateCurrentPackageButtons(currentVehiclePackages,currentVehicleButtons,vehicles,'currentVehiclePackage');
     updateCurrentPackageButtons(currentPersonnelPackages,currentPersonnelButtons,personnel,'currentPersonnelPackage');
   }

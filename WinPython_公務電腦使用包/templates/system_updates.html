@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.19.2240">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.19.2240') }}</p>
+          <h2 class="update-card__title">修復救災職稱來源並依職稱排列人員</h2>
+        </div>
+        <span class="update-card__versions">2026.10.19.2240</span>
+      </header>
+      <ul class="update-card__items">
+        <li>配合值班台官方名冊辨識修正，恢復可信職稱資料；本次出勤人員依分隊長、小隊長、隊員排列並顯示職稱與姓名。</li>
+        <li>救災司機依隊員、小隊長、分隊長排列；Firecam 依分隊長、小隊長、隊員排列，兩者維持只顯示姓名。</li>
+        <li>排序僅作用於畫面，保留原出勤名單、司機與 Firecam 選取值、指揮官及正式登打流程；同職稱與未知職稱保持原順序。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.19.2137">
       <header class="update-card__heading">
         <div>

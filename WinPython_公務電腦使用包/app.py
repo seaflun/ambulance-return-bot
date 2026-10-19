@@ -511,7 +511,7 @@ def disaster_task():
         case_lookup=prepared_case_lookup("disaster"),
         person_options=person_options,
         vehicle_options=vehicle_options,
-        personnel_titles=effective_disaster_personnel_titles(selected_case, nas_settings),
+        **disaster_personnel_display_options(selected_case, nas_settings),
         vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
         disaster_reason_options=DISASTER_REASON_OPTIONS,
         disaster_reason_options_by_type=DISASTER_REASON_OPTIONS_BY_TYPE,
@@ -686,7 +686,7 @@ def create_disaster_task():
             recent_tasks=recent_tasks_for_task_form("disaster"),
             case_lookup=prepared_case_lookup("disaster"),
             person_options=person_options_from_personnel(task_request.personnel),
-            personnel_titles=effective_disaster_personnel_titles(task_request.to_dict(), nas_settings),
+            **disaster_personnel_display_options(task_request.to_dict(), nas_settings),
             vehicle_options=[record["label"] for record in vehicle_records],
             vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
@@ -714,7 +714,7 @@ def create_disaster_task():
             recent_tasks=recent_tasks_for_task_form("disaster"),
             case_lookup=prepared_case_lookup("disaster"),
             person_options=person_options_from_personnel(task_request.personnel),
-            personnel_titles=effective_disaster_personnel_titles(task_request.to_dict(), nas_settings),
+            **disaster_personnel_display_options(task_request.to_dict(), nas_settings),
             vehicle_options=[record["label"] for record in vehicle_records],
             vehicle_plate_names=vehicle_option_plate_names(vehicle_records),
             disaster_reason_options=DISASTER_REASON_OPTIONS,
@@ -5238,6 +5238,23 @@ def effective_disaster_personnel_titles(
         snapshot = read_personnel_title_snapshot(artifacts_dir)
     personnel = [name for name, _ in person_options_from_personnel(case.get("personnel"))]
     return personnel_titles_for_case(snapshot, selected_case_date_input(dict(case)), personnel)
+
+
+def disaster_personnel_display_options(
+    case: Mapping[str, object],
+    settings: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    titles = effective_disaster_personnel_titles(case, settings)
+    people = person_options_from_personnel(case.get("personnel"))
+    options = case.get("person_options") or people
+    leader_order = {"分隊長": 0, "小隊長": 1, "隊員": 2}
+    driver_order = {"隊員": 0, "小隊長": 1, "分隊長": 2}
+    return {
+        "personnel_titles": titles,
+        "current_personnel_options": sorted(people, key=lambda person: leader_order.get(titles.get(person[0]), 3)),
+        "driver_person_options": sorted(options, key=lambda person: driver_order.get(titles.get(person[0]), 3)),
+        "firecam_person_options": sorted(options, key=lambda person: leader_order.get(titles.get(person[0]), 3)),
+    }
 
 
 def effective_disaster_vehicle_recorder_codes() -> dict[str, str]:
