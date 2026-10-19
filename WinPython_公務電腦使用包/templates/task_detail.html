@@ -426,6 +426,19 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
 </head>
 {% macro manual_confirmation_forms(task_id, site_key, site, task_active) -%}
+  {% if not task_active and site_key == 'vehicle_mileage' %}
+    {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}
+      {% if mileage_overlap_confirmation_available(site_key, vehicle_result) and site_manual_complete_token(task_id, site_key, vehicle_key) %}
+        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
+          <input type="hidden" name="vehicle_key" value="{{ vehicle_key }}">
+          <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key, vehicle_key) }}">
+          <label><input type="checkbox" name="confirmed_existing_mileage" value="1" required>已核對 PPE，確認{{ vehicle_key }}此案已由人工登打</label>
+          <button class="secondary" type="submit">確認{{ vehicle_key }}既有里程</button>
+          <span class="label">只標示人工完成，不修改 PPE；請先核對時間、地址及里程。</span>
+        </form>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
   {% if not task_active and site_waits_for_confirmation(site.status) %}
     {% set confirmation = namespace(has_vehicle=false) %}
     {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}

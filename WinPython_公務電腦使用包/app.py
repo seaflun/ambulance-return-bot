@@ -1814,7 +1814,7 @@ def worker_identity():
 def worker_vehicle_settings():
     if not worker_authorized():
         abort(403)
-    return jsonify(vehicle_settings_api_payload())
+    return jsonify(vehicle_settings_api_payload(personnel_target_date=request.args.get("personnel_target_date", "")))
 
 
 @app.get("/worker/task-entry-settings")
@@ -4285,12 +4285,14 @@ def normalize_manual_refresh_commands(value: object) -> list[dict[str, str]]:
     return [commands_by_key[key] for key in sorted(commands_by_key)]
 
 
-def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -> dict[str, object]:
+def vehicle_settings_api_payload(
+    settings: Mapping[str, object] | None = None, *, personnel_target_date: str = "",
+) -> dict[str, object]:
     snapshot = dict(settings or vehicle_settings_snapshot())
     personnel_snapshot = (
         normalize_personnel_title_snapshot(snapshot.get("disaster_personnel_titles"))
         if "disaster_personnel_titles" in snapshot
-        else read_personnel_title_snapshot(artifacts_dir, target_date=sinposmart_fire_day_for())
+        else read_personnel_title_snapshot(artifacts_dir, target_date=personnel_target_date or sinposmart_fire_day_for())
     )
     daily_snapshot = daily_vehicle_mileage_snapshot_from_settings(snapshot)
     if daily_snapshot is None:
@@ -4310,6 +4312,8 @@ def vehicle_settings_api_payload(settings: Mapping[str, object] | None = None) -
             snapshot.get("frequent_civilpower_member_ids")
         ),
         "daily_vehicle_mileage_snapshot": daily_snapshot,
+        "vehicle_mileage_history": (normalize_vehicle_mileage_hint_history(snapshot.get("vehicle_mileage_history"))
+                                    if settings is not None else _stored_vehicle_mileage_hint_history()),
         "manual_refresh_commands": manual_refreshes,
         "revision": vehicle_settings_revision(snapshot),
     }
@@ -4335,6 +4339,8 @@ def normalize_remote_vehicle_settings(payload: object) -> dict[str, object] | No
         "daily_vehicle_mileage_snapshot": daily_snapshot or unavailable_vehicle_mileage_snapshot(),
         "manual_refresh_commands": normalize_manual_refresh_commands(payload.get("manual_refresh_commands")),
     }
+    if "vehicle_mileage_history" in payload:
+        settings["vehicle_mileage_history"] = normalize_vehicle_mileage_hint_history(payload["vehicle_mileage_history"])
     revision = str(payload.get("revision") or "").strip() or vehicle_settings_revision(settings)
     return {**settings, "revision": revision}
 
@@ -4626,7 +4632,9 @@ def apply_pending_vehicle_settings_command(
     return {**result, "revision": vehicle_settings_revision(result)}
 
 
-def request_nas_vehicle_settings(command: Mapping[str, object] | None = None) -> dict[str, object]:
+def request_nas_vehicle_settings(
+    command: Mapping[str, object] | None = None, *, personnel_target_date: str = "",
+) -> dict[str, object]:
     server_url = nas_vehicle_settings_server_url()
     if not server_url:
         return {"state": "unavailable", "detail": "尚未設定 NAS 連線位置"}
@@ -4637,8 +4645,11 @@ def request_nas_vehicle_settings(command: Mapping[str, object] | None = None) ->
         data = json.dumps(dict(command), ensure_ascii=False).encode("utf-8")
         headers = {**headers, "Content-Type": "application/json"}
         method = "POST"
+    settings_url = f"{server_url}/worker/vehicle-settings"
+    if command is None and personnel_target_date:
+        settings_url += "?" + urllib.parse.urlencode({"personnel_target_date": personnel_target_date})
     req = urllib.request.Request(
-        f"{server_url}/worker/vehicle-settings",
+        settings_url,
         data=data,
         headers=headers,
         method=method,
@@ -5012,8 +5023,9 @@ def render_vehicle_settings(
     )
 
 
-def fetch_nas_vehicle_settings() -> dict[str, object] | None:
-    result = request_nas_vehicle_settings()
+def fetch_nas_vehicle_settings(*, personnel_target_date: str = "") -> dict[str, object] | None:
+    result = (request_nas_vehicle_settings(personnel_target_date=personnel_target_date)
+              if personnel_target_date else request_nas_vehicle_settings())
     if result["state"] != "ok":
         return None
     return dict(result["settings"])
@@ -5132,15 +5144,25 @@ def _disaster_personnel_target_date(case: Mapping[str, object]) -> str:
 def _disaster_personnel_snapshot(
     settings: Mapping[str, object] | None = None, *, case: Mapping[str, object],
 ) -> dict:
-    if not has_request_context() or request_is_local_host():
+    if not has_request_context():
         return (settings or {}).get("disaster_personnel_titles") or {}
+    target_date = _disaster_personnel_target_date(case)
+    local = request_is_local_host()
+    if local:
+        supplied = (settings or {}).get("disaster_personnel_titles") or {}
+        if (settings is None or not target_date or supplied.get("target_date") == target_date
+                or target_date == sinposmart_fire_day_for()):
+            return supplied
     if not hasattr(g, "disaster_personnel_snapshot"):
         g.disaster_personnel_snapshot = {}
-    target_date = _disaster_personnel_target_date(case)
     if target_date not in g.disaster_personnel_snapshot:
-        g.disaster_personnel_snapshot[target_date] = read_personnel_title_snapshot(
-            artifacts_dir, target_date=target_date,
-        )
+        if local:
+            remote = fetch_nas_vehicle_settings(personnel_target_date=target_date)
+            g.disaster_personnel_snapshot[target_date] = (remote or {}).get("disaster_personnel_titles") or {}
+        else:
+            g.disaster_personnel_snapshot[target_date] = read_personnel_title_snapshot(
+                artifacts_dir, target_date=target_date,
+            )
     return g.disaster_personnel_snapshot[target_date]
 
 
@@ -7460,6 +7482,18 @@ def _last_vehicle_mileage_records(
     before: datetime | None = None,
 ) -> dict[str, tuple[str, datetime]]:
     records = _stored_last_vehicle_mileage_records(limit, before)
+    remote_history = normalize_vehicle_mileage_hint_history((nas_settings or {}).get("vehicle_mileage_history"))
+    if has_request_context():
+        g.vehicle_mileage_reference_history = remote_history
+    for vehicle, rows in remote_history.items():
+        for row in rows:
+            occurred_at = datetime.strptime(row["time"], "%Y%m%d%H%M")
+            if before is not None and occurred_at >= before:
+                continue
+            existing = records.get(vehicle)
+            if existing is None or occurred_at >= existing[1]:
+                records[vehicle] = (row["mileage"], occurred_at)
+            break
     snapshot = effective_daily_vehicle_mileage_snapshot(nas_settings)
     mileage_system_names = configured_vehicle_mileage_system_names(nas_settings)
     for snapshot_record in snapshot.get("vehicles") or []:
@@ -7496,7 +7530,35 @@ def last_vehicle_mileages(
     return {vehicle: mileage for vehicle, (mileage, _occurred_at) in records.items()}
 
 
-def vehicle_mileage_hint_history() -> dict[str, list[dict[str, str]]]:
+def normalize_vehicle_mileage_hint_history(value: object) -> dict[str, list[dict[str, str]]]:
+    if not isinstance(value, Mapping):
+        return {}
+    history = {}
+    for vehicle, rows in list(value.items())[:100]:
+        if not isinstance(vehicle, str) or not vehicle.strip() or len(vehicle) > 64 or not isinstance(rows, list):
+            continue
+        valid, seen = [], set()
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            stamp, mileage = str(row.get("time") or ""), str(row.get("mileage") or "")
+            if (len(stamp) != 12 or not stamp.isascii() or not stamp.isdigit()
+                    or not mileage.isascii() or not mileage.isdigit() or len(mileage) > 12):
+                continue
+            try:
+                datetime.strptime(stamp, "%Y%m%d%H%M")
+            except ValueError:
+                continue
+            identity = (stamp, mileage)
+            if identity not in seen:
+                seen.add(identity)
+                valid.append({"time": stamp, "mileage": mileage})
+        if valid:
+            history[vehicle.strip()] = sorted(valid, key=lambda row: row["time"], reverse=True)[:300]
+    return history
+
+
+def _stored_vehicle_mileage_hint_history() -> dict[str, list[dict[str, str]]]:
     history: dict[str, list[dict[str, str]]] = {}
     for payload in _vehicle_mileage_history_payloads():
         if not isinstance(payload, dict) or not isinstance(payload.get("task"), dict):
@@ -7509,15 +7571,23 @@ def vehicle_mileage_hint_history() -> dict[str, list[dict[str, str]]]:
                 history.setdefault(vehicle, []).append({
                     "time": occurred_at.strftime("%Y%m%d%H%M"), "mileage": mileage,
                 })
+    return normalize_vehicle_mileage_hint_history(history)
+
+
+def vehicle_mileage_hint_history() -> dict[str, list[dict[str, str]]]:
+    history = _stored_vehicle_mileage_hint_history()
     records = getattr(g, "vehicle_mileage_display_records", None) if has_request_context() else None
     if records is None:
         records = _last_vehicle_mileage_records()
+    remote_history = getattr(g, "vehicle_mileage_reference_history", {}) if has_request_context() else {}
+    for vehicle, rows in remote_history.items():
+        remote_times = {row["time"] for row in rows}
+        history[vehicle] = rows + [row for row in history.get(vehicle, []) if row["time"] not in remote_times]
     for vehicle, (mileage, occurred_at) in records.items():
         history.setdefault(vehicle, []).append({
             "time": occurred_at.strftime("%Y%m%d%H%M"), "mileage": mileage,
         })
-    return {vehicle: sorted(rows, key=lambda row: row["time"], reverse=True)
-            for vehicle, rows in history.items()}
+    return normalize_vehicle_mileage_hint_history(history)
 
 
 def last_vehicle_mileage_times() -> dict[str, str]:
