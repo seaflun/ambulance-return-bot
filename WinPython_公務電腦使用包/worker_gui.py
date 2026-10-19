@@ -15,6 +15,7 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Any
+from urllib.parse import urlsplit
 
 import customtkinter as ctk
 from dotenv import load_dotenv
@@ -370,6 +371,8 @@ class WorkerGui(ctk.CTk):
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.worker_thread: threading.Thread | None = None
         self.local_web_process: subprocess.Popen | None = None
+        self._discovered_task_entry: dict[str, str] | None = None
+        self._task_entry_discovery_pending = True
         self.worker_started_at = ""
         self.worker_stopped_at: float | None = None
         self.worker_exit_error = ""
@@ -385,7 +388,7 @@ class WorkerGui(ctk.CTk):
         )
         self.server_url = tk.StringVar(value=initial_worker_server_url(configured_server_url))
         self.server_url.trace_add("write", self._mark_server_url_manual)
-        self.local_web_url = tk.StringVar(value=local_web_url())
+        self.local_web_url = tk.StringVar(value=os.getenv("TASK_ENTRY_URL", "").strip() or local_web_url())
         self.local_web_status = tk.StringVar(value="服務狀態：尚未檢查")
         self.worker_status = tk.StringVar(value="啟動中")
         self.worker_id = tk.StringVar(value=os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc"))
@@ -439,7 +442,7 @@ class WorkerGui(ctk.CTk):
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_block,
-            text="公務電腦本機網頁與 NAS 佇列 worker 控制面板",
+            text="救災救護登打入口與 NAS 佇列 Worker 控制面板",
             text_color=theme["muted"],
             font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=13),
             wraplength=480,
@@ -466,14 +469,14 @@ class WorkerGui(ctk.CTk):
         top_area.rowconfigure(0, weight=0, minsize=172, uniform="main_card_rows")
         top_area.rowconfigure(1, weight=0, minsize=154, uniform="main_card_rows")
 
-        local = self._card(top_area, "本地伺服器")
+        local = self._card(top_area, "救災救護登打")
         local.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         local.columnconfigure(0, weight=1)
         self._hint(local, "", textvariable=self.local_web_status, wraplength=260).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
         self._entry(local, self.local_web_url).grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
         local_actions = self._action_row(local)
         local_actions.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
-        self._button(local_actions, "開啟本機網頁", self._start_local_web_app, "primary").grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._button(local_actions, "開啟登打網頁", lambda: self._start_local_web_app(open_browser=True), "primary").grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self._button(local_actions, "修復 Chrome", self._repair_worker_chrome, "soft").grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         nas = self._card(top_area, "NAS伺服器")
@@ -689,7 +692,23 @@ class WorkerGui(ctk.CTk):
             fetch_identity=self._fetch_worker_server_identity,
             builtin_origin=builtin_origin,
         )
-        self.after(0, lambda: self._apply_server_choice(choice, start_worker=True))
+        if self.__dict__.get("_task_entry_discovery_pending", False):
+            settings = discover_task_entry_settings(choice)
+            self.after(0, lambda: self._finish_startup(choice, settings))
+        else:
+            self.after(0, lambda: self._apply_server_choice(choice, start_worker=True))
+
+    def _finish_startup(self, choice: worker_routes.RouteChoice, settings: dict[str, str]) -> None:
+        self._discovered_task_entry = settings
+        self._task_entry_discovery_pending = False
+        if settings.get("detail"):
+            self._log(settings["detail"])
+        self._apply_server_choice(choice, start_worker=True)
+        try:
+            self._start_local_web_app()
+        except Exception as exc:
+            self.local_web_status.set("服務狀態：登打入口啟動失敗；Worker 繼續運作")
+            self._log(f"登打入口啟動失敗：{exc}")
 
     def _apply_server_choice(self, choice: worker_routes.RouteChoice, start_worker: bool = False) -> None:
         selected_url = choice.primary_url or self.server_url.get().strip().rstrip("/")
@@ -733,7 +752,24 @@ class WorkerGui(ctk.CTk):
     def _fetch_worker_server_identity(self, url: str) -> worker_routes.ServerIdentity:
         return worker_routes.fetch_server_identity(url, worker.request_json)
 
-    def _start_local_web_app(self) -> None:
+    def _start_local_web_app(self, *, open_browser: bool | None = None) -> None:
+        if self.__dict__.get("_task_entry_discovery_pending", False) and not os.getenv("TASK_ENTRY_URL", "").strip():
+            self.local_web_status.set("服務狀態：正在確認 NAS 登打入口")
+            return
+        try:
+            entry_url = task_entry_url(self.__dict__.get("_discovered_task_entry"))
+        except ValueError as exc:
+            source = "TASK_ENTRY_URL" if os.getenv("TASK_ENTRY_URL", "").strip() else "NAS 登打入口"
+            self.local_web_status.set(f"服務狀態：{source}設定錯誤；Worker 繼續運作")
+            self._log(str(exc))
+            return
+        if entry_url:
+            self.local_web_url.set(entry_url)
+            self.local_web_status.set("服務狀態：使用 NAS 登打入口")
+            self._log(f"NAS 登打入口：{entry_url}")
+            if open_browser is True or (open_browser is None and os.getenv("DESKTOP_WEB_OPEN_BROWSER", "true").strip().lower() not in FALSE_ENV_VALUES):
+                self._open_local_web_app()
+            return
         status = self._local_web_status()
         if self._local_web_status_matches(status):
             self.local_web_status.set("服務狀態：可使用")
@@ -786,6 +822,9 @@ class WorkerGui(ctk.CTk):
                 self.log_queue.put(text)
 
     def _run_local_web_app(self) -> None:
+        if task_entry_uses_nas(self.__dict__.get("_discovered_task_entry")) or self.__dict__.get("_task_entry_discovery_pending", False):
+            self.after(0, self._start_local_web_app)
+            return
         try:
             import app as web_app
 
@@ -798,6 +837,8 @@ class WorkerGui(ctk.CTk):
         return self._local_web_status_matches(self._local_web_status())
 
     def _local_web_status(self) -> dict[str, Any] | None:
+        if task_entry_uses_nas(self.__dict__.get("_discovered_task_entry")) or self.__dict__.get("_task_entry_discovery_pending", False):
+            return None
         try:
             payload = worker.request_json(f"{local_web_base_url()}/status")
         except Exception:
@@ -826,18 +867,29 @@ class WorkerGui(ctk.CTk):
             return False
 
     def _open_local_web_app(self) -> None:
-        url = self.local_web_url.get().strip() or local_web_url()
+        if self.__dict__.get("_task_entry_discovery_pending", False) and not os.getenv("TASK_ENTRY_URL", "").strip():
+            self.local_web_status.set("服務狀態：正在確認 NAS 登打入口")
+            return
+        try:
+            entry_url = task_entry_url(self.__dict__.get("_discovered_task_entry"))
+        except ValueError as exc:
+            source = "TASK_ENTRY_URL" if os.getenv("TASK_ENTRY_URL", "").strip() else "NAS 登打入口"
+            self.local_web_status.set(f"服務狀態：{source}設定錯誤；Worker 繼續運作")
+            self._log(str(exc))
+            return
+        url = entry_url or self.local_web_url.get().strip() or local_web_url()
+        page_name = "NAS 登打入口" if entry_url else "本機網頁"
         try:
             chrome = chrome_executable_path()
             if chrome:
                 creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 subprocess.Popen([str(chrome), url], creationflags=creationflags)
-                self._log(f"已用 Chrome 開啟本機網頁：{url}")
+                self._log(f"已用 Chrome 開啟{page_name}：{url}")
                 return
             webbrowser.open_new_tab(url)
-            self._log(f"已用預設瀏覽器開啟本機網頁：{url}")
+            self._log(f"已用預設瀏覽器開啟{page_name}：{url}")
         except Exception as exc:
-            self._log(f"開啟本機網頁失敗：{exc}")
+            self._log(f"開啟{page_name}失敗：{exc}")
 
     def _check_for_updates(self) -> None:
         launcher = find_update_launcher()
@@ -885,7 +937,8 @@ class WorkerGui(ctk.CTk):
                 self.log_queue.put("Chrome 修復｜即將重啟 Worker GUI")
                 self.after(1200, self.quit_from_tray)
             else:
-                self.log_queue.put("Chrome 修復｜無法自動重啟 GUI，改為重開本機網頁與 Worker")
+                page_name = "NAS 登打入口" if task_entry_uses_nas(self.__dict__.get("_discovered_task_entry")) else "本機網頁"
+                self.log_queue.put(f"Chrome 修復｜無法自動重啟 GUI，改為重開{page_name}與 Worker")
                 self.after(0, self._start_local_web_app)
                 self.after(0, self._restart_worker)
         except Exception as exc:
@@ -906,6 +959,17 @@ class WorkerGui(ctk.CTk):
         return True
 
     def _log_local_status_for_repair(self) -> None:
+        if self.__dict__.get("_task_entry_discovery_pending", False) and not os.getenv("TASK_ENTRY_URL", "").strip():
+            self.log_queue.put("Chrome 修復｜正在確認 NAS 登打入口")
+            return
+        try:
+            entry_url = task_entry_url(self.__dict__.get("_discovered_task_entry"))
+        except ValueError as exc:
+            self.log_queue.put(f"Chrome 修復｜NAS 登打入口設定錯誤：{exc}；Worker 繼續運作")
+            return
+        if entry_url:
+            self.log_queue.put(f"Chrome 修復｜使用 NAS 登打入口：{entry_url}")
+            return
         status = self._local_web_status()
         if self._local_web_status_matches(status):
             self.log_queue.put("Chrome 修復｜本機狀態確認：app_dir 正確")
@@ -2089,6 +2153,75 @@ def local_web_url() -> str:
     return f"{local_web_base_url()}/task-entry"
 
 
+def task_entry_uses_nas(settings: dict[str, str] | None = None) -> bool:
+    return bool(os.getenv("TASK_ENTRY_URL", "").strip()) or bool(settings and settings.get("state") in {"configured", "invalid"})
+
+
+def task_entry_url(settings: dict[str, str] | None = None) -> str:
+    url = os.getenv("TASK_ENTRY_URL", "").strip()
+    if url:
+        return validate_task_entry_url(url)
+    if settings and settings.get("state") == "invalid":
+        raise ValueError(f"NAS 登打入口設定錯誤：{settings.get('detail') or 'NAS 回傳的設定無效'}")
+    if settings and settings.get("state") == "configured":
+        return validate_task_entry_url(settings["url"])
+    return ""
+
+
+def validate_task_entry_url(url: str) -> str:
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("TASK_ENTRY_URL 必須是完整的 http:// 或 https:// 網址。")
+    url = url.strip()
+    error = "TASK_ENTRY_URL 必須是完整的 http:// 或 https:// 網址，且不可含帳密、空白或反斜線。"
+    try:
+        parsed = urlsplit(url)
+        valid = (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.hostname)
+            and "@" not in parsed.netloc
+            and not any(character.isspace() or ord(character) < 32 for character in url)
+            and "\\" not in url
+        )
+        parsed.port
+    except ValueError as exc:
+        raise ValueError(error) from exc
+    if not valid:
+        raise ValueError(error)
+    return url
+
+
+def discover_task_entry_settings(choice: worker_routes.RouteChoice) -> dict[str, str]:
+    disabled = {"state": "disabled", "url": "", "detail": ""}
+    if os.getenv("TASK_ENTRY_URL", "").strip():
+        return disabled
+    if choice.identity_status != "verified" or not worker_routes.UUID_LIKE_PATTERN.fullmatch(choice.instance_id):
+        return disabled
+    try:
+        payload = worker.request_json(f"{choice.primary_url.rstrip('/')}/worker/task-entry-settings")
+    except Exception as exc:
+        return {**disabled, "detail": f"NAS 登打設定讀取失敗，保留本機備援（{type(exc).__name__}）。"}
+    invalid = {"state": "invalid", "url": "", "detail": "NAS 登打入口設定格式錯誤。"}
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        return invalid
+    if payload.get("instance_id") != choice.instance_id:
+        return {**invalid, "detail": "NAS 登打入口設定的身分與已驗證 NAS 不符。"}
+    settings = payload.get("task_entry")
+    if not isinstance(settings, dict) or any(not isinstance(settings.get(key), str) for key in ("state", "url", "detail")):
+        return invalid
+    state = settings["state"]
+    if state == "disabled" and not settings["url"]:
+        return {**disabled, "detail": settings["detail"]}
+    if state == "invalid":
+        return {**invalid, "detail": settings["detail"] or invalid["detail"]}
+    if state == "configured":
+        try:
+            url = validate_task_entry_url(settings["url"])
+        except ValueError:
+            return invalid
+        return {"state": state, "url": url, "detail": settings["detail"]}
+    return invalid
+
+
 def terminate_package_local_web_processes() -> int:
     if os.name != "nt":
         return 0
@@ -2238,7 +2371,6 @@ def main() -> None:
         show_single_instance_message()
         return
     app = WorkerGui()
-    app.after(100, app._start_local_web_app)
     app.after(100, app._start_worker_with_default_server)
     try:
         app.mainloop()

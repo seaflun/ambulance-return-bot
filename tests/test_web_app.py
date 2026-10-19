@@ -2859,9 +2859,9 @@ process.stdout.write(JSON.stringify(states));
         self.assertIn("修正救災車輛里程事由", body)
         self.assertLess(body.index("2026.10.13.1549"), body.index("2026.10.13.0919"))
         self.assertIn("民力登打", body)
-        self.assertLess(body.index("2026 年 9 月"), body.index("2026 年 8 月"))
-        self.assertLess(body.index("2026 年 8 月"), body.index("2026 年 7 月"))
-        self.assertLess(body.index("2026 年 7 月"), body.index("2026 年 6 月"))
+        self.assertLess(body.index(">2026/09</p>"), body.index(">2026/08</p>"))
+        self.assertLess(body.index(">2026/08</p>"), body.index(">2026/07</p>"))
+        self.assertLess(body.index(">2026/07</p>"), body.index(">2026/06</p>"))
         self.assertIn("grid-template-columns: 1fr;", body)
         self.assertIn("width: 100%;", body)
         self.assertIn("max-width: none;", body)
@@ -7758,6 +7758,95 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
 
         self.assertEqual(302, response.status_code)
         self.assertEqual("/admin/disaster", response.headers["Location"])
+
+    def _update_diagnostic_fixture(self):
+        return {"start": "2026-10-19T19:09:30+08:00", "end": "2026-10-19T19:20:02+08:00",
+                "seconds": 632, "stages": [["啟動 Chrome", "2026-10-19T19:09:35+08:00"],
+                                            ["登入一站通", "2026-10-19T19:19:42+08:00"]]}
+
+    def test_update_card_shows_versions_and_status_and_archives_legacy_diagnostics(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        diagnostic = self._update_diagnostic_fixture()
+        command = {"request_id": "legacy-update", "target": "ambulance_worker", "status": "completed",
+                   "before_version": "2026.10.19.1548", "installed_version": "2026.10.19.2043",
+                   "detail": "Remote update completed；耗材慢速階段=" + json.dumps(diagnostic),
+                   "requested_at": "2026-10-19T20:51:05", "updated_at": "2026-10-19T20:59:17"}
+        path = app_module.remote_update_command_file()
+        app_module.write_json_atomic(path, command)
+        original = path.read_bytes()
+        for route in ("/admin/public-pc", "/admin/ems", "/admin/disaster"):
+            body = html.unescape(self.client.get(route).get_data(as_text=True))
+            card = re.search(r'<section class="remote-update-card".*?</section>', body, re.S).group()
+            for value in ("2026.10.19.1548", "2026.10.19.2043", "更新完成"):
+                self.assertIn(value, card)
+            for value in ("耗材慢速階段", "stages", "632", "Remote update completed", "legacy-update", "20:51:05"):
+                self.assertNotIn(value, card)
+        records = list((path.parent / "remote_update_diagnostics").glob("*.json"))
+        self.assertEqual(len(records), 1)
+        archived = json.loads(records[0].read_text(encoding="utf-8"))
+        self.assertEqual(archived["diagnostic"], diagnostic)
+        self.assertEqual(archived["request_id"], command["request_id"])
+        self.assertEqual(path.read_bytes(), original)
+        duty_path = app_module.remote_update_command_file("duty_gui")
+        app_module.write_json_atomic(duty_path, dict(command, target="duty_gui"))
+        duty_original = duty_path.read_bytes()
+        body = html.unescape(self.client.get("/admin/sinposmart").get_data(as_text=True))
+        card = re.search(r'<section class="remote-update-card".*?</section>', body, re.S).group()
+        self.assertIn("2026.10.19.2043", card)
+        self.assertIn("更新完成", card)
+        self.assertNotIn("耗材慢速階段", card)
+        self.assertNotIn("stages", card)
+        self.assertEqual(duty_path.read_bytes(), duty_original)
+        self.assertEqual(len(list((path.parent / "remote_update_diagnostics").glob("*.json"))), 2)
+
+    def test_update_result_separates_diagnostic_record_after_authorized_transition(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        self.post_remote_update()
+        command = app_module.read_remote_update_command()
+        endpoint = f'/worker/remote-update/{command["request_id"]}/status'
+        headers = {"X-Worker-Token": "test-token"}
+        self.assertEqual(self.client.post(endpoint, headers=headers,
+            json={"status": "updating", "worker_id": "PC-01"}).status_code, 200)
+        diagnostic = self._update_diagnostic_fixture()
+        data = {"status": "completed", "worker_id": "PC-01", "exit_code": 0,
+                "before_version": "2026.10.19.1548", "installed_version": "2026.10.19.2043",
+                "detail": "更新完成；耗材慢速階段=" + json.dumps(diagnostic)}
+        rejected = dict(data, worker_id="other-worker")
+        self.assertEqual(self.client.post(endpoint, headers=headers, json=rejected).status_code, 409)
+        folder = app_module.remote_update_command_file().parent / "remote_update_diagnostics"
+        self.assertFalse(folder.exists())
+        response = self.client.post(endpoint, headers=headers, json=data)
+        self.assertEqual(response.status_code, 200)
+        saved = json.loads(app_module.remote_update_command_file().read_text(encoding="utf-8"))
+        self.assertEqual(saved["detail"], "更新完成")
+        self.assertEqual(saved["request_id"], command["request_id"])
+        self.assertEqual(saved["worker_id"], "PC-01")
+        self.assertEqual(saved["status"], "completed")
+        records = list(folder.glob("*.json"))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(json.loads(records[0].read_text(encoding="utf-8"))["diagnostic"], diagnostic)
+        before = records[0].read_bytes()
+        self.assertEqual(self.client.post(endpoint, headers=headers, json=data).status_code, 200)
+        self.assertEqual(records[0].read_bytes(), before)
+
+    def test_update_card_never_displays_invalid_diagnostics_or_loses_unarchived_data(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        diagnostic = self._update_diagnostic_fixture()
+        invalid = dict(diagnostic, stages=[["PRIVATE patient text", diagnostic["start"]]])
+        path = app_module.remote_update_command_file()
+        for item in (invalid, diagnostic):
+            command = {"request_id": "archive-failure", "status": "completed", "installed_version": "2026.10.19.2043",
+                       "detail": "更新完成；耗材慢速階段=" + json.dumps(item)}
+            app_module.write_json_atomic(path, command)
+            original = path.read_bytes()
+            with mock.patch.object(app_module, "write_json_atomic", side_effect=OSError("read only")):
+                body = self.client.get("/admin/ems").get_data(as_text=True)
+            card = re.search(r'<section class="remote-update-card".*?</section>', body, re.S).group()
+            self.assertNotIn("PRIVATE", card)
+            self.assertNotIn("stages", card)
+            self.assertIn("2026.10.19.2043", card)
+            self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((path.parent / "remote_update_diagnostics").exists())
 
     def test_admin_public_pc_shows_remote_update_card_only_on_nas(self):
         os.environ["PUBLIC_PC_REPORT_ENABLED"] = "false"

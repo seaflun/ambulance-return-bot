@@ -20,6 +20,7 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ from dotenv import load_dotenv
 from flask import Flask, abort, g, has_request_context, jsonify, make_response, redirect, render_template, request, send_from_directory, url_for
 
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult, default_adapters
+from ambulance_bot.browser_case_selection import BrowserCaseSelectionStore
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.civilpower_roster import (
     ROSTER_LOADED_STATUS,
@@ -200,7 +202,9 @@ _credential_sync_relay_lock = threading.RLock()
 _duty_updates_lock = threading.Lock()
 _duty_updates_cache = {"expires_at": 0.0, "history": None}
 _case_lookup_start_error = ""
+_task_creation_lock = threading.RLock()
 SELECTED_CASE_PENDING_COOKIE = "sinposmart_selected_case_pending"
+TASK_ENTRY_SELECTED_CASE_COOKIE = "sinposmart_entry_selected_case"
 SELECTED_CASE_PENDING_MAX_AGE_SECONDS = 300
 PUBLIC_PC_REPORT_RETENTION_DAYS = 14
 PUBLIC_PC_FAILURE_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024
@@ -317,6 +321,116 @@ def cleanup_active_worker_browsers() -> int:
     return cleanup_worker_chrome_residue(_WorkerBrowserCleanupOptions(arguments), "manual abort")
 
 
+def task_entry_listener_port() -> int | None:
+    value = os.getenv("TASK_ENTRY_PORT", "").strip()
+    if not value:
+        return None
+    if not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= 65535:
+        raise ValueError("TASK_ENTRY_PORT 必須是 1–65535 的整數。")
+    return int(value)
+
+
+def task_entry_authority_matches(authority: str, default_port: int = 80) -> bool:
+    def parsed_authority(value):
+        parsed = urllib.parse.urlsplit("//" + value)
+        if (not parsed.hostname or parsed.username is not None or parsed.password is not None
+                or parsed.path or parsed.query or parsed.fragment
+                or any(c.isspace() or c == "\\" for c in value)):
+            raise ValueError("Invalid entry authority")
+        return parsed.hostname.lower().rstrip("."), parsed.port
+    try:
+        host, port = parsed_authority(authority)
+    except ValueError:
+        return False
+    for configured in os.getenv("TASK_ENTRY_HOSTS", "").split(","):
+        try:
+            expected_host, expected_port = parsed_authority(configured.strip())
+        except ValueError:
+            continue
+        if host == expected_host and (expected_port is None or expected_port == (port or default_port)):
+            return True
+    return False
+
+
+def task_entry_console_request() -> bool:
+    if not has_request_context():
+        return False
+    try:
+        entry_port = task_entry_listener_port()
+    except ValueError:
+        entry_port = None
+    # SERVER_PORT is the actual Waitress listener, independent of the Host header.
+    if entry_port is not None and request.environ.get("SERVER_PORT") == str(entry_port):
+        return True
+    return task_entry_authority_matches(request.host, 443 if request.is_secure else 80)
+
+
+def selected_case_cookie_name() -> str:
+    return TASK_ENTRY_SELECTED_CASE_COOKIE if task_entry_console_request() else SELECTED_CASE_PENDING_COOKIE
+
+
+def task_entry_settings_value() -> dict:
+    invalid = {"state": "invalid", "url": "", "detail": "NAS 登打入口設定無效，請核對入口網址、專用網域或連接埠。"}
+    try:
+        port = task_entry_listener_port()
+    except ValueError:
+        return invalid
+    url = os.getenv("TASK_ENTRY_URL", "").strip()
+    if not url:
+        if port is None:
+            return invalid if os.getenv("TASK_ENTRY_HOSTS", "").strip() else {"state": "disabled", "url": "", "detail": ""}
+        host = _host_without_port(request.host)
+        host = f"[{host}]" if ":" in host else host
+        url = f"http://{host}:{port}/"
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        default_port = 443 if parsed.scheme == "https" else 80
+        valid = (parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+                 and parsed.username is None and parsed.password is None
+                 and parsed.path in {"", "/", "/task-entry"} and not parsed.query and not parsed.fragment
+                 and not any(c.isspace() or c == "\\" or ord(c) < 32 for c in url))
+        parsed_port = parsed.port or default_port
+        known_hosts = {_host_without_port(request.host).lower().rstrip("."),
+                       os.getenv("TASK_ENTRY_LAN_IP", "").strip().lower().rstrip(".")}
+        uses_listener = port is not None and parsed_port == port and parsed.hostname.lower().rstrip(".") in known_hosts
+        if not valid or not (uses_listener or task_entry_authority_matches(parsed.netloc, default_port)):
+            return invalid
+    except (ValueError, AttributeError):
+        return invalid
+    return {"state": "configured", "url": url, "detail": ""}
+
+
+@app.before_request
+def restrict_task_entry_console():
+    if not task_entry_console_request():
+        return None
+    if request.endpoint == "index":
+        return redirect(url_for("task_entry"))
+    if request.path == "/favicon.ico" and request.method in {"GET", "HEAD"}:
+        return "", 204
+    allowed = {
+        "task_entry", "new_task", "disaster_task", "query_cases", "import_case", "clear_imported_case",
+        "record_folder_preview", "create_task", "create_disaster_task", "edit_task", "update_task",
+        "task_detail", "confirm_ems_case_closed", "run_task", "run_task_site", "select_site_vehicle_candidate",
+        "complete_site", "abort_task", "static",
+        "admin_vehicles", "create_vehicle_option", "delete_vehicle_option", "request_vehicle_mileage_query",
+        "save_civilpower_preferences", "request_civilpower_roster_query", "admin_disaster_vehicles",
+        "save_disaster_vehicle_option", "delete_disaster_vehicle_option",
+        "request_disaster_vehicle_mileage_query", "save_disaster_action_package_options",
+    }
+    if request.endpoint not in allowed:
+        abort(403, description="此入口僅提供救災、救護登打及相關設定。")
+    return None
+
+
+def serialized_task_creation(view):
+    @wraps(view)
+    def locked_create(*args, **kwargs):
+        with _task_creation_lock:
+            return view(*args, **kwargs)
+    return locked_create
+
+
 @app.get("/")
 def index():
     if not request_is_local_host():
@@ -373,7 +487,7 @@ def new_task():
         page_notice=task_form_notice(),
     ))
     if clear_pending_cookie:
-        response.delete_cookie(SELECTED_CASE_PENDING_COOKIE)
+        response.delete_cookie(selected_case_cookie_name())
     return response
 
 
@@ -407,7 +521,7 @@ def disaster_task():
         page_notice=task_form_notice(),
     ))
     if clear_pending_cookie:
-        response.delete_cookie(SELECTED_CASE_PENDING_COOKIE)
+        response.delete_cookie(selected_case_cookie_name())
     return response
 
 
@@ -487,11 +601,12 @@ def import_case():
     notice = "replaced" if form_flag_enabled(request.form.get("replace_existing")) else ""
     response = redirect(task_form_url(anchor=anchor, notice=notice))
     response.set_cookie(
-        SELECTED_CASE_PENDING_COOKIE,
-        "1",
+        selected_case_cookie_name(),
+        g.get("selected_case_token", "1"),
         max_age=SELECTED_CASE_PENDING_MAX_AGE_SECONDS,
         httponly=True,
         samesite="Lax",
+        secure=request.is_secure,
     )
     return response
 
@@ -499,7 +614,10 @@ def import_case():
 @app.post("/cases/clear")
 def clear_imported_case():
     pop_selected_case()
-    return redirect(task_form_url(notice="cleared"))
+    response = redirect(task_form_url(notice="cleared"))
+    if task_entry_console_request():
+        response.delete_cookie(selected_case_cookie_name())
+    return response
 
 
 TASK_FORM_NOTICE_LABELS = {
@@ -518,6 +636,7 @@ def task_form_url(*, anchor: str = "", notice: str = "") -> str:
 
 
 @app.post("/tasks")
+@serialized_task_creation
 def create_task():
     task_request = request_from_form(request.form)
     hydrate_volunteer_assist_member(task_request)
@@ -552,6 +671,7 @@ def create_task():
 
 
 @app.post("/tasks/disaster")
+@serialized_task_creation
 def create_disaster_task():
     task_request = request_from_disaster_form(request.form)
     apply_disaster_vehicle_mileage_system_names(task_request, effective_disaster_vehicle_records())
@@ -1654,6 +1774,15 @@ def worker_vehicle_settings():
     if not worker_authorized():
         abort(403)
     return jsonify(vehicle_settings_api_payload())
+
+
+@app.get("/worker/task-entry-settings")
+def worker_task_entry_settings():
+    if not worker_authorized():
+        abort(403)
+    with _public_pc_report_lock:
+        server = _worker_server_identity_unlocked()
+    return jsonify({"ok": True, "instance_id": server["instance_id"], "task_entry": task_entry_settings_value()})
 
 
 @app.post("/worker/vehicle-settings")
@@ -2981,6 +3110,57 @@ def remote_update_admin_token() -> str:
     return os.getenv("REMOTE_UPDATE_ADMIN_TOKEN", "").strip()
 
 
+def _archive_remote_update_diagnostics(command: dict, target: object) -> dict:
+    summary, marker, encoded = str(command.get("detail") or "").partition("；耗材慢速階段=")
+    if not marker or len(encoded) > 16384 or not command.get("request_id"):
+        return command
+    try:
+        data = json.loads(encoded)
+        start = datetime.fromisoformat(data["start"])
+        end = datetime.fromisoformat(data["end"])
+        seconds = data["seconds"]
+        rows = data["stages"]
+        if (start.tzinfo is None or end.tzinfo is None or end < start
+                or type(seconds) not in (int, float) or not math.isfinite(seconds)
+                or seconds < 0 or abs((end - start).total_seconds() - seconds) > 1
+                or not isinstance(rows, list) or len(rows) > 64):
+            return command
+        stages = []
+        previous = start
+        for row in rows:
+            if (not isinstance(row, list) or len(row) != 2
+                    or row[0] not in SITE_STAGE_DEFINITIONS["consumables"]):
+                return command
+            at = datetime.fromisoformat(row[1])
+            if at.tzinfo is None or not previous <= at <= end:
+                return command
+            stages.append([row[0], at.isoformat()])
+            previous = at
+        diagnostic = {"start": start.isoformat(), "end": end.isoformat(), "seconds": seconds, "stages": stages}
+        normalized_target = normalize_remote_update_target(target)
+        request_id = str(command["request_id"])
+        digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+        path = artifacts_dir / "public_pc" / "remote_update_diagnostics" / f"{normalized_target}-{digest}.json"
+        if path.exists():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved.get("request_id") != request_id or saved.get("diagnostic") != diagnostic:
+                return command
+        else:
+            write_json_atomic(path, {
+                "request_id": request_id,
+                "target": normalized_target,
+                "status": command.get("status"),
+                "before_version": command.get("before_version", ""),
+                "installed_version": command.get("installed_version", ""),
+                "recorded_at": command.get("updated_at", ""),
+                "diagnostic": diagnostic,
+            })
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        # Keep the original result recoverable if validation or durable storage fails.
+        return command
+    return {**command, "detail": summary.strip(), "diagnostic_record": path.name}
+
+
 def _read_remote_update_command_unlocked(target: object = "ambulance_worker") -> dict:
     path = remote_update_command_file(target)
     if not path.exists():
@@ -2989,7 +3169,7 @@ def _read_remote_update_command_unlocked(target: object = "ambulance_worker") ->
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    return payload if isinstance(payload, dict) else {}
+    return _archive_remote_update_diagnostics(payload, target) if isinstance(payload, dict) else {}
 
 
 def remote_update_stale_seconds() -> int:
@@ -3130,6 +3310,7 @@ def _apply_remote_update_status_unlocked(
         command["started_at"] = now
     if status in REMOTE_UPDATE_TERMINAL_STATUSES:
         command["completed_at"] = now
+    command = _archive_remote_update_diagnostics(command, normalized_target)
     write_json_atomic(remote_update_command_file(normalized_target), command)
     return command, "updated"
 
@@ -5120,6 +5301,8 @@ def site_display_name(site_key: str) -> str:
 
 
 def effective_task_execution_mode() -> str:
+    if task_entry_console_request():
+        return "worker_queue"
     desktop_fast_mode = os.getenv("DESKTOP_FAST_MODE", "auto").strip().lower()
     if desktop_fast_mode in {"1", "true", "yes", "on"}:
         return "desktop_fast"
@@ -5131,6 +5314,8 @@ def effective_task_execution_mode() -> str:
 
 
 def request_is_local_host() -> bool:
+    if task_entry_console_request():
+        return False
     host = _host_without_port(request.host)
     return host.lower() in local_host_candidates()
 
@@ -7974,9 +8159,21 @@ def event_site_name(event: dict) -> str:
     return "任務"
 
 
+def update_release_datetime(version: object, fallback: object = "") -> str:
+    value = str(version or "")
+    original = "" if fallback is None else str(fallback)
+    if not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{4}", value):
+        return original
+    try:
+        return datetime.strptime(value, "%Y.%m.%d.%H%M").strftime("%Y/%m/%d %H:%M")
+    except ValueError:
+        return original
+
+
 @app.context_processor
 def template_helpers() -> dict:
     return {
+        "update_release_datetime": update_release_datetime,
         "last_vehicle_mileage_times": last_vehicle_mileage_times,
         "vehicle_mileage_hint_history": vehicle_mileage_hint_history,
         "case_time_range": case_time_range,
@@ -8048,11 +8245,11 @@ def template_helpers() -> dict:
 
 
 def show_public_pc_admin_button() -> bool:
-    return not request_is_local_host()
+    return not task_entry_console_request() and not request_is_local_host()
 
 
 def show_nas_home_button() -> bool:
-    return not request_is_local_host()
+    return not task_entry_console_request() and not request_is_local_host()
 
 
 def show_vehicle_settings_button() -> bool:
@@ -8060,7 +8257,7 @@ def show_vehicle_settings_button() -> bool:
 
 
 def show_task_entry_controls() -> bool:
-    return request_is_local_host()
+    return task_entry_console_request() or request_is_local_host()
 
 
 def should_auto_queue_task_on_create() -> bool:
@@ -8156,7 +8353,10 @@ def write_selected_case_from_lookup(case_id: str) -> bool:
         "updated_at": lookup.get("updated_at", ""),
         "selected_case": selected,
     }
-    (output_dir / "selected.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if task_entry_console_request():
+        g.selected_case_token = browser_case_selection_store().put(payload)
+    else:
+        (output_dir / "selected.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return True
 
 
@@ -8190,6 +8390,23 @@ def selected_case_is_ambulance_case(case: dict) -> bool:
     return "\u6551\u8b77" in text or "其他-打撈浮屍" in text
 
 
+def browser_case_selection_store() -> BrowserCaseSelectionStore:
+    return BrowserCaseSelectionStore(
+        artifacts_dir / "cases" / "browser_selections.json",
+        ttl_seconds=SELECTED_CASE_PENDING_MAX_AGE_SECONDS,
+    )
+
+
+def selected_case_values(payload: dict) -> dict:
+    selected = dict(payload.get("selected_case") or {})
+    people = person_options_from_personnel(selected.get("personnel") or [])
+    if people:
+        selected["person_options"] = people
+    selected["status"] = payload.get("status", "")
+    selected["detail"] = payload.get("detail", "")
+    return selected if selected.get("case_id") or payload.get("selected_case") else {}
+
+
 def read_selected_case() -> dict:
     path = artifacts_dir / "cases" / "selected.json"
     if not path.exists():
@@ -8198,17 +8415,12 @@ def read_selected_case() -> dict:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    selected = dict(payload.get("selected_case") or {})
-    people = person_options_from_personnel(selected.get("personnel") or [])
-    if people:
-        selected["person_options"] = people
-    selected["status"] = payload.get("status", "")
-    selected["detail"] = payload.get("detail", "")
-    return selected
+    return selected_case_values(payload)
 
 
 def selected_case_for_task_entry() -> tuple[dict, bool]:
-    pending_import = request.cookies.get(SELECTED_CASE_PENDING_COOKIE) == "1"
+    cookie = request.cookies.get(selected_case_cookie_name(), "")
+    pending_import = bool(cookie) if task_entry_console_request() else cookie == "1"
     selected = pop_selected_case()
     return (selected if pending_import else {}), pending_import
 
@@ -8697,6 +8909,9 @@ def vehicle_admin_records() -> list[dict[str, str]]:
 
 
 def pop_selected_case() -> dict:
+    if task_entry_console_request():
+        token = request.cookies.get(selected_case_cookie_name(), "")
+        return selected_case_values(browser_case_selection_store().pop(token))
     selected = read_selected_case()
     if selected:
         try:
@@ -8718,6 +8933,9 @@ desktop_runner.event_callback = report_public_pc_task_event
 def run_web_app(host: str | None = None, port: int | None = None) -> None:
     host = host or os.getenv("WEB_HOST", "0.0.0.0")
     port = port or int(os.getenv("WEB_PORT", "8080"))
+    entry_port = task_entry_listener_port()
+    if entry_port == port:
+        raise ValueError("TASK_ENTRY_PORT 不可與管理服務 WEB_PORT 相同。")
     try:
         credential_sync_record_for_worker()
     except CredentialEnvelopeError as exc:
@@ -8731,11 +8949,17 @@ def run_web_app(host: str | None = None, port: int | None = None) -> None:
         try:
             from waitress import serve
         except ImportError:
+            if entry_port is not None:
+                raise RuntimeError("NAS 專用登打連接埠需要 Waitress，請安裝 requirements.txt。")
             print("[app] waitress unavailable, using Flask development server", flush=True)
             app.run(host=host, port=port, threaded=True, use_reloader=False)
         else:
             print("[app] waitress serving", flush=True)
-            serve(app, host=host, port=port, threads=8)
+            if entry_port is None:
+                serve(app, host=host, port=port, threads=8)
+            else:
+                listen_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+                serve(app, listen=f"{listen_host}:{port} {listen_host}:{entry_port}", threads=8)
     finally:
         auto_start_stop.set()
         auto_start_thread.join(timeout=2)

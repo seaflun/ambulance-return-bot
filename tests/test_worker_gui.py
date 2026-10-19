@@ -198,7 +198,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn('fg_color=theme["status_bg"]', source)
         self.assertIn("corner_radius=18", source)
         self.assertIn("ctk.CTkTextbox", source)
-        self.assertIn('self._card(top_area, "本地伺服器")', source)
+        self.assertIn('self._card(top_area, "救災救護登打")', source)
         self.assertIn('self._card(top_area, "NAS伺服器")', source)
         self.assertIn('uniform="main_cards"', source)
         self.assertIn('uniform="main_card_rows"', source)

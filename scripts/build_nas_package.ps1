@@ -320,6 +320,7 @@ if (Test-Path -LiteralPath $compose -PathType Leaf) {
     Copy-FileToOutput -Source $compose -RelativePath "compose.nas.yml"
     Copy-FileToOutput -Source $compose -RelativePath "compose.yaml"
 }
+Copy-FileToOutput -Source (Join-Path $project "compose.entry.yml") -RelativePath "compose.entry.yml"
 
 $docs = Join-Path $project "docs"
 if (Test-Path -LiteralPath $docs -PathType Container) {
@@ -349,6 +350,25 @@ NAS package generated from the public-duty runtime source.
    /docker/ambulance_return_bot/
 3. Keep the NAS .env file on the NAS. This generated package does not include .env.
 4. Restart the ambulance_return_bot stack in DSM Container Manager.
+
+Optional LAN-only task entry (rescue/disaster forms):
+- Build from the current runtime source; do not replace newer production files with an older package.
+- Confirm the NAS LAN IPv4 address before enabling the optional override.
+- From /volume1/docker/ambulance_return_bot/, keep the existing project name ambulance:
+  TASK_ENTRY_LAN_IP=10.30.65.30 docker compose -p ambulance -f compose.yaml -f compose.entry.yml up -d app
+- This command recreates the existing app in the same project as one app container
+  and adds port 8091 on that LAN address. A restart alone cannot apply new ports.
+  It keeps the original port 8080, Worker APIs, volumes and NAS .env unchanged.
+- Open http://10.30.65.30:8091/ from another LAN computer (replace with the actual IP).
+- TASK_ENTRY_LAN_IP is required; the override does not default to all interfaces.
+  It is passed to the container with TASK_ENTRY_PORT=8091 and its TASK_ENTRY_URL.
+- Do not start a second Flask service or overwrite .env with package defaults.
+- For a friendly NAS hostname, point its LAN DNS record at the same NAS LAN IPv4
+  and keep :8091 in the URL. Configure the advertised TASK_ENTRY_URL separately
+  if a reverse proxy terminates the dedicated entry hostname.
+- NAS entry can be deployed without publishing a GitHub release. Automatic GUI
+  discovery and disabling the local 8090 service require the updated Worker GUI
+  installed on the public-duty PC; a NAS-only update cannot change an older GUI.
 '@
 
     $nasVersion = Read-VersionText -Path (Join-Path $output "VERSION.txt")

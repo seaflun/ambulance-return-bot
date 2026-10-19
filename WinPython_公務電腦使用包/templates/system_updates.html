@@ -115,7 +115,7 @@
     <article class="update-card" data-duty-release-version="{{ release.version }}">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">{{ release.period }}</p>
+          <p class="update-card__period">{{ update_release_datetime(release.version, release.period) }}</p>
           <h2 class="update-card__title">{{ release.title }}</h2>
         </div>
         <span class="update-card__versions">{{ release.version }}</span>
@@ -148,10 +148,25 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.19.2137">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.19.2137') }}</p>
+          <h2 class="update-card__title">區網共用登打、共享設定與更新歷程整理</h2>
+        </div>
+        <span class="update-card__versions">2026.10.19.2137</span>
+      </header>
+      <ul class="update-card__items">
+        <li>新增 NAS 區網救災／救護專用入口，多台電腦可獨立選案並將任務交給原 Worker 排隊處理，同案同車保留防重複檢查。</li>
+        <li>保留救災與救護各項設定，專用入口、原入口與 Worker 共用 NAS 資料；公務電腦可自動採用已驗證的 NAS 登打網址。</li>
+        <li>值班台與救護台更新歷程統一顯示年月日與時分，月份里程碑保留原有日期精度。</li>
+        <li>更新結果清楚顯示版本前後，耗材慢速階段診斷獨立保存，避免混入一般更新訊息。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.19.2043">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 19 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.19.2043', '2026 年 10 月 19 日') }}</p>
           <h2 class="update-card__title">耗材長耗時匿名階段診斷</h2>
         </div>
         <span class="update-card__versions">2026.10.19.2043</span>
@@ -165,7 +180,7 @@
     <article class="update-card" data-release-version="2026.10.19.1548">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 19 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.19.1548', '2026 年 10 月 19 日') }}</p>
           <h2 class="update-card__title">修正民力案件查詢小時範圍</h2>
         </div>
         <span class="update-card__versions">2026.10.19.1548</span>
@@ -179,7 +194,7 @@
     <article class="update-card" data-release-version="2026.10.18.2100">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.18.2100', '2026 年 10 月 18 日') }}</p>
           <h2 class="update-card__title">統一全寬狀態卡與更新表單</h2>
         </div>
         <span class="update-card__versions">2026.10.18.2100</span>
@@ -194,7 +209,7 @@
     <article class="update-card" data-release-version="2026.10.18.2038">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.18.2038', '2026 年 10 月 18 日') }}</p>
           <h2 class="update-card__title">精簡值班狀態並修正安裝器顯示</h2>
         </div>
         <span class="update-card__versions">2026.10.18.2038</span>
@@ -209,7 +224,7 @@
     <article class="update-card" data-release-version="2026.10.18.1939">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.18.1939', '2026 年 10 月 18 日') }}</p>
           <h2 class="update-card__title">統一後台系統狀態與更新版面</h2>
         </div>
         <span class="update-card__versions">2026.10.18.1939</span>
@@ -224,7 +239,7 @@
     <article class="update-card" data-release-version="2026.10.18.1913">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.18.1913', '2026 年 10 月 18 日') }}</p>
           <h2 class="update-card__title">修正耗材患者清單換頁誤判</h2>
         </div>
         <span class="update-card__versions">2026.10.18.1913</span>
@@ -238,7 +253,7 @@
     <article class="update-card" data-release-version="2026.10.18.1900">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.18.1900', '2026 年 10 月 18 日') }}</p>
           <h2 class="update-card__title">新增值班台獨立存活與更新交接狀態</h2>
         </div>
         <span class="update-card__versions">2026.10.18.1900</span>
@@ -254,7 +269,7 @@
     <article class="update-card" data-release-version="2026.10.18.1352">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.18.1352', '2026 年 10 月 18 日') }}</p>
           <h2 class="update-card__title">修正耗材清單誤判與簡化救災登打</h2>
         </div>
         <span class="update-card__versions">2026.10.18.1352</span>
@@ -272,7 +287,7 @@
     <article class="update-card" data-release-version="2026.10.18.1045">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.18.1045', '2026 年 10 月 18 日') }}</p>
           <h2 class="update-card__title">補齊車輛清點失敗階段</h2>
         </div>
         <span class="update-card__versions">2026.10.18.1045</span>
@@ -287,7 +302,7 @@
     <article class="update-card" data-release-version="2026.10.18.0910">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 18 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.18.0910', '2026 年 10 月 18 日') }}</p>
           <h2 class="update-card__title">區分不用保養與已完成作業結果</h2>
         </div>
         <span class="update-card__versions">2026.10.18.0910</span>
@@ -302,7 +317,7 @@
     <article class="update-card" data-release-version="2026.10.17.1253">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 17 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.17.1253', '2026 年 10 月 17 日') }}</p>
           <h2 class="update-card__title">保留車輛清點逐車結果與未確認原因</h2>
         </div>
         <span class="update-card__versions">2026.10.17.1253</span>
@@ -317,7 +332,7 @@
     <article class="update-card" data-release-version="2026.10.17.1114">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 17 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.17.1114', '2026 年 10 月 17 日') }}</p>
           <h2 class="update-card__title">耗材儲存與消毒回查加速</h2>
         </div>
         <span class="update-card__versions">2026.10.17.1114</span>
@@ -332,7 +347,7 @@
     <article class="update-card" data-release-version="2026.10.17.0945">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 17 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.17.0945', '2026 年 10 月 17 日') }}</p>
           <h2 class="update-card__title">耗材與消毒登打提速、交接更新等待修正</h2>
         </div>
         <span class="update-card__versions">2026.10.17.0945</span>
@@ -347,7 +362,7 @@
     <article class="update-card" data-release-version="2026.10.16.2349">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 16 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.16.2349', '2026 年 10 月 16 日') }}</p>
           <h2 class="update-card__title">後台顯示登入截圖失敗原因</h2>
         </div>
         <span class="update-card__versions">2026.10.16.2349</span>
@@ -362,7 +377,7 @@
     <article class="update-card" data-release-version="2026.10.16.2206">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 16 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.16.2206', '2026 年 10 月 16 日') }}</p>
           <h2 class="update-card__title">修正延遲登入後跨消防日完成狀態</h2>
         </div>
         <span class="update-card__versions">2026.10.16.2206</span>
@@ -377,7 +392,7 @@
     <article class="update-card" data-release-version="2026.10.15.2250">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 15 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.15.2250', '2026 年 10 月 15 日') }}</p>
           <h2 class="update-card__title">六站登打加速與載入核對</h2>
         </div>
         <span class="update-card__versions">2026.10.15.2250</span>
@@ -393,7 +408,7 @@
     <article class="update-card" data-release-version="2026.10.15.2232">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 15 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.15.2232', '2026 年 10 月 15 日') }}</p>
           <h2 class="update-card__title">登入失敗原因與密碼更新頁面紀錄</h2>
         </div>
         <span class="update-card__versions">2026.10.15.2232</span>
@@ -408,7 +423,7 @@
     <article class="update-card" data-release-version="2026.10.14.2038">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 14 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.14.2038', '2026 年 10 月 14 日') }}</p>
           <h2 class="update-card__title">系統更新分開顯示值班台歷程</h2>
         </div>
         <span class="update-card__versions">2026.10.14.2038</span>
@@ -422,7 +437,7 @@
     <article class="update-card" data-release-version="2026.10.13.2245">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 13 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.13.2245', '2026 年 10 月 13 日') }}</p>
           <h2 class="update-card__title">補齊系統更新項目與發布檢查</h2>
         </div>
         <span class="update-card__versions">2026.10.13.2245</span>
@@ -436,7 +451,7 @@
     <article class="update-card" data-release-version="2026.10.13.1549">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 13 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.13.1549', '2026 年 10 月 13 日') }}</p>
           <h2 class="update-card__title">修正加油總價即時更新</h2>
         </div>
         <span class="update-card__versions">2026.10.13.1549</span>
@@ -450,7 +465,7 @@
     <article class="update-card" data-release-version="2026.10.13.0919">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 13 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.13.0919', '2026 年 10 月 13 日') }}</p>
           <h2 class="update-card__title">修正救災車輛里程事由</h2>
         </div>
         <span class="update-card__versions">2026.10.13.0919</span>
@@ -463,7 +478,7 @@
     <article class="update-card" data-release-version="2026.10.09.2000">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 9 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.09.2000', '2026 年 10 月 9 日') }}</p>
           <h2 class="update-card__title">補強值班台帳號儲存狀態</h2>
         </div>
         <span class="update-card__versions">2026.10.09.2000</span>
@@ -476,7 +491,7 @@
     <article class="update-card" data-release-version="2026.10.09.0053">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 9 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.09.0053', '2026 年 10 月 9 日') }}</p>
           <h2 class="update-card__title">改善里程核對與登打錯誤提醒</h2>
         </div>
         <span class="update-card__versions">2026.10.09.0053</span>
@@ -490,7 +505,7 @@
     <article class="update-card" data-release-version="2026.10.08.0844">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 8 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.08.0844', '2026 年 10 月 8 日') }}</p>
           <h2 class="update-card__title">改善空白查詢與站點資料等待</h2>
         </div>
         <span class="update-card__versions">2026.10.08.0844</span>
@@ -504,7 +519,7 @@
     <article class="update-card" data-release-version="2026.10.06.0726">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 6 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.06.0726', '2026 年 10 月 6 日') }}</p>
           <h2 class="update-card__title">修正當日沒有工作紀錄時停住</h2>
         </div>
         <span class="update-card__versions">2026.10.06.0726</span>
@@ -517,7 +532,7 @@
     <article class="update-card" data-release-version="2026.10.04.1943">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 4 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.04.1943', '2026 年 10 月 4 日') }}</p>
           <h2 class="update-card__title">支援逐車確認人工里程紀錄</h2>
         </div>
         <span class="update-card__versions">2026.10.04.1943</span>
@@ -530,7 +545,7 @@
     <article class="update-card" data-release-version="2026.10.04.1650">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 4 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.04.1650', '2026 年 10 月 4 日') }}</p>
           <h2 class="update-card__title">改善人工補登工作紀錄辨識</h2>
         </div>
         <span class="update-card__versions">2026.10.04.1650</span>
@@ -543,7 +558,7 @@
     <article class="update-card" data-release-version="2026.10.04.1146">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 4 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.04.1146', '2026 年 10 月 4 日') }}</p>
           <h2 class="update-card__title">補強勤務查詢結果辨識</h2>
         </div>
         <span class="update-card__versions">2026.10.04.1146</span>
@@ -556,7 +571,7 @@
     <article class="update-card" data-release-version="2026.10.03.1036">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 3 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.03.1036', '2026 年 10 月 3 日') }}</p>
           <h2 class="update-card__title">改善查詢等待與跨分鐘消毒核對</h2>
         </div>
         <span class="update-card__versions">2026.10.03.1036</span>
@@ -569,7 +584,7 @@
     <article class="update-card" data-release-version="2026.10.02.2121">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 2 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.02.2121', '2026 年 10 月 2 日') }}</p>
           <h2 class="update-card__title">分開核對救災與救護工作紀錄</h2>
         </div>
         <span class="update-card__versions">2026.10.02.2121</span>
@@ -582,7 +597,7 @@
     <article class="update-card" data-release-version="2026.10.02.1553">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 2 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.02.1553', '2026 年 10 月 2 日') }}</p>
           <h2 class="update-card__title">改善消毒時間比對與網路錯誤判斷</h2>
         </div>
         <span class="update-card__versions">2026.10.02.1553</span>
@@ -595,7 +610,7 @@
     <article class="update-card" data-release-version="2026.10.02.1157">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 2 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.02.1157', '2026 年 10 月 2 日') }}</p>
           <h2 class="update-card__title">加強儲存結果與歷史里程核對</h2>
         </div>
         <span class="update-card__versions">2026.10.02.1157</span>
@@ -608,7 +623,7 @@
     <article class="update-card" data-release-version="2026.10.01.1044">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 10 月 1 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.01.1044', '2026 年 10 月 1 日') }}</p>
           <h2 class="update-card__title">改善同案多次派遣的消毒查詢</h2>
         </div>
         <span class="update-card__versions">2026.10.01.1044</span>
@@ -621,7 +636,7 @@
     <article class="update-card" data-release-version="2026.09.27.0210">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 9 月 27 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.09.27.0210', '2026 年 9 月 27 日') }}</p>
           <h2 class="update-card__title">改善跨日耗材查詢</h2>
         </div>
         <span class="update-card__versions">2026.09.27.0210</span>
@@ -634,7 +649,7 @@
     <article class="update-card" data-release-version="2026.09.27.0027">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 9 月 27 日</p>
+          <p class="update-card__period">{{ update_release_datetime('2026.09.27.0027', '2026 年 9 月 27 日') }}</p>
           <h2 class="update-card__title">改善連續案件里程時間重疊</h2>
         </div>
         <span class="update-card__versions">2026.09.27.0027</span>
@@ -647,7 +662,7 @@
     <article class="update-card">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 9 月</p>
+          <p class="update-card__period">2026/09</p>
           <h2 class="update-card__title">補強案件歷程、民力查詢與重試可靠性</h2>
         </div>
         <span class="update-card__versions">更新紀錄整理至 2026.09.23</span>
@@ -664,7 +679,7 @@
     <article class="update-card">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 8 月</p>
+          <p class="update-card__period">2026/08</p>
           <h2 class="update-card__title">增加民力登打與車輛資料同步</h2>
         </div>
         <span class="update-card__versions">民力 2026.08.19.0851・里程同步 2026.08.22.1017</span>
@@ -679,7 +694,7 @@
     <article class="update-card">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 7 月</p>
+          <p class="update-card__period">2026/07</p>
           <h2 class="update-card__title">擴充救災中心與遠端維運</h2>
         </div>
         <span class="update-card__versions">2026.07.22.2026</span>
@@ -695,7 +710,7 @@
     <article class="update-card">
       <header class="update-card__heading">
         <div>
-          <p class="update-card__period">2026 年 6 月</p>
+          <p class="update-card__period">2026/06</p>
           <h2 class="update-card__title">建立救護登打與公務電腦執行流程</h2>
         </div>
         <span class="update-card__versions">里程 2026.06.07.1827・加油 2026.06.25.1905</span>

@@ -33,12 +33,13 @@
       <span class="status {{ update.status_class }}">{{ update.status_label }}</span>
     </div>
     <p class="remote-update-detail">{{ description }}</p>
-    {% if update.detail %}<p class="remote-update-detail">{{ update.detail }}</p>{% endif %}
-    <div class="remote-update-meta">
-      {% if update.requested_at %}<span>下達：{{ update.requested_at }}</span>{% endif %}
-      {% if update.updated_at %}<span>更新：{{ update.updated_at }}</span>{% endif %}
-      {% if update.request_id %}<span>命令：{{ update.request_id }}</span>{% endif %}
-    </div>
+    {% if update.before_version or update.installed_version %}
+    <p class="remote-update-detail">版本：
+      {% if update.before_version %}{{ update.before_version }}{% endif %}
+      {% if update.before_version and update.installed_version %} → {% endif %}
+      {% if update.installed_version %}{{ update.installed_version }}{% endif %}
+    </p>
+    {% endif %}
   </div>
   <form action="{{ action }}" method="post" onsubmit="return confirm({{ confirmation|tojson|forceescape }});">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

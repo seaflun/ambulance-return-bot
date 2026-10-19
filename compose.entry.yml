@@ -1,0 +1,8 @@
+services:
+  app:
+    environment:
+      TASK_ENTRY_PORT: "8091"
+      TASK_ENTRY_LAN_IP: "${TASK_ENTRY_LAN_IP:?請設定實際NAS區網IP}"
+      TASK_ENTRY_URL: "http://${TASK_ENTRY_LAN_IP:?請設定實際NAS區網IP}:8091/"
+    ports:
+      - "${TASK_ENTRY_LAN_IP:?請設定實際NAS區網IP}:8091:8091"
