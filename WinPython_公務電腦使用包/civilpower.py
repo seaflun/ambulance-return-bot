@@ -6,7 +6,7 @@ import os
 import re
 import time
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -122,7 +122,20 @@ class CivilpowerTaskPlan:
 
     @property
     def case_search_end_hour(self) -> str:
-        return self.in_time[:2]
+        return self._case_search_end_datetime.strftime("%H")
+
+    @property
+    def case_search_end_date(self) -> str:
+        return self._case_search_end_datetime.strftime("%Y/%m/%d")
+
+    @property
+    def _case_search_end_datetime(self) -> datetime:
+        start = datetime.strptime(f"{self.out_date} {self.case_search_start_hour}", "%Y/%m/%d %H")
+        end = datetime.strptime(f"{self.in_date} {self.in_time}", "%Y/%m/%d %H%M")
+        boundary = end.replace(minute=0)
+        if end.minute:
+            boundary += timedelta(hours=1)
+        return max(boundary, start + timedelta(hours=1))
 
 
 def build_civilpower_task_plan(request: AmbulanceReturnRequest) -> CivilpowerTaskPlan:
@@ -1038,7 +1051,7 @@ def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan)
         driver.execute_script("arguments[0].click();", checkbox)
     _set_input(wait, "#txt_SearchDate_S", plan.out_date)
     _set_input(wait, "#txt_SearchDate_S_H", plan.case_search_start_hour)
-    _set_input(wait, "#txt_SearchDate_E", plan.in_date)
+    _set_input(wait, "#txt_SearchDate_E", plan.case_search_end_date)
     _set_input(wait, "#txt_SearchDate_E_H", plan.case_search_end_hour)
     dialog = _open_selection_dialog(
         driver,

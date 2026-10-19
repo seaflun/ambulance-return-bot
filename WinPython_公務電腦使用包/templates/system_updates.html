@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.19.1548">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">2026 年 10 月 19 日</p>
+          <h2 class="update-card__title">修正民力案件查詢小時範圍</h2>
+        </div>
+        <span class="update-card__versions">2026.10.19.1548</span>
+      </header>
+      <ul class="update-card__items">
+        <li>民力工作紀錄案件代入的查詢結束時間改為向上補到整點，同一小時出勤返隊會查詢 15 時～16 時，避免 15 時～15 時查不到案件。</li>
+        <li>已是整點的返隊時間保留原查詢上限，23 時跨日進位時同步調整結束日期，支援月底與年底。</li>
+        <li>只調整查詢範圍，正式出勤、返隊的精確日期與分鐘、案件核對、防重複及儲存後回查保持原規則。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.18.2100">
       <header class="update-card__heading">
         <div>
