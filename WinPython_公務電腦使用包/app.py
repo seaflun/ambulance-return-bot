@@ -8094,6 +8094,17 @@ def public_pc_event_rows(report: dict) -> list[dict]:
         site_key = event_site_key({"action": action})
         if site_key not in SITE_STAGE_GROUPS:
             site_key = next((key for key in SITE_STAGE_GROUPS if status.startswith(key + "_")), "")
+        lifecycle_group = lifecycle_state = ""
+        if not any(event.get(field) for field in DIAGNOSTIC_FIELDS):
+            startup_detail = re.sub(r"^登入帳號\s*[：:][^。\r\n]*。\s*", "", detail, count=1)
+            if (status in {"vehicle_mileage_running", "manual_captcha_required"}
+                    and action in {"更新", "執行中", "公務電腦回報任務狀態", "公務電腦回報車輛里程"}
+                    and re.fullmatch(r"公務電腦\s+worker\s+執行車輛里程[：:]\s*[\w.-]+", startup_detail)):
+                site_key, lifecycle_group, lifecycle_state = "vehicle_mileage", "準備登打", "執行中"
+            elif (status in {"manual_captcha_required", "queued_for_worker"}
+                    and action == "後台重新送出車輛里程"
+                    and detail == "後台重新送出車輛里程，已排入公務電腦處理。"):
+                site_key, lifecycle_group, lifecycle_state = "vehicle_mileage", "排隊等候", "等候執行"
         failure_site_statuses = None
         if site_key and status_class(status) == "failed":
             failure_sites = event.get("failure_sites")
@@ -8110,7 +8121,7 @@ def public_pc_event_rows(report: dict) -> list[dict]:
                 civilpower_stage_from_detail(detail) if site_key == "volunteer_assist"
                 else site_stage_from_detail(site_key, detail)
             ) or str(event.get("failure_stage") or "")
-            group = next((name for name, stages in groups if stage in stages), "")
+            group = lifecycle_group or next((name for name, stages in groups if stage in stages), "")
             state_class = status_class(status)
             if state_class == "complete":
                 group = groups[-1][0]
@@ -8121,7 +8132,7 @@ def public_pc_event_rows(report: dict) -> list[dict]:
                 diagnostic = site_diagnostic({"key": site_key, "status": status, "detail": detail})
                 stage = str(diagnostic.get("failure_stage") or "")
                 group = next((name for name, stages in groups if stage in stages), "階段未判定")
-            state = {"complete": "已完成", "failed": "失敗", "waiting": "待確認", "running": "執行中"}.get(state_class, status_label(status))
+            state = lifecycle_state or {"complete": "已完成", "failed": "失敗", "waiting": "待確認", "running": "執行中"}.get(state_class, status_label(status))
             if "略過" in action:
                 state = "略過（已完成）" if state_class == "complete" else "略過"
             event.update(action=f"{SITE_SHORT_NAMES[site_key]}｜{group}｜{state}", stage_group=group)

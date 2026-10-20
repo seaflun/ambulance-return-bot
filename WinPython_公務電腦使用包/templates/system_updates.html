@@ -148,6 +148,19 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.20.2119">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.20.2119') }}</p>
+          <h2 class="update-card__title">補齊里程啟動與排隊階段</h2>
+        </div>
+        <span class="update-card__versions">2026.10.20.2119</span>
+      </header>
+      <ul class="update-card__items">
+        <li>里程 Worker 開始處理時顯示「準備登打」，後台重新送出並排隊時顯示「排隊等候」，修正已知啟動與排隊紀錄被歸為階段未判定。</li>
+        <li>保留每次執行的原始狀態與內容，僅依該次明確訊息判讀進度；既有成功結果不會覆蓋舊歷史，沿用前版救災分車登打、既有紀錄回查及區網帳號顯示。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.20.2107">
       <header class="update-card__heading">
         <div>
