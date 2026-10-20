@@ -364,6 +364,7 @@
             {% set operator_label = item.operator or item.user or '未知使用者' %}
             {% set synced_account = item.synced_account or operator_label %}
             {% set site_login_accounts = task_site_login_accounts(item) %}
+            {% set site_completion_seconds = task_site_completion_seconds(item) %}
             {% set vehicle_entries = task_vehicle_display_entries(task) %}
             <div class="card-head">
               <div>
@@ -429,7 +430,13 @@
               {% for site_key, title in task_site_display_pairs(task) %}
                 {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
                 <div class="site">
-                  <div class="site-name">{{ title }}</div>
+                  <div class="site-heading">
+                    <div class="site-name">{{ title }}</div>
+                    <div class="site-duration" aria-label="{{ title }}完成耗時" title="依該站開始與完成回報時間估算，不含前置排隊；回報延遲可能影響秒數。">
+                      <span class="site-duration-label">完成耗時</span>
+                      <strong class="site-duration-value">{% if site_completion_seconds.get(site_key) is not none %}約 {{ site_completion_seconds[site_key] }} 秒{% elif status_class(site.status) == 'complete' %}未記錄{% else %}—{% endif %}</strong>
+                    </div>
+                  </div>
                   <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
                   {% for row in site_vehicle_candidate_rows(site) if row.state in ['available', 'selected'] %}
                     <section class="site-vehicle-choices" aria-label="{{ row.original_vehicle }}查找車輛">

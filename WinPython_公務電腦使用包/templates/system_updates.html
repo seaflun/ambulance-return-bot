@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.20.2224">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.20.2224') }}</p>
+          <h2 class="update-card__title">後台各站卡片新增完成耗時</h2>
+        </div>
+        <span class="update-card__versions">2026.10.20.2224</span>
+      </header>
+      <ul class="update-card__items">
+        <li>救護與救災後台各站卡片顯示「完成耗時／約 N 秒」，手機版保留單欄排列，加油與民力系統亦適用。</li>
+        <li>依該站開始與完成回報時間估算，排除前置排隊；重試採最近一次完整執行，多車等整站完成才結算。</li>
+        <li>缺少可靠歷史時顯示「未記錄」，未完成站別顯示「—」；已完成而略過的站別保留原耗時，並排除延遲及逐車回報造成的誤算。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.20.2119">
       <header class="update-card__heading">
         <div>

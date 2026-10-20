@@ -208,6 +208,37 @@
   font-weight: 720;
 }
 
+.site-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 5px;
+}
+
+.site-heading .site-name {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.site-duration {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: auto;
+  color: var(--secondary-label);
+  font-size: .72rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.site-duration-value {
+  color: var(--label);
+  font-size: .94rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .site-retry-form {
   margin: 8px 0 0;
   padding: 0;

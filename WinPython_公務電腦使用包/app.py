@@ -2166,6 +2166,7 @@ def worker_task_status(task_id: str):
             event_id=f"retry-status:{status_event_id}" if status_event_id else "",
             worker_id=worker_id,
             site_result=site_result,
+            vehicle_key=str(data.get("vehicle_key") or "").strip(),
         )
     except WorkerClaimConflictError as exc:
         return jsonify({"ok": False, "error": exc.code, "detail": exc.detail}), 409
@@ -3643,6 +3644,7 @@ def upsert_public_pc_report(data: dict) -> dict:
             "action": public_pc_action_for_task(task, str(data.get("action") or "更新")),
             "status": event_status,
             "detail": event_detail,
+            "vehicle_key": str(data.get("vehicle_key") or "").strip(),
             **{field: str(data.get(field) or "") for field in DIAGNOSTIC_FIELDS},
         }
         reports = [item for item in current_reports if str(item.get("task_id") or "") != task_id]
@@ -6555,6 +6557,7 @@ def sync_public_pc_report_retry_task(
     event_id: str = "",
     worker_id: str = "",
     site_result: SiteAutomationResult | None = None,
+    vehicle_key: str = "",
 ) -> None:
     if not public_pc_report_retry_task(payload):
         return
@@ -6576,6 +6579,7 @@ def sync_public_pc_report_retry_task(
             "action": action,
             "status": site_result.status if site_result is not None else effective_task_status(dict(payload)),
             "detail": detail,
+            "vehicle_key": vehicle_key,
             **{field: str(getattr(site_result, field, "") or "") for field in DIAGNOSTIC_FIELDS},
             "overall_status": str(payload.get("overall_status") or ""),
             "site_statuses": dict(payload.get("site_statuses") or {}),
@@ -7933,6 +7937,103 @@ def public_pc_report_display_events(report: dict) -> list[dict]:
     return events
 
 
+def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int | None]:
+    """Estimate the latest successful site run from its reported lifecycle events."""
+    seconds: dict[str, int | None] = dict.fromkeys(SITE_RUN_ORDER)
+    site_statuses = report.get("site_statuses")
+    if not isinstance(site_statuses, Mapping):
+        return seconds
+    completed = {key for key in SITE_RUN_ORDER
+                 if isinstance(site_statuses.get(key), Mapping)
+                 and site_statuses[key].get("status") == f"{key}_saved"}
+    starts: dict[str, datetime | None] = {}
+    latest_times: dict[str, datetime] = {}
+    completions: dict[str, tuple[datetime | None, str]] = {}
+    task = report.get("task") if isinstance(report.get("task"), Mapping) else {}
+    entries = task.get("vehicle_entries")
+    entries = entries if isinstance(entries, list) else []
+
+    def event_time(event: Mapping[str, object]) -> datetime | None:
+        try:
+            value = datetime.fromisoformat(str(event.get("time") or "").strip().replace("Z", "+00:00"))
+            # Legacy Worker/Desktop timestamps are local Taiwan time.
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone(timedelta(hours=8)))
+            return value.astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            return None
+
+    for event in public_pc_report_display_events(report):
+        status = str(event.get("status") or "")
+        action = str(event.get("action") or "")
+        detail = str(event.get("detail") or "")
+        if (action == PUBLIC_PC_LEGACY_RECONCILE_ACTION
+                or str(event.get("event_id") or "").startswith("retry-reconcile:")):
+            continue
+        worker_start = status == "worker_running" and "公務電腦 worker 執行中：" in detail
+        site_key = ("duty_work_log" if worker_start else
+                    next((key for key in SITE_RUN_ORDER if status.startswith(key + "_")), ""))
+        if site_key not in completed or event.get("vehicle_key"):
+            continue
+        timestamp = event_time(event)
+        # Delayed outbox events must not replace a newer attempt's lifecycle.
+        if timestamp is not None:
+            if site_key in latest_times and timestamp < latest_times[site_key]:
+                continue
+            latest_times[site_key] = timestamp
+        aggregate_detail = re.sub(r"^登入帳號\s*[：:][^。\r\n]*。\s*", "", detail, count=1)
+        for title in (site_display_name(site_key), SITE_SHORT_NAMES.get(site_key, "")):
+            aggregate_detail = aggregate_detail.removeprefix(f"{title}: ")
+        parts = [part.strip() for part in aggregate_detail.split(" | ") if part.strip()]
+        # Old NAS retry reports dropped vehicle_key. A multi-car terminal must
+        # explicitly cover every target; a partial or truncated report is unknown.
+        if (len(entries) > 1 and site_key in {"vehicle_mileage", "fuel_record", "consumables", "disinfection"}
+                and "vehicle_key" not in event and str(event.get("event_id") or "").startswith("retry-status:")
+                and (status == f"{site_key}_saved" or status_class(status) in {"failed", "waiting"})):
+            labels = [str(entry.get("vehicle") or f"{index}車") for index, entry in enumerate(entries, 1)
+                      if isinstance(entry, Mapping) and (site_key != "fuel_record"
+                          or form_flag_enabled(dict(entry.get("fuel_record") or {}).get("enabled")))]
+            if not labels or sorted(part.split(": ", 1)[0] for part in parts) != sorted(labels):
+                seconds[site_key] = None
+                continue
+        # A Desktop progress report can contain another vehicle's failed status.
+        if " 階段：" in action:
+            continue
+        skipped = "略過" in action or (bool(parts) and all(
+            "已完成，略過" in part or part.rstrip(" .。").endswith(": skipped")
+            or "NAS 已顯示此站完成，略過重試" in part for part in parts
+        ))
+        if skipped:
+            starts.pop(site_key, None)
+            continue
+        if status == f"{site_key}_running" or worker_start:
+            explicit_start = (worker_start or "開始" in action or "重試" in action
+                              or "公務電腦 worker 執行" in detail
+                              or "公務電腦 worker 登打加油紀錄：" in detail)
+            progress_stage = (civilpower_stage_from_detail(detail) if site_key == "volunteer_assist"
+                              else site_stage_from_detail(site_key, detail))
+            if site_key not in starts and not explicit_start and progress_stage:
+                continue
+            if site_key not in starts or explicit_start:
+                starts[site_key] = timestamp
+        elif status == f"{site_key}_saved":
+            completion = (timestamp, detail)
+            if site_key in starts:
+                start = starts.pop(site_key)
+                elapsed = (timestamp - start).total_seconds() if start is not None and timestamp is not None else -1
+                seconds[site_key] = int(elapsed + 0.5) if elapsed >= 0 else None
+                completions[site_key] = completion
+            elif timestamp is None or completions.get(site_key) != completion:
+                seconds[site_key] = None
+        elif (status_class(status) in {"failed", "waiting"}
+              or site_waits_for_confirmation(status) or status.endswith("_vehicle_candidate_available")):
+            starts.pop(site_key, None)
+            seconds[site_key] = None
+    for site_key in starts:
+        seconds[site_key] = None
+    return seconds
+
+
 def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
     """Read failure attempts independently of the site's current success state."""
     site = dict((report.get("site_statuses") or {}).get(site_key) or {})
@@ -8285,6 +8386,7 @@ def template_helpers() -> dict:
         "patient_counts_from_summary": patient_counts_from_summary,
         "compact_login_account_summary": compact_login_account_summary,
         "task_site_login_accounts": task_site_login_accounts,
+        "task_site_completion_seconds": task_site_completion_seconds,
         "public_pc_event_display_detail": public_pc_event_display_detail,
         "public_pc_event_rows": public_pc_event_rows,
         "public_pc_site_failure_history": public_pc_site_failure_history,
