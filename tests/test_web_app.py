@@ -9818,7 +9818,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn('<span class="label">出勤時間</span><span class="value">08/26 1036</span>', volunteer_card)
         self.assertIn('<span class="label">返隊時間</span><span class="value">08/26 1147</span>', volunteer_card)
         self.assertNotIn('<span class="label">回報</span>', volunteer_card)
-        self.assertNotIn("登入帳號：", volunteer_card)
+        self.assertIn("登入帳號：尚未回報", volunteer_card)
+        self.assertNotIn("=值班人員 > 任務司機", volunteer_card)
 
     def test_public_pc_event_detail_compacts_renderer_stacktrace(self):
         raw_detail = "Message: timeout: Timed out receiving message from renderer\nStacktrace:\n" + (

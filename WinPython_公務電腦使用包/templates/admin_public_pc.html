@@ -363,7 +363,7 @@
             {% set task = item.task if item.task is mapping else {} %}
             {% set operator_label = item.operator or item.user or '未知使用者' %}
             {% set synced_account = item.synced_account or operator_label %}
-            {% set site_login_accounts = item.site_login_accounts if item.site_login_accounts is mapping else {} %}
+            {% set site_login_accounts = task_site_login_accounts(item) %}
             {% set vehicle_entries = task_vehicle_display_entries(task) %}
             <div class="card-head">
               <div>

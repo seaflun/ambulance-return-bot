@@ -385,10 +385,17 @@ class DesktopFastRunner:
             ),
         )
 
-    def _site_progress_callback(self, task_id: str, site_key: str) -> Callable[[str], None]:
-        return lambda stage: self._report_site_progress(task_id, site_key, stage)
+    def _site_progress_callback(
+        self, task_id: str, site_key: str, *, vehicle_key: str = "", vehicle_label: str = "",
+    ) -> Callable[[str], None]:
+        return lambda stage: self._report_site_progress(
+            task_id, site_key, stage,
+            **({"vehicle_key": vehicle_key, "vehicle_label": vehicle_label} if vehicle_key else {}),
+        )
 
-    def _report_site_progress(self, task_id: str, site_key: str, stage: str) -> None:
+    def _report_site_progress(
+        self, task_id: str, site_key: str, stage: str, *, vehicle_key: str = "", vehicle_label: str = "",
+    ) -> None:
         self._raise_if_cancelled(task_id)
         try:
             site_name = SITE_NAMES[site_key]
@@ -401,9 +408,10 @@ class DesktopFastRunner:
                     f"{site_key}_running",
                     with_login_audit(f"本機快速 {site_name}：{stage}", login_audit),
                 ),
+                **({"vehicle_key": vehicle_key, "vehicle_label": vehicle_label} if vehicle_key else {}),
             )
             stage_name = (civilpower_stage_from_detail(stage) if site_key == "volunteer_assist"
-                          else site_stage_from_detail(site_key, f"本機快速 {stage}"))
+                          else site_stage_from_detail(site_key, f"本機快速 {site_name}：{stage}"))
             group = next((name for name, stages in SITE_STAGE_GROUPS.get(site_key, ()) if stage_name in stages), "")
             owner = self._execution_owner(task_id)
             with self._lock:
@@ -854,6 +862,7 @@ class DesktopFastRunner:
 
     def _run_vehicle_mileage(self, request, profile_suffix: str) -> SiteAutomationResult:
         vehicle_requests = request.vehicle_requests()
+        login_request = vehicle_requests[0] if request.service_type == "disaster" else None
         if len(vehicle_requests) <= 1:
             mileage_request = vehicle_requests[0] if vehicle_requests else request
             return run_vehicle_mileage_task(
@@ -866,6 +875,7 @@ class DesktopFastRunner:
                 update_context=self._site_update_context(request.task_id, "vehicle_mileage"),
                 cancel_check=self._cancel_check(request.task_id),
                 progress=self._site_progress_callback(request.task_id, "vehicle_mileage"),
+                **({"login_request": login_request} if login_request is not None else {}),
             )
         debugger_port = _site_debugger_port("VEHICLE_MILEAGE_DEBUGGER_PORT", 9234)
         first_driver = True
@@ -889,7 +899,11 @@ class DesktopFastRunner:
                     index,
                 ),
                 cancel_check=self._cancel_check(request.task_id),
-                progress=self._site_progress_callback(request.task_id, "vehicle_mileage"),
+                progress=self._site_progress_callback(
+                    request.task_id, "vehicle_mileage", vehicle_key=_vehicle_result_key(vehicle_request, index),
+                    vehicle_label=str(vehicle_request.vehicle or "").strip(),
+                ),
+                **({"login_request": login_request} if login_request is not None else {}),
             )
 
         return self._run_per_vehicle_site(
@@ -1003,7 +1017,10 @@ class DesktopFastRunner:
                     index,
                 ),
                 cancel_check=self._cancel_check(request.task_id),
-                progress=self._site_progress_callback(request.task_id, "fuel_record"),
+                progress=self._site_progress_callback(
+                    request.task_id, "fuel_record", vehicle_key=_vehicle_result_key(vehicle_request, index),
+                    vehicle_label=str(vehicle_request.vehicle or "").strip(),
+                ),
             )
 
         return self._run_per_vehicle_site(

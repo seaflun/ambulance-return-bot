@@ -371,7 +371,8 @@ class SiteCompletionConflictError(RuntimeError):
 def mileage_overlap_confirmation_available(site_key: str, record: dict[str, Any]) -> bool:
     return (
         site_key == "vehicle_mileage" and isinstance(record, dict) and record.get("status") == "vehicle_mileage_failed"
-        and diagnostic_payload(site_key, str(record.get("status") or ""), str(record.get("detail") or ""))["exception_type"] == "mileage_overlap"
+        and diagnostic_payload(site_key, str(record.get("status") or ""), str(record.get("detail") or ""))["exception_type"]
+        in {"mileage_overlap", "mileage_existing_conflict"}
     )
 
 
@@ -1575,7 +1576,7 @@ class JsonTaskStore:
                         or task_payload_is_active_for_edit(payload)):
                     raise SiteCompletionConflictError("只有未排隊或執行中的個別車輛可確認既有里程。")
                 if not isinstance(results, dict) or not mileage_overlap_confirmation_available(site_key, results.get(normalized_vehicle_key) or {}):
-                    raise SiteCompletionConflictError("只有里程時間重疊失敗的車輛可人工確認既有紀錄。")
+                    raise SiteCompletionConflictError("只有里程時間重疊或既有內容不符失敗的車輛可人工確認既有紀錄。")
                 completed_detail = "使用者已人工核對 PPE，確認此車同案里程已登打（特例地址／時間可能不同）；保留官網紀錄，未新增或儲存。"
 
             if normalized_vehicle_key:

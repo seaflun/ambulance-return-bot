@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.20.2107">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.20.2107') }}</p>
+          <h2 class="update-card__title">救災里程分車登打與既有紀錄辨識</h2>
+        </div>
+        <span class="update-card__versions">2026.10.20.2107</span>
+      </header>
+      <ul class="update-card__items">
+        <li>救災各車獨立處理及回報，一車失敗或待確認仍繼續下一車；已完成車輛保留結果，重跑只處理未完成車。</li>
+        <li>同車用車時間重疊且地址相似時，重新查詢並確認唯一既有紀錄後回報「已登打」，保留官方資料；不同巷弄門牌或多筆候選仍須核對。</li>
+        <li>救災工作及里程統一使用登打第1車司機帳號，各車填寫自己的司機、返隊時間及里程；區網後台與任務明細恢復各站登入帳號顯示。</li>
+        <li>補齊里程前後紀錄查詢與回查進度的階段對應，修正歷史紀錄顯示「階段未判定」，並顯示既有紀錄的日期時間及內容差異。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.20.0717">
       <header class="update-card__heading">
         <div>

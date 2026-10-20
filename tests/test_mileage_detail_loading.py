@@ -91,6 +91,66 @@ class MileageDetailLoadingTests(unittest.TestCase):
 
 
 class MileageHistoryRecoveryTests(unittest.TestCase):
+    def conflict_request(self):
+        request = backfill.MileageBackfillTests().request()
+        request.service_type, request.vehicle = "disaster", "新坡11"
+        request.case_date, request.case_time = "2026/10/20", "1636"
+        request.return_date, request.return_time = "2026/10/20", "1713"
+        request.mileage = "35444"
+        return request
+
+    def conflict_rows(self):
+        before = backfill.record(41, "1509", "1612", 35431, 35441, "2026/10")
+        before.update(StartDay="20261020", EndDay="20261020")
+        current = backfill.record(42, "1636", "1714", 35441, 35444, "2026/10")
+        current.update(StartDay="20261020", EndDay="20261020")
+        return before, current
+
+    def test_overlap_rechecks_case_month_and_names_the_conflicting_record(self):
+        before, conflict = self.conflict_rows()
+        conflict.update(StartTime="1600", EndTime="1800")
+        with patch.object(runtime, "_vehicle_mileage_history", return_value=[before, conflict]), \
+             patch.object(runtime, "_load_vehicle_mileage_month", return_value=[before, conflict]) as load, \
+             patch.object(runtime, "_write_vehicle_mileage_backfill") as write, \
+             patch.object(runtime, "_save_vehicle_mileage_form") as save:
+            with self.assertRaises(runtime.WebDriverException) as caught:
+                runtime._add_vehicle_mileage_record(object(), self.conflict_request())
+        load.assert_called_once()
+        self.assertEqual("2026/10", load.call_args.args[2])
+        for expected in ("新坡11", "紀錄 42", "2026/10/20 16:00", "2026/10/20 18:00"):
+            self.assertIn(expected, str(caught.exception))
+        write.assert_not_called()
+        save.assert_not_called()
+
+    def test_stale_overlap_can_recover_after_requery_without_overwriting_any_record(self):
+        before, conflict = self.conflict_rows()
+        conflict.update(StartTime="1600", EndTime="1800")
+        with patch.object(runtime, "_vehicle_mileage_history", return_value=[before, conflict]), \
+             patch.object(runtime, "_load_vehicle_mileage_month", return_value=[before]), \
+             patch.object(runtime, "_write_vehicle_mileage_backfill") as write, \
+             patch.object(runtime, "_save_vehicle_mileage_enabled", return_value=False), \
+             patch.object(runtime, "_save_vehicle_mileage_form") as save:
+            detail = runtime._add_vehicle_mileage_record(object(), self.conflict_request())
+        self.assertIn("未按儲存", detail)
+        self.assertEqual("35441", write.call_args.args[2]["start_mileage"])
+        self.assertIsNone(write.call_args.args[2]["existing"])
+        save.assert_not_called()
+
+    def test_existing_record_difference_is_rechecked_and_reports_only_the_conflicting_field(self):
+        before, current = self.conflict_rows()
+        with patch.object(runtime, "_vehicle_mileage_history", return_value=[before, current]), \
+             patch.object(runtime, "_load_vehicle_mileage_month", return_value=[before, current]) as load, \
+             patch.object(runtime, "_write_vehicle_mileage_backfill") as write, \
+             patch.object(runtime, "_save_vehicle_mileage_form") as save:
+            with self.assertRaises(runtime.WebDriverException) as caught:
+                runtime._add_vehicle_mileage_record(object(), self.conflict_request())
+        load.assert_called_once()
+        for expected in ("新坡11", "紀錄 42", "返隊時間", "2026/10/20 17:14", "2026/10/20 17:13"):
+            self.assertIn(expected, str(caught.exception))
+        self.assertNotIn("駕駛人：", str(caught.exception))
+        write.assert_not_called()
+        save.assert_not_called()
+
     def request(self):
         request = backfill.MileageBackfillTests().request()
         request.case_date, request.case_time = "2026/10/08", "2234"

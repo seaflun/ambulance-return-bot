@@ -50,6 +50,7 @@ from .duty_credentials import (
     update_saved_credential_id_number,
 )
 from .failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text, is_browser_session_recovery_error
+from .mileage_address import disaster_mileage_addresses_match
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
 from .task_cancellation import TaskCancellationError
@@ -90,6 +91,13 @@ _CHROME_PROFILE_LOCK_NAMES = ("SingletonLock", "SingletonCookie", "SingletonSock
 _PPE_OPTION_NAME_FIELDS = ("Text", "Name", "DriverName", "UserName", "EmpName")
 _PPE_OPTION_ID_FIELDS = ("Value", "Id", "UserId", "EmpId", "Code", "Driver")
 WAITING_CONFIRMATION_MARKER = "waiting_confirmation:"
+
+
+class _ExistingMileageDetail(str):
+    def __new__(cls, value: str, *, verified: bool):
+        detail = super().__new__(cls, value)
+        detail.verified = verified
+        return detail
 
 
 def _report_progress(progress: Callable[[str], None] | None, stage: str) -> None:
@@ -347,6 +355,7 @@ def run_vehicle_mileage_task(
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
     progress: Callable[[str], None] | None = None,
+    login_request: AmbulanceReturnRequest | None = None,
 ) -> SeleniumRunResult:
     output_dir = artifacts_dir / "selenium"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -397,13 +406,17 @@ def run_vehicle_mileage_task(
             update_context=update_context,
             **({"cancel_check": cancel_check} if cancel_check is not None else {}),
             **({"progress": progress} if progress is not None else {}),
+            **({"login_request": login_request} if login_request is not None else {}),
         )
-        status = _confirmation_aware_status(
-            "vehicle_mileage",
-            detail,
-            save_enabled=_save_vehicle_mileage_enabled(),
-            prefilled_status="vehicle_mileage_prefilled",
-        )
+        if isinstance(detail, _ExistingMileageDetail):
+            status = "vehicle_mileage_saved" if detail.verified else "vehicle_mileage_waiting_confirmation"
+        else:
+            status = _confirmation_aware_status(
+                "vehicle_mileage",
+                detail,
+                save_enabled=_save_vehicle_mileage_enabled(),
+                prefilled_status="vehicle_mileage_prefilled",
+            )
         return SeleniumRunResult(True, status, detail, summary_path)
     except TaskCancellationError:
         close_driver_on_exit = True
@@ -1832,10 +1845,11 @@ def _open_vehicle_mileage_page(
     update_context: dict[str, object] | None = None,
     cancel_check: Callable[[], None] | None = None,
     progress: Callable[[str], None] | None = None,
+    login_request: AmbulanceReturnRequest | None = None,
 ) -> str:
     try:
         _report_progress(progress, "登入 PPE")
-        if not _ensure_ppe_vehicle_mileage_session(driver, request):
+        if not _ensure_ppe_vehicle_mileage_session(driver, login_request or request):
             _save_artifacts(driver, output_dir, request.task_id, "vehicle_mileage_login")
             raise WebDriverException("PPE login did not reach vehicle mileage page")
         detail = _prepare_vehicle_mileage_form(
@@ -3192,6 +3206,69 @@ def _save_fuel_record_form(
     return f"{WAITING_CONFIRMATION_MARKER} {request.vehicle} 加油已按儲存，尚需回查保存結果。"
 
 
+def _disaster_existing_mileage_matches(request: AmbulanceReturnRequest, rows: list[dict]) -> list[dict]:
+    start = _mileage_record_datetime({"StartDay": request.service_case_date().strftime("%Y%m%d"),
+                                     "StartTime": request.case_time}, "Start")
+    end = _mileage_record_datetime({"EndDay": request.service_return_date().strftime("%Y%m%d"),
+                                   "EndTime": request.return_time}, "End")
+    if end < start:
+        raise WebDriverException("返隊時間早於案件時間。")
+    return [row for row in rows
+            if max(start, _mileage_record_datetime(row, "Start")) < min(end, _mileage_record_datetime(row, "End"))
+            and disaster_mileage_addresses_match(request.case_address, str(row.get("Destination") or ""))]
+
+
+def _disaster_existing_mileage_detail(
+    driver: webdriver.Chrome, request: AmbulanceReturnRequest, history: list[dict],
+    artifacts_dir: Path | None, cancel_check: Callable[[], None] | None,
+) -> _ExistingMileageDetail | None:
+    matches = _disaster_existing_mileage_matches(request, history)
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise WebDriverException("重疊時間及相似地址對應多筆既有里程紀錄，無法唯一確認，停止補登。")
+    existing = matches[0]
+    if not str(existing.get("Id") or "").strip():
+        raise WebDriverException("既有里程紀錄缺少穩定識別碼，停止補登。")
+    month = _mileage_record_datetime(existing, "Start").strftime("%Y/%m")
+    try:
+        if cancel_check:
+            cancel_check()
+        refreshed = _load_vehicle_mileage_month(driver, request, month, artifacts_dir)
+        if cancel_check:
+            cancel_check()
+        current = _disaster_existing_mileage_matches(
+            request, [row for row in history if row["month"] != month] + refreshed,
+        )
+        unchanged = ("Id", "StartDay", "StartTime", "EndDay", "EndTime", "StartMileage", "EndMileage",
+                     "Mileage", "Reason", "Destination", "DeptNo", "Driver", "DriverName", "Remarks")
+        if (len(current) != 1 or str(current[0].get("Id") or "") != str(existing["Id"])
+                or any(current[0].get(key) != existing.get(key) for key in unchanged)):
+            raise WebDriverException("既有紀錄消失、內容變動或出現多筆候選。")
+    except TaskCancellationError:
+        raise
+    except (WebDriverException, RuntimeError, ValueError) as exc:
+        return _ExistingMileageDetail(
+            f"{WAITING_CONFIRMATION_MARKER} {request.vehicle} 既有里程紀錄回查尚未確認：{exc}；本次未新增或儲存。",
+            verified=False,
+        )
+    first, last = _mileage_record_datetime(existing, "Start"), _mileage_record_datetime(existing, "End")
+    requested_start = _mileage_record_datetime({"StartDay": request.service_case_date().strftime("%Y%m%d"),
+                                              "StartTime": request.case_time}, "Start")
+    requested_end = _mileage_record_datetime({"EndDay": request.service_return_date().strftime("%Y%m%d"),
+                                            "EndTime": request.return_time}, "End")
+    return _ExistingMileageDetail(
+        f"{request.vehicle} 已登打（車輛里程紀錄 {existing['Id']}，時間重疊且地址相似）；"
+        f"里程已重新查詢並核對既有紀錄。既有 {first:%Y/%m/%d %H:%M} 至 {last:%Y/%m/%d %H:%M}、"
+        f"地址 {existing.get('Destination') or '未填'}、駕駛 {existing.get('DriverName') or '未填'}、"
+        f"里程 {existing.get('StartMileage')}→{existing.get('EndMileage')}；"
+        f"本案 {requested_start:%Y/%m/%d %H:%M} 至 {requested_end:%Y/%m/%d %H:%M}、"
+        f"地址 {request.case_address}、駕駛 {request.driver}、結束里程 {request.mileage}；"
+        f"保留 PPE 既有紀錄，本次未新增或儲存。",
+        verified=True,
+    )
+
+
 def _add_vehicle_mileage_record(
     driver: webdriver.Chrome,
     request: AmbulanceReturnRequest,
@@ -3202,12 +3279,17 @@ def _add_vehicle_mileage_record(
 ) -> str:
     _report_progress(progress, "依案件時間查詢前後里程")
     history = _vehicle_mileage_history(driver, request, artifacts_dir, cancel_check)
+    if request.service_type == "disaster" and previous_request is None:
+        existing_detail = _disaster_existing_mileage_detail(driver, request, history, artifacts_dir, cancel_check)
+        if existing_detail is not None:
+            return existing_detail
     try:
         plan = _vehicle_mileage_entry_plan(request, history, previous_request)
     except WebDriverException as exc:
         if not any(message in str(exc) for message in (
             "查無案件之前的結束里程", "本案結束里程小於前一筆結束里程",
             "本案結束里程超過後一筆結束里程", "本案與前一筆結束里程相差不可超過 300 公里",
+            "案件與既有用車時間重疊", "相同案件時間已有不同內容的里程紀錄",
         )):
             raise
         # Recheck the case month before trusting a plan built after an older-month query.
@@ -3216,6 +3298,10 @@ def _add_vehicle_mileage_record(
         case_month = request.service_case_date().strftime("%Y/%m")
         refreshed = _load_vehicle_mileage_month(driver, request, case_month, artifacts_dir)
         history = [row for row in history if row["month"] != case_month] + refreshed
+        if request.service_type == "disaster" and previous_request is None:
+            existing_detail = _disaster_existing_mileage_detail(driver, request, history, artifacts_dir, cancel_check)
+            if existing_detail is not None:
+                return existing_detail
         plan = _vehicle_mileage_entry_plan(request, history, previous_request)
     month = plan["start_at"].strftime("%Y/%m")
     following = plan["following"]
@@ -3234,8 +3320,13 @@ def _add_vehicle_mileage_record(
     if cancel_check:
         cancel_check()
     refreshed = _load_vehicle_mileage_month(driver, request, month, artifacts_dir)
+    refreshed_history = [row for row in history if row["month"] != month] + refreshed
+    if request.service_type == "disaster" and previous_request is None:
+        existing_detail = _disaster_existing_mileage_detail(driver, request, refreshed_history, artifacts_dir, cancel_check)
+        if existing_detail is not None:
+            return existing_detail
     current_plan = _vehicle_mileage_entry_plan(
-        request, [row for row in history if row["month"] != month] + refreshed, previous_request,
+        request, refreshed_history, previous_request,
     )
     if current_plan != plan:
         raise WebDriverException("查詢後前後里程已變動，請重新執行。")
@@ -3368,7 +3459,11 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
         elif first >= end:
             after.append(row)
         else:
-            raise WebDriverException("案件與既有用車時間重疊，停止補登。")
+            raise WebDriverException(
+                f"案件與既有用車時間重疊，停止補登。{request.vehicle} 本案 "
+                f"{start:%Y/%m/%d %H:%M} 至 {end:%Y/%m/%d %H:%M}；"
+                f"衝突紀錄 {row['Id']}：{first:%Y/%m/%d %H:%M} 至 {last:%Y/%m/%d %H:%M}。"
+            )
     before.sort(key=lambda row: _mileage_record_datetime(row, "End"), reverse=True)
     after.sort(key=lambda row: _mileage_record_datetime(row, "Start"))
     if not before:
@@ -3392,14 +3487,23 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
     if len(current) > 1:
         raise WebDriverException("multiple current mileage rows")
     existing = current[0] if current else None
-    if existing and (
-        _mileage_record_datetime(existing, "End") != end
-        or str(existing["EndMileage"]) != last
-        or str(existing["StartMileage"]) != first
-        or clean_case_address(str(existing.get("Destination") or "")) != clean_case_address(request.case_address)
-        or str(existing.get("DriverName") or "").strip() != request.driver.strip()
-    ):
-        raise WebDriverException("相同案件時間已有不同內容的里程紀錄，停止補登。")
+    if existing:
+        comparisons = (
+            ("返隊時間", _mileage_record_datetime(existing, "End").strftime("%Y/%m/%d %H:%M"),
+             end.strftime("%Y/%m/%d %H:%M")),
+            ("結束里程", str(existing["EndMileage"]), last),
+            ("開始里程", str(existing["StartMileage"]), first),
+            ("前往地點", clean_case_address(str(existing.get("Destination") or "")),
+             clean_case_address(request.case_address)),
+            ("駕駛人", str(existing.get("DriverName") or "").strip(), request.driver.strip()),
+        )
+        differences = [f"{label}：既有 {actual}、本案 {expected}"
+                       for label, actual, expected in comparisons if actual != expected]
+        if differences:
+            raise WebDriverException(
+                f"相同案件時間已有不同內容的里程紀錄，停止補登。{request.vehicle} "
+                f"紀錄 {existing['Id']}（{start:%Y/%m/%d %H:%M}）；{'；'.join(differences)}。"
+            )
     return dict(start_at=start, start_mileage=first, end_mileage=last, previous=before[0],
                 following=following, existing=existing)
 

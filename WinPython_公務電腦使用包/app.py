@@ -74,7 +74,7 @@ from ambulance_bot.duty_credentials import (
     credential_sync_accounts_from_payload,
     load_synced_worker_credential,
 )
-from ambulance_bot.login_audit import compact_login_account_summary, site_login_account_summaries
+from ambulance_bot.login_audit import compact_login_account_summary, mask_login_account, site_login_account_summaries
 from ambulance_bot.line_api import reply_text, verify_signature
 from ambulance_bot.manual_task_lock import (
     manual_task_lock_active,
@@ -1526,6 +1526,59 @@ def admin_task_reports() -> list[dict]:
         })
         known_ids.add(task_id)
     return sorted(reports, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+
+
+def task_site_login_accounts(payload: Mapping[str, object]) -> dict[str, str]:
+    def public_summary(value: object) -> str:
+        return re.sub(r"\b[A-Za-z][0-9]{9}\b", lambda match: mask_login_account(match.group()),
+                      compact_login_account_summary(str(value or "")))
+
+    def audit_summary(detail: object) -> str:
+        summaries = []
+        for audit in re.findall(r"登入帳號：[^\r\n。]+", str(detail or "")):
+            parts = audit.partition("=")[2].split("，", 2)
+            if len(parts) == 3:
+                summary = f"{parts[2].strip()}（{parts[1].strip()}）"
+            elif len(parts) == 2:
+                summary = parts[1].strip()
+            else:
+                continue
+            summary = public_summary(summary)
+            if summary and summary not in summaries:
+                summaries.append(summary)
+        return "；".join(summaries)
+
+    task = payload.get("task") if isinstance(payload.get("task"), Mapping) else {}
+    statuses = payload.get("site_statuses") if isinstance(payload.get("site_statuses"), Mapping) else {}
+    attempts = payload.get("site_attempts") if isinstance(payload.get("site_attempts"), Mapping) else {}
+    reported = payload.get("site_login_accounts") if isinstance(payload.get("site_login_accounts"), Mapping) else {}
+    summaries = {}
+    for site_key, _title in task_site_display_pairs(dict(task), dict(statuses)):
+        site = statuses.get(site_key) if isinstance(statuses.get(site_key), Mapping) else {}
+        prior_accounts = {}
+        history = attempts.get(site_key) if isinstance(attempts.get(site_key), list) else []
+        for attempt in sorted((item for item in history if isinstance(item, Mapping)), key=_public_pc_event_time):
+            summary = audit_summary(attempt.get("detail"))
+            if summary:
+                prior_accounts[str(attempt.get("vehicle_key") or "")] = summary
+        vehicles = site.get("vehicle_results") if isinstance(site.get("vehicle_results"), Mapping) else {}
+        vehicle_accounts = {}
+        for vehicle, result in vehicles.items():
+            if isinstance(result, Mapping):
+                summary = audit_summary(result.get("detail")) or prior_accounts.get(str(vehicle), "")
+                vehicle_accounts[str(vehicle)] = summary
+        if any(vehicle_accounts.values()):
+            unique_accounts = set(vehicle_accounts.values())
+            summary = (next(iter(unique_accounts)) if len(unique_accounts) == 1 else
+                       "；".join(f"{vehicle}：{account or '尚未回報'}" for vehicle, account in vehicle_accounts.items()))
+            current_accounts = audit_summary(site.get("detail")).split("；")
+            unassigned = [account for account in current_accounts if account and account not in unique_accounts]
+            if unassigned:
+                summary += "；目前：" + "；".join(unassigned)
+        else:
+            summary = audit_summary(site.get("detail")) or prior_accounts.get("", "")
+        summaries[site_key] = summary or public_summary(reported.get(site_key)) or "尚未回報"
+    return summaries
 
 
 def render_admin_public_pc(*, locked_service: str = ""):
@@ -8220,6 +8273,7 @@ def template_helpers() -> dict:
         "selected_return_time_input": selected_return_time_input,
         "patient_counts_from_summary": patient_counts_from_summary,
         "compact_login_account_summary": compact_login_account_summary,
+        "task_site_login_accounts": task_site_login_accounts,
         "public_pc_event_display_detail": public_pc_event_display_detail,
         "public_pc_event_rows": public_pc_event_rows,
         "public_pc_site_failure_history": public_pc_site_failure_history,

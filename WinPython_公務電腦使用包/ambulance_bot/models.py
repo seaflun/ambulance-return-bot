@@ -485,8 +485,14 @@ class AmbulanceReturnRequest:
         return [account for account in self.personnel_accounts if account.lower().startswith("tyfd")]
 
     @property
+    def duty_login_driver(self) -> str:
+        if self.service_type == "disaster":
+            return self.effective_vehicle_entries()[0].driver.strip()
+        return self.driver.strip()
+
+    @property
     def driver_duty_login_account_candidates(self) -> list[str]:
-        driver = self.driver.strip()
+        driver = self.duty_login_driver
         if not driver:
             return []
         accounts = [account.strip() for account in self.personnel_accounts]
@@ -499,7 +505,7 @@ class AmbulanceReturnRequest:
 
     @property
     def personnel_duty_login_account_candidates(self) -> list[str]:
-        driver = self.driver.strip()
+        driver = self.duty_login_driver
         accounts = [account.strip() for account in self.personnel_accounts]
         ordered: list[str] = []
         for index, account in enumerate(accounts):

@@ -226,8 +226,15 @@ def site_stage_from_detail(site_key: str, detail: str) -> str:
     if "worker" not in detail_text.lower() and "本機快速" not in detail_text:
         return ""
     stages = SITE_STAGE_DEFINITIONS.get(site_key, ())
-    matches = [stage for stage in stages if stage in detail_text]
-    return max(matches, key=detail_text.rfind) if matches else ""
+    matches = [(detail_text.rfind(stage), stage) for stage in stages if stage in detail_text]
+    if site_key == "vehicle_mileage":
+        for reported, canonical in (
+            ("依案件時間查詢前後里程", "核對前後里程"),
+            ("本案與後一筆里程已核對", "確認里程紀錄"),
+        ):
+            pattern = rf"(?:公務電腦\s+worker\s+車輛里程|本機快速\s*車輛里程)\s*[：:]\s*({re.escape(reported)})"
+            matches.extend((match.start(1), canonical) for match in re.finditer(pattern, detail_text))
+    return max(matches, key=lambda match: match[0])[1] if matches else ""
 
 
 def diagnostic_payload(site_key: str, status: str, detail: str, exception: BaseException | None = None) -> dict[str, str]:
@@ -275,6 +282,7 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         "element_intercepted",
         "vehicle_not_found",
         "mileage_overlap",
+        "mileage_existing_conflict",
         "mileage_sequence",
         "element_missing",
         "case_not_found",
@@ -464,6 +472,8 @@ def _diagnostic_category(
         return "mileage_sequence"
     if site_key == "vehicle_mileage" and "既有用車時間重疊" in analysis_detail:
         return "mileage_overlap"
+    if site_key == "vehicle_mileage" and "相同案件時間已有不同內容的里程紀錄" in analysis_detail:
+        return "mileage_existing_conflict"
     if "captcha" in text or "驗證碼" in analysis_detail or "sso" in text or "login" in text or "登入" in analysis_detail or "帳密" in analysis_detail:
         return "login"
     if "query failed" in text or "查詢" in analysis_detail:
@@ -554,6 +564,8 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return "填寫返隊時間與里程"
     if category == "mileage_overlap":
         return "填寫返隊時間與里程"
+    if category == "mileage_existing_conflict":
+        return "核對前後里程"
     if category == "mileage_sequence":
         return "核對前後里程"
     if category == "fuel_period":
@@ -662,6 +674,7 @@ def _reason_for(category: str, status: str, detail: str) -> str:
         "vehicle_candidate": "同案查到其他車輛，原車紀錄可能尚未同步；這不代表原車填錯，需由使用者選擇本次查找車輛。",
         "validation": "送出前資料檢查不一致，程式已停止避免寫入錯誤資料。",
         "mileage_overlap": "同一車輛已有用車紀錄與本案件時間重疊，程式已停止補登，避免覆蓋既有資料。",
+        "mileage_existing_conflict": "同一案件時間的既有里程紀錄與任務內容不同，程式已停止新增或覆寫，避免重複登打。",
         "mileage_sequence": "本案里程與前後正式里程不連續，程式已停止寫入，避免修改錯誤里程。",
         "save": "填寫後的儲存動作未完成或未確認成功。",
         "query": "查詢案件時沒有取得可用結果。",
@@ -728,6 +741,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "確認任務車號與系統車輛名稱一致，必要時到救護各項設定修正後重試。"
     if category == "mileage_overlap":
         return "先核對 PPE 中該車輛的既有用車時間、案件時間與車號；若為重複案件保留既有紀錄，若資料有誤再修正後單獨重跑里程，勿直接覆寫重疊紀錄。"
+    if category == "mileage_existing_conflict":
+        return "依紀錄編號核對 PPE 的車輛、時間、地址、駕駛及里程；若確認此案已由人工登打，可勾選該車既有里程確認，只標示人工完成，不要重複新增或覆寫正式紀錄。"
     if category == "mileage_sequence":
         return "核對 PPE 月份、前後正式紀錄的時間與里程，確認正確後只重跑失敗車輛的里程。"
     if category == "civilpower_case_verify":

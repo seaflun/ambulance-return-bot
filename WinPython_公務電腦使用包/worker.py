@@ -1987,6 +1987,9 @@ def _report_worker_site_progress(
     site_name: str,
     stage: str,
     login_audit: str,
+    *,
+    vehicle_key: str = "",
+    vehicle_label: str = "",
 ) -> None:
     try:
         post_status(
@@ -1996,6 +1999,7 @@ def _report_worker_site_progress(
             with_login_audit(f"公務電腦 worker {site_name}：{stage}", login_audit),
             site_key=site_key,
             site_name=site_name,
+            **({"vehicle_key": vehicle_key, "vehicle_label": vehicle_label} if vehicle_key else {}),
         )
     except TaskCancellationError:
         raise
@@ -2706,7 +2710,7 @@ def _run_worker_per_vehicle_site(
     action: Callable[[AmbulanceReturnRequest, int], object],
     *,
     vehicle_results: dict[str, dict[str, str]] | None = None,
-    login_audit: str = "",
+    login_audit: str | Callable[[AmbulanceReturnRequest], str] = "",
     vehicle_requests: list[AmbulanceReturnRequest] | None = None,
 ) -> SiteAutomationResult:
     stored = {str(key): dict(value) for key, value in dict(vehicle_results or {}).items() if isinstance(value, dict)}
@@ -2717,6 +2721,7 @@ def _run_worker_per_vehicle_site(
         if _vehicle_result_is_complete(stored.get(vehicle_key)):
             details.append(f"{vehicle_key}: 已完成，略過")
             continue
+        vehicle_audit = login_audit(vehicle_request) if callable(login_audit) else login_audit
         try:
             vehicle_result = action(vehicle_request, index)
         except TaskCancellationError:
@@ -2741,7 +2746,7 @@ def _run_worker_per_vehicle_site(
             )
         except Exception as exc:
             vehicle_result = make_site_result(site_key, site_name, f"{site_key}_failed", str(exc), exc)
-        vehicle_result = _result_with_login_audit(vehicle_result, login_audit)
+        vehicle_result = _result_with_login_audit(vehicle_result, vehicle_audit)
         vehicle_status = str(getattr(vehicle_result, "status", "") or f"{site_key}_failed")
         vehicle_detail = str(getattr(vehicle_result, "detail", "") or "")
         stored[vehicle_key] = {"status": vehicle_status, "detail": vehicle_detail}
@@ -2782,7 +2787,9 @@ def run_vehicle_task(
     if vehicle_results is None:
         vehicle_results = site_vehicle_results_from_embedded_task(task, "vehicle_mileage")
     request = AmbulanceReturnRequest.from_dict(task)
-    login_audit = login_audit_for_site("vehicle_mileage", request)
+    vehicle_requests = request.vehicle_requests()
+    login_request = vehicle_requests[0] if request.service_type == "disaster" else None
+    login_audit = login_audit_for_site("vehicle_mileage", login_request or request)
     print(f"[worker] vehicle mileage task {request.task_id}", flush=True)
     post_status(
         server_url,
@@ -2791,42 +2798,56 @@ def run_vehicle_task(
         with_login_audit(f"公務電腦 worker 執行車輛里程：{worker_id}", login_audit),
     )
 
-    def report_progress(stage: str) -> None:
+    def report_progress(
+        stage: str, vehicle_request: AmbulanceReturnRequest | None = None, vehicle_index: int = 1,
+    ) -> None:
         _report_worker_site_progress(
             server_url,
             request.task_id,
             "vehicle_mileage",
             "車輛里程",
             stage,
-            login_audit,
+            login_audit_for_site("vehicle_mileage", login_request or vehicle_request)
+            if vehicle_request is not None else login_audit,
+            **({"vehicle_key": _vehicle_result_key(vehicle_request, vehicle_index),
+                "vehicle_label": str(vehicle_request.vehicle or "").strip()} if vehicle_request is not None else {}),
         )
 
-    if len(request.vehicle_requests()) > 1:
+    if len(vehicle_requests) > 1:
         shared_port = debugger_port or int(os.getenv("VEHICLE_MILEAGE_DEBUGGER_PORT", "9234"))
-        result = _run_worker_per_vehicle_site(
-            server_url,
-            request,
-            "vehicle_mileage",
-            "車輛里程",
-            lambda vehicle_request, index: run_vehicle_mileage_task(
+        first_driver = True
+
+        def run_vehicle(vehicle_request, index):
+            nonlocal first_driver
+            fresh_driver = first_driver
+            first_driver = False
+            return run_vehicle_mileage_task(
                 vehicle_request,
                 artifacts_dir,
                 profile_name=profile_name,
                 debugger_port=shared_port,
                 use_session_lock=use_session_lock,
                 tile_name=tile_name,
-                force_new_driver=index == 1,
+                force_new_driver=fresh_driver,
                 update_context=_vehicle_specific_update_context(update_context, vehicle_request, index),
                 cancel_check=cancel_check,
-                progress=report_progress,
-            ),
+                progress=lambda stage: report_progress(stage, vehicle_request, index),
+                **({"login_request": login_request} if login_request is not None else {}),
+            )
+
+        result = _run_worker_per_vehicle_site(
+            server_url,
+            request,
+            "vehicle_mileage",
+            "車輛里程",
+            run_vehicle,
             vehicle_results=vehicle_results,
-            login_audit=login_audit,
+            login_audit=lambda vehicle_request: login_audit_for_site("vehicle_mileage", login_request or vehicle_request),
         )
     else:
         try:
             result = run_vehicle_mileage_task(
-                request,
+                vehicle_requests[0] if vehicle_requests else request,
                 artifacts_dir,
                 profile_name=profile_name,
                 debugger_port=debugger_port,
@@ -2836,6 +2857,7 @@ def run_vehicle_task(
                 update_context=update_context,
                 cancel_check=cancel_check,
                 progress=report_progress,
+                **({"login_request": login_request} if login_request is not None else {}),
             )
         except TaskCancellationError:
             raise
@@ -2895,14 +2917,18 @@ def run_fuel_worker_task(
         with_login_audit(f"公務電腦 worker 登打加油紀錄：{worker_id}", login_audit),
     )
 
-    def report_progress(stage: str) -> None:
+    def report_progress(
+        stage: str, vehicle_request: AmbulanceReturnRequest | None = None, vehicle_index: int = 1,
+    ) -> None:
         _report_worker_site_progress(
             server_url,
             request.task_id,
             "fuel_record",
             "登打加油紀錄",
             stage,
-            login_audit,
+            login_audit_for_site("fuel_record", vehicle_request) if vehicle_request is not None else login_audit,
+            **({"vehicle_key": _vehicle_result_key(vehicle_request, vehicle_index),
+                "vehicle_label": str(vehicle_request.vehicle or "").strip()} if vehicle_request is not None else {}),
         )
 
     try:
@@ -2928,10 +2954,10 @@ def run_fuel_worker_task(
                         original_indexes[id(vehicle_request)],
                     ),
                     cancel_check=cancel_check,
-                    progress=report_progress,
+                    progress=lambda stage: report_progress(stage, vehicle_request, index),
                 ),
                 vehicle_results=vehicle_results,
-                login_audit=login_audit,
+                login_audit=lambda vehicle_request: login_audit_for_site("fuel_record", vehicle_request),
                 vehicle_requests=fuel_requests,
             )
         else:

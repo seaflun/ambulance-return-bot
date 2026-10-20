@@ -1,4 +1,5 @@
 {% from "_page_chrome.html" import page_chrome %}
+{% set site_login_accounts = task_site_login_accounts(payload) %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -207,6 +208,12 @@
       margin-bottom: 14px;
     }
     .card-title { min-width: 0; }
+    .card-login-account {
+      margin: -4px 0 12px;
+      color: var(--muted);
+      font-size: var(--text-xs);
+      overflow-wrap: anywhere;
+    }
     .card-stage-label {
       display: block;
       margin-bottom: 2px;
@@ -524,6 +531,10 @@
       <span class="status {{ status_class(site.status) }}">{{ status_label(site.status, site.detail) }}</span>
     </div>
   </div>
+  {% set login_sites = [('vehicle_mileage', '里程'), ('fuel_record', '加油')] if site_key in ['vehicle_mileage', 'fuel_record'] and task_has_active_fuel_site(payload.task, payload.site_statuses) else [(site_key, title)] %}
+  {% for login_site_key, login_title in login_sites %}
+    <div class="card-login-account" aria-label="{{ login_title }}登入帳號">{% if login_sites|length > 1 %}{{ login_title }}{% endif %}登入帳號：{{ site_login_accounts.get(login_site_key) or '尚未回報' }}</div>
+  {% endfor %}
 {%- endmacro %}
 <body class="workspace-page workspace-page--task workspace-page--{{ payload.task.service_type }}-task">
   <main>
@@ -631,8 +642,18 @@
           {{ mileage_overlap_confirmation_forms(payload.task.task_id, payload.site_statuses.get('vehicle_mileage', {}), task_active) }}
           <ul class="line-list">
             {% if vehicle_entries|length > 1 %}
+              {% set mileage_vehicle_results = payload.site_statuses.get('vehicle_mileage', {}).get('vehicle_results', {}) %}
               {% for entry in vehicle_entries %}
-                <li><span class="label">{{ entry.label }}</span><span class="value">{{ entry.vehicle or '未填' }} / {{ entry.driver or '未填' }} / {{ entry.return_time or '未填' }} / {{ entry.mileage or '未填' }}</span></li>
+                <li>
+                  <span class="label">{{ entry.label }}</span>
+                  <span class="value">{{ entry.vehicle or '未填' }} / {{ entry.driver or '未填' }} / {{ entry.return_time or '未填' }} / {{ entry.mileage or '未填' }}
+                    {% if payload.task.service_type == 'disaster' %}
+                      {% set vehicle_mileage_result = mileage_vehicle_results.get(entry.vehicle, {}) if mileage_vehicle_results is mapping else {} %}
+                      <br><span class="status {{ status_class(vehicle_mileage_result.status or 'not_started') }}">{{ status_label(vehicle_mileage_result.status, vehicle_mileage_result.detail) if vehicle_mileage_result.status else '尚未回報' }}</span>
+                      {% if vehicle_mileage_result.detail %}<br>{{ vehicle_mileage_result.detail }}{% endif %}
+                    {% endif %}
+                  </span>
+                </li>
               {% endfor %}
             {% else %}
               {% set entry = vehicle_entries[0] %}
