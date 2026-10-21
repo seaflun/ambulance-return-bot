@@ -361,8 +361,6 @@
         {% for item in reports %}
           <article class="task-card">
             {% set task = item.task if item.task is mapping else {} %}
-            {% set operator_label = item.operator or item.user or '未知使用者' %}
-            {% set synced_account = item.synced_account or operator_label %}
             {% set site_login_accounts = task_site_login_accounts(item) %}
             {% set site_completion_seconds = task_site_completion_seconds(item) %}
             {% set vehicle_entries = task_vehicle_display_entries(task) %}
@@ -376,7 +374,6 @@
                 {% else %}
                   <div class="meta">任務司機：{{ task.driver or '未填司機' }}</div>
                 {% endif %}
-                <div class="meta">同步帳號：{{ synced_account }}</div>
                 <div class="meta">公務電腦：{{ item.worker_id or '未回報' }}｜更新：{{ item.updated_at }}</div>
               </div>
               <span class="status {{ status_class(effective_task_status(item)) }}">{{ task_completion_label(item) }}</span>
@@ -410,34 +407,33 @@
               </section>
             {% endif %}
 
-            {% if site_login_accounts %}
-              <section class="login-summary" aria-label="各站登入帳號">
-                <div class="login-title">各站登入帳號</div>
-                <div class="login-grid">
-                  {% for site_key, title in task_site_display_pairs(task) %}
-                    <div class="login-account">
-                      <span class="login-account-name">{{ title }}</span>
-                      <span class="login-account-value">{{ compact_login_account_summary(site_login_accounts.get(site_key) or '尚未回報') }}</span>
-                    </div>
-                  {% endfor %}
-                </div>
-              </section>
-            {% endif %}
-
             {% set task_active = task.task_id in active_task_ids %}
             {% set retry_return_service = service_filter if service_filter in ['ems', 'disaster'] else 'public_pc' %}
-            <div class="site-grid">
+            <h3 class="site-summary-title">各站登打狀態</h3>
+            <div class="site-grid" role="group" aria-label="各站登打狀態">
               {% for site_key, title in task_site_display_pairs(task) %}
                 {% set site = item.site_statuses.get(site_key, {}) if item.site_statuses else {} %}
-                <div class="site">
+                <div class="site" data-site-key="{{ site_key }}">
                   <div class="site-heading">
-                    <div class="site-name">{{ title }}</div>
+                    <div class="site-title-status">
+                      <div class="site-name">{{ title }}</div>
+                      <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
+                    </div>
                     <div class="site-duration" aria-label="{{ title }}完成耗時" title="依該站開始與完成回報時間估算，不含前置排隊；回報延遲可能影響秒數。">
                       <span class="site-duration-label">完成耗時</span>
                       <strong class="site-duration-value">{% if site_completion_seconds.get(site_key) is not none %}約 {{ site_completion_seconds[site_key] }} 秒{% elif status_class(site.status) == 'complete' %}未記錄{% else %}—{% endif %}</strong>
                     </div>
                   </div>
-                  <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
+                  <div class="site-login-account" aria-label="{{ title }}登入帳號">
+                    {% set account_summary = compact_login_account_summary(site_login_accounts.get(site_key) or '尚未回報') %}
+                    {% for account in account_summary.split('；') %}
+                      {% set account_parts = account.rpartition('（') if account.endswith('）') else (account, '', '') %}
+                      <div class="site-account-line">
+                        <span class="login-account-value">{% if account == '尚未回報' %}登入帳號尚未回報{% else %}{{ account_parts[0] or account }}{% endif %}</span>
+                        {% if account_parts[1] %}<span class="site-account-source">{{ account_parts[2][:-1] }}</span>{% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
                   {% for row in site_vehicle_candidate_rows(site) if row.state in ['available', 'selected'] %}
                     <section class="site-vehicle-choices" aria-label="{{ row.original_vehicle }}查找車輛">
                       <div>系統車輛：{{ row.original_vehicle }}</div>

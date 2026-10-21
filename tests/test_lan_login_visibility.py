@@ -1,5 +1,6 @@
 import html
 import os
+import re
 import tempfile
 import unittest
 from datetime import datetime
@@ -44,6 +45,14 @@ class LanLoginVisibilityTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         return html.unescape(response.get_data(as_text=True))
 
+    def assert_account(self, body, identity, source):
+        if 'class="site-login-account"' not in body:
+            self.assertIn(f"{identity}（{source}）", body)
+            return
+        self.assertRegex(body, r'<div class="site-account-line">\s*<span class="login-account-value">'
+                         + re.escape(identity) + r'</span>\s*<span class="site-account-source">'
+                         + re.escape(source) + r'</span>')
+
     def test_nas_admin_shows_accounts_from_worker_audit_without_local_credentials(self):
         task = self.task()
         self.set_site(task, "duty_work_log", "登入帳號：工作=任務司機 > 出勤人員 > 同步帳號，任務司機，12番 測試甲 - tyfd10001。勤務完成。")
@@ -51,9 +60,9 @@ class LanLoginVisibilityTests(unittest.TestCase):
         before = self.store.get(task.task_id)
         with patch.object(app_module, "site_login_account_summaries", side_effect=AssertionError("NAS must not guess credentials")):
             body = self.body("/admin/ems")
-        self.assertIn('aria-label="各站登入帳號"', body)
-        self.assertIn("12番 測試甲 - tyfd10001（任務司機）", body)
-        self.assertIn("7番 測試乙 - tyfd10002（出勤人員）", body)
+        self.assertIn('aria-label="各站登打狀態"', body)
+        self.assert_account(body, "12番 測試甲 - tyfd10001", "任務司機")
+        self.assert_account(body, "7番 測試乙 - tyfd10002", "出勤人員")
         self.assertIn("尚未回報", body)
         self.assertEqual(before, self.store.get(task.task_id))
 
@@ -73,8 +82,8 @@ class LanLoginVisibilityTests(unittest.TestCase):
         for route in ("/admin/disaster", f"/tasks/{task.task_id}"):
             with self.subTest(route=route):
                 body = self.body(route)
-                self.assertIn("新坡11：12番 測試甲 - tyfd10001（任務司機）", body)
-                self.assertIn("新坡15：7番 測試乙 - tyfd10002（任務司機）", body)
+                self.assert_account(body, "新坡11：12番 測試甲 - tyfd10001", "任務司機")
+                self.assert_account(body, "新坡15：7番 測試乙 - tyfd10002", "任務司機")
 
     def test_latest_attempt_account_survives_skip_and_overrides_old_summary(self):
         task = self.task()
@@ -84,7 +93,7 @@ class LanLoginVisibilityTests(unittest.TestCase):
         payload["site_login_accounts"] = {"vehicle_mileage": "1番 舊帳號 - tyfd00001（任務司機）"}
         self.store.save_payload(task.task_id, payload)
         body = self.body("/admin/ems")
-        self.assertIn("8番 新帳號 - tyfd10003（同步帳號）", body)
+        self.assert_account(body, "8番 新帳號 - tyfd10003", "同步帳號")
         self.assertNotIn("1番 舊帳號 - tyfd00001", body)
 
     def test_unreported_sites_keep_trusted_summary_or_show_placeholder(self):
@@ -93,8 +102,8 @@ class LanLoginVisibilityTests(unittest.TestCase):
         payload["site_login_accounts"] = {"duty_work_log": "8番 已回報 - tyfd10003（任務司機優先）"}
         self.store.save_payload(task.task_id, payload)
         body = self.body("/admin/ems")
-        self.assertIn("8番 已回報 - tyfd10003（任務司機）", body)
-        self.assertEqual(3, body.count('class="login-account-value">尚未回報'))
+        self.assert_account(body, "8番 已回報 - tyfd10003", "任務司機")
+        self.assertEqual(3, body.count('class="login-account-value">登入帳號尚未回報'))
 
     def test_combined_mileage_card_shows_mileage_and_fuel_accounts(self):
         task = self.task(fuel_record=FuelRecord(enabled=True))
@@ -129,8 +138,8 @@ class LanLoginVisibilityTests(unittest.TestCase):
         for route in ("/admin/disaster", f"/tasks/{task.task_id}"):
             with self.subTest(route=route):
                 body = self.body(route)
-                self.assertIn("12番 已完成車 - tyfd10001（任務司機）", body)
-                self.assertIn("目前：7番 執行中 - tyfd10002（任務司機）", body)
+                self.assert_account(body, "12番 已完成車 - tyfd10001", "任務司機")
+                self.assert_account(body, "目前：7番 執行中 - tyfd10002", "任務司機")
                 self.assertNotIn("新坡15：7番 執行中", body)
 
     def test_unknown_vehicle_account_is_not_replaced_by_another_vehicles_account(self):
@@ -141,5 +150,5 @@ class LanLoginVisibilityTests(unittest.TestCase):
         for route in ("/admin/disaster", f"/tasks/{task.task_id}"):
             with self.subTest(route=route):
                 body = self.body(route)
-                self.assertIn("新坡11：12番 有回報 - tyfd10001（任務司機）", body)
+                self.assert_account(body, "新坡11：12番 有回報 - tyfd10001", "任務司機")
                 self.assertIn("新坡15：尚未回報", body)

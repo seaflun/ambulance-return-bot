@@ -4912,12 +4912,14 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn('<details class="task-details">', body)
         self.assertIn("<summary>完整事件</summary>", body)
         self.assertIn("任務司機：曾彥綸", body)
-        self.assertIn("同步帳號：8番 曾彥綸 - tyfd01510", body)
-        self.assertIn("各站登入帳號", body)
-        self.assertIn("8番 曾彥綸 - tyfd01510（任務司機）", body)
-        self.assertNotIn("8番 曾彥綸 - tyfd01510（出勤人員）", body)
-        self.assertIn("8番 曾彥綸 - tyfd01510（同步帳號）", body)
-        self.assertIn("8番 曾彥綸 - C123***789（同步帳號）", body)
+        self.assertNotIn("同步帳號：8番 曾彥綸 - tyfd01510", body)
+        self.assertIn("各站登打狀態", body)
+        for identity, source in (("8番 曾彥綸 - tyfd01510", "任務司機"),
+                                 ("8番 曾彥綸 - tyfd01510", "同步帳號"),
+                                 ("8番 曾彥綸 - C123***789", "同步帳號")):
+            self.assertRegex(body, r'<span class="login-account-value">' + re.escape(identity)
+                             + r'</span>\s*<span class="site-account-source">' + source + r'</span>')
+        self.assertNotIn('class="site-account-source">出勤人員</span>', body)
         self.assertNotIn("任務司機優先", body)
         self.assertNotIn("司機帳號優先，失敗一次改同步帳號", body)
         self.assertNotIn("回報來源帳號：8番 曾彥綸 - tyfd01510", body)
