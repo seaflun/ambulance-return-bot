@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.21.2047">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.21.2047') }}</p>
+          <h2 class="update-card__title">補齊後台完整事件的階段判定</h2>
+        </div>
+        <span class="update-card__versions">2026.10.21.2047</span>
+      </header>
+      <ul class="update-card__items">
+        <li>補齊耗材與消毒啟動、各站重新排隊、瀏覽器自動重試及內容修改事件，顯示準備登打、排隊等候、重啟瀏覽器或待重新登打。</li>
+        <li>補上工作紀錄重新查詢與民力準備登入的固定進度對應，修正既有事件顯示「階段未判定」；保留原始狀態及錯誤診斷，真正未知訊息仍維持未判定。</li>
+        <li>民力準備登入仍作為完成耗時的起點，中途進度不重設秒數；保留各站卡片、登打明細與分車資訊。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.21.1203">
       <header class="update-card__heading">
         <div>

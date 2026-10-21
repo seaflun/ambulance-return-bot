@@ -71,10 +71,23 @@ class SiteCompletionTimingTests(unittest.TestCase):
         self.assertEqual(29, self.seconds(events, "duty_work_log"))
 
     def test_worker_civilpower_preparation_is_a_known_initial_event(self):
-        events = [self.event("volunteer_assist", "2026-10-20T08:00:00",
-                             detail="登入帳號：民力系統=任務司機。公務電腦 worker 民力系統：準備登入民力運用管理系統"),
-                  self.event("volunteer_assist", "2026-10-20T08:00:29", "saved")]
-        self.assertEqual(29, self.seconds(events, "volunteer_assist"))
+        for prefix in ("", "登入帳號：民力系統=任務司機。", "民力系統: 登入帳號：民力系統=任務司機。",
+                       "登入帳號：民力系統=任務司機。民力系統: "):
+            with self.subTest(prefix=prefix):
+                events = [self.event("volunteer_assist", "2026-10-20T08:00:00",
+                                     detail=prefix + "公務電腦 worker 民力系統：準備登入民力運用管理系統"),
+                          self.event("volunteer_assist", "2026-10-20T08:00:10",
+                                     detail="公務電腦 worker 民力系統：登入內部入口網"),
+                          self.event("volunteer_assist", "2026-10-20T08:00:29", "saved")]
+                self.assertEqual(29, self.seconds(events, "volunteer_assist"))
+
+    def test_civilpower_mid_progress_without_start_cannot_supply_duration(self):
+        for stage in ("登入內部入口網", "工作紀錄回查"):
+            with self.subTest(stage=stage):
+                events = [self.event("volunteer_assist", "2026-10-20T08:00:10",
+                                     detail="公務電腦 worker 民力系統：" + stage),
+                          self.event("volunteer_assist", "2026-10-20T08:00:29", "saved")]
+                self.assertIsNone(self.seconds(events, "volunteer_assist"))
 
     def test_vehicle_terminals_do_not_finish_or_reset_the_whole_site(self):
         events = [self.event("vehicle_mileage", "2026-10-20T08:00:00"),

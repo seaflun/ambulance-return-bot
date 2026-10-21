@@ -8009,7 +8009,10 @@ def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int 
         if status == f"{site_key}_running" or worker_start:
             explicit_start = (worker_start or "開始" in action or "重試" in action
                               or "公務電腦 worker 執行" in detail
-                              or "公務電腦 worker 登打加油紀錄：" in detail)
+                              or "公務電腦 worker 登打加油紀錄：" in detail
+                              or (site_key == "volunteer_assist" and bool(re.fullmatch(
+                                  r"(?:登入帳號\s*[：:][^。\r\n]*。\s*)?公務電腦\s+worker\s+民力系統\s*[：:]\s*"
+                                  r"準備登入民力運用管理系統", aggregate_detail))))
             progress_stage = (civilpower_stage_from_detail(detail) if site_key == "volunteer_assist"
                               else site_stage_from_detail(site_key, detail))
             if site_key not in starts and not explicit_start and progress_stage:
@@ -8149,6 +8152,35 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
     return rows
 
 
+def _public_pc_event_lifecycle(site_key: str, status: str, action: str, detail: str) -> tuple[str, str, str]:
+    startup_names = {"vehicle_mileage": "車輛里程", "consumables": "耗材", "disinfection": "消毒紀錄"}
+    for site in SITE_DEFINITIONS:
+        if site_key and site_key != site.key:
+            continue
+        body = detail.removeprefix(f"{site.name}: ")
+        body = re.sub(r"^登入帳號\s*[：:][^。\r\n]*。\s*", "", body, count=1)
+        report_actions = {"更新", "執行中", "公務電腦回報任務狀態", f"公務電腦回報{site.name}"}
+        startup_name = startup_names.get(site.key)
+        if (startup_name and status in {f"{site.key}_running", "manual_captcha_required"}
+                and action in report_actions
+                and re.fullmatch(rf"公務電腦\s+worker\s+執行{startup_name}[：:]\s*[\w.-]+", body)):
+            return site.key, "準備登打", "執行中"
+        if (status in {"manual_confirmation_required", "manual_captcha_required", "queued_for_worker"}
+                and action == f"後台重新送出{site.name}"
+                and detail == f"後台重新送出{site.name}，已排入公務電腦處理。"):
+            return site.key, "排隊等候", "等候執行"
+        if status == f"{site.key}_needs_update" and body == "任務內容已修改，請更新此站。":
+            return site.key, "內容已修改", "待重新登打"
+        recovery_messages = {
+            f"{site.name} Chrome 工作階段失效，正在自動重啟瀏覽器並重試。",
+            f"{site.name} 網頁工作階段失效，自動重啟瀏覽器後重試",
+        }
+        if (status == f"{site.key}_running" and body in recovery_messages
+                and (action in report_actions or action == body)):
+            return site.key, "重啟瀏覽器", "重試中"
+    return site_key, "", ""
+
+
 def public_pc_event_rows(report: dict) -> list[dict]:
     rows = []
     events = public_pc_report_display_events(report)
@@ -8197,15 +8229,7 @@ def public_pc_event_rows(report: dict) -> list[dict]:
             site_key = next((key for key in SITE_STAGE_GROUPS if status.startswith(key + "_")), "")
         lifecycle_group = lifecycle_state = ""
         if not any(event.get(field) for field in DIAGNOSTIC_FIELDS):
-            startup_detail = re.sub(r"^登入帳號\s*[：:][^。\r\n]*。\s*", "", detail, count=1)
-            if (status in {"vehicle_mileage_running", "manual_captcha_required"}
-                    and action in {"更新", "執行中", "公務電腦回報任務狀態", "公務電腦回報車輛里程"}
-                    and re.fullmatch(r"公務電腦\s+worker\s+執行車輛里程[：:]\s*[\w.-]+", startup_detail)):
-                site_key, lifecycle_group, lifecycle_state = "vehicle_mileage", "準備登打", "執行中"
-            elif (status in {"manual_captcha_required", "queued_for_worker"}
-                    and action == "後台重新送出車輛里程"
-                    and detail == "後台重新送出車輛里程，已排入公務電腦處理。"):
-                site_key, lifecycle_group, lifecycle_state = "vehicle_mileage", "排隊等候", "等候執行"
+            site_key, lifecycle_group, lifecycle_state = _public_pc_event_lifecycle(site_key, status, action, detail)
         failure_site_statuses = None
         if site_key and status_class(status) == "failed":
             failure_sites = event.get("failure_sites")

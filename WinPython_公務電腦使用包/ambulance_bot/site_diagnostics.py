@@ -208,8 +208,14 @@ SITE_DEFAULT_FAILURE_STAGE = {
 
 def civilpower_stage_from_detail(detail: str) -> str:
     detail_text = " ".join(str(detail or "").split())
-    matches = [stage for stage in CIVILPOWER_STAGES if stage in detail_text]
-    return max(matches, key=detail_text.rfind) if matches else ""
+    matches = [(detail_text.rfind(stage), stage) for stage in CIVILPOWER_STAGES if stage in detail_text]
+    startup_pattern = (
+        r"(?:^|[。|])\s*(?:民力系統:\s*)?(?:公務電腦\s+worker\s+|本機快速\s*)民力系統\s*[：:]\s*"
+        r"(準備登入民力運用管理系統)(?=$|\s*\|)"
+    )
+    matches.extend((match.start(1), CIVILPOWER_STAGE_LABELS["login"])
+                   for match in re.finditer(startup_pattern, detail_text))
+    return max(matches, key=lambda match: match[0])[1] if matches else ""
 
 
 def _detail_without_login_audit(detail: str) -> str:
@@ -234,6 +240,13 @@ def site_stage_from_detail(site_key: str, detail: str) -> str:
         ):
             pattern = rf"(?:公務電腦\s+worker\s+車輛里程|本機快速\s*車輛里程)\s*[：:]\s*({re.escape(reported)})"
             matches.extend((match.start(1), canonical) for match in re.finditer(pattern, detail_text))
+    elif site_key == "duty_work_log":
+        retry_pattern = (
+            r"(?:^|[。|])\s*(?:消防勤務工作紀錄:\s*)?(?:公務電腦\s+worker\s+|本機快速\s*)消防勤務工作紀錄\s*[：:]\s*"
+            r"(既有工作紀錄查詢逾時，重新查詢一次（尚未新增）)(?=$|\s*\|)"
+        )
+        matches.extend((match.start(1), "查詢既有工作紀錄")
+                       for match in re.finditer(retry_pattern, detail_text))
     return max(matches, key=lambda match: match[0])[1] if matches else ""
 
 
