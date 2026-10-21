@@ -632,6 +632,153 @@ class WebAppTests(unittest.TestCase):
 
         self.assertFalse(app_module.credential_sync_relay_file().exists())
 
+    def test_credential_sync_worker_get_expires_pending_account_status(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        payload = self.credential_sync_payload()
+        payload["accounts"][0]["duty_pc_save_status"] = "saved"
+        queued = self.client.post(
+            "/api/credential-sync", json=payload,
+            headers={"X-Credential-Sync-Token": "sync-token"},
+        )
+        self.assertEqual(queued.status_code, 200)
+        before = json.loads(app_module.credential_sync_status_file().read_text(encoding="utf-8"))["accounts"][0]
+        expired_at = datetime.fromisoformat(before["last_sent_at"]).timestamp() + 901
+
+        with mock.patch.object(app_module.time, "time", return_value=expired_at):
+            response = self.client.get(
+                "/worker/credential-sync", headers={"X-Worker-Token": os.environ["WORKER_TOKEN"]},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.get_json()["request"])
+        self.assertFalse(app_module.credential_sync_relay_file().exists())
+        row = json.loads(app_module.credential_sync_status_file().read_text(encoding="utf-8"))["accounts"][0]
+        self.assertEqual(row["last_status"], "expired")
+        self.assertEqual(row["last_sent_at"], before["last_sent_at"])
+        self.assertEqual(row["duty_pc_save_status"], "saved")
+        self.assertTrue(row["last_completed_at"])
+
+    def test_credential_sync_admin_keeps_unexpired_pending_request(self):
+        now = datetime.now()
+        sent_at = (now - timedelta(seconds=899)).isoformat(timespec="seconds")
+        status_path = app_module.credential_sync_status_file()
+        app_module.write_json_atomic(status_path, {"accounts": [{
+            "name": "尚在等待", "last_sent_at": sent_at, "last_completed_at": "",
+            "last_status": "pending", "duty_pc_save_status": "saved",
+        }]})
+        before = status_path.read_bytes()
+
+        with mock.patch.object(app_module.time, "time", return_value=now.timestamp()):
+            row = app_module.credential_sync_admin_view()["accounts"][0]
+
+        self.assertEqual(row["last_status"], "pending")
+        self.assertEqual(row["status_label"], "等待 Worker 回覆")
+        self.assertEqual(row["status_class"], "running")
+        self.assertEqual(status_path.read_bytes(), before)
+
+    def test_credential_sync_admin_expires_stale_pending_without_relay(self):
+        now = datetime.now()
+        app_module.sinposmart_store().upsert_event({
+            "event_id": "expiry-view-login", "record_type": "login", "status": "ok",
+            "occurred_at": now.isoformat(timespec="seconds"), "display_name": "8番 已逾時",
+        })
+        for sent_at in (
+            (now - timedelta(seconds=901)).isoformat(timespec="seconds"),
+            (now - timedelta(seconds=901)).astimezone().isoformat(timespec="seconds"),
+        ):
+            with self.subTest(sent_at=sent_at):
+                status_path = app_module.credential_sync_status_file()
+                app_module.write_json_atomic(status_path, {"accounts": [{
+                    "name": "已逾時", "last_sent_at": sent_at, "last_completed_at": "",
+                    "last_status": "pending", "duty_pc_save_status": "saved",
+                }]})
+                self.assertFalse(app_module.credential_sync_relay_file().exists())
+
+                with mock.patch.object(app_module.time, "time", return_value=now.timestamp()):
+                    response = self.client.get("/admin/sinposmart")
+                    row = app_module.credential_sync_admin_view()["accounts"][0]
+
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue("Worker：同步逾時" in response.get_data(as_text=True), "未顯示同步逾時")
+                self.assertEqual(row["last_status"], "expired")
+                self.assertEqual(row["status_class"], "failed")
+                self.assertEqual(row["last_sent_at"], sent_at)
+                self.assertEqual(row["duty_pc_save_status"], "saved")
+                self.assertTrue(row["last_completed_at"])
+                persisted = json.loads(status_path.read_text(encoding="utf-8"))["accounts"][0]
+                self.assertEqual(persisted["last_status"], "expired")
+                before = status_path.read_bytes()
+                app_module.credential_sync_admin_view()
+                self.assertEqual(status_path.read_bytes(), before)
+
+    def test_credential_sync_admin_expiry_preserves_new_batch_and_completed_accounts(self):
+        now = datetime.now()
+        old_sent_at = (now - timedelta(seconds=901)).isoformat(timespec="seconds")
+        new_sent_at = now.isoformat(timespec="seconds")
+        rows = [
+            {"name": "舊批次", "last_sent_at": old_sent_at, "last_status": "pending"},
+            {"name": "新批次", "last_sent_at": new_sent_at, "last_status": "pending"},
+            {"name": "已成功", "last_sent_at": old_sent_at, "last_status": "saved"},
+            {"name": "已失敗", "last_sent_at": old_sent_at, "last_status": "failed"},
+            {"name": "缺少時間", "last_sent_at": "", "last_status": "pending"},
+            {"name": "無效時間", "last_sent_at": "invalid-time", "last_status": "pending"},
+        ]
+        for row in rows:
+            row.update(last_completed_at="kept" if row["last_status"] in {"saved", "failed"} else "",
+                       duty_pc_save_status="saved")
+        status_path = app_module.credential_sync_status_file()
+        app_module.write_json_atomic(status_path, {"accounts": rows})
+        app_module.write_credential_sync_relay({
+            "request_id": "newer-batch", "created_at": new_sent_at, "status": "pending",
+        })
+        relay_before = app_module.credential_sync_relay_file().read_bytes()
+
+        with mock.patch.object(app_module.time, "time", return_value=now.timestamp()):
+            view = {row["name"]: row for row in app_module.credential_sync_admin_view()["accounts"]}
+
+        self.assertEqual(view["舊批次"]["last_status"], "expired")
+        for row in rows[1:]:
+            for field in ("last_sent_at", "last_completed_at", "last_status", "duty_pc_save_status"):
+                self.assertEqual(view[row["name"]][field], row[field])
+        self.assertEqual(app_module.credential_sync_relay_file().read_bytes(), relay_before)
+
+    def test_credential_sync_worker_expiry_clears_relay_when_status_write_fails(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        sent_at = (datetime.now() - timedelta(seconds=901)).isoformat(timespec="seconds")
+        app_module.write_json_atomic(app_module.credential_sync_status_file(), {"accounts": [{
+            "name": "過期帳號", "last_sent_at": sent_at, "last_status": "pending",
+        }]})
+        app_module.write_credential_sync_relay({
+            "request_id": "expired-status-write-failed", "created_at": sent_at, "status": "pending",
+        })
+
+        with mock.patch.object(app_module, "_write_credential_sync_status_unlocked", side_effect=OSError("unavailable")):
+            response = self.client.get(
+                "/worker/credential-sync", headers={"X-Worker-Token": os.environ["WORKER_TOKEN"]},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.get_json()["request"])
+        self.assertFalse(app_module.credential_sync_relay_file().exists())
+
+    def test_credential_sync_admin_shows_expiry_when_status_write_fails(self):
+        now = datetime.now()
+        app_module.sinposmart_store().upsert_event({
+            "event_id": "expiry-write-failed-login", "record_type": "login", "status": "ok",
+            "occurred_at": now.isoformat(timespec="seconds"), "display_name": "8番 已逾時",
+        })
+        app_module.write_json_atomic(app_module.credential_sync_status_file(), {"accounts": [{
+            "name": "已逾時", "last_sent_at": (now - timedelta(seconds=901)).isoformat(timespec="seconds"),
+            "last_status": "pending", "duty_pc_save_status": "saved",
+        }]})
+
+        with mock.patch.object(app_module, "_write_credential_sync_status_unlocked", side_effect=OSError("unavailable")):
+            response = self.client.get("/admin/sinposmart")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue("Worker：同步逾時" in response.get_data(as_text=True), "未顯示同步逾時")
+
     def test_worker_get_migrates_legacy_plaintext_relay_to_sealed_storage(self):
         worker_token = "0123456789abcdef0123456789abcdef"
         os.environ["WORKER_TOKEN"] = worker_token

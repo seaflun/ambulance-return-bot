@@ -2656,6 +2656,34 @@ def _write_credential_sync_status_accounts(status: dict, rows: dict[str, dict[st
     status["accounts"] = [rows[name] for name in sorted(rows, key=str.casefold)]
 
 
+def _expire_credential_sync_status_unlocked() -> dict:
+    status = _read_credential_sync_status_unlocked()
+    rows = _credential_sync_status_accounts(status)
+    now_epoch = time.time()
+    ttl_seconds = credential_sync_ttl_seconds()
+    changed = False
+    for row in rows.values():
+        if row["last_status"] != "pending":
+            continue
+        try:
+            sent_at = datetime.fromisoformat(row["last_sent_at"])
+            if now_epoch - sent_at.timestamp() <= ttl_seconds:
+                continue
+            expired_at = (sent_at + timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds")
+        except (ValueError, OverflowError, OSError):
+            continue
+        row["last_status"] = "expired"
+        row["last_completed_at"] = expired_at
+        changed = True
+    if changed:
+        _write_credential_sync_status_accounts(status, rows)
+        try:
+            _write_credential_sync_status_unlocked(status)
+        except OSError:
+            pass
+    return status
+
+
 def _credential_sync_record_account_profiles(record: dict) -> list[dict[str, str]]:
     profiles: list[dict[str, str]] = []
     names: set[str] = set()
@@ -2721,12 +2749,13 @@ def credential_sync_actor_sort_key(actor_no: object) -> tuple[int, int, str]:
 
 def credential_sync_admin_view(days: list[dict] | None = None) -> dict[str, list[dict[str, str]]]:
     with _credential_sync_relay_lock:
-        status = _read_credential_sync_status_unlocked()
+        status = _expire_credential_sync_status_unlocked()
     login_details = credential_sync_login_details_by_name(days or [])
     labels = {
         "pending": ("等待 Worker 回覆", "running"),
         "saved": ("成功", "complete"),
         "failed": ("失敗", "failed"),
+        "expired": ("同步逾時", "failed"),
     }
     duty_pc_labels = {
         "saved": ("已儲存", "complete"),
@@ -2872,6 +2901,7 @@ def _read_credential_sync_relay_unlocked(path: Path) -> dict:
         return {}
     created_epoch = credential_sync_created_epoch(payload, path)
     if time.time() - created_epoch > credential_sync_ttl_seconds():
+        _expire_credential_sync_status_unlocked()
         try:
             path.unlink()
         except OSError:

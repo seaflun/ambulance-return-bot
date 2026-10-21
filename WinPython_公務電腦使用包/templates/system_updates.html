@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.21.2242">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.21.2242') }}</p>
+          <h2 class="update-card__title">修正帳密同步逾時仍顯示等待</h2>
+        </div>
+        <span class="update-card__versions">2026.10.21.2242</span>
+      </header>
+      <ul class="update-card__items">
+        <li>帳密同步超過有效期限後，後台改顯示「同步逾時」，先前殘留的等待狀態也會自動更新。</li>
+        <li>保留值班台已儲存狀態，以及新批次、已成功和已失敗的同步結果，不延長帳密傳送資料的有效期限。</li>
+        <li>同步狀態檔暫時無法寫入時，畫面仍能顯示逾時，並繼續清除已過期的傳送資料。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.21.2047">
       <header class="update-card__heading">
         <div>
