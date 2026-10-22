@@ -364,6 +364,11 @@ def _login_sso(
 
 
 def _sso_credentials_rejected(error: str) -> bool:
+    compact = re.sub(r"\s+", "", error).lower()
+    if any(message in compact for message in (
+        "鎖定帳號", "帳號鎖定", "帳號已鎖定", "帳號被鎖定", "accountislocked", "accountlocked",
+    )):
+        return True
     if "驗證碼" in error or "captcha" in error.lower():
         return False
     return any(message in error.lower() for message in (
@@ -439,6 +444,10 @@ def _login_error_text(driver: webdriver.Chrome) -> str:
         texts = [item.text.strip() for item in driver.find_elements(By.CSS_SELECTOR, selector) if item.text.strip()]
         if texts:
             return " ".join(texts)
+    for body in driver.find_elements(By.TAG_NAME, "body"):
+        for line in body.text.splitlines():
+            if re.sub(r"\s+", "", line).startswith("登入失敗"):
+                return line.strip()[:240]
     return ""
 
 

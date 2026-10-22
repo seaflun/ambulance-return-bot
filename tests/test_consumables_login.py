@@ -41,6 +41,55 @@ def _ready_single_page_query(test):
 
 
 class ConsumablesLoginTests(unittest.TestCase):
+    def test_sso_official_lock_banner_without_alert_class_switches_to_backup_once(self):
+        from ambulance_bot.duty_credentials import DutyCredential
+
+        banner = "登入失敗3次以上，鎖定帳號15分鐘，15分鐘後可再重新登入"
+        primary = DutyCredential("user8", "primary-test", actor_no="8", id_number="A123456789")
+        backup = DutyCredential("backup19", "backup-test", actor_no="19", id_number="B123456789")
+        driver = Mock()
+        driver.find_elements.side_effect = lambda by, value: (
+            [Mock(text=banner + "\n救急救難一站通\n驗證碼\n密碼管理辦法")]
+            if by == consumables_login_module.By.TAG_NAME and value == "body" else []
+        )
+
+        def fill(_driver, _wait, account, _password, _attempt):
+            driver.active_account = account
+
+        with patch.object(consumables_login_module, "_acs_credential_attempts", return_value=[
+            (primary, "同步帳號"), (backup, "備援同步帳號"),
+        ]), patch.object(consumables_login_module, "_fill_login_form", side_effect=fill) as submit, patch.object(
+            consumables_login_module, "_wait_until_sso_login_finished"
+        ), patch.object(consumables_login_module, "_sso_login_succeeded",
+                        side_effect=lambda d: d.active_account == backup.id_number):
+            account, _wait = consumables_login_module._login_sso(driver, primary.id_number, primary.password, None, None)
+        self.assertEqual(account, backup.id_number)
+        self.assertEqual([call.args[2] for call in submit.call_args_list], [primary.id_number, backup.id_number])
+        self.assertIn("備援同步帳號", driver._consumables_login_audit)
+
+    def test_sso_lock_banner_is_not_misclassified_as_captcha_error(self):
+        self.assertTrue(consumables_login_module._sso_credentials_rejected(
+            "驗證碼錯誤後，登入失敗3次以上，鎖定帳號15分鐘"))
+        self.assertTrue(consumables_login_module._sso_credentials_rejected("帳號鎖定中，請稍後再試"))
+        self.assertFalse(consumables_login_module._sso_credentials_rejected("驗證碼錯誤，請重新輸入"))
+
+    def test_sso_error_reader_returns_only_banner_not_footer_or_form_labels(self):
+        banner = "登入失敗 3 次以上，鎖定帳號 15 分鐘，15 分鐘後可再重新登入"
+        driver = Mock()
+        driver.find_elements.side_effect = lambda by, value: (
+            [Mock(text=banner + "\n驗證碼\n帳號被停用時將無法使用本系統")]
+            if by == consumables_login_module.By.TAG_NAME and value == "body" else []
+        )
+        self.assertEqual(consumables_login_module._login_error_text(driver), banner)
+
+    def test_sso_error_reader_ignores_general_password_policy(self):
+        driver = Mock()
+        driver.find_elements.side_effect = lambda by, value: (
+            [Mock(text="救急救難一站通\n驗證碼\n帳號被停用時將無法使用本系統")]
+            if by == consumables_login_module.By.TAG_NAME and value == "body" else []
+        )
+        self.assertEqual(consumables_login_module._login_error_text(driver), "")
+
     def test_sso_skips_missing_ids_and_duplicate_accounts_when_falling_back(self):
         from ambulance_bot.duty_credentials import DutyCredential
 

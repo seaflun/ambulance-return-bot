@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.22.1230">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.22.1230') }}</p>
+          <h2 class="update-card__title">修正一站通帳號鎖定警示與備援切換</h2>
+        </div>
+        <span class="update-card__versions">2026.10.22.1230</span>
+      </header>
+      <ul class="update-card__items">
+        <li>補讀頁首登入失敗提示，正確辨識「鎖定帳號 15 分鐘」，避免被誤判為驗證碼或登入狀態不明。</li>
+        <li>帳號已鎖定時立即改試 19 番、任務司機及出勤人員備援，不再對同一帳號連續嘗試三次。</li>
+        <li>保留驗證碼錯誤的原帳號重試，並略過頁面一般密碼管理說明，避免誤判。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.22.1154">
       <div class="update-card__heading">
         <div>
