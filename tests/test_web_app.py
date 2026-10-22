@@ -2592,6 +2592,94 @@ process.stdout.write(JSON.stringify(states));
         self.assertEqual([False, False], state["options"][0]["甲"])
         self.assertEqual([True, True], state["options"][1]["甲"])
 
+    def _run_disinfection_counts(self, counts, actions=(), *, initialize=True, checked=None):
+        if not shutil.which("node"):
+            self.skipTest("Node.js required for disinfection count behavior tests")
+        template = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包" / "templates" / "new_task.html"
+        source = template.read_text(encoding="utf-8")
+        block = re.search(r"(?ms)^    function patientSummaryFromCounts\(.*?(?=^    function taskFieldValue)", source)
+        self.assertIsNotNone(block)
+        script = r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const fields = {}, boxes = {};
+for (const suffix of ['', '_2']) {
+  for (const [index, name] of ['patient_male_count', 'patient_female_count', 'refusal_male_count', 'refusal_female_count'].entries()) {
+    fields[name + suffix] = {value: String(input.counts[suffix][index]), listeners: {},
+      addEventListener(type, fn) {this.listeners[type] = fn;}};
+  }
+  for (const name of ['patient_summary', 'refusal_summary']) fields[name + suffix] = {value: ''};
+  boxes['disinfection_items' + suffix] = input.items.map((value, index) => ({value, checked: input.checked.includes(index + 1)}));
+}
+const context = {disinfectionItemOptions: input.items, autoCheckedDisinfectionItems: new Map(),
+  autoCheckedDisinfectionItems2: new Map(), updateFieldVisualHints() {}, document: {
+    querySelector(selector) {return fields[selector.match(/name="([^"]+)"/)[1]] || null;},
+    querySelectorAll(selector) {return boxes[selector.match(/name="([^"]+)"/)[1]] || [];}
+  }};
+require('vm').runInNewContext(input.source, context);
+for (const suffix of ['', '_2']) {
+  context.bindPatientSummaryCounts(suffix);
+  if (input.initialize) context.applyDisinfectionCountRule(suffix);
+}
+const snapshot = () => Object.fromEntries(Object.entries(boxes).map(([key, list]) =>
+  [key, list.flatMap((box, index) => box.checked ? [index + 1] : [])]));
+const states = [snapshot()];
+for (const [field, value] of input.actions) {
+  fields[field].value = String(value);
+  fields[field].listeners.change();
+  states.push(snapshot());
+}
+process.stdout.write(JSON.stringify(states));
+"""
+        result = subprocess.run([shutil.which("node"), "-e", script],
+                                input=json.dumps(dict(source=block.group(0), items=app_module.DISINFECTION_ITEM_OPTIONS,
+                                                      counts=counts, actions=actions, initialize=initialize,
+                                                      checked=checked or [])),
+                                text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_disinfection_counts_switch_between_transport_refusal_and_no_patient(self):
+        states = self._run_disinfection_counts({"": [1, 0, 0, 0], "_2": [0, 0, 0, 0]},
+            [("refusal_female_count", 1), ("patient_male_count", 0), ("refusal_female_count", 0),
+             ("patient_female_count", 2)])
+        for index in (0, 1, 4):
+            self.assertEqual([1, 2, 3, 9, 10, 17, 18, 19], states[index]["disinfection_items"])
+        self.assertEqual([1, 9, 10, 17, 18, 19], states[2]["disinfection_items"])
+        self.assertEqual([1], states[3]["disinfection_items"])
+
+    def test_disinfection_counts_are_independent_and_keep_selected_items_in_submission(self):
+        states = self._run_disinfection_counts({"": [0, 0, 0, 0], "_2": [0, 0, 2, 0]},
+                                               [("patient_female_count_2", 1)])
+        self.assertEqual([1], states[0]["disinfection_items"])
+        self.assertEqual([1, 9, 10, 17, 18, 19], states[0]["disinfection_items_2"])
+        self.assertEqual([1], states[1]["disinfection_items"])
+        self.assertEqual([1, 2, 3, 9, 10, 17, 18, 19], states[1]["disinfection_items_2"])
+        for state in states:
+            data = MultiDict([("two_vehicle", "1"), ("vehicle", "新坡95"), ("vehicle_2", "新坡92")])
+            for field, numbers in state.items():
+                for number in numbers:
+                    data.add(field, app_module.DISINFECTION_ITEM_OPTIONS[number - 1])
+            request = app_module.request_from_form(data)
+            self.assertEqual([app_module.DISINFECTION_ITEM_OPTIONS[number - 1] for number in state["disinfection_items"]], request.disinfection_items)
+            self.assertEqual([app_module.DISINFECTION_ITEM_OPTIONS[number - 1] for number in state["disinfection_items_2"]], request.vehicle_entries[1].disinfection_items)
+
+    def test_disinfection_edit_keeps_saved_selection_until_counts_change(self):
+        states = self._run_disinfection_counts({"": [0, 0, 0, 0], "_2": [0, 0, 0, 0]},
+                                               [("refusal_male_count", 1)], initialize=False, checked=[1, 20])
+        self.assertEqual([1, 20], states[0]["disinfection_items"])
+        self.assertEqual([1, 9, 10, 17, 18, 19], states[1]["disinfection_items"])
+        self.assertEqual([1, 20], states[1]["disinfection_items_2"])
+
+    def test_disinfection_count_initialization_only_applies_to_new_forms(self):
+        body = self.client.get("/app").get_data(as_text=True)
+        self.assertIn("const initializeDisinfectionFromCounts = true;", body)
+        response = self.client.post("/tasks", data=self.valid_task_data(case_address="桃園市觀音區"))
+        task_id = response.headers["Location"].rstrip("/").split("/")[-1]
+        body = self.client.get(f"/tasks/{task_id}/edit").get_data(as_text=True)
+        self.assertIn("const initializeDisinfectionFromCounts = false;", body)
+        response = self.client.post("/tasks", data=self.valid_task_data(mileage=""))
+        self.assertIn("const initializeDisinfectionFromCounts = false;", response.get_data(as_text=True))
+
     def _run_disaster_action_text(self, initial, additions):
         if not shutil.which("node"):
             self.skipTest("Node.js required for disaster action text behavior tests")

@@ -912,6 +912,8 @@
     const defaultConsumables2 = {{ second_consumables | tojson }};
     const baselineConsumablesLoaded = {{ baseline_consumables_loaded | default(false) | tojson }};
     const selectedConsumablePackages = {{ selected_consumable_packages | default([]) | tojson }};
+    const disinfectionItemOptions = {{ disinfection_item_options | tojson }};
+    const initializeDisinfectionFromCounts = {{ (form_action == url_for('create_task') and not form_errors) | tojson }};
     const lastVehicleMileages = {{ last_vehicle_mileages | default({}) | tojson }};
     const lastVehicleMileageTimes = {{ last_vehicle_mileage_times() | tojson }};
     const vehicleMileageHintHistory = {{ vehicle_mileage_hint_history() | tojson }};
@@ -1351,6 +1353,21 @@
       refusalSummary.value = refusalSummaryFromCounts(refusalMale.value, refusalFemale.value);
     }
 
+    function applyDisinfectionCountRule(suffix = "") {
+      const fields = ["patient_male_count", "patient_female_count", "refusal_male_count", "refusal_female_count"]
+        .map((name) => document.querySelector(`select[name="${name}${suffix}"]`));
+      if (fields.some((field) => !field)) return;
+      const counts = fields.map((field) => Number.parseInt(field.value, 10) || 0);
+      const itemNumbers = counts[0] + counts[1] > 0 ? [1, 2, 3, 9, 10, 17, 18, 19]
+        : counts[2] + counts[3] > 0 ? [1, 9, 10, 17, 18, 19] : [1];
+      const selected = new Set(itemNumbers.map((number) => disinfectionItemOptions[number - 1]));
+      const autoChecked = suffix ? autoCheckedDisinfectionItems2 : autoCheckedDisinfectionItems;
+      autoChecked.clear();
+      document.querySelectorAll(`input[name="disinfection_items${suffix}"]`).forEach((checkbox) => {
+        checkbox.checked = selected.has(checkbox.value);
+      });
+    }
+
     function bindPatientSummaryCounts(suffix = "") {
       ["male", "female"].forEach((gender) => {
         ["patient", "refusal"].forEach((countType) => {
@@ -1358,6 +1375,7 @@
           if (!select) return;
           select.addEventListener("change", () => {
             syncPatientSummary(suffix);
+            applyDisinfectionCountRule(suffix);
             updateFieldVisualHints();
           });
         });
@@ -2148,6 +2166,10 @@
 
     bindPatientSummaryCounts();
     bindPatientSummaryCounts("_2");
+    if (initializeDisinfectionFromCounts) {
+      applyDisinfectionCountRule();
+      applyDisinfectionCountRule("_2");
+    }
     Object.entries(defaultConsumables).forEach(([name, qty]) => addConsumableRow(name, qty));
     Object.entries(defaultConsumables2).forEach(([name, qty]) => addConsumableRow2(name, qty));
     selectedConsumablePackages.forEach((packageKey) => {

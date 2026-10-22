@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.22.2135">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.22.2135') }}</p>
+          <h2 class="update-card__title">依各車送醫與拒送人數切換消毒勾選</h2>
+        </div>
+        <span class="update-card__versions">2026.10.22.2135</span>
+      </header>
+      <ul class="update-card__items">
+        <li>送醫人數至少 1 人時，維持原本 1、2、3、9、10、17、18、19 項消毒預設。</li>
+        <li>無送醫但有拒送時，預設勾選 1、9、10、17、18、19；送醫與拒送皆為 0 人時，只勾選第 1 項。</li>
+        <li>兩車依各自人數切換；編輯既有案件或表單驗證失敗時保留已選項目，人數變更後才重新套用規則。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.22.1842">
       <header class="update-card__heading">
         <div>
