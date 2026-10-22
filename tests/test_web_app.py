@@ -5951,6 +5951,12 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn("<script>alert(1)</script>", body)
         self.assertIn('id="notice-history"', body)
         self.assertNotIn('id="notice-history" open', body)
+        section = re.search(r'<details\b([^>]*)id="notice-section"([^>]*)>\s*<summary class="section-head">(.*?)</summary>', body, re.S)
+        self.assertIsNotNone(section)
+        self.assertNotRegex(section.group(1) + section.group(2), r'\bopen\b')
+        self.assertIn('id="notice-counts"', section.group(3))
+        self.assertIn('id="notice-status"', section.group(3))
+        self.assertIn('<h3 class="notice-records-heading">通報紀錄', body)
 
     def test_sinposmart_notice_unknown_counts_do_not_render_fake_zero_or_success(self):
         store = app_module.sinposmart_store()

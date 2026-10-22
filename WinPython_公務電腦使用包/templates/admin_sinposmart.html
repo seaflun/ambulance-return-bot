@@ -2,13 +2,16 @@
 {% from "_admin_system_status.html" import system_overview, health_card, remote_update_card %}
 {% macro notice_time(value, fallback='') %}{{ value | replace('T', ' ') | replace('+08:00', '') if value else fallback }}{% endmacro %}
 {% macro notice_section(view) %}
-  <section class="section summary-card notice-section" id="notice-section" aria-label="已收通報"
+  <details class="section notice-section" id="notice-section" aria-label="已收通報"
            data-notice-day="{{ view.date }}" data-notice-source="{{ view.workstation }}">
-    <div class="notice-heading">
-      <div><h2 class="section-title">已收通報</h2><div class="section-note">曆日 <span id="notice-date">{{ view.date }}</span> · 臺灣時間午夜歸零</div><div class="section-note">來源：<span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span></div></div>
-      <span id="notice-status" class="status {{ view.status_class }}">{{ view.status_label }}</span>
-    </div>
-    <div class="notice-counts" id="notice-counts">{% if view.count_known and view.shift_count is not none %}當班已收 {{ view.shift_count }} 則{% elif view.shift_label %}當班已收待確認{% else %}當班時段待取得{% endif %}｜{% if view.count_known and view.today_count is not none %}今日累積 {{ view.today_count }} 則{% else %}今日累積待確認{% endif %}</div>
+    <summary class="section-head">
+      <h2 class="section-title">已收通報</h2>
+      <div class="section-note notice-overview">
+        <span class="notice-counts" id="notice-counts">{% if view.count_known and view.shift_count is not none %}當班已收 {{ view.shift_count }} 則{% elif view.shift_label %}當班已收待確認{% else %}當班時段待取得{% endif %}｜{% if view.count_known and view.today_count is not none %}今日累積 {{ view.today_count }} 則{% else %}今日累積待確認{% endif %}</span>
+        <span id="notice-status" class="status {{ view.status_class }}">{{ view.status_label }}</span>
+      </div>
+    </summary>
+    <div class="section-note notice-meta">曆日 <span id="notice-date">{{ view.date }}</span> · 臺灣時間午夜歸零 · 來源：<span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span></div>
     <div class="notice-times">
       <span>最後檢查：<span id="notice-last-checked">{{ notice_time(view.last_checked_at, '尚未取得檢查回報') }}</span></span>
       <span>最近新增：<span id="notice-last-received">{{ notice_time(view.last_received_at, '尚無新增回報') }}{% if view.last_received_count %}，共 {{ view.last_received_count }} 則{% endif %}</span></span>
@@ -29,8 +32,8 @@
         <button class="button" type="submit">查看</button>
       </form>
     </details>
-    <details class="notice-history" id="notice-history">
-      <summary>展開紀錄（<span id="notice-record-count">{{ view.records | length }}</span> 則已收通報）</summary>
+    <div class="notice-history" id="notice-history">
+      <h3 class="notice-records-heading">通報紀錄（<span id="notice-record-count">{{ view.records | length }}</span> 則）</h3>
       <div class="notice-table-wrap"><table class="notice-table">
         <thead><tr><th scope="col">收取時間</th><th scope="col">通報主旨</th><th scope="col">入表</th><th scope="col">已讀確認</th></tr></thead>
         <tbody id="notice-records">{% for record in view.records %}<tr>
@@ -39,8 +42,8 @@
         </tr>{% else %}<tr><td colspan="4">目前沒有已確認入表的通報明細。</td></tr>{% endfor %}</tbody>
       </table></div>
       <div id="notice-problems" class="notice-problems">{% for entry in view.history if entry.state not in ['success', 'running'] %}<p>{{ notice_time(entry.reported_at) }} · {{ entry.status_label }}{% if entry.error %}：{{ entry.error }}{% endif %}</p>{% endfor %}</div>
-    </details>
-  </section>
+    </div>
+  </details>
 {% endmacro %}
 <!doctype html>
 <html lang="zh-Hant">
@@ -163,9 +166,10 @@
     .summary-label { color: var(--muted); font-size: var(--text-sm); }
     .summary-value { margin-top: 3px; font-size: 24px; font-weight: 820; }
     .notice-section { margin: 0 0 18px; }
-    .notice-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
-    .notice-heading .status { flex-shrink: 0; white-space: normal; text-align: center; max-width: 55%; }
-    .notice-counts { margin: 12px 0 8px; font-size: 22px; font-weight: 780; }
+    .notice-overview { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .notice-overview .status { flex-shrink: 0; white-space: normal; }
+    .notice-counts { overflow-wrap: anywhere; }
+    .notice-meta { margin-bottom: 10px; overflow-wrap: anywhere; }
     .notice-times { display: flex; flex-wrap: wrap; column-gap: 24px; row-gap: 6px; margin-bottom: 8px; color: var(--muted); }
     .notice-times span, .notice-error { overflow-wrap: anywhere; }
     .notice-error { margin: 10px 0; color: var(--attention); }
@@ -176,7 +180,7 @@
     .notice-filters label { display: grid; gap: 4px; color: var(--muted); font-size: var(--text-sm); }
     .notice-filters input, .notice-filters select { min-height: 44px; min-width: 150px; max-width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: var(--surface); color: var(--ink); font: inherit; }
     .notice-history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
-    .notice-history > summary { cursor: pointer; min-height: 32px; color: var(--accent); font-weight: 700; }
+    .notice-records-heading { font-size: var(--text-md); font-weight: 700; }
     .notice-table-wrap { overflow-x: auto; margin-top: 10px; }
     .notice-table { width: 100%; border-collapse: collapse; text-align: left; font-size: var(--text-sm); }
     .notice-table th, .notice-table td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
