@@ -1297,7 +1297,8 @@ def sinposmart_heartbeat():
 @app.get("/api/sinposmart/health")
 def sinposmart_health():
     # The public admin page has the same read-only policy; no browser-side secret.
-    response = jsonify({"ok": True, **duty_gui_health_view()})
+    health = duty_gui_health_view()
+    response = jsonify({"ok": True, **health, "notice_collection": sinposmart_notice_view(health)})
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -1685,6 +1686,7 @@ def admin_public_pc_remote_update():
 @app.get("/admin/sinposmart")
 def admin_sinposmart():
     days = sinposmart_store().list_days(limit=7)
+    gui_health = duty_gui_health_view()
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()
     duty_gui_remote_update_enabled = bool(csrf_token and admin_token)
@@ -1701,13 +1703,23 @@ def admin_sinposmart():
         selected_fire_day=selected_fire_day,
         version_info=sinposmart_admin_version_info(selected_day),
         nas_version=package_version(),
-        duty_gui_health=duty_gui_health_view(),
+        duty_gui_health=gui_health,
+        notice_view=sinposmart_notice_view(gui_health),
         credential_sync_status=credential_sync_admin_view(days),
         duty_gui_remote_update=(
             remote_update_admin_view("duty_gui") if duty_gui_remote_update_enabled else {}
         ),
         duty_gui_remote_update_enabled=duty_gui_remote_update_enabled,
         remote_update_csrf_token=csrf_token if duty_gui_remote_update_enabled else "",
+    )
+
+
+def sinposmart_notice_view(health: dict) -> dict:
+    """Notice calendar/source filters are independent of the duty fire day."""
+    return sinposmart_store(create=False).notice_view(
+        request.args.get("notice_day") or None,
+        workstation=str(request.args.get("notice_workstation") or ""),
+        preferred_workstation=str((health.get("gui") or {}).get("workstation") or ""),
     )
 
 
@@ -2821,8 +2833,8 @@ def _record_credential_sync_result_unlocked(record: dict, status: str) -> None:
     _write_credential_sync_status_unlocked(current)
 
 
-def sinposmart_store() -> SinpoSmartBackendStore:
-    return SinpoSmartBackendStore(artifacts_dir / "sinposmart")
+def sinposmart_store(*, create: bool = True) -> SinpoSmartBackendStore:
+    return SinpoSmartBackendStore(artifacts_dir / "sinposmart", create=create)
 
 
 def duty_gui_heartbeat_store() -> DutyGuiHeartbeatStore:

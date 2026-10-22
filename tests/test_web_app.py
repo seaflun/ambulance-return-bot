@@ -15,7 +15,7 @@ import unittest
 import urllib.error
 import zlib
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 from werkzeug.datastructures import MultiDict
@@ -5914,6 +5914,143 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             self.assertEqual(row["duty_pc_save_status"], "saved" if index == 0 else "unknown")
         raw = app_module.credential_sync_status_file().read_text(encoding="utf-8")
         self.assertNotIn("untrusted-private-value", raw)
+
+    def _notice_view_fixture(self, **changes):
+        view = {
+            "date": "2026-10-22", "sources": [{"workstation": "SP-76F413", "selected": True}],
+            "workstation": "SP-76F413", "count_known": True, "today_count": 5,
+            "shift_count": 2, "shift_label": "14-16", "state": "success",
+            "status_label": "檢查正常", "status_class": "complete",
+            "last_reported_at": "2026-10-22T15:48:05+08:00",
+            "last_checked_at": "2026-10-22T15:48:05+08:00",
+            "last_success_at": "2026-10-22T15:48:05+08:00",
+            "last_received_at": "2026-10-22T15:45:00+08:00", "last_received_count": 2,
+            "next_check_at": "2026-10-22T15:51:00+08:00", "error": "", "parts_complete": True,
+            "spreadsheet_url": "https://drive.google.com/drive/u/0/search?q=115年10月電子通報",
+            "records": [{"key": "a" * 64, "subject": "通報主旨 <script>alert(1)</script>",
+                         "received_at": "2026-10-22T15:45:00+08:00", "read_state": "pending",
+                         "write_confirmed": True, "write_label": "已入表", "read_label": "已讀待確認"}],
+            "history": [],
+        }
+        view.update(changes)
+        return view
+
+    def test_sinposmart_notice_section_is_visible_without_duty_records_and_escapes_subject(self):
+        store = app_module.sinposmart_store()
+        view = self._notice_view_fixture()
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=view, create=True):
+            body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn('aria-label="已收通報"', body)
+        self.assertIn("當班已收 2 則", body)
+        self.assertIn("今日累積 5 則", body)
+        self.assertIn("曆日", body)
+        self.assertIn("SP-76F413", body)
+        self.assertIn("已讀待確認", body)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", body)
+        self.assertNotIn("<script>alert(1)</script>", body)
+        self.assertIn('id="notice-history"', body)
+        self.assertNotIn('id="notice-history" open', body)
+
+    def test_sinposmart_notice_unknown_counts_do_not_render_fake_zero_or_success(self):
+        store = app_module.sinposmart_store()
+        view = self._notice_view_fixture(state="unknown", status_label="尚無回報", status_class="",
+                                         today_count=0, shift_count=0, count_known=False,
+                                         records=[], last_checked_at="", last_received_at="")
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=view, create=True):
+            body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn("尚無回報", body)
+        self.assertIn("今日累積待確認", body)
+        self.assertNotIn("今日累積 0 則", body)
+        self.assertIn("尚未取得檢查回報", body)
+
+    def test_sinposmart_notice_health_reuses_readonly_poll_and_preserves_calendar_source_filters(self):
+        store = app_module.sinposmart_store()
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=self._notice_view_fixture(), create=True) as query:
+            response = self.client.get("/api/sinposmart/health?notice_day=2026-10-21&notice_workstation=SP-76F413")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["notice_collection"]["today_count"], 5)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(query.call_args.args[0], "2026-10-21")
+        self.assertEqual(query.call_args.kwargs["workstation"], "SP-76F413")
+
+    def test_sinposmart_notice_calendar_is_independent_of_fire_day(self):
+        store = app_module.sinposmart_store()
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=self._notice_view_fixture(), create=True) as query:
+            self.client.get("/admin/sinposmart?fire_day=2026-10-20&notice_day=2026-10-22")
+        self.assertEqual(query.call_args.args[0], "2026-10-22")
+
+    def test_sinposmart_fire_day_navigation_preserves_notice_calendar_and_source(self):
+        from urllib.parse import parse_qs, urlsplit
+        store = app_module.sinposmart_store()
+        store.upsert_event({"record_type": "login", "status": "ok", "occurred_at": datetime.now().isoformat()})
+        view = self._notice_view_fixture(date="2026-10-21", workstation="PC-B")
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=view):
+            body = self.client.get("/admin/sinposmart?notice_day=2026-10-21&notice_workstation=PC-B").data.decode("utf-8")
+        link = re.search(r'class="button day-link[^\"]*" href="([^\"]+)"', body)
+        self.assertIsNotNone(link)
+        query = parse_qs(urlsplit(html.unescape(link.group(1))).query)
+        self.assertEqual(query.get("notice_day"), ["2026-10-21"])
+        self.assertEqual(query.get("notice_workstation"), ["PC-B"])
+
+    def test_sinposmart_notice_section_refreshes_safely_and_marks_lost_connection(self):
+        store = app_module.sinposmart_store()
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=self._notice_view_fixture(), create=True):
+            body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn("notice_collection", body)
+        self.assertIn("通報狀態待確認／重新連線中", body)
+        self.assertIn("document.createElement", body)
+        self.assertNotIn(".innerHTML =", body)
+
+    def test_sinposmart_notice_authenticated_round_trip_deduplicates_and_keeps_zero_poll_out_of_history(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        now = datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0)
+        run_id = "11111111-1111-4111-8111-111111111111"
+        key = "a" * 64
+        report = {
+            "schema_version": 1, "run_id": run_id, "part_index": 0, "part_count": 1,
+            "state": "success", "started_at": (now - timedelta(seconds=10)).isoformat(),
+            "completed_at": now.isoformat(), "reported_at": now.isoformat(),
+            "next_check_at": (now + timedelta(minutes=3)).isoformat(), "calendar_day": now.date().isoformat(),
+            "shift_start": (now - timedelta(hours=1)).isoformat(), "shift_end": (now + timedelta(hours=1)).isoformat(),
+            "unread_count": 1, "new_count": 1, "marked_read_count": 1,
+            "pending_write_count": 0, "pending_read_count": 0, "error_stage": "", "message": "",
+            "records": [{"key": key, "subject": "演練通知", "received_at": now.isoformat(), "read_state": "confirmed"}],
+            "new_keys": [key],
+        }
+        event = {"event_id": "notice-roundtrip-1", "record_type": "notice_collection",
+                 "occurred_at": now.isoformat(), "status": "success", "trigger_type": "notice_poll",
+                 "snapshot": {"workstation": "SP-76F413", "app_version": "2026.10.22.1148",
+                              "run_id": run_id, "notice_collection": report}}
+        self.assertEqual(self.client.post("/api/sinposmart/events", json=event).status_code, 403)
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        for _ in range(2):
+            response = self.client.post("/api/sinposmart/events", headers=headers, json=event)
+            self.assertEqual(response.get_json()["ack_id"], event["event_id"])
+        query = "?notice_day=" + now.date().isoformat() + "&notice_workstation=SP-76F413"
+        view = self.client.get("/api/sinposmart/health" + query).get_json()["notice_collection"]
+        self.assertEqual(view["today_count"], 1)
+        self.assertEqual(view["shift_count"], 1)
+        self.assertEqual(len(view["records"]), 1)
+        self.assertEqual(view["records"][0]["read_state"], "confirmed")
+        self.assertEqual(len(view["history"]), 1)
+        next_time = now + timedelta(seconds=1)
+        zero = {**report, "run_id": "22222222-2222-4222-8222-222222222222",
+                "started_at": now.isoformat(), "completed_at": next_time.isoformat(),
+                "reported_at": next_time.isoformat(), "unread_count": 0, "new_count": 0,
+                "marked_read_count": 0, "new_keys": []}
+        event = {**event, "event_id": "notice-roundtrip-zero", "occurred_at": next_time.isoformat(),
+                 "snapshot": {**event["snapshot"], "run_id": zero["run_id"], "notice_collection": zero}}
+        self.assertEqual(self.client.post("/api/sinposmart/events", headers=headers, json=event).status_code, 200)
+        view = self.client.get("/api/sinposmart/health" + query).get_json()["notice_collection"]
+        self.assertEqual(view["today_count"], 1)
+        self.assertEqual(len(view["history"]), 1)
+        self.assertIn("演練通知", self.client.get("/admin/sinposmart" + query).data.decode("utf-8"))
 
     def test_sinposmart_admin_sections_are_collapsed_by_default(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"

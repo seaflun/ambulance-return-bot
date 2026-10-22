@@ -24,6 +24,282 @@ from ambulance_bot.sinposmart_backend import (
 )
 
 
+class NoticeCollectionBackendTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.store = SinpoSmartBackendStore(Path(self.temporary.name))
+
+    @staticmethod
+    def record(number=1, received="2026-10-22T09:00:00+08:00", read_state="confirmed"):
+        return {"key": f"{number:064x}", "subject": f"通報 {number}", "received_at": received, "read_state": read_state}
+
+    def event(self, *, run=1, station="PUBLIC-PC", reported="2026-10-22T09:01:00+08:00", records=None, **changes):
+        records = [] if records is None else records
+        run_id = f"00000000-0000-4000-8000-{run:012d}"
+        current = datetime.fromisoformat(reported)
+        state = changes.pop("state", "success")
+        report = {
+            "schema_version": 1, "run_id": run_id, "part_index": 0, "part_count": 1, "state": state,
+            "started_at": reported, "completed_at": reported if state not in {"running", "waiting"} else "",
+            "reported_at": reported, "next_check_at": (current + timedelta(minutes=3 if 8 <= current.hour < 22 else 30)).isoformat(),
+            "calendar_day": current.date().isoformat(), "shift_start": "", "shift_end": "",
+            "unread_count": len(records), "new_count": len(records), "marked_read_count": len(records),
+            "pending_write_count": 0, "pending_read_count": 0, "error_stage": "", "message": "",
+            "records": records, "new_keys": [row["key"] for row in records],
+        }
+        report.update(changes)
+        return {"event_id": f"notice-{run}-{state}-{report['part_index']}", "occurred_at": reported,
+                "record_type": "notice_collection", "trigger_type": "notice_poll", "status": state,
+                "snapshot": {"app_version": "2026.10.22.1200", "workstation": station, "run_id": run_id,
+                             "notice_collection": report}}
+
+    def put(self, event):
+        return self.store.upsert_event(event, now=datetime.fromisoformat(event["occurred_at"]))
+
+    def view(self, day="2026-10-22", **kwargs):
+        kwargs.setdefault("now", datetime(2026, 10, 22, 9, 2, tzinfo=backend.TAIPEI_TIMEZONE))
+        return self.store.notice_view(day, **kwargs)
+
+    def test_notice_typed_whitelist_preserves_metadata_without_generic_depth_loss(self):
+        raw = self.event(records=[self.record()])
+        raw["snapshot"]["notice_collection"].update(secret="do-not-store", message="password=do-not-store https://unsafe.invalid")
+        raw["snapshot"]["notice_collection"]["records"][0].update(subject="<script>alert(1)</script> 通報", cookie="do-not-store")
+        raw["snapshot"]["password"] = "do-not-store"
+        stored = self.put(raw)
+        report = stored["snapshot"]["notice_collection"]
+        self.assertIs(type(report["new_count"]), int)
+        self.assertEqual(report["records"][0]["key"], self.record()["key"])
+        self.assertNotIn("<script>", report["records"][0]["subject"])
+        self.assertNotIn("do-not-store", json.dumps(stored))
+        self.assertEqual(self.view()["today_count"], 1)
+
+    def test_readonly_notice_store_does_not_create_storage_directory(self):
+        absent = Path(self.temporary.name) / "artifacts" / "sinposmart"
+        store = SinpoSmartBackendStore(absent, create=False)
+        view = store.notice_view("2026-10-22", now=datetime(2026, 10, 22, 9, 2, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertFalse(absent.parent.exists())
+        self.assertFalse(view["count_known"])
+        self.assertIsNone(view["today_count"])
+        SinpoSmartBackendStore(absent)
+        self.assertTrue(absent.is_dir())
+
+    def test_invalid_notice_metadata_never_becomes_normal_zero(self):
+        for changes in ({"new_count": True}, {"new_count": -1}, {"state": "ok"},
+                        {"reported_at": "2026-10-22T09:01:00"}, {"calendar_day": "2026-10-21"},
+                        {"records": [{**self.record(), "key": "unsafe"}]}, {"part_index": 2}):
+            with self.subTest(changes=changes):
+                raw = self.event(**changes)
+                stored = backend.normalize_sinposmart_event(raw)
+                self.assertEqual(stored["snapshot"]["notice_collection"], {})
+                self.assertEqual(stored["status"], "failed")
+        self.assertFalse(self.view()["count_known"])
+        self.assertIsNone(self.view()["today_count"])
+        self.assertNotEqual(self.view()["status_class"], "complete")
+
+    def test_notice_events_keep_each_running_result_and_part_id(self):
+        for event in (self.event(state="running"), self.event(), self.event(run=2)):
+            self.put(event)
+        events = self.store.read_day("2026-10-22")["events"]
+        self.assertEqual(len(events), 3)
+        self.assertTrue(all(event["repeat_count"] == 1 for event in events))
+
+    def test_full_ledger_parts_over_200_are_complete_or_explicitly_unknown(self):
+        records = [self.record(number) for number in range(1, 302)]
+        first = self.event(records=records[:200], part_count=2, new_count=301, unread_count=301, marked_read_count=301)
+        second = self.event(records=records[200:], part_index=1, part_count=2, new_count=301, unread_count=301, marked_read_count=301)
+        self.put(first)
+        self.assertFalse(self.view()["parts_complete"])
+        self.assertIsNone(self.view()["today_count"])
+        self.put(second)
+        self.put(second)
+        view = self.view()
+        self.assertTrue(view["parts_complete"])
+        self.assertEqual(view["today_count"], 301)
+        self.assertEqual(len(view["records"]), 301)
+        self.assertEqual(len(view["history"]), 1)
+
+    def test_calendar_day_and_shift_cross_midnight_and_fire_day_boundary(self):
+        old = self.record(1, "2026-10-21T23:59:00+08:00")
+        early = self.record(2, "2026-10-22T00:01:00+08:00")
+        morning = self.record(3, "2026-10-22T07:59:00+08:00")
+        self.put(self.event(run=1, reported="2026-10-21T23:59:10+08:00", records=[old]))
+        self.put(self.event(run=2, reported="2026-10-22T00:02:00+08:00", records=[old, early],
+                            shift_start="2026-10-21T22:00:00+08:00", shift_end="2026-10-22T08:00:00+08:00"))
+        self.put(self.event(run=3, reported="2026-10-22T07:59:30+08:00", records=[old, early, morning],
+                            shift_start="2026-10-21T22:00:00+08:00", shift_end="2026-10-22T08:00:00+08:00"))
+        view = self.view(now=datetime(2026, 10, 22, 8, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertEqual((view["today_count"], view["shift_count"]), (2, 3))
+        self.put(self.event(run=4, reported="2026-10-22T08:01:00+08:00", records=[early, morning]))
+        self.assertEqual(self.view()["today_count"], 2)
+        self.assertEqual(self.view("2026-10-21")["today_count"], 1)
+
+    def test_retries_and_source_switch_do_not_sum_snapshots_or_fallback_preferred_host(self):
+        self.put(self.event(records=[self.record()]))
+        self.put(self.event(run=2, records=[self.record()]))
+        self.put(self.event(run=3, station="LOCAL-PC", records=[self.record()]))
+        self.assertEqual(self.view(workstation="PUBLIC-PC")["today_count"], 1)
+        self.assertEqual(len(self.view(workstation="PUBLIC-PC")["history"]), 1)
+        self.assertEqual(self.view(workstation="LOCAL-PC")["today_count"], 1)
+        missing = self.view(preferred_workstation="NEW-PUBLIC-PC")
+        self.assertEqual(missing["workstation"], "NEW-PUBLIC-PC")
+        self.assertFalse(missing["count_known"])
+        self.assertIsNone(missing["today_count"])
+        self.assertIn("尚無回報", missing["status_label"])
+
+    def test_written_receipt_and_read_confirmation_are_separate(self):
+        self.put(self.event(records=[self.record(read_state="pending")], state="partial", marked_read_count=0,
+                            pending_read_count=1, error_stage="mark_read"))
+        view = self.view()
+        self.assertEqual(view["today_count"], 1)
+        self.assertNotEqual(view["status_class"], "complete")
+        self.assertTrue(view["records"][0]["write_confirmed"])
+        self.assertEqual(view["records"][0]["read_state"], "pending")
+
+    def test_zero_polls_only_update_summary_and_busy_does_not_fake_scan(self):
+        self.put(self.event())
+        view = self.view()
+        self.assertEqual(view["today_count"], 0)
+        self.assertTrue(view["count_known"])
+        self.assertEqual(view["history"], [])
+        self.put(self.event(run=2, reported="2026-10-22T09:02:00+08:00", state="waiting", error_stage="busy"))
+        waiting = self.view()
+        self.assertEqual(waiting["last_checked_at"], view["last_checked_at"])
+        self.assertEqual(waiting["last_success_at"], view["last_success_at"])
+        self.assertNotEqual(waiting["status_class"], "complete")
+        self.assertEqual(waiting["history"], [])
+
+    def test_night_30_minute_schedule_is_fresh_until_next_check_plus_tolerance(self):
+        self.put(self.event(reported="2026-10-22T00:01:00+08:00"))
+        self.assertEqual(self.view(now=datetime(2026, 10, 22, 0, 20, tzinfo=backend.TAIPEI_TIMEZONE))["status_class"], "complete")
+        self.assertNotEqual(self.view(now=datetime(2026, 10, 22, 0, 34, tzinfo=backend.TAIPEI_TIMEZONE))["status_class"], "complete")
+
+    def test_historical_date_is_labelled_without_a_live_timeout(self):
+        self.put(self.event(reported="2026-10-21T23:01:00+08:00"))
+        self.put(self.event(run=2))
+        view = self.view("2026-10-21")
+        self.assertTrue(view["historical"])
+        self.assertIn("歷史", view["status_label"])
+        self.assertNotIn("超過", view["status_label"])
+        self.assertTrue(view["last_checked_at"].startswith("2026-10-21"))
+
+    def test_late_midnight_receipt_updates_history_ledger_without_borrowing_next_day_check(self):
+        checked = "2026-10-21T23:59:00+08:00"
+        self.put(self.event(reported=checked))
+        late = self.record(1, "2026-10-21T23:59:55+08:00")
+        next_day = self.record(2, "2026-10-22T00:00:05+08:00")
+        self.put(self.event(run=2, reported="2026-10-22T00:00:10+08:00", records=[late, next_day],
+                            started_at="2026-10-21T23:59:50+08:00"))
+        self.put(self.event(run=3, station="LOCAL-PC", reported="2026-10-22T00:00:10+08:00",
+                            records=[self.record(3, "2026-10-21T23:59:56+08:00")]))
+        view = self.view("2026-10-21", workstation="PUBLIC-PC")
+        self.assertTrue(view["count_known"])
+        self.assertEqual(view["today_count"], 1)
+        self.assertEqual([row["key"] for row in view["records"]], [late["key"]])
+        self.assertEqual(view["last_received_at"], late["received_at"])
+        self.assertEqual(view["last_checked_at"], checked)
+        self.assertEqual(view["last_success_at"], checked)
+        self.assertEqual(view["last_reported_at"], checked)
+
+    def test_cross_midnight_shift_unknown_or_pending_read_never_gets_success_green(self):
+        for index, read_state in enumerate(("unknown", "pending"), 1):
+            with self.subTest(read_state=read_state):
+                station = f"PUBLIC-{read_state}"
+                self.put(self.event(run=index, station=station, reported="2026-10-22T00:01:00+08:00",
+                                    records=[self.record(1, "2026-10-21T23:59:55+08:00", read_state)],
+                                    new_keys=[], new_count=0, unread_count=0, marked_read_count=0,
+                                    shift_start="2026-10-21T22:00:00+08:00", shift_end="2026-10-22T08:00:00+08:00"))
+                view = self.view(workstation=station, now=datetime(2026, 10, 22, 0, 2, tzinfo=backend.TAIPEI_TIMEZONE))
+                self.assertEqual((view["today_count"], view["shift_count"]), (0, 1))
+                self.assertEqual(view["records"][0]["read_state"], read_state)
+                self.assertEqual(view["state"], "uncertain")
+                self.assertEqual(view["status_class"], "attention")
+
+    def test_late_receipt_without_target_day_report_keeps_unknown_counts_but_shows_evidence(self):
+        late = self.record(1, "2026-10-21T23:59:55+08:00")
+        next_day = self.record(2, "2026-10-22T00:00:05+08:00")
+        self.put(self.event(reported="2026-10-22T00:00:10+08:00", records=[late, next_day]))
+        self.put(self.event(run=2, station="LOCAL-PC", reported="2026-10-22T00:00:10+08:00",
+                            records=[self.record(3, "2026-10-21T23:59:56+08:00")]))
+        view = self.view("2026-10-21", workstation="PUBLIC-PC")
+        self.assertFalse(view["count_known"])
+        self.assertIsNone(view["today_count"])
+        self.assertIsNone(view["shift_count"])
+        self.assertEqual(view["last_checked_at"], "")
+        self.assertEqual(view["last_success_at"], "")
+        self.assertEqual(view["last_reported_at"], "")
+        self.assertNotEqual(view["status_class"], "complete")
+        self.assertEqual([row["key"] for row in view["records"]], [late["key"]])
+        self.assertTrue(view["records"][0]["write_confirmed"])
+
+    def test_invalid_date_query_keeps_admin_health_available_and_sheet_search_matches_title(self):
+        self.put(self.event())
+        for day in ("bad", "2026-02-30", [], {}):
+            with self.subTest(day=day):
+                self.assertEqual(self.view(day)["date"], "2026-10-22")
+        from urllib.parse import unquote
+        self.assertTrue(unquote(self.view()["spreadsheet_url"]).endswith("115年10月電子通報"))
+
+    def test_untrusted_source_query_and_invalid_payload_never_fallback_to_normal_host(self):
+        self.put(self.event())
+        view = self.view(workstation='<script>alert(1)</script>')
+        self.assertNotIn("<script>", json.dumps(view))
+        self.assertFalse(view["count_known"])
+        self.put(self.event(run=2, reported="2026-10-22T09:02:00+08:00", new_count=False))
+        view = self.view(workstation="PUBLIC-PC")
+        self.assertFalse(view["count_known"])
+        self.assertNotEqual(view["status_class"], "complete")
+
+    def test_unknown_success_counters_and_unscanned_login_failure_do_not_claim_success(self):
+        self.put(self.event(new_count=None))
+        view = self.view()
+        self.assertFalse(view["count_known"])
+        self.assertIsNone(view["today_count"])
+        self.assertEqual(view["last_success_at"], "")
+        self.assertNotEqual(view["status_class"], "complete")
+        self.put(self.event(run=2, reported="2026-10-22T09:02:00+08:00", state="failed", error_stage="login"))
+        self.assertEqual(self.view()["last_checked_at"], view["last_checked_at"])
+
+    def test_conflicting_duplicate_part_or_original_receipt_timestamp_is_unknown(self):
+        self.put(self.event(records=[self.record()]))
+        altered = self.event(records=[self.record(received="2026-10-22T08:00:00+08:00")])
+        altered["event_id"] = "conflicting-part"
+        self.put(altered)
+        self.assertFalse(self.view()["count_known"])
+        self.assertIsNone(self.view()["today_count"])
+
+    def test_later_read_confirmation_updates_one_receipt_without_new_history_or_count(self):
+        self.put(self.event(records=[self.record(read_state="pending")], state="partial", marked_read_count=0,
+                            pending_read_count=1, error_stage="mark_read"))
+        self.put(self.event(run=2, reported="2026-10-22T09:02:00+08:00", records=[self.record()], new_keys=[], new_count=0))
+        view = self.view()
+        self.assertEqual(view["today_count"], 1)
+        self.assertEqual(len(view["records"]), 1)
+        self.assertEqual(view["records"][0]["read_state"], "confirmed")
+        self.assertEqual(view["status_class"], "complete")
+        self.assertEqual(len(view["history"]), 1)
+
+    def test_notice_normalization_is_idempotent_and_drops_all_unknown_envelope_data(self):
+        raw = self.event(records=[self.record()])
+        raw.update(content="password=must-not-retain", error="token=must-not-retain", result_ref="https://unsafe.invalid/secret")
+        first = backend.normalize_sinposmart_event(raw)
+        again = backend.normalize_sinposmart_event(first)
+        self.assertEqual(first["snapshot"], again["snapshot"])
+        self.assertNotIn("must-not-retain", json.dumps(first))
+        self.assertNotIn("unsafe.invalid", json.dumps(first))
+
+    def test_same_second_terminal_result_outweighs_late_running_delivery(self):
+        self.put(self.event(state="partial", error_stage="write", pending_write_count=1))
+        self.put(self.event(state="running"))
+        self.assertEqual(self.view()["state"], "partial")
+        self.assertEqual(self.view()["status_class"], "attention")
+
+    def test_extreme_valid_date_query_does_not_overflow_adjacent_file_lookup(self):
+        for day in ("0001-01-01", "9999-12-31"):
+            with self.subTest(day=day):
+                self.assertEqual(self.view(day)["date"], day)
+
+
 class DutyGuiHeartbeatTests(unittest.TestCase):
     SERVER = "b32a71f7-4d56-4dab-bc5d-a36be124370a"
     INSTANCE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

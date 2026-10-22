@@ -1,5 +1,47 @@
 {% from "_page_chrome.html" import page_chrome %}
 {% from "_admin_system_status.html" import system_overview, health_card, remote_update_card %}
+{% macro notice_time(value, fallback='') %}{{ value | replace('T', ' ') | replace('+08:00', '') if value else fallback }}{% endmacro %}
+{% macro notice_section(view) %}
+  <section class="section summary-card notice-section" id="notice-section" aria-label="已收通報"
+           data-notice-day="{{ view.date }}" data-notice-source="{{ view.workstation }}">
+    <div class="notice-heading">
+      <div><h2 class="section-title">已收通報</h2><div class="section-note">曆日 <span id="notice-date">{{ view.date }}</span> · 臺灣時間午夜歸零</div><div class="section-note">來源：<span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span></div></div>
+      <span id="notice-status" class="status {{ view.status_class }}">{{ view.status_label }}</span>
+    </div>
+    <div class="notice-counts" id="notice-counts">{% if view.count_known and view.shift_count is not none %}當班已收 {{ view.shift_count }} 則{% elif view.shift_label %}當班已收待確認{% else %}當班時段待取得{% endif %}｜{% if view.count_known and view.today_count is not none %}今日累積 {{ view.today_count }} 則{% else %}今日累積待確認{% endif %}</div>
+    <div class="notice-times">
+      <span>最後檢查：<span id="notice-last-checked">{{ notice_time(view.last_checked_at, '尚未取得檢查回報') }}</span></span>
+      <span>最近新增：<span id="notice-last-received">{{ notice_time(view.last_received_at, '尚無新增回報') }}{% if view.last_received_count %}，共 {{ view.last_received_count }} 則{% endif %}</span></span>
+      <span>下次檢查：<span id="notice-next-check">{{ notice_time(view.next_check_at, '待回報') }}</span></span>
+    </div>
+    <p id="notice-error" class="notice-error"{% if not view.error %} hidden{% endif %}>{{ view.error }}</p>
+    <div class="section-note">最後成功：<span id="notice-last-success">{{ notice_time(view.last_success_at, '尚未取得成功回報') }}</span> · 當班時段：<span id="notice-shift">{{ view.shift_label or '待取得' }}</span></div>
+    <div class="notice-actions">
+      <a class="button" id="notice-sheet-link" href="{{ view.spreadsheet_url }}" target="_blank" rel="noopener noreferrer">查看 Google 試算表</a>
+    </div>
+    <details class="notice-filter-panel"><summary>篩選日期／來源</summary>
+      <form class="notice-filters" action="{{ url_for('admin_sinposmart') }}" method="get">
+        {% if selected_fire_day %}<input type="hidden" name="fire_day" value="{{ selected_fire_day }}">{% endif %}
+        <label>曆日 <input type="date" name="notice_day" value="{{ view.date }}" required></label>
+        <label>來源電腦 <select name="notice_workstation" aria-label="通報來源電腦">
+          {% for source in view.sources %}<option value="{{ source.workstation }}"{% if source.workstation == view.workstation %} selected{% endif %}>{{ source.workstation }}</option>{% else %}<option value="">尚未辨識來源</option>{% endfor %}
+        </select></label>
+        <button class="button" type="submit">查看</button>
+      </form>
+    </details>
+    <details class="notice-history" id="notice-history">
+      <summary>展開紀錄（<span id="notice-record-count">{{ view.records | length }}</span> 則已收通報）</summary>
+      <div class="notice-table-wrap"><table class="notice-table">
+        <thead><tr><th scope="col">收取時間</th><th scope="col">通報主旨</th><th scope="col">入表</th><th scope="col">已讀確認</th></tr></thead>
+        <tbody id="notice-records">{% for record in view.records %}<tr>
+          <td>{{ notice_time(record.received_at) }}</td><td>{{ record.subject or '先前已確認收取（未保存主旨）' }}</td>
+          <td>{{ record.write_label }}</td><td>{{ record.read_label }}</td>
+        </tr>{% else %}<tr><td colspan="4">目前沒有已確認入表的通報明細。</td></tr>{% endfor %}</tbody>
+      </table></div>
+      <div id="notice-problems" class="notice-problems">{% for entry in view.history if entry.state not in ['success', 'running'] %}<p>{{ notice_time(entry.reported_at) }} · {{ entry.status_label }}{% if entry.error %}：{{ entry.error }}{% endif %}</p>{% endfor %}</div>
+    </details>
+  </section>
+{% endmacro %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -120,6 +162,27 @@
     .summary-card { padding: 14px; }
     .summary-label { color: var(--muted); font-size: var(--text-sm); }
     .summary-value { margin-top: 3px; font-size: 24px; font-weight: 820; }
+    .notice-section { margin: 0 0 18px; }
+    .notice-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .notice-heading .status { flex-shrink: 0; white-space: normal; text-align: center; max-width: 55%; }
+    .notice-counts { margin: 12px 0 8px; font-size: 22px; font-weight: 780; }
+    .notice-times { display: flex; flex-wrap: wrap; column-gap: 24px; row-gap: 6px; margin-bottom: 8px; color: var(--muted); }
+    .notice-times span, .notice-error { overflow-wrap: anywhere; }
+    .notice-error { margin: 10px 0; color: var(--attention); }
+    .notice-actions { margin-top: 12px; }
+    .notice-filter-panel { margin-top: 10px; }
+    .notice-filter-panel > summary { cursor: pointer; min-height: 32px; color: var(--muted); }
+    .notice-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 14px; }
+    .notice-filters label { display: grid; gap: 4px; color: var(--muted); font-size: var(--text-sm); }
+    .notice-filters input, .notice-filters select { min-height: 44px; min-width: 150px; max-width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: var(--surface); color: var(--ink); font: inherit; }
+    .notice-history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+    .notice-history > summary { cursor: pointer; min-height: 32px; color: var(--accent); font-weight: 700; }
+    .notice-table-wrap { overflow-x: auto; margin-top: 10px; }
+    .notice-table { width: 100%; border-collapse: collapse; text-align: left; font-size: var(--text-sm); }
+    .notice-table th, .notice-table td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .notice-table td:nth-child(2) { min-width: 180px; overflow-wrap: anywhere; }
+    .notice-problems { color: var(--attention); font-size: var(--text-sm); }
+    .notice-problems p { margin-top: 8px; overflow-wrap: anywhere; }
     .unreturned-return-card { margin-bottom: 14px; border-color: #e7b76b; background: #fffaf1; }
     .unreturned-return-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
     .unreturned-return-title { font-size: 18px; font-weight: 840; }
@@ -273,7 +336,7 @@
       <nav class="day-nav" aria-label="消防日">
         {% for day in days %}
           {% set fire_day = day.fire_day %}
-          <a class="button day-link {{ 'active' if fire_day == selected_fire_day else '' }}" href="/admin/sinposmart?fire_day={{ fire_day }}">
+          <a class="button day-link {{ 'active' if fire_day == selected_fire_day else '' }}" href="{{ url_for('admin_sinposmart', fire_day=fire_day, notice_day=request.args.get('notice_day'), notice_workstation=request.args.get('notice_workstation')) }}">
             {{ fire_day }}
           </a>
         {% endfor %}
@@ -305,6 +368,8 @@
           <div class="summary-value">{{ summary.failed or 0 }}</div>
         </div>
       </section>
+
+      {{ notice_section(notice_view) }}
 
       <details class="section" aria-label="未返隊處理歷程"{% if summary.unreturned_returns %} open{% endif %}>
         <summary class="section-head">
@@ -623,6 +688,7 @@
         </div>
       </details>
     {% else %}
+      {{ notice_section(notice_view) }}
       <section class="empty">目前尚未收到 SinpoSmart 值班事件。</section>
     {% endif %}
   </main>
@@ -631,13 +697,93 @@
       let inFlight = false;
       const fields = Array.from(document.querySelectorAll("[data-health-field]"));
       const statuses = Array.from(document.querySelectorAll("[data-health-status]"));
+      const notice = document.getElementById("notice-section");
+      const filters = new URLSearchParams(window.location.search);
+      const noticeParams = new URLSearchParams();
+      ["notice_day", "notice_workstation"].forEach(key => {
+        if (filters.get(key)) noticeParams.set(key, filters.get(key));
+      });
+      const noticeQuery = noticeParams.size ? "?" + noticeParams.toString() : "";
+      const statusClass = value => ["complete", "failed", "running", "attention"].includes(value) ? value : "";
+      const stamp = value => value ? String(value).replace("T", " ").replace(/\+08:00$/, "") : "";
+      function refreshNotice(view) {
+        if (!notice) return;
+        if (!view || !Array.isArray(view.records) || !Array.isArray(view.history)) throw new Error("invalid_notice");
+        const setText = (id, value) => { document.getElementById(id).textContent = value; };
+        setText("notice-date", view.date);
+        setText("notice-source-name", view.workstation || "尚未辨識");
+        const status = document.getElementById("notice-status");
+        status.textContent = view.status_label;
+        status.className = "status " + statusClass(view.status_class);
+        const shift = view.count_known && Number.isInteger(view.shift_count) ? "當班已收 " + view.shift_count + " 則" : (view.shift_label ? "當班已收待確認" : "當班時段待取得");
+        const today = view.count_known && Number.isInteger(view.today_count) ? "今日累積 " + view.today_count + " 則" : "今日累積待確認";
+        setText("notice-counts", shift + "｜" + today);
+        setText("notice-last-checked", stamp(view.last_checked_at) || "尚未取得檢查回報");
+        setText("notice-last-received", view.last_received_at ? stamp(view.last_received_at) + (view.last_received_count ? "，共 " + view.last_received_count + " 則" : "") : "尚無新增回報");
+        setText("notice-next-check", stamp(view.next_check_at) || "待回報");
+        setText("notice-last-success", stamp(view.last_success_at) || "尚未取得成功回報");
+        setText("notice-shift", view.shift_label || "待取得");
+        const error = document.getElementById("notice-error");
+        error.textContent = view.error || "";
+        error.hidden = !view.error;
+        const dateInput = notice.querySelector('[name="notice_day"]');
+        if (document.activeElement !== dateInput) dateInput.value = view.date;
+        const sourceInput = notice.querySelector('[name="notice_workstation"]');
+        if (document.activeElement !== sourceInput) {
+          const options = document.createDocumentFragment();
+          (view.sources || []).forEach(source => {
+            const option = document.createElement("option");
+            option.value = source.workstation;
+            option.textContent = source.workstation;
+            option.selected = source.workstation === view.workstation;
+            options.append(option);
+          });
+          if (!options.childNodes.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "尚未辨識來源";
+            options.append(option);
+          }
+          sourceInput.replaceChildren(options);
+        }
+        const sheetUrl = new URL(view.spreadsheet_url);
+        if (sheetUrl.origin !== "https://drive.google.com") throw new Error("invalid_sheet_link");
+        document.getElementById("notice-sheet-link").href = sheetUrl.href;
+        const rows = document.createDocumentFragment();
+        view.records.forEach(record => {
+          const row = document.createElement("tr");
+          [stamp(record.received_at), record.subject || "先前已確認收取（未保存主旨）", record.write_label, record.read_label].forEach(value => {
+            const cell = document.createElement("td");
+            cell.textContent = value;
+            row.append(cell);
+          });
+          rows.append(row);
+        });
+        if (!view.records.length) {
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.colSpan = 4;
+          cell.textContent = "目前沒有已確認入表的通報明細。";
+          row.append(cell);
+          rows.append(row);
+        }
+        document.getElementById("notice-records").replaceChildren(rows);
+        setText("notice-record-count", view.records.length);
+        const problems = document.createDocumentFragment();
+        view.history.filter(entry => !["success", "running"].includes(entry.state)).forEach(entry => {
+          const item = document.createElement("p");
+          item.textContent = stamp(entry.reported_at) + " · " + entry.status_label + (entry.error ? "：" + entry.error : "");
+          problems.append(item);
+        });
+        document.getElementById("notice-problems").replaceChildren(problems);
+      }
       async function refreshHealth() {
         if (inFlight) return;
         inFlight = true;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
         try {
-          const response = await fetch("/api/sinposmart/health", {cache: "no-store", signal: controller.signal});
+          const response = await fetch("/api/sinposmart/health" + noticeQuery, {cache: "no-store", signal: controller.signal});
           if (!response.ok) throw new Error("health_unavailable");
           const health = await response.json();
           if (health.ok !== true || !health.gui || !health.installer || !health.installation) {
@@ -653,7 +799,16 @@
             const value = health[node.dataset.healthStatus].status_class;
             node.className = "status " + (["complete", "failed", "running", "attention"].includes(value) ? value : "");
           });
+          refreshNotice(health.notice_collection);
         } catch (_) {
+          if (notice) {
+            const status = document.getElementById("notice-status");
+            status.textContent = "通報狀態待確認／重新連線中";
+            status.className = "status attention";
+            const error = document.getElementById("notice-error");
+            error.textContent = "暫時無法取得後台狀態，以上為最後回報。";
+            error.hidden = false;
+          }
           statuses.forEach(node => {
             node.textContent = node.dataset.healthStatus === "installer" ? "更新狀態待確認" : "狀態未知／重新連線中";
             node.className = "status attention";
