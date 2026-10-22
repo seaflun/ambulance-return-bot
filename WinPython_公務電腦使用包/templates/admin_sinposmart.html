@@ -12,6 +12,7 @@
       </div>
     </summary>
     <div class="section-note notice-meta">曆日 <span id="notice-date">{{ view.date }}</span> · 臺灣時間午夜歸零 · 來源：<span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span></div>
+    <p id="notice-verification" class="section-note"{% if not view.verification_checked_at %} hidden{% endif %}>{% if view.verification_checked_at %}本次人工查核：已讀核實 {{ view.verified_read_count }} 則，原件未找到 {{ view.original_not_found_count }} 則。查核時間：{{ notice_time(view.verification_checked_at) }}。{{ view.verification_note }}{% endif %}</p>
     <div class="notice-times">
       <span>最後檢查：<span id="notice-last-checked">{{ notice_time(view.last_checked_at, '尚未取得檢查回報') }}</span></span>
       <span>最近新增：<span id="notice-last-received">{{ notice_time(view.last_received_at, '尚無新增回報') }}{% if view.last_received_count %}，共 {{ view.last_received_count }} 則{% endif %}</span></span>
@@ -727,6 +728,9 @@
         setText("notice-next-check", stamp(view.next_check_at) || "待回報");
         setText("notice-last-success", stamp(view.last_success_at) || "尚未取得成功回報");
         setText("notice-shift", view.shift_label || "待取得");
+        const verification = document.getElementById("notice-verification");
+        verification.hidden = !view.verification_checked_at;
+        verification.textContent = view.verification_checked_at ? "本次人工查核：已讀核實 " + view.verified_read_count + " 則，原件未找到 " + view.original_not_found_count + " 則。查核時間：" + stamp(view.verification_checked_at) + "。" + (view.verification_note || "") : "";
         const error = document.getElementById("notice-error");
         error.textContent = view.error || "";
         error.hidden = !view.error;

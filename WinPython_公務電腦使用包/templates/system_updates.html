@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.22.1842">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.22.1842') }}</p>
+          <h2 class="update-card__title">通報支援獨立人工查核與原件未找到註記</h2>
+        </div>
+        <span class="update-card__versions">2026.10.22.1842</span>
+      </header>
+      <ul class="update-card__items">
+        <li>人工查核依來源電腦、原通報識別碼及收取時間關聯，不更動原始事件、GUI 收取紀錄或累積筆數。</li>
+        <li>區分已核實已讀與本次未找到原件；疑似撤回或重發保留差異，不以同主旨的新件宣告原件已讀。</li>
+        <li>後台顯示查核時間與結果，背景回報保留註記；新的收取失敗、分片缺漏及逾時仍正常提示。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.22.1812">
       <header class="update-card__heading">
         <div>

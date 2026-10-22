@@ -61,6 +61,128 @@ class NoticeCollectionBackendTests(unittest.TestCase):
         kwargs.setdefault("now", datetime(2026, 10, 22, 9, 2, tzinfo=backend.TAIPEI_TIMEZONE))
         return self.store.notice_view(day, **kwargs)
 
+    def verification(self, record, result="read_confirmed", **changes):
+        entry = {"workstation": "PUBLIC-PC", "key": record["key"], "received_at": record["received_at"],
+                 "verified_at": "2026-10-22T09:01:30+08:00", "result": result, "subject": record["subject"]}
+        entry.update(changes)
+        return entry
+
+    def save_verifications(self, entries):
+        path = Path(self.temporary.name) / "notice_verifications.json"
+        path.write_text(json.dumps({"schema_version": 1, "entries": entries}), encoding="utf-8")
+        return path
+
+    def test_operator_verification_separates_33_read_from_one_missing_original_without_changing_events(self):
+        records = [self.record(index, read_state="unknown") for index in range(1, 35)]
+        raw = self.event(records=[dict(record, subject="") for record in records], new_keys=[], new_count=0,
+                         unread_count=0, marked_read_count=0)
+        self.put(raw)
+        event_path = self.store.path_for_day("2026-10-22")
+        before = event_path.read_bytes()
+        entries = [self.verification(record) for record in records[:-1]]
+        entries.append(self.verification(records[-1], "original_not_found", related_key=records[-2]["key"]))
+        self.save_verifications(entries)
+        view = self.view()
+        self.assertEqual((view["today_count"], view["verified_read_count"], view["original_not_found_count"]), (34, 33, 1))
+        self.assertEqual((view["state"], view["status_class"], view["status_label"]), ("reviewed", "", "已核對，1則原件未找到"))
+        by_key = {row["key"]: row for row in view["records"]}
+        self.assertEqual(by_key[records[0]["key"]]["read_label"], "已人工核實已讀")
+        missing = by_key[records[-1]["key"]]
+        self.assertEqual(missing["read_state"], "unknown")
+        self.assertEqual(missing["read_label"], "原件未找到（疑似撤回／重發）")
+        self.assertEqual(missing["subject"], records[-1]["subject"])
+        self.assertEqual(missing["related_key"], records[-2]["key"])
+        self.assertEqual(view["verification_checked_at"], entries[-1]["verified_at"])
+        self.assertEqual(view["last_checked_at"], raw["occurred_at"])
+        self.assertEqual(view["history"], [])
+        self.assertEqual(event_path.read_bytes(), before)
+
+    def test_operator_verification_invalid_or_mismatched_evidence_stays_unknown(self):
+        record = self.record(read_state="unknown")
+        self.put(self.event(records=[record], new_keys=[], new_count=0))
+        invalid = ({"workstation": "OTHER-PC"}, {"key": "b" * 64}, {"received_at": "2026-10-22T09:00:01+08:00"},
+                   {"verified_at": "2026-10-22T09:03:00+08:00"}, {"verified_at": "2026-10-22T08:59:00+08:00"},
+                   {"verified_at": "2026-10-22T09:01:00"}, {"result": []}, {"subject": []},
+                   {"related_key": {}}, {"note": "password=unsafe https://example.invalid"},
+                   {"key": True}, {"received_at": None})
+        for changes in invalid:
+            with self.subTest(changes=changes):
+                self.save_verifications([self.verification(record, **changes)])
+                view = self.view()
+                self.assertEqual(view["records"][0]["read_state"], "unknown")
+                self.assertEqual(view["verified_read_count"], 0)
+                self.assertEqual(view["verification_checked_at"], "")
+                self.assertNotEqual(view["status_class"], "complete")
+
+    def test_operator_verification_is_stable_across_polls_and_machine_confirmation_clears_missing(self):
+        record = self.record(read_state="unknown")
+        event = self.event(records=[record], new_keys=[], new_count=0)
+        self.put(event)
+        self.save_verifications([self.verification(record, "original_not_found")])
+        self.assertEqual(self.view()["original_not_found_count"], 1)
+        self.put(event)
+        self.put(self.event(run=2, reported="2026-10-22T09:02:00+08:00", records=[record], new_keys=[], new_count=0))
+        self.assertEqual((self.view()["today_count"], self.view()["original_not_found_count"]), (1, 1))
+        self.put(self.event(run=3, reported="2026-10-22T09:02:01+08:00", records=[dict(record, read_state="confirmed")],
+                            new_keys=[], new_count=0))
+        view = self.view(now=datetime(2026, 10, 22, 9, 3, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertEqual(view["original_not_found_count"], 0)
+        self.assertEqual(view["records"][0]["read_label"], "已確認已讀")
+        self.assertEqual(view["verification_checked_at"], "")
+        self.assertEqual(view["status_class"], "complete")
+
+    def test_operator_verification_does_not_mask_machine_failure_busy_partial_or_stale(self):
+        record = self.record(read_state="unknown")
+        self.put(self.event(records=[record], new_keys=[], new_count=0))
+        self.save_verifications([self.verification(record, "original_not_found")])
+        for index, state in enumerate(("waiting", "failed", "partial"), 2):
+            with self.subTest(state=state):
+                self.put(self.event(run=index, reported=f"2026-10-22T09:0{index}:00+08:00", state=state,
+                                    records=[record], new_keys=[], new_count=0,
+                                    error_stage="busy" if state == "waiting" else "login" if state == "failed" else "mark_read"))
+                view = self.view(now=datetime(2026, 10, 22, 9, 5, tzinfo=backend.TAIPEI_TIMEZONE))
+                self.assertEqual(view["state"], state)
+                self.assertEqual(view["original_not_found_count"], 1)
+        self.put(self.event(run=5, reported="2026-10-22T09:05:00+08:00", records=[record], new_keys=[], new_count=0))
+        stale = self.view(now=datetime(2026, 10, 22, 9, 11, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertEqual(stale["status_class"], "attention")
+        self.assertIn("超過", stale["status_label"])
+        self.assertNotEqual(stale["state"], "reviewed")
+
+    def test_operator_verification_cannot_cover_new_unknown_or_pending_machine_work(self):
+        record, other = self.record(read_state="unknown"), self.record(2, read_state="unknown")
+        self.put(self.event(records=[record, other], new_keys=[], new_count=0))
+        self.save_verifications([self.verification(record, "original_not_found")])
+        self.assertEqual(self.view()["state"], "uncertain")
+        self.save_verifications([self.verification(record), self.verification(other)])
+        self.assertEqual(self.view()["status_class"], "complete")
+        self.put(self.event(run=2, reported="2026-10-22T09:02:00+08:00", records=[record, other],
+                            new_keys=[], new_count=0, pending_write_count=1))
+        self.assertEqual(self.view()["state"], "uncertain")
+
+    def test_operator_verification_is_visible_range_only_and_not_a_fire_day_file(self):
+        records = [self.record(), self.record(2, "2026-10-21T23:00:00+08:00", "unknown")]
+        self.put(self.event(records=records, new_keys=[], new_count=0))
+        path = self.save_verifications([self.verification(records[1], "original_not_found")])
+        before = path.read_bytes()
+        self.assertEqual(self.view()["original_not_found_count"], 0)
+        days = self.store.list_days(now=datetime(2026, 10, 22, 9, 2, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertEqual([day["fire_day"] for day in days], ["2026-10-22"])
+        self.store.cleanup(datetime(2026, 11, 22, 9, 2, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_operator_verification_malformed_document_and_cap_fail_closed(self):
+        record = self.record(read_state="unknown")
+        self.put(self.event(records=[record], new_keys=[], new_count=0))
+        path = self.save_verifications([])
+        for content in ("{bad", "[]", '{"schema_version":true,"entries":[]}',
+                        json.dumps({"schema_version": 1, "entries": [self.verification(record)] * 201})):
+            with self.subTest(content=content[:40]):
+                path.write_text(content, encoding="utf-8")
+                view = self.view()
+                self.assertEqual(view["records"][0]["read_state"], "unknown")
+                self.assertEqual(view["verification_checked_at"], "")
+
     def test_notice_typed_whitelist_preserves_metadata_without_generic_depth_loss(self):
         raw = self.event(records=[self.record()])
         raw["snapshot"]["notice_collection"].update(secret="do-not-store", message="password=do-not-store https://unsafe.invalid")

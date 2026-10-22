@@ -1780,6 +1780,72 @@ NOTICE_REASONS = {
     "busy": "瀏覽器忙碌，等待下一次檢查。", "unknown": "通報收取發生異常，請至值班台確認。",
 }
 NOTICE_COUNT_FIELDS = ("unread_count", "new_count", "marked_read_count", "pending_write_count", "pending_read_count")
+NOTICE_VERIFICATION_FILENAME = "notice_verifications.json"
+NOTICE_VERIFICATION_NOTES = {
+    "read_confirmed": "已核對試算表及網站已讀清單。",
+    "original_not_found": "已核對試算表；本次網站查核未找到原件，撤回／重發尚未證實。",
+}
+
+
+def normalize_notice_verifications(value: Any, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    if (not isinstance(value, dict) or type(value.get("schema_version")) is not int
+            or value["schema_version"] != 1 or not isinstance(value.get("entries"), list)
+            or len(value["entries"]) > 200):
+        return []
+    current, entries, conflicts = _heartbeat_now(now), {}, set()
+    for raw in value["entries"]:
+        if not isinstance(raw, dict):
+            continue
+        station, key, result = raw.get("workstation"), raw.get("key"), raw.get("result")
+        subject, related, note = raw.get("subject"), raw.get("related_key", ""), raw.get("note", "")
+        received, verified = _heartbeat_datetime(raw.get("received_at")), _heartbeat_datetime(raw.get("verified_at"))
+        if (not isinstance(station, str) or re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", station) is None
+                or not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None
+                or not isinstance(result, str) or result not in NOTICE_VERIFICATION_NOTES
+                or not isinstance(subject, str) or len(subject) > 240
+                or not isinstance(related, str) or related and (re.fullmatch(r"[0-9a-f]{64}", related) is None or related == key)
+                or not isinstance(note, str) or note not in {"", NOTICE_VERIFICATION_NOTES[result]}
+                or received is None or verified is None or not received <= verified <= current):
+            continue
+        try:
+            entry = {"workstation": station, "key": key,
+                     "received_at": received.astimezone(TAIPEI_TIMEZONE).isoformat(),
+                     "verified_at": verified.astimezone(TAIPEI_TIMEZONE).isoformat(), "result": result,
+                     "subject": sanitize_login_text(re.sub(r"<[^>]*>|[<>\x00-\x1f]", "", subject), 240),
+                     "related_key": related, "note": NOTICE_VERIFICATION_NOTES[result]}
+        except OverflowError:
+            continue
+        identity = (station, key, received)
+        if identity in entries and entries[identity] != entry:
+            conflicts.add(identity)
+        entries[identity] = entry
+    return [entry for identity, entry in entries.items() if identity not in conflicts]
+
+
+def apply_notice_verifications(rows: list[dict[str, Any]], value: Any, workstation: str,
+                               *, now: datetime | None = None) -> dict[str, Any]:
+    """Annotate only the derived ledger; source machine events remain unchanged."""
+    entries = {(entry["key"], _heartbeat_datetime(entry["received_at"])): entry
+               for entry in normalize_notice_verifications(value, now=now) if entry["workstation"] == workstation}
+    applied = []
+    for row in rows:
+        entry = entries.get((row["key"], _heartbeat_datetime(row["received_at"])))
+        if entry is None or row["read_state"] != "unknown":
+            continue
+        row.update(verification_result=entry["result"], verification_checked_at=entry["verified_at"],
+                   verification_note=entry["note"])
+        if not row["subject"]:
+            row["subject"] = entry["subject"]
+        if entry["result"] == "read_confirmed":
+            row.update(read_state="confirmed", verification_read_label="已人工核實已讀")
+        else:
+            row.update(verification_read_label="原件未找到（疑似撤回／重發）", related_key=entry["related_key"])
+        applied.append(entry)
+    read_count = sum(entry["result"] == "read_confirmed" for entry in applied)
+    missing_count = len(applied) - read_count
+    return {"verification_checked_at": max((entry["verified_at"] for entry in applied), default=""),
+            "verified_read_count": read_count, "original_not_found_count": missing_count,
+            "verification_note": NOTICE_VERIFICATION_NOTES["original_not_found" if missing_count else "read_confirmed"] if applied else ""}
 
 
 def normalize_notice_collection_report(value: Any) -> dict[str, Any]:
@@ -1895,7 +1961,8 @@ def _notice_groups(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str, *, workstation: str = "",
-                                 preferred_workstation: str = "", now: datetime | None = None) -> dict[str, Any]:
+                                 preferred_workstation: str = "", now: datetime | None = None,
+                                 verifications: Any = None) -> dict[str, Any]:
     current = _heartbeat_now(now)
     target = date.fromisoformat(calendar_day)
     groups = _notice_groups(events)
@@ -1964,9 +2031,10 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
     daily_rows = [row for row in rows if _heartbeat_datetime(row["received_at"]).astimezone(TAIPEI_TIMEZONE).date() == target]
     visible_rows = [row for row in rows if row in daily_rows
                     or start and end and start <= _heartbeat_datetime(row["received_at"]) < end]
+    view.update(apply_notice_verifications(visible_rows, verifications, selected, now=current))
     view.update(last_received_at=daily_rows[0]["received_at"] if daily_rows else "", last_received_count=received_count,
                 records=[dict(row, write_confirmed=True, write_label="已確認入表",
-                              read_label={"confirmed": "已確認已讀", "pending": "已讀待確認", "unknown": "已讀狀態未知"}[row["read_state"]])
+                              read_label=row.get("verification_read_label") or {"confirmed": "已確認已讀", "pending": "已讀待確認", "unknown": "已讀狀態未知"}[row["read_state"]])
                          for row in visible_rows],
                 history=list(reversed(history)))
     if not today:
@@ -1992,9 +2060,15 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
         view["today_count"] = len(daily_rows)
     if not latest["complete"] or conflicting_key:
         view.update(state="uncertain", status_label="回報分片缺漏或狀態待確認", status_class="attention", error="無法確認完整通報數量。")
-    elif state == "success" and (not known or any(row["read_state"] != "confirmed" for row in visible_rows)
-                                  or report["pending_write_count"] or report["pending_read_count"]):
-        view.update(state="uncertain", status_label="入表或已讀狀態待確認", status_class="attention")
+    elif state == "success":
+        unresolved = [row for row in visible_rows if row["read_state"] != "confirmed"]
+        clean_poll = known and report["pending_write_count"] == report["pending_read_count"] == 0 and not report["error_stage"]
+        review_current = (latest["at"] <= current + timedelta(minutes=5)
+                          and (historical or current <= _heartbeat_datetime(report["next_check_at"]) + timedelta(minutes=2)))
+        if clean_poll and review_current and unresolved and all(row.get("verification_result") == "original_not_found" for row in unresolved):
+            view.update(state="reviewed", status_label=f"已核對，{len(unresolved)}則原件未找到", status_class="")
+        elif not clean_poll or unresolved:
+            view.update(state="uncertain", status_label="入表或已讀狀態待確認", status_class="attention")
     if latest["at"] > current + timedelta(minutes=5):
         view.update(count_known=False, today_count=None, shift_count=None, status_label="回報時間待確認", status_class="attention")
     elif target == current.astimezone(TAIPEI_TIMEZONE).date() and report.get("next_check_at") and current > _heartbeat_datetime(report["next_check_at"]) + timedelta(minutes=2):
@@ -2049,6 +2123,10 @@ class SinpoSmartBackendStore:
         events = []
         # A civil day straddles two fire-day files. Include its neighbour for delayed, cross-midnight receipt parts.
         with self._lock:
+            try:
+                verifications = json.loads((self.root_dir / NOTICE_VERIFICATION_FILENAME).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                verifications = None
             for offset in (-1, 0, 1):
                 try:
                     path = self.path_for_day((target + timedelta(days=offset)).isoformat())
@@ -2062,13 +2140,15 @@ class SinpoSmartBackendStore:
                 if isinstance(rows, list):
                     events.extend(row for row in rows if isinstance(row, dict))
         return build_notice_collection_view(events, target.isoformat(), workstation=workstation,
-                                            preferred_workstation=preferred_workstation, now=now)
+                                            preferred_workstation=preferred_workstation, now=now, verifications=verifications)
 
     def list_days(self, limit: int = 7, now: datetime | None = None) -> list[dict[str, Any]]:
         with self._lock:
             self.cleanup(now)
             days: list[dict[str, Any]] = []
             for path in sorted(self.root_dir.glob("*.json"), reverse=True):
+                if path.name == NOTICE_VERIFICATION_FILENAME:
+                    continue
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
@@ -2138,6 +2218,8 @@ class SinpoSmartBackendStore:
             current_day = date.fromisoformat(sinposmart_fire_day_for(now))
             cutoff = current_day - timedelta(days=self.retention_days - 1)
             for path in self.root_dir.glob("*.json"):
+                if path.name == NOTICE_VERIFICATION_FILENAME:
+                    continue
                 try:
                     fire_day = date.fromisoformat(path.stem)
                 except ValueError:

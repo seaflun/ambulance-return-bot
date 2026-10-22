@@ -5971,6 +5971,20 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn("今日累積 0 則", body)
         self.assertIn("尚未取得檢查回報", body)
 
+    def test_sinposmart_notice_manual_verification_does_not_claim_missing_original_is_read(self):
+        store = app_module.sinposmart_store()
+        view = self._notice_view_fixture(state="reviewed", status_label="已核對，1則原件未找到", status_class="",
+            verification_checked_at="2026-10-22T19:00:00+08:00", verified_read_count=33,
+            original_not_found_count=1, verification_note="本次主旨搜尋未找到原件；疑似撤回或重發，尚未證實。")
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=view):
+            body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn('id="notice-verification"', body)
+        self.assertIn("已讀核實 33 則，原件未找到 1 則", body)
+        self.assertIn("疑似撤回或重發，尚未證實", body)
+        self.assertIn('verification_checked_at', body)
+        self.assertNotIn("34 則全部已讀", body)
+
     def test_sinposmart_notice_health_reuses_readonly_poll_and_preserves_calendar_source_filters(self):
         store = app_module.sinposmart_store()
         with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
