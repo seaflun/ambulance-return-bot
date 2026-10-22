@@ -41,6 +41,109 @@ def _ready_single_page_query(test):
 
 
 class ConsumablesLoginTests(unittest.TestCase):
+    def test_sso_skips_missing_ids_and_duplicate_accounts_when_falling_back(self):
+        from ambulance_bot.duty_credentials import DutyCredential
+
+        credentials = [
+            (DutyCredential("user8", "primary-test", actor_no="8", id_number="A123456789"), "同步帳號"),
+            (DutyCredential("tyfd00788", "backup-test", actor_no="19"), "備援同步帳號"),
+            (DutyCredential("alias8", "alias-test", actor_no="12", id_number="A123456789"), "任務司機"),
+            (DutyCredential("person21", "person-test", actor_no="21", id_number="D123456789"), "出勤人員"),
+        ]
+        with patch.object(consumables_login_module, "_acs_credential_attempts", return_value=credentials), patch.object(
+            consumables_login_module, "_fill_login_form"
+        ) as fill, patch.object(consumables_login_module, "_wait_until_sso_login_finished"), patch.object(
+            consumables_login_module, "_sso_login_succeeded", side_effect=[False, True]
+        ), patch.object(consumables_login_module, "_login_error_text", return_value="帳號或密碼錯誤"):
+            account, _wait = consumables_login_module._login_sso(Mock(), "A123456789", "primary-test", Mock(), None)
+        self.assertEqual(account, "D123456789")
+        self.assertEqual([call.args[2:4] for call in fill.call_args_list],
+                         [("A123456789", "primary-test"), ("D123456789", "person-test")])
+
+    def test_sso_page_timeout_does_not_try_another_account(self):
+        from ambulance_bot.duty_credentials import DutyCredential
+        from selenium.common.exceptions import TimeoutException
+
+        backup = DutyCredential("tyfd00788", "backup-test", actor_no="19", id_number="B123456789")
+        with patch.object(consumables_login_module, "_acs_credential_attempts", return_value=[
+            (backup, "備援同步帳號"),
+        ]), patch.object(consumables_login_module, "_fill_login_form") as fill, patch.object(
+            consumables_login_module, "_wait_until_sso_login_finished", side_effect=TimeoutException("page timeout")
+        ):
+            with self.assertRaises(TimeoutException):
+                consumables_login_module._login_sso(Mock(), "A123456789", "primary-test", None, None)
+        self.assertEqual(fill.call_count, 1)
+
+    def test_sso_uses_task_personnel_after_both_sync_accounts_are_rejected(self):
+        from ambulance_bot.duty_credentials import DutyCredential
+
+        credentials = [
+            (DutyCredential("user8", "primary-test", actor_no="8", id_number="A123456789"), "同步帳號"),
+            (DutyCredential("tyfd00788", "backup-test", actor_no="19", id_number="B123456789"), "備援同步帳號"),
+            (DutyCredential("driver12", "driver-test", actor_no="12", id_number="C123456789"), "任務司機"),
+            (DutyCredential("person21", "person-test", actor_no="21", id_number="D123456789"), "出勤人員"),
+        ]
+        driver = Mock()
+        with patch.object(consumables_login_module, "_acs_credential_attempts", return_value=credentials), patch.object(
+            consumables_login_module, "_fill_login_form"
+        ) as fill, patch.object(consumables_login_module, "_wait_until_sso_login_finished"), patch.object(
+            consumables_login_module, "_sso_login_succeeded", side_effect=[False, False, False, True]
+        ), patch.object(consumables_login_module, "_login_error_text", return_value="帳號或密碼錯誤"):
+            account, _wait = consumables_login_module._login_sso(driver, "A123456789", "primary-test", Mock(), None)
+        self.assertEqual(account, "D123456789")
+        self.assertEqual([call.args[2] for call in fill.call_args_list], [c.id_number for c, _source in credentials])
+        self.assertIn("出勤人員", driver._consumables_login_audit)
+        self.assertIn("21番", driver._consumables_login_audit)
+
+    def test_consumables_result_includes_actual_backup_login_audit(self):
+        driver = Mock()
+        driver._consumables_login_audit = "登入帳號：耗材=備援同步帳號，19番 備援 - B12***789"
+        with patch.object(consumables_login_module, "_open_consumable_record_for_task", return_value="已完成。"):
+            result = open_consumable_record_for_task(driver, Mock())
+        self.assertIn(driver._consumables_login_audit, result)
+        self.assertIn("已完成。", result)
+
+    def test_sso_rejected_primary_uses_backup_and_records_masked_actual_account(self):
+        from ambulance_bot.duty_credentials import DutyCredential
+
+        primary = DutyCredential("user8", "primary-test", actor_no="8", id_number="A123456789")
+        backup = DutyCredential("tyfd00788", "backup-test", actor_no="19", id_number="B123456789")
+        driver = Mock()
+        progress = Mock()
+        with patch.object(consumables_login_module, "_acs_credential_attempts", return_value=[
+            (primary, "同步帳號"), (backup, "備援同步帳號"),
+        ]), patch.object(consumables_login_module, "_fill_login_form") as fill, patch.object(
+            consumables_login_module, "_wait_until_sso_login_finished"
+        ), patch.object(consumables_login_module, "_sso_login_succeeded", side_effect=[False, True]), patch.object(
+            consumables_login_module, "_login_error_text", return_value="帳號或密碼錯誤"
+        ):
+            account, _wait = consumables_login_module._login_sso(
+                driver, primary.id_number, primary.password, None, progress)
+        self.assertEqual(account, backup.id_number)
+        self.assertEqual([call.args[2:4] for call in fill.call_args_list],
+                         [(primary.id_number, primary.password), (backup.id_number, backup.password)])
+        self.assertIn("備援同步帳號", driver._consumables_login_audit)
+        self.assertIn("19番", driver._consumables_login_audit)
+        for secret in (primary.password, backup.password, primary.id_number, backup.id_number):
+            self.assertNotIn(secret, driver._consumables_login_audit)
+
+    def test_sso_captcha_failure_retries_primary_without_switching_accounts(self):
+        from ambulance_bot.duty_credentials import DutyCredential
+
+        primary = DutyCredential("user8", "primary-test", actor_no="8", id_number="A123456789")
+        backup = DutyCredential("tyfd00788", "backup-test", actor_no="19", id_number="B123456789")
+        with patch.object(consumables_login_module, "_acs_credential_attempts", return_value=[
+            (primary, "同步帳號"), (backup, "備援同步帳號"),
+        ]), patch.object(consumables_login_module, "_fill_login_form") as fill, patch.object(
+            consumables_login_module, "_wait_until_sso_login_finished"
+        ), patch.object(consumables_login_module, "_sso_login_succeeded", return_value=False), patch.object(
+            consumables_login_module, "_login_error_text", return_value="驗證碼錯誤"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "一站通登入失敗"):
+                consumables_login_module._login_sso(Mock(), primary.id_number, primary.password, None, None)
+        self.assertEqual(fill.call_count, consumables_login_module.MAX_LOGIN_ATTEMPTS)
+        self.assertTrue(all(call.args[2] == primary.id_number for call in fill.call_args_list))
+
     def test_consumables_operation_failure_captures_task_and_vehicle_evidence(self):
         request = AmbulanceReturnRequest(
             task_id="consumables-capture",

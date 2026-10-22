@@ -16,11 +16,17 @@ from ambulance_bot.login_audit import (
     mask_login_account,
     site_login_account_summaries,
     vehicle_mileage_login_audit,
+    with_login_audit,
 )
 from ambulance_bot.models import AmbulanceReturnRequest
 
 
 class LoginAuditTests(unittest.TestCase):
+    def test_actual_consumables_backup_audit_is_not_replaced_by_initial_primary(self):
+        actual = "登入帳號：耗材=同步帳號 > 備援同步帳號，備援同步帳號，19番 備援 - B12***789。已完成。"
+        initial = "登入帳號：耗材=同步帳號 > 備援同步帳號，同步帳號，8番 主用 - A12***789"
+        self.assertEqual(with_login_audit(actual, initial), actual)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.previous = {

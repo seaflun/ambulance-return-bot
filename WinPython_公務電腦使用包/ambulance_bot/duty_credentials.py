@@ -135,11 +135,20 @@ def load_duty_credential(
 
 
 def load_synced_worker_credential(path: Path | None = None) -> DutyCredential | None:
-    return load_saved_duty_automation_credential(path)
+    return load_saved_duty_automation_credential(path) or load_backup_synced_worker_credential(path)
 
 
 def load_saved_duty_work_credential(path: Path | None = None) -> DutyCredential | None:
-    return load_saved_duty_automation_credential(path, duty_password=True)
+    return load_saved_duty_automation_credential(path, duty_password=True) or load_backup_synced_worker_credential(
+        path, duty_password=True
+    )
+
+
+def load_backup_synced_worker_credential(
+    path: Path | None = None, *, duty_password: bool = False,
+) -> DutyCredential | None:
+    return next((credential for credential in list_saved_duty_automation_credentials(path, duty_password=duty_password)
+                 if credential.actor_no == "19" or credential.user_id.lower() == "tyfd00788"), None)
 
 
 def load_recent_synced_duty_credential(
@@ -211,7 +220,11 @@ def _append_synced_task_login_credential(
 ) -> None:
     synced = load_saved_duty_work_credential() if duty_password else load_synced_worker_credential()
     if synced is not None:
-        attempts.append((synced, "同步帳號"))
+        source = "備援同步帳號" if _is_backup_sync_account({"actor_no": synced.actor_no, "user_id": synced.user_id}) else "同步帳號"
+        attempts.append((synced, source))
+    backup = load_backup_synced_worker_credential(duty_password=duty_password)
+    if backup is not None and (synced is None or backup.user_id.lower() != synced.user_id.lower()):
+        attempts.append((backup, "備援同步帳號"))
 
 
 def _append_task_login_credentials(
@@ -628,28 +641,26 @@ def save_credential_sync_payload(payload: dict[str, object], path: Path | None =
 
 
 def stable_synced_account_selection(accounts: list[dict[str, object]], path: Path | None = None) -> str:
-    for account in accounts:
-        user_id = str(account.get("user_id") or "").strip()
-        actor_no = str(account.get("actor_no") or "").strip()
-        if _is_locked_sync_account(account):
-            return user_id or actor_no
-
     source = path or saved_login_path()
     existing_payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
-    existing_selected = str(existing_payload.get("last_selected") or "").strip()
     existing_accounts = existing_payload.get("accounts")
     existing_account_list = list(existing_accounts) if isinstance(existing_accounts, list) else []
-    existing_account = _select_account(existing_account_list, existing_selected)
-    if existing_selected and existing_account is not None and _is_locked_sync_account(existing_account):
-        return existing_selected
-
+    candidates = [account for account in [*accounts, *existing_account_list] if isinstance(account, dict)]
+    for backup in (False, True):
+        for account in candidates:
+            if _is_locked_sync_account(account) and _is_backup_sync_account(account) == backup:
+                return str(account.get("user_id") or account.get("actor_no") or "").strip()
     return ""
 
 
 def _is_locked_sync_account(account: dict[str, object]) -> bool:
     actor_no = str(account.get("actor_no") or "").strip()
     user_id = str(account.get("user_id") or "").strip()
-    return actor_no == "8" or user_id.lower() == "tyfd01510"
+    return actor_no == "8" or user_id.lower() == "tyfd01510" or _is_backup_sync_account(account)
+
+
+def _is_backup_sync_account(account: dict[str, object]) -> bool:
+    return str(account.get("actor_no") or "").strip() == "19" or str(account.get("user_id") or "").strip().lower() == "tyfd00788"
 
 
 def _is_locked_sync_credential(credential: DutyCredential) -> bool:

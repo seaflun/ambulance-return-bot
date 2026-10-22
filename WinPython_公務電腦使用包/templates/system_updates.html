@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.22.1154">
+      <div class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.22.1154') }}</p>
+          <h2 class="update-card__title">新增備援同步帳號與耗材出勤人員備援登入</h2>
+        </div>
+        <span class="update-card__versions">2026.10.22.1154</span>
+      </div>
+      <ul class="update-card__items">
+        <li>保留 8 番為主用同步帳號，新增 19 番為備援，沿用各人已儲存的帳密。</li>
+        <li>耗材登入遇到明確帳密錯誤時，依序改試備援、任務司機及出勤人員；驗證碼錯誤重試原帳號，網頁逾時不切換帳號。</li>
+        <li>進度與完成結果顯示實際登入者並遮罩身分證；同步單一人員時保留其他人的帳密。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.21.2242">
       <header class="update-card__heading">
         <div>

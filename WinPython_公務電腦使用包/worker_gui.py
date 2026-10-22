@@ -28,6 +28,7 @@ from ambulance_bot.duty_credentials import (
     legacy_configured_saved_login_path,
     list_saved_duty_automation_credentials,
     load_saved_duty_automation_credential,
+    load_synced_worker_credential,
     save_duty_automation_credentials,
     saved_login_path,
     set_last_selected_duty_automation_credential,
@@ -511,7 +512,7 @@ class WorkerGui(ctk.CTk):
             corner_radius=10,
         )
         self.credential_combo.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
-        self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=330).grid(row=3, column=0, sticky="w", padx=16, pady=(0, 12))
+        self._hint(credentials, "8 番為主用同步帳號，19 番為備援；耗材帳密錯誤時改試備援。", wraplength=330).grid(row=3, column=0, sticky="w", padx=16, pady=(0, 12))
 
         version_card = self._card(top_area, "版本")
         version_card.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(14, 0))
@@ -1202,7 +1203,7 @@ class WorkerGui(ctk.CTk):
             self.credential_combo.configure(values=labels)
         if not labels:
             self.credential_choice.set("")
-            self.credential_sync_status.set("目前沒有 8 號同步帳號，請先由值班台登入同步帳號。")
+            self.credential_sync_status.set("目前沒有 8 或 19 番同步帳號，請先由值班台登入同步帳號。")
             return
 
         selected = selected_saved_credential_label(self.saved_credentials)
@@ -1269,8 +1270,8 @@ class WorkerGui(ctk.CTk):
             messagebox.showerror("匯入同步失敗", f"同步資料儲存失敗：{exc}")
             return
         if result is None:
-            self.credential_sync_status.set("匯入同步失敗：同步資料缺少 8 號帳號或密碼。")
-            messagebox.showerror("匯入同步失敗", "同步資料缺少 8 號帳號或密碼。")
+            self.credential_sync_status.set("匯入同步失敗：同步資料缺少 8 或 19 番同步帳號或密碼。")
+            messagebox.showerror("匯入同步失敗", "同步資料缺少 8 或 19 番同步帳號或密碼。")
             return
         user_id, password, path, count = result
         self._apply_credential_sync_result(user_id, password, path, count)
@@ -1960,11 +1961,14 @@ def credential_choice_label(credential: DutyCredential) -> str:
 
 
 def is_locked_sync_credential(credential: DutyCredential) -> bool:
-    return credential.actor_no == "8" or credential.user_id.lower() == "tyfd01510"
+    return credential.actor_no in {"8", "19"} or credential.user_id.lower() in {"tyfd01510", "tyfd00788"}
 
 
 def locked_sync_credentials(credentials: list[DutyCredential]) -> list[DutyCredential]:
-    return [credential for credential in credentials if is_locked_sync_credential(credential)]
+    return sorted(
+        (credential for credential in credentials if is_locked_sync_credential(credential)),
+        key=lambda credential: not (credential.actor_no == "8" or credential.user_id.lower() == "tyfd01510"),
+    )
 
 
 def _name_from_display_name(display_name: str, account: str = "", actor_no: str = "") -> str:
@@ -1982,12 +1986,17 @@ def _name_from_display_name(display_name: str, account: str = "", actor_no: str 
 
 
 def selected_saved_credential_label(saved_credentials: dict[str, DutyCredential]) -> str:
+    selected = load_synced_worker_credential()
+    if selected is not None:
+        for label, credential in saved_credentials.items():
+            if credential.user_id.lower() == selected.user_id.lower():
+                return label
     return next(iter(saved_credentials), "")
 
 
 def persist_selected_saved_credential(credential: DutyCredential) -> Path:
     if not is_locked_sync_credential(credential):
-        raise ValueError("同步帳號已鎖定 8 號")
+        raise ValueError("同步帳號僅允許 8 或 19 番")
     selected = credential.user_id or credential.actor_no or credential.id_number
     return set_last_selected_duty_automation_credential(selected)
 

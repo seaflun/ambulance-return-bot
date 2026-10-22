@@ -213,7 +213,7 @@ class WorkerGuiEnvTests(unittest.TestCase):
         self.assertIn('self._button(local_actions, "修復 Chrome", self._repair_worker_chrome, "soft").grid(row=0, column=1', source)
         self.assertIn("self.credential_combo.grid(row=2, column=0", source)
         self.assertIn("credentials.rowconfigure(3, weight=1)", source)
-        self.assertIn('self._hint(credentials, "同步帳號為固定8番，請勿勾選其他帳號。", wraplength=330).grid(row=3', source)
+        self.assertIn('self._hint(credentials, "8 番為主用同步帳號，19 番為備援；耗材帳密錯誤時改試備援。", wraplength=330).grid(row=3', source)
         self.assertIn("version_card.rowconfigure(2, weight=1)", source)
         self.assertNotIn('self._import_credential_sync_file, "primary").grid(row=3', source)
         self.assertNotIn("請按「匯入同步」", source)
@@ -2018,6 +2018,20 @@ class WorkerGuiEnvTests(unittest.TestCase):
         }
 
         self.assertEqual(worker_gui.selected_saved_credential_label(saved), label8)
+
+    def test_locked_sync_credentials_lists_primary_then_backup_only(self):
+        from unittest.mock import patch
+
+        credentials = [
+            DutyCredential(user_id="tyfd00788", password="backup-test", actor_no="19"),
+            DutyCredential(user_id="user9", password="other-test", actor_no="9"),
+            DutyCredential(user_id="user8", password="primary-test", actor_no="8"),
+        ]
+        self.assertEqual([c.user_id for c in worker_gui.locked_sync_credentials(credentials)],
+                         ["user8", "tyfd00788"])
+        with patch.object(worker_gui, "set_last_selected_duty_automation_credential") as save:
+            worker_gui.persist_selected_saved_credential(credentials[0])
+        save.assert_called_once_with("tyfd00788")
 
     def test_locked_sync_credentials_only_lists_actor_8(self):
         credentials = [

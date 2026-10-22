@@ -88,12 +88,13 @@ class EntryDataParityTests(unittest.TestCase):
         self.assertEqual("100", actual["新坡95"])
 
     def test_equal_minute_mileage_keeps_nas_latest_order_in_hint_history(self):
-        self.add_mileage("local", "local-old", "0900", "110")
-        self.add_mileage("nas", "nas-old", "0900", "90")
-        self.add_mileage("nas", "nas-new", "0900", "100")
+        with mock.patch("ambulance_bot.task_store.now_text", return_value="2026-10-20T12:00:00"):
+            self.add_mileage("local", "local-old", "0900", "110")
+            self.add_mileage("nas", "nas-old", "0900", "90")
+            self.add_mileage("nas", "nas-new", "0900", "100")
         payload = self.stores["nas"].get("nas-new")
-        payload["updated_at"] = "2026-10-20T12:01:00"
-        self.stores["nas"].save_payload("nas-new", payload)
+        with mock.patch("ambulance_bot.task_store.now_text", return_value="2026-10-20T12:01:00"):
+            self.stores["nas"].save_payload("nas-new", payload)
         expected = self.request("nas", "get", "/api/vehicle-mileages").json
         actual = self.request("local", "get", "/api/vehicle-mileages").json
         self.assertEqual("100", expected["mileages"]["新坡95"])

@@ -28,6 +28,7 @@ from ambulance_bot.duty_credentials import (
     load_synced_worker_credential,
     task_login_credential_attempts,
 )
+from ambulance_bot.login_audit import CONSUMABLES_LOGIN_PRIORITY_LABEL, credential_public_label, with_login_audit
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm, vehicle_ppe_names
 from ambulance_bot.profile_paths import runtime_profile_dir
@@ -106,20 +107,7 @@ def login_acs_and_get_driver(
     driver.set_script_timeout(page_timeout)
     apply_tile(driver, tile_name)
     try:
-        login_error = ""
-        if progress is not None:
-            progress("登入一站通")
-        for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
-            driver.get(SSO_URL)
-            wait = WebDriverWait(driver, 15)
-            _fill_login_form(driver, wait, account_text, password_text, attempt)
-            _wait_until_sso_login_finished(driver, wait)
-            if _sso_login_succeeded(driver):
-                break
-            login_error = _login_error_text(driver) or "登入後仍停留在一站通 SSO 頁，可能是驗證碼錯誤。"
-        else:
-            raise RuntimeError(f"一站通登入失敗，已嘗試 {MAX_LOGIN_ATTEMPTS} 次。{login_error}")
-
+        account_text, wait = _login_sso(driver, account_text, password_text, task, progress)
         _open_acs_system(driver, wait)
         _remember_initial_consumable_list(driver, account_text, task)
         return driver
@@ -146,13 +134,15 @@ def open_consumable_record_for_task(
 ) -> str:
     mark_driver_operation_active(driver)
     try:
-        return _open_consumable_record_for_task(
+        detail = _open_consumable_record_for_task(
             driver,
             task,
             cancel_check=cancel_check,
             update_context=update_context,
             progress=progress,
         )
+        audit = getattr(driver, "_consumables_login_audit", "")
+        return with_login_audit(detail, audit) if isinstance(audit, str) else detail
     except (TaskCancellationError, ManualUpdateRequiredError, VehicleCandidateLookupError):
         raise
     except Exception as exc:
@@ -333,6 +323,54 @@ def _acs_login_account(credential) -> str:
     return credential.id_number.strip() or (
         credential.user_id if re.fullmatch(r"[A-Za-z][0-9]{9}", credential.user_id) else ""
     )
+
+
+def _login_sso(
+    driver: webdriver.Chrome,
+    account_text: str,
+    password_text: str,
+    task: dict[str, object] | AmbulanceReturnRequest | None,
+    progress: Callable[[str], None] | None,
+) -> tuple[str, WebDriverWait]:
+    credentials = _acs_credential_attempts(task)
+    primary = next(((credential, source) for credential, source in credentials
+                    if _acs_login_account(credential) == account_text), (None, ""))
+    candidates = [(account_text, password_text, *primary)]
+    seen = {account_text.casefold()}
+    for credential, source in credentials:
+        account = _acs_login_account(credential)
+        if account and credential.password and account.casefold() not in seen:
+            seen.add(account.casefold())
+            candidates.append((account, credential.password, credential, source))
+    for account, password, credential, source in candidates:
+        audit = (f"登入帳號：耗材={CONSUMABLES_LOGIN_PRIORITY_LABEL}，{source}，"
+                 f"{credential_public_label(credential, login_account=account)}") if credential is not None else ""
+        if progress is not None:
+            progress(with_login_audit("登入一站通", audit))
+        for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
+            driver.get(SSO_URL)
+            wait = WebDriverWait(driver, 15)
+            _fill_login_form(driver, wait, account, password, attempt)
+            _wait_until_sso_login_finished(driver, wait)
+            if _sso_login_succeeded(driver):
+                driver._consumables_login_audit = audit
+                return account, wait
+            error = _login_error_text(driver)
+            if _sso_credentials_rejected(error):
+                break
+        else:
+            raise RuntimeError("一站通登入失敗，驗證碼或登入狀態未能確認；未切換其他帳號。")
+    raise RuntimeError("一站通登入失敗，主用及可用備援帳號均未通過帳密驗證。")
+
+
+def _sso_credentials_rejected(error: str) -> bool:
+    if "驗證碼" in error or "captcha" in error.lower():
+        return False
+    return any(message in error.lower() for message in (
+        "帳號或密碼錯誤", "帳號密碼錯誤", "帳號或密碼不正確", "密碼錯誤", "密碼不正確",
+        "帳號不存在", "帳號已鎖定", "帳號被鎖定", "帳號已停用", "帳號停用",
+        "invalid credentials", "invalid username or password", "account is locked",
+    ))
 
 
 def _lookup_synced_credential_id_number_for_acs() -> None:

@@ -13,9 +13,9 @@ from .duty_credentials import (
 from .models import AmbulanceReturnRequest
 
 
-TASK_LOGIN_PRIORITY_LABEL = "任務司機 > 出勤人員 > 同步帳號"
-CIVILPOWER_LOGIN_PRIORITY_LABEL = "值班人員 > 任務司機 > 出勤人員 > 同步帳號"
-CONSUMABLES_LOGIN_PRIORITY_LABEL = "同步帳號 > 任務司機 > 出勤人員"
+TASK_LOGIN_PRIORITY_LABEL = "任務司機 > 出勤人員 > 同步帳號 > 備援同步帳號"
+CIVILPOWER_LOGIN_PRIORITY_LABEL = "值班人員 > 任務司機 > 出勤人員 > 同步帳號 > 備援同步帳號"
+CONSUMABLES_LOGIN_PRIORITY_LABEL = "同步帳號 > 備援同步帳號 > 任務司機 > 出勤人員"
 PPE_LOGIN_PRIORITY_LABEL = TASK_LOGIN_PRIORITY_LABEL
 
 
@@ -148,6 +148,8 @@ def with_login_audit(detail: str, audit: str) -> str:
     clean_detail = str(detail or "").strip()
     clean_audit = str(audit or "").strip()
     if not clean_audit or clean_audit in clean_detail:
+        return clean_detail
+    if clean_audit.startswith("登入帳號：耗材=") and "登入帳號：耗材=" in clean_detail:
         return clean_detail
     return f"{clean_audit}。{clean_detail}" if clean_detail else clean_audit
 

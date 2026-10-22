@@ -1968,7 +1968,7 @@ def maybe_run_credential_sync(server_url: str) -> None:
     try:
         result = save_credential_sync_payload(payload)
         if result is None:
-            detail = "帳密同步資料缺少 8 號帳號或密碼。"
+            detail = "帳密同步資料缺少 8 或 19 番同步帳號或密碼。"
         else:
             user_id, _password, path, count = result
             status = "saved"

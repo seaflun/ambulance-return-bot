@@ -26,6 +26,65 @@ from ambulance_bot.duty_credentials import (
 
 
 class DutyCredentialTests(unittest.TestCase):
+    def test_single_personnel_sync_preserves_both_sync_passwords(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ):
+            path = Path(tmp) / "saved_login.json"
+            save_duty_automation_credentials([
+                {"actor_no": "8", "user_id": "user8", "password": "primary-new"},
+                {"actor_no": "19", "user_id": "tyfd00788", "password": "backup-new"},
+            ], last_selected="user8", path=path)
+            save_credential_sync_payload({"actor_no": "12", "user_id": "driver12", "password": "driver-new"}, path=path)
+            self.assertEqual({c.user_id: c.password for c in list_saved_duty_automation_credentials(path)}, {
+                "user8": "primary-new", "tyfd00788": "backup-new", "driver12": "driver-new",
+            })
+            self.assertEqual(load_synced_worker_credential(path).user_id, "user8")
+
+    def test_backup_sync_follows_primary_before_consumables_task_people(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+            "DUTY_SAVED_LOGIN_PATH": str(Path(tmp) / "saved_login.json"),
+            "DUTY_SAVED_LOGIN_PATH_OVERRIDE": "1",
+        }):
+            save_duty_automation_credentials([
+                {"actor_no": "19", "user_id": "tyfd00788", "password": "backup-test"},
+                {"actor_no": "8", "user_id": "user8", "password": "primary-test"},
+                {"actor_no": "12", "user_id": "driver12", "password": "driver-test"},
+            ], last_selected="user8")
+            request = SimpleNamespace(driver_duty_login_account_candidates=["driver12"],
+                                      personnel_duty_login_account_candidates=[])
+            for policy, expected in (
+                ("consumables", [("user8", "同步帳號"), ("tyfd00788", "備援同步帳號"), ("driver12", "任務司機")]),
+                ("standard", [("driver12", "任務司機"), ("user8", "同步帳號"), ("tyfd00788", "備援同步帳號")]),
+            ):
+                with self.subTest(policy=policy):
+                    self.assertEqual([(c.user_id, source) for c, source in
+                                      task_login_credential_attempts(request, login_policy=policy)], expected)
+
+    def test_syncing_only_backup_preserves_primary_password_and_selection(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ):
+            path = Path(tmp) / "saved_login.json"
+            save_duty_automation_credentials([
+                {"actor_no": "8", "user_id": "user8", "password": "primary-new"},
+                {"actor_no": "19", "user_id": "tyfd00788", "password": "backup-old"},
+            ], last_selected="user8", path=path)
+            result = save_credential_sync_payload({"actor_no": "19", "user_id": "tyfd00788",
+                                                   "password": "backup-new"}, path=path)
+            self.assertEqual(result[0:2], ("user8", "primary-new"))
+            self.assertEqual({c.user_id: c.password for c in list_saved_duty_automation_credentials(path)},
+                             {"user8": "primary-new", "tyfd00788": "backup-new"})
+
+    def test_backup_can_initialize_sync_and_primary_takes_priority_when_added(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ):
+            path = Path(tmp) / "saved_login.json"
+            result = save_credential_sync_payload({"actor_no": "19", "user_id": "tyfd00788",
+                                                   "password": "backup-test"}, path=path)
+            self.assertIsNotNone(result)
+            self.assertEqual(load_synced_worker_credential(path).user_id, "tyfd00788")
+            save_credential_sync_payload({"actor_no": "8", "user_id": "user8",
+                                           "password": "primary-test"}, path=path)
+            self.assertEqual(load_synced_worker_credential(path).user_id, "user8")
+
     def test_concurrent_credential_updates_are_serialized_without_losing_accounts(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "saved_login.json"
