@@ -8225,6 +8225,15 @@ def _public_pc_event_lifecycle(site_key: str, status: str, action: str, detail: 
 
 def public_pc_event_rows(report: dict) -> list[dict]:
     rows = []
+    task_stages = {
+        "created": ("建立任務", "已建立"),
+        "ems_case_closed_confirmed": ("建立任務", "已確認結案"),
+        "queued_for_worker": ("排隊領取", "等候執行"),
+        "claimed_by_worker": ("排隊領取", "已領取"),
+        "task_run_requested": ("啟動執行", "已送出"),
+        "desktop_fast_running": ("啟動執行", "執行中"),
+        "worker_running": ("啟動執行", "執行中"),
+    }
     events = public_pc_report_display_events(report)
     has_worker_queue = bool(worker_queue_state(report).get("queued_at")) or any(
         event.get("status") == "queued_for_worker" for event in events)
@@ -8234,7 +8243,8 @@ def public_pc_event_rows(report: dict) -> list[dict]:
     if folders:
         if public_pc_report_service_type(report) == "ems":
             folders = folders[:1]
-        folder_row = {"time": "", "action": "已建立的資料夾", "detail": "", "folder_paths": folders}
+        folder_row = {"time": "", "action": "任務｜資料夾｜已建立", "detail": "",
+                      "stage_group": "資料夾", "folder_paths": folders}
     for raw in events:
         if not isinstance(raw, dict):
             continue
@@ -8304,6 +8314,11 @@ def public_pc_event_rows(report: dict) -> list[dict]:
                 state = "略過（已完成）" if state_class == "complete" else "略過"
             event.update(action=f"{SITE_SHORT_NAMES[site_key]}｜{group}｜{state}", stage_group=group)
             if any(word in action for word in ("單站", "重試", "手動")) and action not in detail:
+                detail = f"{action}。{detail}"
+        elif status in task_stages:
+            group, state = task_stages[status]
+            event.update(action=f"任務｜{group}｜{state}", stage_group=group)
+            if action not in {"更新", status_label(status)} and action not in detail:
                 detail = f"{action}。{detail}"
         elif re.fullmatch(r".+站登打成功", action) and status == "desktop_fast_completed":
             detail = "所有有效站別皆已完成。"

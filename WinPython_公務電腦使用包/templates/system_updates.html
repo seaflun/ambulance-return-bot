@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.23.0910">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.23.0910') }}</p>
+          <h2 class="update-card__title">完整事件補齊整體任務的階段分類</h2>
+        </div>
+        <span class="update-card__versions">2026.10.23.0910</span>
+      </header>
+      <ul class="update-card__items">
+        <li>救災、救護完整事件統一以「任務｜階段｜狀態」顯示整體任務進度，分為建立任務、排隊領取、啟動執行與資料夾四類。</li>
+        <li>結案確認顯示為「已確認結案」，不視為所有站別登打完成；各站事件仍沿用原本階段，未知或失敗訊息保留原樣。</li>
+        <li>保留原始時間、內容、資料夾路徑與自訂標題，資料夾仍合併顯示一次，不改寫正式任務紀錄。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.22.2135">
       <header class="update-card__heading">
         <div>

@@ -8876,17 +8876,19 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
                 report = {"task_id": task["task_id"], "task": task, "events": events, "record_folders": folders, "site_statuses": {}}
                 before = json.dumps(report)
                 rows = app_module.public_pc_event_rows(report)
-                folder_rows = [row for row in rows if row["action"] == "已建立的資料夾"]
+                folder_rows = [row for row in rows if row["action"] == "任務｜資料夾｜已建立"]
                 self.assertEqual(1, len(folder_rows))
                 self.assertEqual(folders, folder_rows[0]["folder_paths"])
-                self.assertEqual(1, sum(row["action"].startswith("按下") for row in rows))
+                self.assertEqual(1, sum(row.get("status") == "task_run_requested" for row in rows))
                 self.assertEqual(before, json.dumps(report))
                 if service == "ems":
                     self.assertEqual("2026-09-13T00:11:49", folder_rows[0]["time"])
-                    self.assertEqual(1, sum(row["detail"] == "已確認救護案件結案" for row in rows))
+                    self.assertEqual(1, sum(row["detail"].endswith("已確認救護案件結案") for row in rows))
                 with mock.patch.object(app_module, "public_pc_reports", return_value=[report]):
                     page = self.client.get(f"/admin/{service}").get_data(as_text=True)
-                self.assertEqual(1, page.count('class="event-action">已建立的資料夾</div>'))
+                self.assertEqual(1, page.count('class="event-action">任務｜資料夾｜已建立</div>'))
+                self.assertIn("任務｜建立任務｜已建立", page)
+                self.assertIn("任務｜啟動執行｜已送出", page)
                 for folder in folders:
                     self.assertEqual(1, page.count(folder))
                 self.assertNotIn(raw_path, page)
@@ -8900,7 +8902,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         report = {"task": {"service_type": "ems"}, "events": [success, dict(success), failed]}
         rows = app_module.public_pc_event_rows(report)
         self.assertEqual(2, len(rows))
-        self.assertEqual("已建立的資料夾", rows[0]["action"])
+        self.assertEqual("任務｜資料夾｜已建立", rows[0]["action"])
         self.assertEqual(["/volume1/nas/救護硬碟/救護密錄器及行車紀錄器/2026/9月/09122226-95"], rows[0]["folder_paths"])
         self.assertEqual("record_folder_failed", rows[1]["status"])
         self.assertTrue(rows[1]["detail"])
@@ -8941,7 +8943,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
                 self.assertEqual(response.status_code, 200)
                 app_module.upsert_public_pc_report({"task_id": f"folders-{service}", "action": "後續更新"})
                 page = self.client.get(f"/admin/{service}").get_data(as_text=True)
-                self.assertIn("已建立的資料夾", page)
+                self.assertIn("任務｜資料夾｜已建立", page)
                 for path in expected:
                     self.assertIn(path, page)
                 self.assertNotIn("/data/disaster-records/", page)
@@ -9033,6 +9035,51 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         summary = app_module.public_pc_event_for_action(payload, "四站登打成功")
         self.assertEqual("desktop_fast_completed", summary["status"])
         self.assertNotEqual(event["detail"], summary["detail"])
+
+    def test_task_lifecycle_event_rows_have_simple_stages_without_mutating_history(self):
+        path = "/volume1/nas/救護硬碟/救護密錄器及行車紀錄器/2026/10月/test-95"
+        source = [
+            ("created", "其他", "任務已建立。", "建立任務", "已建立"),
+            ("ems_case_closed_confirmed", "其他", "已確認救護案件結案", "建立任務", "已確認結案"),
+            ("queued_for_worker", "執行中", "任務已排隊，等待公務電腦 worker 執行。", "排隊領取", "等候執行"),
+            ("claimed_by_worker", "執行中", "公務電腦 worker 已領取：public-duty-pc", "排隊領取", "已領取"),
+            ("desktop_fast_running", "本機快速執行", "公務電腦 worker 四站登打已啟動。", "啟動執行", "執行中"),
+            ("worker_running", "執行中", "登入帳號：工作=任務司機 > 出勤人員 > 同步帳號；任務司機。公務電腦 worker 執行中：public-duty-pc", "啟動執行", "執行中"),
+            ("task_run_requested", "按下四站登打", "已送出登打啟動要求。", "啟動執行", "已送出"),
+        ]
+        events = [{"event_id": str(index), "time": f"2026-10-22T20:01:{index:02d}",
+                   "status": status, "action": action, "detail": detail}
+                  for index, (status, action, detail, _, _) in enumerate(source)]
+        events.append({"time": "2026-10-22T20:01:32", "status": "desktop_fast_running",
+                       "action": "已建立的資料夾", "detail": "record folders ready: " + path})
+        report = {"task": {"service_type": "ems"}, "events": events,
+                  "site_statuses": {"consumables": {"status": "consumables_saved"}}}
+        before = json.dumps(report, ensure_ascii=False)
+        rows = app_module.public_pc_event_rows(report)
+        self.assertEqual([f"任務｜{group}｜{state}" for _, _, _, group, state in source]
+                         + ["任務｜資料夾｜已建立"], [row["action"] for row in rows])
+        self.assertEqual([group for _, _, _, group, _ in source] + ["資料夾"],
+                         [row["stage_group"] for row in rows])
+        self.assertEqual([event["time"] for event in events], [row["time"] for row in rows])
+        self.assertEqual([path], rows[-1]["folder_paths"])
+        self.assertIn("已確認救護案件結案", rows[1]["detail"])
+        self.assertIn("登入帳號：", rows[5]["detail"])
+        self.assertEqual(before, json.dumps(report, ensure_ascii=False))
+
+    def test_task_lifecycle_does_not_classify_unknown_or_failed_events_as_progress(self):
+        events = [
+            {"action": "其他", "status": "created_external", "detail": "任務已建立。"},
+            {"action": "資料夾建立失敗", "status": "record_folders_failed", "detail": "無法連線 NAS"},
+            {"action": "耗材 階段", "status": "consumables_running", "detail": "本機快速 一站通耗材：儲存"},
+            {"action": "自訂進度", "status": "worker_running", "detail": "公務電腦 worker 執行中：public-duty-pc"},
+        ]
+        rows = app_module.public_pc_event_rows({"events": events})
+        self.assertEqual(events[0], rows[0])
+        self.assertEqual("record_folders_failed", rows[1]["status"])
+        self.assertNotIn("任務｜", rows[1]["action"])
+        self.assertTrue(rows[2]["action"].startswith("耗材｜"))
+        self.assertEqual("任務｜啟動執行｜執行中", rows[3]["action"])
+        self.assertEqual("自訂進度。" + events[3]["detail"], rows[3]["detail"])
 
     def test_full_event_rows_align_with_all_site_stage_groups_without_mutating_history(self):
         for site_key, groups in app_module.SITE_STAGE_GROUPS.items():
