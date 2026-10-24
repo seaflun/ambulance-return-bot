@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -2016,13 +2016,12 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
     selected = requested if has_request else (daily[-1]["workstation"] if daily else "")
     relevant = [group for group in groups if group["workstation"] == selected]
     today = [group for group in daily if group["workstation"] == selected]
-    title = f"{target.year - 1911}年{target.month}月電子通報"
     historical = target != current.astimezone(TAIPEI_TIMEZONE).date()
     view = {"date": calendar_day, "historical": historical, "workstation": selected, "count_known": False, "today_count": None, "shift_count": None,
             "shift_label": "", "state": "unknown", "status_label": "尚無回報", "status_class": "",
             "last_reported_at": "", "last_checked_at": "", "last_success_at": "", "last_received_at": "",
             "last_received_count": None, "next_check_at": "", "error": "", "records": [], "history": [], "parts_complete": False,
-            "spreadsheet_url": "https://drive.google.com/drive/u/0/search?q=" + quote(title),
+            "spreadsheet_url": "/admin/sinposmart/notices/spreadsheet?notice_day=" + target.isoformat(),
             "sources": [{"workstation": source, "selected": source == selected,
                          "last_reported_at": next((group["at"].astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds")
                                                    for group in reversed(daily) if group["workstation"] == source), "")}

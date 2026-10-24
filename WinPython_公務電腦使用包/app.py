@@ -5,6 +5,7 @@ import binascii
 from copy import deepcopy
 import hashlib
 import hmac
+import http.client
 import json
 import math
 import os
@@ -19,7 +20,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from uuid import uuid4
@@ -1775,6 +1776,58 @@ def sinposmart_notice_view(health: dict) -> dict:
         workstation=str(request.args.get("notice_workstation") or ""),
         preferred_workstation=str((health.get("gui") or {}).get("workstation") or ""),
     )
+
+
+@app.get("/admin/sinposmart/notices/spreadsheet")
+def admin_sinposmart_notice_sheet():
+    raw_day = request.args.get("notice_day")
+    try:
+        target = date.fromisoformat(raw_day) if raw_day is not None else datetime.now(timezone(timedelta(hours=8))).date()
+        if (raw_day is not None and target.isoformat() != raw_day) or not 2011 <= target.year <= 2910:
+            raise ValueError("invalid calendar day")
+    except (TypeError, ValueError):
+        abort(400, description="通報日期格式不正確，請返回值班後台重新選擇日期。")
+    sync_key = os.getenv("SINPOSMART_NOTICE_COLLECTION_SYNC_KEY", "").strip()
+    if not sync_key:
+        token = os.getenv("CREDENTIAL_SYNC_TOKEN", "").strip()
+        if token:
+            sync_key = hmac.new(token.encode("utf-8"), b"SinpoSmartNoticeCollection:v1", hashlib.sha256).hexdigest()
+    if not sync_key:
+        abort(503, description="通報試算表查詢授權尚未設定，請稍後再試。")
+    payload = {"action": "getMonthlySpreadsheetLink", "year": target.year, "month": target.month, "sync_key": sync_key}
+    query = urllib.request.Request(
+        "https://script.google.com/macros/s/AKfycbw5yM8234CMi67hkox091wgoubwNIuWC8yxtNsQ024SpbpXhAGWVC5hB-HU4UQQavPO1A/exec",
+        json.dumps(payload).encode("utf-8"), {"Content-Type": "text/plain;charset=utf-8"}, method="POST")
+    try:
+        with urllib.request.urlopen(query, timeout=15) as opened:
+            raw = opened.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("oversize response")
+        result = json.loads(raw)
+    except (OSError, UnicodeError, ValueError, http.client.HTTPException):
+        abort(502, description="通報試算表連線或回覆尚未確認，請稍後重新開啟。")
+    if not isinstance(result, dict):
+        abort(502, description="通報試算表回覆格式無法確認，請稍後再試。")
+    if result.get("status") != "success":
+        error = result.get("error")
+        if not isinstance(error, str):
+            abort(502, description="通報試算表查詢回覆無法確認，請稍後再試。")
+        if error == "spreadsheet_not_found":
+            abort(404, description=f"尚未找到 {target.year - 1911}年{target.month}月電子通報；查詢不會建立或修改試算表。")
+        if error in {"ambiguous_spreadsheet", "invalid_spreadsheet"}:
+            abort(409, description="通報月份檔案有重複名稱或格式不符，請人工確認後再開啟。")
+        abort(502, description="通報試算表查詢尚未成功，請稍後再試。")
+    sheet_id = result.get("spreadsheetId")
+    if (type(result.get("year")) is not int or result["year"] != target.year
+            or type(result.get("month")) is not int or result["month"] != target.month
+            or not isinstance(sheet_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{20,128}", sheet_id) is None):
+        abort(502, description="通報試算表月份或識別資料無法確認，未開啟連結。")
+    expected_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+    if result.get("spreadsheetUrl") != expected_url:
+        abort(502, description="通報試算表連結無法確認，未開啟連結。")
+    response = redirect(expected_url)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def read_unreturned_cancellations() -> dict:
@@ -8143,7 +8196,7 @@ def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int 
         if status == f"{site_key}_running" or worker_start:
             explicit_start = (worker_start or "開始" in action or "重試" in action
                               or "公務電腦 worker 執行" in detail
-                              or "公務電腦 worker 登打加油紀錄：" in detail
+                              or (site_key == "fuel_record" and _public_pc_worker_startup(site_key, detail))
                               or (site_key == "volunteer_assist" and bool(re.fullmatch(
                                   r"(?:登入帳號\s*[：:][^。\r\n]*。\s*)?公務電腦\s+worker\s+民力系統\s*[：:]\s*"
                                   r"準備登入民力運用管理系統", aggregate_detail))))
@@ -8286,18 +8339,28 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
     return rows
 
 
+def _public_pc_worker_startup(site_key: str, detail: str) -> bool:
+    startup_names = {"vehicle_mileage": "執行車輛里程", "consumables": "執行耗材",
+                     "disinfection": "執行消毒紀錄", "fuel_record": "登打加油紀錄"}
+    startup_name = startup_names.get(site_key)
+    if not startup_name:
+        return False
+    body = detail.removeprefix(f"{site_display_name(site_key)}: ")
+    body = re.sub(r"^登入帳號\s*[：:][^。\r\n]*。\s*", "", body, count=1)
+    return bool(re.fullmatch(rf"公務電腦\s+worker\s+{startup_name}[：:]\s*[\w.-]+", body)) and (
+        site_key != "fuel_record" or not site_stage_from_detail(site_key, body))
+
+
 def _public_pc_event_lifecycle(site_key: str, status: str, action: str, detail: str) -> tuple[str, str, str]:
-    startup_names = {"vehicle_mileage": "車輛里程", "consumables": "耗材", "disinfection": "消毒紀錄"}
     for site in SITE_DEFINITIONS:
         if site_key and site_key != site.key:
             continue
         body = detail.removeprefix(f"{site.name}: ")
         body = re.sub(r"^登入帳號\s*[：:][^。\r\n]*。\s*", "", body, count=1)
         report_actions = {"更新", "執行中", "公務電腦回報任務狀態", f"公務電腦回報{site.name}"}
-        startup_name = startup_names.get(site.key)
-        if (startup_name and status in {f"{site.key}_running", "manual_captcha_required"}
+        if (status in {f"{site.key}_running", "manual_captcha_required"}
                 and action in report_actions
-                and re.fullmatch(rf"公務電腦\s+worker\s+執行{startup_name}[：:]\s*[\w.-]+", body)):
+                and _public_pc_worker_startup(site.key, detail)):
             return site.key, "準備登打", "執行中"
         if (status in {"manual_confirmation_required", "manual_captcha_required", "queued_for_worker"}
                 and action == f"後台重新送出{site.name}"

@@ -311,15 +311,17 @@
             {% for key, title in [('gui', '值班台 GUI'), ('installer', '更新安裝器')] %}
               {% set health = duty_gui_health[key] %}
               <div><strong>{{ title }}</strong></div>
-              <div data-health-field="{{ key }}.last_known_label">{{ health.last_known_label }}</div>
               {% if key == 'installer' %}
+                <div>最近結果：<span data-health-field="installer.result_label" data-health-empty="尚無安裝結果">{{ health.result_label or '尚無安裝結果' }}</span></div>
+                <div>執行版本：<span data-health-field="installer.app_version">{{ health.app_version }}</span>・目標：<span data-health-field="installer.target_version" data-health-empty="尚未指定">{{ health.target_version or '尚未指定' }}</span></div>
                 <div>最後回報（台灣時間）：<span data-health-field="installer.last_seen_label" data-health-empty="尚未收到">{{ health.last_seen_label or '尚未收到' }}</span>・<span data-health-field="installer.age_label">{{ health.age_label }}</span></div>
-                <div>執行版本：<span data-health-field="installer.app_version">{{ health.app_version }}</span></div>
-                <div>電腦：<span data-health-field="installer.workstation">{{ health.workstation }}</span></div>
-                <div data-health-field="installer.result_label">{{ health.result_label }}</div>
-                <div data-health-field="installation.installer_request_label">{{ duty_gui_health.installation.installer_request_label }}</div>
-                <div>目標版本：<span data-health-field="installer.target_version">{{ health.target_version }}</span></div>
+                <details class="installer-diagnostics">
+                  <summary>安裝器診斷資料</summary>
+                  <div data-health-field="installer.last_known_label">{{ health.last_known_label }}</div>
+                  <div>電腦：<span data-health-field="installer.workstation">{{ health.workstation }}</span></div>
+                  <div data-health-field="installation.installer_request_label">{{ duty_gui_health.installation.installer_request_label }}</div>
               {% else %}
+                <div data-health-field="gui.last_known_label">{{ health.last_known_label }}</div>
                 <div data-health-field="gui.startup_label">{{ health.startup_label }}</div>
                 <div data-health-field="installation.status_label">{{ duty_gui_health.installation.status_label }}</div>
               {% endif %}
@@ -328,6 +330,7 @@
               <div>啟動（台灣時間）：<span data-health-field="{{ key }}.process_started_label">{{ health.process_started_label }}</span></div>
               <div>已取代實例：<span data-health-field="{{ key }}.retired_count">{{ health.retired_count }}</span></div>
               <div>更新請求：<span data-health-field="{{ key }}.update_request_id">{{ health.update_request_id }}</span></div>
+              {% if key == 'installer' %}</details>{% endif %}
             {% endfor %}
           </details>
         {% endcall %}
@@ -761,8 +764,11 @@
           }
           sourceInput.replaceChildren(options);
         }
-        const sheetUrl = new URL(view.spreadsheet_url);
-        if (sheetUrl.origin !== "https://drive.google.com") throw new Error("invalid_sheet_link");
+        const sheetUrl = new URL(view.spreadsheet_url, window.location.origin);
+        if (sheetUrl.origin !== window.location.origin || sheetUrl.pathname !== "/admin/sinposmart/notices/spreadsheet"
+            || sheetUrl.searchParams.get("notice_day") !== view.date || sheetUrl.username || sheetUrl.password || sheetUrl.hash) {
+          throw new Error("invalid_sheet_link");
+        }
         document.getElementById("notice-sheet-link").href = sheetUrl.href;
         const rows = document.createDocumentFragment();
         view.records.forEach(record => {

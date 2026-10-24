@@ -591,19 +591,192 @@ body.workspace-page--ems-settings {
   color: #fff;
 }
 
-.workspace-page--duty .section {
-  padding: 20px;
+/* Duty content cards share one material; the shared system overview stays unchanged. */
+body.workspace-page--duty {
+  --duty-card-radius: 18px;
+  --duty-row-radius: 12px;
+  --duty-card-padding: 1.25rem;
+  --duty-card-shadow: 0 2px 8px rgba(29, 29, 31, .035);
+  --duty-card-surface: #fff;
 }
 
-.workspace-page--duty .section-head > *,
-.workspace-page--duty .event-head > * {
+body.workspace-page--duty :is(.section, .summary-card, .event-card, .empty) {
   min-width: 0;
+  padding: var(--duty-card-padding);
+  border: 1px solid var(--line);
+  border-radius: var(--duty-card-radius);
+  background: var(--duty-card-surface);
+  color: var(--ink);
+  box-shadow: var(--duty-card-shadow);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  overflow-wrap: anywhere;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
-.workspace-page--duty .section-note,
-.workspace-page--duty .event-title {
+body.workspace-page--duty :is(.section, .summary-card, .event-card, .empty):hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+  box-shadow: 0 3px 12px rgba(29, 29, 31, .06);
+}
+
+body.workspace-page--duty :is(.section-head, .event-head) > * { min-width: 0; }
+body.workspace-page--duty :is(.section-note, .event-title) { overflow-wrap: anywhere; }
+body.workspace-page--duty .section-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: -.012em;
+}
+
+body.workspace-page--duty :is(.event-title, .credential-sync-name) {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.5;
+  letter-spacing: -.01em;
+}
+
+body.workspace-page--duty :is(.section-note, .event-time, .event-meta, .event-detail, .unreturned-return-meta,
+  .credential-sync-login, .notice-times) {
+  color: var(--muted);
+  font-size: .875rem;
+  font-weight: 400;
+  line-height: 1.6;
   overflow-wrap: anywhere;
-  word-break: break-word;
+}
+
+body.workspace-page--duty :is(.event-time, .event-step time, .summary-value) { font-variant-numeric: tabular-nums; }
+body.workspace-page--duty .summary-value { font-size: clamp(1.125rem, 2vw, 1.5rem); font-weight: 700; }
+body.workspace-page--duty .summary-grid { gap: .75rem; }
+body.workspace-page--duty :is(.event-list, .credential-sync-list) { gap: .75rem; }
+
+/* Content disclosures share feedback at every depth, including diagnostics. */
+body.workspace-page--duty :is(details.section, .section details) > summary,
+body.workspace-page--duty details.section > summary.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  min-height: 44px;
+  margin: 0;
+  padding: .75rem;
+  border-radius: var(--duty-row-radius);
+  color: var(--ink);
+  font-size: .875rem;
+  font-weight: 600;
+  line-height: 1.6;
+  list-style: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  overflow-wrap: anywhere;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+body.workspace-page--duty :is(details.section, .section details) > summary::-webkit-details-marker { display: none; }
+body.workspace-page--duty :is(details.section, .section details) > summary::marker { content: ""; }
+body.workspace-page--duty :is(details.section, .section details) > summary::after {
+  content: "展開";
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: .8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+body.workspace-page--duty :is(details.section, .section details)[open] > summary::after { content: "收合"; }
+body.workspace-page--duty :is(details.section, .section details) > summary:hover { background: var(--accent-soft); }
+body.workspace-page--duty :is(details.section, .section details) > summary:active { background: color-mix(in srgb, var(--accent) 15%, white); }
+body.workspace-page--duty :is(details.section, .section details) > summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+body.workspace-page--duty details.section > summary.section-head {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr) auto;
+  margin: -.5rem -.5rem 0;
+}
+body.workspace-page--duty details.section[open] > summary.section-head { margin-bottom: .75rem; }
+body.workspace-page--duty :is(.unreturned-return-history, .notice-problem-history, .notice-filter-panel,
+  .login-diagnostic, .daily-vehicle-details, .rescue-video-diagnostics) {
+  margin-top: .75rem;
+  padding: .25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--duty-row-radius);
+  background: var(--duty-card-surface);
+}
+body.workspace-page--duty :is(.unreturned-return-history, .notice-problem-history, .notice-filter-panel,
+  .login-diagnostic, .daily-vehicle-details, .rescue-video-diagnostics)[open] > summary { margin-bottom: .5rem; }
+body.workspace-page--duty :is(.notice-filters, .login-diagnostic > .event-detail, .login-page-text) { margin-inline: .75rem; }
+
+/* History rows use the same time / description / result alignment as event cards. */
+body.workspace-page--duty .event-head { grid-template-columns: minmax(9rem, .6fr) minmax(0, 2fr) auto; gap: .75rem; }
+body.workspace-page--duty .event-steps { gap: 0; margin-top: .75rem; padding-top: .25rem; }
+body.workspace-page--duty .unreturned-return-history .event-steps { margin: 0; padding: 0 .75rem; border: 0; }
+body.workspace-page--duty .event-step {
+  grid-template-columns: minmax(9rem, .6fr) minmax(0, 2fr) auto;
+  gap: .75rem;
+  align-items: start;
+  padding: .75rem 0;
+  color: var(--muted);
+  font-size: .875rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+body.workspace-page--duty .event-step + .event-step { border-top: 1px solid var(--line); }
+body.workspace-page--duty .event-step time { grid-column: 1; grid-row: 1; }
+body.workspace-page--duty .event-step-name { grid-column: 2; grid-row: 1; color: var(--ink); font-weight: 600; }
+body.workspace-page--duty .event-step > .status { grid-column: 3; grid-row: 1; justify-self: end; }
+body.workspace-page--duty :is(.notice-problems, .daily-vehicle-row, .rescue-video-diagnostic-row, .unreturned-return-item) {
+  color: var(--muted);
+  font-size: .875rem;
+  line-height: 1.6;
+}
+body.workspace-page--duty .notice-problems { padding: 0 .75rem; }
+body.workspace-page--duty .notice-problems p { margin: 0; padding: .75rem 0; }
+body.workspace-page--duty .notice-problems p + p { border-top: 1px solid var(--line); }
+body.workspace-page--duty :is(.daily-vehicle-row, .rescue-video-diagnostic-row, .unreturned-return-item) {
+  padding: .75rem;
+  border-color: var(--line);
+  border-radius: var(--duty-row-radius);
+  background: var(--duty-card-surface);
+}
+body.workspace-page--duty :is(.waiting-reason, .pause-reason, .login-page-text, .login-page-image) { border-radius: var(--duty-row-radius); }
+body.workspace-page--duty .section .status {
+  min-height: 28px;
+  padding: .25rem .625rem;
+  background: var(--idle-bg);
+  color: var(--muted);
+  font-size: .8125rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+body.workspace-page--duty .notice-overview .status { flex-shrink: 1; max-width: 100%; }
+body.workspace-page--duty .section .status.complete { background: var(--complete-bg); color: var(--complete); }
+body.workspace-page--duty .section .status.failed { background: var(--failed-bg); color: var(--failed); }
+body.workspace-page--duty .section .status.running { background: var(--running-bg); color: var(--running); }
+body.workspace-page--duty .section .status.attention { background: var(--attention-bg); color: var(--attention); }
+
+@media (max-width: 760px) {
+  body.workspace-page--duty { --duty-card-padding: 1rem; }
+  body.workspace-page--duty .summary-card { padding: 1rem; }
+  body.workspace-page--duty details.section > summary.section-head { grid-template-columns: minmax(0, 1fr) auto; gap: .375rem .75rem; }
+  body.workspace-page--duty details.section > summary.section-head > .section-note { grid-column: 1 / -1; grid-row: 2; }
+  body.workspace-page--duty details.section > summary.section-head::after { grid-column: 2; grid-row: 1; justify-self: end; margin: 0; }
+  body.workspace-page--duty .event-head,
+  body.workspace-page--duty .login-card .event-head { grid-template-columns: minmax(0, 1fr) auto; gap: .375rem .75rem; }
+  body.workspace-page--duty .event-head > .event-time { grid-column: 1 / -1; }
+  body.workspace-page--duty .event-head > div:not(.event-badges) { grid-column: 1; grid-row: 2; }
+  body.workspace-page--duty .event-head > .event-badges { grid-column: 2; grid-row: 2; max-width: 8rem; }
+  body.workspace-page--duty .event-step { grid-template-columns: minmax(0, 1fr) fit-content(40%); gap: .25rem .75rem; }
+  body.workspace-page--duty .event-step time { grid-column: 1 / -1; grid-row: 1; }
+  body.workspace-page--duty .event-step-name { grid-column: 1; grid-row: 2; }
+  body.workspace-page--duty .event-step > .status { grid-column: 2; grid-row: 2; max-width: 8rem; }
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  body.workspace-page--duty { --line: #76767b; --muted: #4b4b50; --duty-card-shadow: none; }
 }
 
 .workspace-page .event-card,

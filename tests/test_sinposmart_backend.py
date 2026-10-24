@@ -440,13 +440,14 @@ class NoticeCollectionBackendTests(unittest.TestCase):
         self.assertEqual([row["key"] for row in view["records"]], [late["key"]])
         self.assertTrue(view["records"][0]["write_confirmed"])
 
-    def test_invalid_date_query_keeps_admin_health_available_and_sheet_search_matches_title(self):
+    def test_invalid_date_query_keeps_admin_health_available_and_sheet_link_tracks_selected_month(self):
         self.put(self.event())
         for day in ("bad", "2026-02-30", [], {}):
             with self.subTest(day=day):
                 self.assertEqual(self.view(day)["date"], "2026-10-22")
-        from urllib.parse import unquote
-        self.assertTrue(unquote(self.view()["spreadsheet_url"]).endswith("115年10月電子通報"))
+        for day in ("2025-12-31", "2026-01-01", "2026-10-22", "2026-11-01"):
+            with self.subTest(day=day):
+                self.assertEqual(self.view(day)["spreadsheet_url"], "/admin/sinposmart/notices/spreadsheet?notice_day=" + day)
 
     def test_untrusted_source_query_and_invalid_payload_never_fallback_to_normal_host(self):
         self.put(self.event())

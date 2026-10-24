@@ -1,5 +1,6 @@
 import base64
 import html
+import http.client
 import contextlib
 import io
 import json
@@ -184,6 +185,87 @@ class WebAppTests(unittest.TestCase):
         payload.update(changes)
         return payload
 
+    def test_notice_sheet_redirect_resolves_selected_calendar_month_with_server_only_auth(self):
+        sheet_id = "verified-monthly-sheet-202610"
+        payload = {"status": "success", "year": 2026, "month": 10, "spreadsheetId": sheet_id,
+                   "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"}
+        with mock.patch.dict(os.environ, {"CREDENTIAL_SYNC_TOKEN": "sync-token", "SINPOSMART_NOTICE_COLLECTION_SYNC_KEY": ""}), \
+                mock.patch.object(app_module.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(payload).encode())) as opened:
+            response = self.client.get("/admin/sinposmart/notices/spreadsheet?notice_day=2026-10-24")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.location, payload["spreadsheetUrl"])
+        sent = opened.call_args.args[0]
+        body = json.loads(sent.data)
+        self.assertEqual((body["action"], body["year"], body["month"]), ("getMonthlySpreadsheetLink", 2026, 10))
+        self.assertEqual(len(body["sync_key"]), 64)
+        self.assertNotIn("sync-token", sent.full_url + response.location + response.get_data(as_text=True))
+        self.assertEqual(opened.call_args.kwargs["timeout"], 15)
+
+    def test_notice_sheet_redirect_rejects_unverified_url_identity_month_and_payload(self):
+        sheet_id = "verified-monthly-sheet-202610"
+        valid = {"status": "success", "year": 2026, "month": 10, "spreadsheetId": sheet_id,
+                 "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"}
+        invalid = [{**valid, "spreadsheetUrl": url} for url in (
+            "https://evil.example/", "javascript:alert(1)",
+            "https://docs.google.com.evil.example/spreadsheets/d/verified-monthly-sheet-202610/edit",
+            "https://user:secret@docs.google.com/spreadsheets/d/verified-monthly-sheet-202610/edit",
+            valid["spreadsheetUrl"] + "?token=private", valid["spreadsheetUrl"] + "#private")]
+        invalid += [{**valid, "month": 11}, {**valid, "year": True}, {**valid, "spreadsheetId": "different-sheet-id"}, [], {}, {"status": "error", "error": []}, {"status": "error", "error": {}}]
+        for payload in invalid:
+            with self.subTest(payload=payload), mock.patch.dict(os.environ, {"CREDENTIAL_SYNC_TOKEN": "sync-token", "SINPOSMART_NOTICE_COLLECTION_SYNC_KEY": ""}), \
+                    mock.patch.object(app_module.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(payload).encode())):
+                response = self.client.get("/admin/sinposmart/notices/spreadsheet?notice_day=2026-10-24")
+                self.assertEqual(response.status_code, 502)
+                self.assertIsNone(response.location)
+
+    def test_notice_sheet_redirect_distinguishes_missing_ambiguous_and_transport_failure(self):
+        for error, status in (("spreadsheet_not_found", 404), ("ambiguous_spreadsheet", 409),
+                              ("invalid_spreadsheet", 409), ("lookup_failed", 502), ("unauthorized", 502)):
+            with self.subTest(error=error), mock.patch.dict(os.environ, {"CREDENTIAL_SYNC_TOKEN": "sync-token", "SINPOSMART_NOTICE_COLLECTION_SYNC_KEY": ""}), \
+                    mock.patch.object(app_module.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps({"status": "error", "error": error}).encode())):
+                response = self.client.get("/admin/sinposmart/notices/spreadsheet?notice_day=2026-10-24")
+                self.assertEqual(response.status_code, status)
+                self.assertIsNone(response.location)
+        for failure in (urllib.error.URLError("private-secret"), http.client.BadStatusLine("private-secret"),
+                        http.client.IncompleteRead(b"private-secret", 30)):
+            with self.subTest(failure=type(failure).__name__), mock.patch.dict(os.environ, {"CREDENTIAL_SYNC_TOKEN": "sync-token", "SINPOSMART_NOTICE_COLLECTION_SYNC_KEY": ""}), \
+                    mock.patch.object(app_module.urllib.request, "urlopen", side_effect=failure):
+                response = self.client.get("/admin/sinposmart/notices/spreadsheet?notice_day=2026-10-24")
+                self.assertEqual(response.status_code, 502)
+                self.assertNotIn("private-secret", response.get_data(as_text=True))
+
+    def test_notice_sheet_redirect_invalid_date_or_missing_notice_auth_makes_no_request(self):
+        with mock.patch.object(app_module.urllib.request, "urlopen") as opened, \
+                mock.patch.dict(os.environ, {"CREDENTIAL_SYNC_TOKEN": "", "WORKER_TOKEN": "worker-only", "SINPOSMART_NOTICE_COLLECTION_SYNC_KEY": ""}):
+            for day in ("bad", "2026-02-30", "20261024", "2026-10-24T00:00:00"):
+                self.assertEqual(self.client.get("/admin/sinposmart/notices/spreadsheet", query_string={"notice_day": day}).status_code, 400)
+            self.assertEqual(self.client.get("/admin/sinposmart/notices/spreadsheet?notice_day=2026-10-24").status_code, 503)
+            opened.assert_not_called()
+
+    def test_notice_sheet_redirect_default_uses_taipei_calendar_and_explicit_notice_auth(self):
+        sheet_id = "verified-monthly-sheet-202601"
+        payload = {"status": "success", "year": 2026, "month": 1, "spreadsheetId": sheet_id,
+                   "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"}
+        with mock.patch.dict(os.environ, {"CREDENTIAL_SYNC_TOKEN": "", "SINPOSMART_NOTICE_COLLECTION_SYNC_KEY": "notice-key"}), \
+                mock.patch.object(app_module, "datetime", wraps=datetime) as clock, \
+                mock.patch.object(app_module.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(payload).encode())) as opened:
+            clock.now.return_value = datetime(2026, 1, 1, 0, 10, tzinfo=timezone(timedelta(hours=8)))
+            response = self.client.get("/admin/sinposmart/notices/spreadsheet")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(clock.now.call_args.args[0].utcoffset(None), timedelta(hours=8))
+        self.assertEqual(json.loads(opened.call_args.args[0].data), {
+            "action": "getMonthlySpreadsheetLink", "year": 2026, "month": 1, "sync_key": "notice-key"})
+        self.assertNotIn("notice-key", response.get_data(as_text=True))
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_notice_sheet_redirect_rejects_oversize_or_non_json_without_disclosure(self):
+        for raw in (b"not-json private-secret", b"\xff", b" " * 65537):
+            with self.subTest(length=len(raw)), mock.patch.dict(os.environ, {"CREDENTIAL_SYNC_TOKEN": "sync-token", "SINPOSMART_NOTICE_COLLECTION_SYNC_KEY": ""}), \
+                    mock.patch.object(app_module.urllib.request, "urlopen", return_value=io.BytesIO(raw)):
+                response = self.client.get("/admin/sinposmart/notices/spreadsheet?notice_day=2026-10-24")
+                self.assertEqual(response.status_code, 502)
+                self.assertNotIn("private-secret", response.get_data(as_text=True))
+
     def test_gui_heartbeat_requires_sync_identity_auth_and_strict_small_body(self):
         self.assertEqual(self.client.get("/api/sinposmart/identity").status_code, 403)
         self.assertEqual(self.client.post("/api/sinposmart/heartbeat", json={}).status_code, 403)
@@ -305,6 +387,13 @@ class WebAppTests(unittest.TestCase):
         for field in ("gui.app_version", "gui.login_label", "gui.last_seen_label", "installer.progress_label"):
             self.assertIn(f'data-health-field="{field}"', primary)
         self.assertIn("未執行更新", primary)
+        diagnostics = re.search(r'<details class="installer-diagnostics"([^>]*)>(.*?)</details>', card, re.S)
+        self.assertIsNotNone(diagnostics)
+        self.assertNotRegex(diagnostics.group(1), r'\bopen\b')
+        for field in ("installer.instance_id", "installer.update_request_id", "installer.phase_label"):
+            self.assertIn(f'data-health-field="{field}"', diagnostics.group(2))
+        for field in ("installer.result_label", "installer.target_version", "installer.last_seen_label"):
+            self.assertIn(f'data-health-field="{field}"', card[:diagnostics.start()])
         self.assertIn('data-health-field="gui.workstation" data-health-empty="尚未辨識"', primary)
         self.assertNotIn("system-overview-card--compact", body)
         self.assertNotIn("system-update-details", body)
@@ -2045,8 +2134,9 @@ class WebAppTests(unittest.TestCase):
                 "  color: var(--ink);",
                 css,
             )
-            self.assertIn(".workspace-page--duty .section {\n  padding: 20px;", css)
-            self.assertIn(".workspace-page--duty .event-title {\n  overflow-wrap: anywhere;", css)
+            self.assertIn("--duty-card-padding: 1.25rem;", css)
+            self.assertIn("padding: var(--duty-card-padding);", css)
+            self.assertIn("body.workspace-page--duty :is(.section-note, .event-title) { overflow-wrap: anywhere; }", css)
             self.assertIn(".workspace-page--duty .section {\n    padding: 16px;", css)
         finally:
             response.close()
@@ -6065,7 +6155,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             "last_success_at": "2026-10-22T15:48:05+08:00",
             "last_received_at": "2026-10-22T15:45:00+08:00", "last_received_count": 2,
             "next_check_at": "2026-10-22T15:51:00+08:00", "error": "", "parts_complete": True,
-            "spreadsheet_url": "https://drive.google.com/drive/u/0/search?q=115年10月電子通報",
+            "spreadsheet_url": "/admin/sinposmart/notices/spreadsheet?notice_day=2026-10-22",
             "records": [{"key": "a" * 64, "subject": "通報主旨 <script>alert(1)</script>",
                          "received_at": "2026-10-22T15:45:00+08:00", "read_state": "pending",
                          "write_confirmed": True, "write_label": "已入表", "read_label": "已讀待確認"}],
@@ -9313,6 +9403,60 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
                 self.assertEqual([group for group, _ in groups], [row["stage_group"] for row in rows])
                 self.assertTrue(all("執行中" in row["action"] for row in rows))
                 self.assertEqual(before, json.dumps(report, ensure_ascii=False))
+
+    def test_fuel_worker_bootstrap_is_preparation_but_each_progress_keeps_its_stage(self):
+        for prefix in ("", "登入帳號：測試員。", "登打加油紀錄: 登入帳號：測試員。"):
+            with self.subTest(prefix=prefix):
+                events = [{"time": "2026-10-20T08:00:00", "status": "fuel_record_running",
+                           "detail": prefix + "公務電腦 worker 登打加油紀錄：test-pc"}]
+                expected_groups = ["準備登打"]
+                for group, stages in app_module.SITE_STAGE_GROUPS["fuel_record"]:
+                    for stage in stages:
+                        events.append({"time": f"2026-10-20T08:00:{len(events):02d}",
+                                       "status": "fuel_record_running",
+                                       "detail": prefix + "公務電腦 worker 登打加油紀錄：" + stage})
+                        expected_groups.append(group)
+                report = {"events": events}
+                before = json.dumps(report, ensure_ascii=False)
+                rows = app_module.public_pc_event_rows(report)
+                self.assertEqual(expected_groups, [row["stage_group"] for row in rows])
+                self.assertEqual("加油｜準備登打｜執行中", rows[0]["action"])
+                self.assertEqual([event["time"] for event in events], [row["time"] for row in rows])
+                self.assertEqual([event["detail"] for event in events], [row["detail"] for row in rows])
+                self.assertEqual(before, json.dumps(report, ensure_ascii=False))
+
+    def test_fuel_completion_uses_bootstrap_without_resetting_on_progress_or_queue_wait(self):
+        for vehicle_key in (None, "測試車"):
+            with self.subTest(vehicle_key=vehicle_key):
+                events = [{"time": "2026-10-20T07:00:00", "status": "queued_for_worker",
+                           "detail": "任務已排隊，等待公務電腦 worker 執行。"},
+                          {"time": "2026-10-20T08:00:17", "status": "fuel_record_running",
+                           "detail": "登入帳號：測試員。公務電腦 worker 登打加油紀錄：test-pc"}]
+                for second, stage in ((18, "啟動 Chrome"), (21, "登入 PPE"), (24, "開啟登打油耗"),
+                                      (25, "選取車輛"), (27, "填寫加油紀錄"), (28, "儲存"),
+                                      (38, "確認加油紀錄")):
+                    events.append({"time": f"2026-10-20T08:00:{second}", "status": "fuel_record_running",
+                                   "vehicle_key": vehicle_key,
+                                   "detail": "登打加油紀錄: 登入帳號：測試員。公務電腦 worker 登打加油紀錄：" + stage})
+                events.append({"time": "2026-10-20T08:00:40", "status": "fuel_record_saved",
+                               "detail": "加油已重新查詢並核對儲存內容。"})
+                report = {"events": events, "site_statuses": {"fuel_record": {"status": "fuel_record_saved"}}}
+                before = json.dumps(report, ensure_ascii=False)
+                self.assertEqual(23, app_module.task_site_completion_seconds(report)["fuel_record"])
+                self.assertEqual(before, json.dumps(report, ensure_ascii=False))
+                events.append({"time": "2026-10-20T08:00:42", "status": "fuel_record_running",
+                               "detail": "公務電腦 worker 登打加油紀錄：確認加油紀錄"})
+                self.assertEqual(23, app_module.task_site_completion_seconds(report)["fuel_record"])
+
+    def test_fuel_progress_without_bootstrap_does_not_invent_a_start_time(self):
+        for _, stages in app_module.SITE_STAGE_GROUPS["fuel_record"]:
+            for stage in stages:
+                with self.subTest(stage=stage):
+                    report = {"site_statuses": {"fuel_record": {"status": "fuel_record_saved"}}, "events": [
+                        {"time": "2026-10-20T08:00:38", "status": "fuel_record_running",
+                         "detail": "公務電腦 worker 登打加油紀錄：" + stage},
+                        {"time": "2026-10-20T08:00:40", "status": "fuel_record_saved", "detail": "加油已儲存。"}]}
+                    self.assertIsNone(app_module.task_site_completion_seconds(report)["fuel_record"])
 
     def test_legacy_last_site_and_overall_complete_events_display_distinct_meanings(self):
         detail = "一站通耗材完成後，所有有效站別皆已完成。"

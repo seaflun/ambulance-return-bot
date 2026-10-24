@@ -148,6 +148,23 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.24.2145">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.24.2145') }}</p>
+          <h2 class="update-card__title">統一值班介面並修正通報連結與加油計時</h2>
+        </div>
+        <span class="update-card__versions">2026.10.24.2145</span>
+      </header>
+      <ul class="update-card__items">
+        <li>統一值班後台彙總、功能與事件卡片的圓角、留白、細邊框與輕陰影；系統狀態維持與救護、救災後台相同的共用格式。</li>
+        <li>未返隊完整歷程改為時間、說明、狀態對齊，手機改為分列呈現；通報異常與其他明細共用字級、間距與分隔線，完整紀錄皆保留。</li>
+        <li>各功能的外層及內層展開控制使用一致的滑入、按下、鍵盤焦點與展開／收合提示，並保留減少動態與高對比支援。</li>
+        <li>「查看 Google 試算表」依所選曆日月份，透過已授權的唯讀查找直接開啟實際通報表；不再跳轉 Drive 搜尋，缺檔或重名會明確提示。</li>
+        <li>更新安裝器僅保留最近結果、版本與回報時間，實例及請求編號等診斷資訊預設收合，系統狀態共用樣式維持原樣。</li>
+        <li>修正救護後台加油起始事件的階段與完成秒數，進度回報不再重設開始時間；僅計算該次實際執行區間，缺少可靠起點則顯示未記錄，原始任務資料皆保留。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.24.1922">
       <header class="update-card__heading">
         <div>
