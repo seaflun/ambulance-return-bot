@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.24.1904">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.24.1904') }}</p>
+          <h2 class="update-card__title">修復值班後台無法開啟的問題</h2>
+        </div>
+        <span class="update-card__versions">2026.10.24.1904</span>
+      </header>
+      <ul class="update-card__items">
+        <li>修正更新命令時間帶有時區時，值班後台開啟出現伺服器錯誤的問題。</li>
+        <li>更新命令與最後回報時間統一計算，正確判斷等待更新及逾時狀態。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.24.1734">
       <header class="update-card__heading">
         <div>

@@ -3387,18 +3387,26 @@ def remote_update_command_is_stale(command: dict, now: datetime | None = None) -
     timestamp = str(command.get("updated_at") or command.get("requested_at") or "").strip()
     if not timestamp:
         return False
+    local_zone = timezone(timedelta(hours=8))
+
+    def with_timezone(value: datetime) -> datetime:
+        # Legacy command timestamps without an offset are Taiwan local time.
+        return value.replace(tzinfo=local_zone) if value.tzinfo is None else value.astimezone(local_zone)
+
     try:
-        updated_at = datetime.fromisoformat(timestamp)
+        updated_at = with_timezone(datetime.fromisoformat(timestamp))
     except ValueError:
         return False
     if command.get("target") == "duty_gui" and command.get("status") in {
         "staged", "waiting_handoff", "waiting_busy", "waiting_idle",
     }:
         try:
-            updated_at = max(updated_at, datetime.fromisoformat(str(command.get("last_seen_at") or "")))
+            last_seen_at = with_timezone(datetime.fromisoformat(str(command.get("last_seen_at") or "")))
+            updated_at = max(updated_at, last_seen_at)
         except (ValueError, TypeError):
             pass
-    return ((now or datetime.now()) - updated_at).total_seconds() > remote_update_stale_seconds()
+    current = with_timezone(now) if now is not None else datetime.now(local_zone)
+    return (current - updated_at).total_seconds() > remote_update_stale_seconds()
 
 
 def _expire_remote_update_command_unlocked(command: dict, target: object = "ambulance_worker") -> dict:

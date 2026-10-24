@@ -7604,6 +7604,96 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             404,
         )
 
+    def test_sinposmart_admin_renders_pending_update_with_timezone_timestamp(self):
+        os.environ["WORKER_TOKEN"] = "test-token"
+        now = datetime(2026, 10, 24, 18, 0, 0)
+        taipei = timezone(timedelta(hours=8))
+
+        class FixtureClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz is None else now.replace(tzinfo=taipei).astimezone(tz)
+
+        command = {
+            "request_id": "pending-aware-timestamp", "target": "duty_gui", "status": "pending",
+            "requested_at": "2026-10-24T17:59:30+08:00", "updated_at": "2026-10-24T17:59:30+08:00",
+        }
+        path = app_module.remote_update_command_file("duty_gui")
+        app_module.write_json_atomic(path, command)
+        with mock.patch.object(app_module, "datetime", FixtureClock), \
+                mock.patch.object(app_module, "sinposmart_admin_version_info", return_value={}), \
+                mock.patch.dict(os.environ, {"REMOTE_UPDATE_STALE_SECONDS": "60"}):
+            response = self.client.get("/admin/sinposmart")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("更新命令進行中", response.get_data(as_text=True))
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), command)
+
+    def test_remote_update_staleness_compares_timezone_timestamps_at_same_instant(self):
+        taipei = timezone(timedelta(hours=8))
+        local_now = datetime(2026, 10, 24, 18, 0, 0)
+        aware_now = local_now.replace(tzinfo=taipei)
+        with mock.patch.dict(os.environ, {"REMOTE_UPDATE_STALE_SECONDS": "60"}):
+            for age, stale in ((59, False), (60, False), (61, True)):
+                updated = aware_now - timedelta(seconds=age)
+                timestamps = (
+                    updated.replace(tzinfo=None).isoformat(), updated.isoformat(),
+                    updated.astimezone(timezone.utc).isoformat(),
+                    updated.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
+                for target in ("duty_gui", "ambulance_worker"):
+                    for now in (local_now, aware_now, aware_now.astimezone(timezone.utc)):
+                        for timestamp in timestamps:
+                            with self.subTest(target=target, now=now, timestamp=timestamp, age=age):
+                                self.assertEqual(app_module.remote_update_command_is_stale({
+                                    "target": target, "status": "pending", "updated_at": timestamp,
+                                }, now=now), stale)
+
+    def test_remote_update_staleness_uses_taipei_now_on_utc_host(self):
+        utc_now = datetime(2026, 10, 24, 10, 0, 0, tzinfo=timezone.utc)
+
+        class FixtureClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return utc_now.replace(tzinfo=None) if tz is None else utc_now.astimezone(tz)
+
+        with mock.patch.object(app_module, "datetime", FixtureClock), \
+                mock.patch.dict(os.environ, {"REMOTE_UPDATE_STALE_SECONDS": "60"}):
+            for timestamp, stale in (("2026-10-24T17:59:01", False), ("2026-10-24T17:58:59+08:00", True)):
+                with self.subTest(timestamp=timestamp):
+                    self.assertEqual(app_module.remote_update_command_is_stale({
+                        "target": "duty_gui", "status": "pending", "updated_at": timestamp,
+                    }), stale)
+
+    def test_duty_gui_waiting_staleness_uses_newest_mixed_timezone_heartbeat(self):
+        now = datetime(2026, 10, 24, 18, 0, 0)
+        cases = (
+            ("2026-10-24T17:58:59+08:00", "2026-10-24T17:59:01", False),
+            ("2026-10-24T17:58:59", "2026-10-24T09:59:01+00:00", False),
+            ("2026-10-24T17:58:59+08:00", "2026-10-24T09:59:01Z", False),
+            ("2026-10-24T09:58:59+00:00", "2026-10-24T17:59:01+08:00", False),
+            ("2026-10-24T17:59:01", "2026-10-24T09:58:59Z", False),
+            ("2026-10-24T17:59:01+08:00", "2026-10-24T09:58:59+00:00", False),
+            ("2026-10-24T17:58:58", "2026-10-24T09:58:59Z", True),
+            ("2026-10-24T17:58:59+08:00", "2026-10-24T09:59:00Z", False),
+        )
+        with mock.patch.dict(os.environ, {"REMOTE_UPDATE_STALE_SECONDS": "60"}):
+            for status in ("waiting_idle", "waiting_busy"):
+                for updated, last_seen, stale in cases:
+                    with self.subTest(status=status, updated=updated, last_seen=last_seen):
+                        self.assertEqual(app_module.remote_update_command_is_stale({
+                            "target": "duty_gui", "status": status, "worker_id": "PC-01",
+                            "updated_at": updated, "last_seen_at": last_seen,
+                        }, now=now), stale)
+
+    def test_owned_duty_gui_stage_keeps_handoff_when_timezone_timestamp_is_old(self):
+        now = datetime(2026, 10, 24, 18, 0, 0)
+        for status in ("staged", "waiting_handoff"):
+            with self.subTest(status=status):
+                self.assertFalse(app_module.remote_update_command_is_stale({
+                    "target": "duty_gui", "status": status, "worker_id": "PC-01",
+                    "updated_at": "2026-10-23T01:00:00+08:00", "last_seen_at": "2026-10-22T17:00:00Z",
+                }, now=now))
+
     def test_remote_update_active_command_expires_after_stale_limit(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         with mock.patch.dict(os.environ, {"REMOTE_UPDATE_STALE_SECONDS": "60"}):
