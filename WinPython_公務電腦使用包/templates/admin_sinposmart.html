@@ -42,7 +42,11 @@
           <td>{{ record.write_label }}</td><td>{{ record.read_label }}</td>
         </tr>{% else %}<tr><td colspan="4">目前沒有已確認入表的通報明細。</td></tr>{% endfor %}</tbody>
       </table></div>
-      <div id="notice-problems" class="notice-problems">{% for entry in view.history if entry.state not in ['success', 'running'] %}<p>{{ notice_time(entry.reported_at) }} · {{ entry.status_label }}{% if entry.error %}：{{ entry.error }}{% endif %}</p>{% endfor %}</div>
+      {% set problems = view.history | rejectattr('state', 'in', ['success', 'running']) | list %}
+      <details id="notice-problem-history" class="notice-problem-history"{% if not problems %} hidden{% endif %}>
+        <summary class="section-note" id="notice-problem-summary">{% if problems %}最近異常：{{ notice_time(problems[0].reported_at) }} · {{ problems[0].status_label }}{% if problems[0].error %}：{{ problems[0].error }}{% endif %}（共 {{ problems | length }} 筆）{% endif %}</summary>
+        <div id="notice-problems" class="notice-problems">{% for entry in problems %}<p>{{ notice_time(entry.reported_at) }} · {{ entry.status_label }}{% if entry.error %}：{{ entry.error }}{% endif %}</p>{% endfor %}</div>
+      </details>
     </div>
   </details>
 {% endmacro %}
@@ -379,13 +383,13 @@
       <details class="section" aria-label="未返隊處理歷程"{% if summary.unreturned_returns %} open{% endif %}>
         <summary class="section-head">
           <h2 class="section-title">未返隊處理歷程</h2>
-          <div class="section-note">待處理 {{ summary.unreturned_returns or 0 }} 筆；待處理案件置頂，並保留已解決與逾期案件的完整時序。</div>
+          <div class="section-note">待處理 {{ summary.unreturned_returns or 0 }} 筆；每案顯示最新狀態，完整確認歷程可展開。</div>
         </summary>
         <div class="event-list">
         {% for event in admin_view.unreturned_return_history_events or [] %}
           <article class="event-card">
             <div class="event-head">
-              <time class="event-time">{{ event.first_paused_at or event.occurred_at }}</time>
+              <time class="event-time">最新回報：{{ event.occurred_at }}</time>
               <div>
                 <h3 class="event-title">{{ event.item_title }}</h3>
                 <div class="event-meta">
@@ -433,15 +437,18 @@
             {% if event.skipped_scheduled_people %}
               <div class="event-detail">略過的表定接班：{{ event.skipped_scheduled_people | join('、') }}</div>
             {% endif %}
-            <div class="event-steps">
-            {% for transition in event.transitions or [] %}
-              <div class="event-step">
-                <div class="event-step-name">{{ transition.trigger_label }}{% if transition.owner_actor_no %}｜{{ transition.owner_actor_no }}番{% endif %}</div>
-                <time>{{ transition.occurred_at }}</time>
-                <span class="status {{ transition.status_class }}">{{ transition.status_label }}</span>
+            <details class="unreturned-return-history">
+              <summary class="event-detail">完整確認歷程（{{ (event.transitions or []) | length }} 筆）</summary>
+              <div class="event-steps">
+              {% for transition in event.transitions or [] %}
+                <div class="event-step">
+                  <div class="event-step-name">{{ transition.trigger_label }}{% if transition.owner_actor_no %}｜{{ transition.owner_actor_no }}番{% endif %}</div>
+                  <time>{{ transition.occurred_at }}</time>
+                  <span class="status {{ transition.status_class }}">{{ transition.status_label }}</span>
+                </div>
+              {% endfor %}
               </div>
-            {% endfor %}
-            </div>
+            </details>
           </article>
         {% else %}
           <div class="section-note">目前沒有未返隊處理歷程。</div>
@@ -777,8 +784,12 @@
         }
         document.getElementById("notice-records").replaceChildren(rows);
         setText("notice-record-count", view.records.length);
+        const problemEntries = view.history.filter(entry => !["success", "running"].includes(entry.state));
+        const latestProblem = problemEntries[0];
+        document.getElementById("notice-problem-history").hidden = !problemEntries.length;
+        setText("notice-problem-summary", latestProblem ? "最近異常：" + stamp(latestProblem.reported_at) + " · " + latestProblem.status_label + (latestProblem.error ? "：" + latestProblem.error : "") + "（共 " + problemEntries.length + " 筆）" : "");
         const problems = document.createDocumentFragment();
-        view.history.filter(entry => !["success", "running"].includes(entry.state)).forEach(entry => {
+        problemEntries.forEach(entry => {
           const item = document.createElement("p");
           item.textContent = stamp(entry.reported_at) + " · " + entry.status_label + (entry.error ? "：" + entry.error : "");
           problems.append(item);

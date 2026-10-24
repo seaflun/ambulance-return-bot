@@ -5877,6 +5877,23 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("自動偵測未返隊", body)
         self.assertIn("自動返隊確認", body)
         self.assertIn("手動確認返隊", body)
+        history = re.search(
+            r'<details\b(?P<attributes>[^>]*)>\s*'
+            r'<summary[^>]*>完整確認歷程（3 筆）</summary>'
+            r'(?P<transitions>.*?)</details>', body, re.S,
+        )
+        self.assertIsNotNone(history)
+        self.assertNotRegex(history.group("attributes"), r'\bopen\b')
+        transitions = history.group("transitions")
+        self.assertLess(transitions.index(f"{fire_day}T10:00:00"), transitions.index(f"{fire_day}T10:10:00"))
+        self.assertLess(transitions.index(f"{fire_day}T10:10:00"), transitions.index(f"{fire_day}T12:41:00"))
+        compact = body.replace(history.group(0), "")
+        self.assertIn("已確認返隊", compact)
+        self.assertIn(f"最新回報：{fire_day}T12:41:00", compact)
+        self.assertIn(f"首次暫停：{fire_day}T10:00:00", compact)
+        self.assertIn(f"最後結果：{fire_day}T12:41:00", compact)
+        self.assertNotIn("自動偵測未返隊", compact)
+        self.assertNotIn("自動返隊確認", compact)
 
     def test_sinposmart_admin_marks_legacy_unreturned_history_without_fake_handoff_people(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
@@ -6092,6 +6109,84 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("今日累積待確認", body)
         self.assertNotIn("今日累積 0 則", body)
         self.assertIn("尚未取得檢查回報", body)
+
+    def test_sinposmart_notice_problem_history_is_collapsed_with_latest_summary_and_escaped_rows(self):
+        store = app_module.sinposmart_store()
+        problems = [
+            {"state": "failed", "reported_at": "2026-10-22T15:50:00+08:00",
+             "status_label": "收取失敗 <b>notice-status-xss</b>",
+             "error": "連線 <script>notice-history-xss()</script>"},
+            {"state": "partial", "reported_at": "2026-10-22T15:47:00+08:00",
+             "status_label": "部分完成", "error": "已讀仍待確認"},
+            {"state": "uncertain", "reported_at": "2026-10-22T15:44:00+08:00",
+             "status_label": "收取結果待確認", "error": "收據尚未確認"},
+            {"state": "missing_credentials", "reported_at": "2026-10-22T15:41:00+08:00",
+             "status_label": "尚未設定通報帳密", "error": "請先設定通報帳號"},
+            {"state": "waiting", "reported_at": "2026-10-22T15:38:00+08:00",
+             "status_label": "等待收取", "error": ""},
+        ]
+        history = [
+            {"state": "success", "reported_at": "2026-10-22T15:52:00+08:00",
+             "status_label": "success-not-a-problem", "error": ""},
+            {"state": "running", "reported_at": "2026-10-22T15:51:00+08:00",
+             "status_label": "running-not-a-problem", "error": ""},
+            *problems,
+        ]
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=self._notice_view_fixture(history=history)), \
+                mock.patch.object(app_module, "sinposmart_admin_version_info", return_value={}):
+            response = self.client.get("/admin/sinposmart")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        details = re.search(r'<details\b(?P<attributes>[^>]*\bid="notice-problem-history"[^>]*)>'
+                            r'(?P<content>.*?)</details>', body, re.S)
+        self.assertIsNotNone(details)
+        self.assertNotRegex(details.group("attributes"), r'\b(?:open|hidden)\b')
+        summary = re.search(r'<summary\b[^>]*\bid="notice-problem-summary"[^>]*>(.*?)</summary>',
+                            details.group("content"), re.S)
+        self.assertIsNotNone(summary)
+        summary_text = " ".join(html.unescape(re.sub(r"<[^>]*>", "", summary.group(1))).split())
+        self.assertEqual(summary_text,
+                         "最近異常：2026-10-22 15:50:00 · 收取失敗 <b>notice-status-xss</b>："
+                         "連線 <script>notice-history-xss()</script>（共 5 筆）")
+        rows = re.search(r'<div\b[^>]*\bid="notice-problems"[^>]*>(.*?)</div>',
+                         details.group("content"), re.S)
+        self.assertIsNotNone(rows)
+        self.assertEqual(len(re.findall(r"<p\b", rows.group(1))), len(problems))
+        for entry in problems:
+            self.assertIn(entry["reported_at"].replace("T", " ").replace("+08:00", ""), rows.group(1))
+            self.assertIn(html.escape(entry["status_label"]), rows.group(1))
+            self.assertIn(html.escape(entry["error"]), rows.group(1))
+        self.assertLess(rows.group(1).index("15:50:00"), rows.group(1).index("15:38:00"))
+        self.assertNotIn("success-not-a-problem", details.group("content"))
+        self.assertNotIn("running-not-a-problem", details.group("content"))
+        self.assertNotIn("<script>notice-history-xss()</script>", details.group("content"))
+        self.assertNotIn("<b>notice-status-xss</b>", details.group("content"))
+
+    def test_sinposmart_notice_problem_history_is_hidden_without_problems(self):
+        store = app_module.sinposmart_store()
+        success = {"state": "success", "reported_at": "2026-10-22T15:52:00+08:00",
+                   "status_label": "success-not-a-problem", "error": ""}
+        running = {"state": "running", "reported_at": "2026-10-22T15:51:00+08:00",
+                   "status_label": "running-not-a-problem", "error": ""}
+        for history in ([], [success], [running], [success, running]):
+            with self.subTest(history=history), \
+                    mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                    mock.patch.object(store, "notice_view", return_value=self._notice_view_fixture(history=history)), \
+                    mock.patch.object(app_module, "sinposmart_admin_version_info", return_value={}):
+                response = self.client.get("/admin/sinposmart")
+            self.assertEqual(response.status_code, 200)
+            details = re.search(r'<details\b(?P<attributes>[^>]*\bid="notice-problem-history"[^>]*)>'
+                                r'(?P<content>.*?)</details>', response.get_data(as_text=True), re.S)
+            self.assertIsNotNone(details)
+            self.assertRegex(details.group("attributes"), r'\bhidden\b')
+            self.assertNotRegex(details.group("attributes"), r'\bopen\b')
+            rows = re.search(r'<div\b[^>]*\bid="notice-problems"[^>]*>(.*?)</div>',
+                             details.group("content"), re.S)
+            self.assertIsNotNone(rows)
+            self.assertNotRegex(rows.group(1), r"<p\b")
+            self.assertNotIn("success-not-a-problem", rows.group(1))
+            self.assertNotIn("running-not-a-problem", rows.group(1))
 
     def test_sinposmart_notice_manual_verification_does_not_claim_missing_original_is_read(self):
         store = app_module.sinposmart_store()
