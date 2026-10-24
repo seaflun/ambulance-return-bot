@@ -7582,6 +7582,28 @@ def _vehicle_mileage_history_payloads(limit: int = 300) -> list[dict]:
     return sorted(payloads, key=_last_vehicle_mileage_sort_key, reverse=True)[:limit]
 
 
+def _confirmed_vehicle_mileage_entries(payload: dict) -> list[dict[str, object]]:
+    statuses = payload.get("site_statuses")
+    site = statuses.get("vehicle_mileage") if isinstance(statuses, Mapping) else None
+    if not isinstance(site, Mapping):
+        return []
+    results = site.get("vehicle_results")
+    if results is not None and not isinstance(results, Mapping):
+        return []
+    entries = []
+    for entry in task_vehicle_display_entries(payload["task"]):
+        vehicle = str(entry.get("vehicle") or "").strip()
+        result = results.get(vehicle) if isinstance(results, Mapping) and results else site
+        if not isinstance(result, Mapping) or result.get("status") != "vehicle_mileage_saved":
+            continue
+        # Confirming an existing record preserves its official mileage, which
+        # can differ from the submitted task value. Do not certify that input.
+        if "保留 PPE 既有紀錄" in str(result.get("detail") or ""):
+            continue
+        entries.append(entry)
+    return entries
+
+
 def _stored_last_vehicle_mileage_records(limit: int, before: datetime | None = None) -> dict[str, tuple[str, datetime]]:
     mileages: dict[str, tuple[str, datetime]] = {}
     recent_payloads = _vehicle_mileage_history_payloads(limit)
@@ -7594,7 +7616,7 @@ def _stored_last_vehicle_mileage_records(limit: int, before: datetime | None = N
         occurred_at = _last_vehicle_mileage_sort_key(payload)[0]
         if before is not None and occurred_at >= before:
             continue
-        for entry in task_vehicle_display_entries(task):
+        for entry in _confirmed_vehicle_mileage_entries(payload):
             vehicle = str(entry.get("vehicle") or "").strip()
             mileage = str(entry.get("mileage") or "").strip()
             if vehicle and mileage and vehicle not in mileages:
@@ -7725,7 +7747,7 @@ def _stored_vehicle_mileage_hint_history() -> dict[str, list[dict[str, str]]]:
         if not isinstance(payload, dict) or not isinstance(payload.get("task"), dict):
             continue
         occurred_at = _last_vehicle_mileage_sort_key(payload)[0]
-        for entry in task_vehicle_display_entries(payload["task"]):
+        for entry in _confirmed_vehicle_mileage_entries(payload):
             vehicle = str(entry.get("vehicle") or "").strip()
             mileage = str(entry.get("mileage") or "").strip()
             if vehicle and mileage.isdigit():

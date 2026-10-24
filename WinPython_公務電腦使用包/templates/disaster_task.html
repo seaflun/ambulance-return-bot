@@ -649,6 +649,8 @@
   updateFolderPreview();
   updateRequiredHints();
   startVehicleMileageSync(data=>{
+    Object.keys(lastVehicleMileages).forEach(key=>delete lastVehicleMileages[key]);
+    Object.keys(lastVehicleMileageTimes).forEach(key=>delete lastVehicleMileageTimes[key]);
     Object.assign(lastVehicleMileages,data.mileages);
     Object.assign(lastVehicleMileageTimes,data.times);
     list.querySelectorAll('.vehicle-card').forEach(updateLastMileageHint);

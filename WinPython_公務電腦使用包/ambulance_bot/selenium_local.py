@@ -3483,14 +3483,23 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
     if not re.fullmatch(r"\d+", last) or int(last) < int(first):
         previous_at = _mileage_record_datetime(before[0], "End").strftime("%Y/%m/%d %H:%M")
         raise WebDriverException(
-            f"本案結束里程小於前一筆結束里程。前一筆 {previous_at}、紀錄 {before[0]['Id']}、"
+            f"本案結束里程小於前一筆結束里程。{request.vehicle} 本案 "
+            f"{requested_start:%Y/%m/%d %H:%M} 至 {end:%Y/%m/%d %H:%M}；"
+            f"前一筆 {previous_at}、紀錄 {before[0]['Id']}、"
             f"結束里程 {first}；本案結束里程 {last}。"
         )
     if int(last) - int(first) > 300:
         raise WebDriverException("本案與前一筆結束里程相差不可超過 300 公里。")
     following = after[0] if after else None
     if following and int(last) > int(following["EndMileage"]):
-        raise WebDriverException("本案結束里程超過後一筆結束里程。")
+        following_start = _mileage_record_datetime(following, "Start")
+        following_end = _mileage_record_datetime(following, "End")
+        raise WebDriverException(
+            f"本案結束里程超過後一筆結束里程。{request.vehicle} 本案 "
+            f"{requested_start:%Y/%m/%d %H:%M} 至 {end:%Y/%m/%d %H:%M}、結束里程 {last}；"
+            f"後一筆 {following_start:%Y/%m/%d %H:%M} 至 {following_end:%Y/%m/%d %H:%M}、"
+            f"紀錄 {following['Id']}、結束里程 {following['EndMileage']}。"
+        )
     if len(current) > 1:
         raise WebDriverException("multiple current mileage rows")
     existing = current[0] if current else None

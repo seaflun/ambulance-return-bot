@@ -57,6 +57,8 @@ class SharedMileageTests(unittest.TestCase):
                 self.assertIn("no-store", first.headers["Cache-Control"])
                 self.assertEqual("4886", first.json["mileages"]["新坡95"])
                 isolated_store.create(AmbulanceReturnRequest.from_dict(self.report("nas", "2127", "4919")["task"]))
+                isolated_store.update_site_result("nas", app_module.SiteAutomationResult(
+                    "vehicle_mileage", "里程", "vehicle_mileage_saved", "里程已回查確認"))
                 current = self.fixture.client.get("/api/vehicle-mileages", **options)
                 self.assertEqual("4919", current.json["mileages"]["新坡95"])
                 self.assertEqual("202610192127", current.json["times"]["新坡95"])
@@ -66,6 +68,8 @@ class SharedMileageTests(unittest.TestCase):
     def test_current_nas_task_wins_over_stale_report_with_same_task_id(self):
         self.write_reports([self.report("same", "1758", "4886")])
         self.fixture.store.create(AmbulanceReturnRequest.from_dict(self.report("same", "1758", "4890")["task"]))
+        self.fixture.store.update_site_result("same", app_module.SiteAutomationResult(
+            "vehicle_mileage", "里程", "vehicle_mileage_saved", "里程已回查確認"))
         self.assertEqual("4890", app_module.last_vehicle_mileages()["新坡95"])
 
     def test_mileage_polling_never_cleans_up_or_quarantines_task_files(self):

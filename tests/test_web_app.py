@@ -433,6 +433,12 @@ class WebAppTests(unittest.TestCase):
         else:
             os.environ[name] = value
 
+    def create_saved_mileage_reference(self, task_request):
+        payload = self.store.create(task_request)
+        self.store.update_site_result(task_request.task_id, app_module.SiteAutomationResult(
+            "vehicle_mileage", "里程", "vehicle_mileage_saved", "里程已回查確認"))
+        return payload
+
     def valid_task_data(self, **overrides):
         data = {
             "case_id": "case-test-001",
@@ -3600,7 +3606,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
                 {"vehicle": "新坡11", "driver": "甲", "mileage": "12345", "return_time": "1522"}
             ],
         )
-        self.store.create(task)
+        self.create_saved_mileage_reference(task)
         self.import_case_for_form(
             {
                 "case_id": "FIRE-NEXT-MILEAGE",
@@ -3934,12 +3940,12 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("兩車同時登打", body)
 
     def test_app_page_includes_last_mileage_by_vehicle(self):
-        self.store.create(
+        self.create_saved_mileage_reference(
             app_module.request_from_form(
                 self.valid_task_data(case_id="case-previous-primary", vehicle="\u65b0\u576191", mileage="11111")
             )
         )
-        self.store.create(
+        self.create_saved_mileage_reference(
             app_module.request_from_form(
                 self.valid_task_data(
                     case_id="case-previous-two-vehicle",
@@ -4514,7 +4520,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertEqual(2, len(payload["task"]["vehicle_entries"]))
 
     def test_create_disaster_task_rejects_mileage_below_or_more_than_300_from_previous_entry(self):
-        self.store.create(
+        self.create_saved_mileage_reference(
             AmbulanceReturnRequest(
                 task_id="previous-disaster-mileage",
                 created_at=datetime(2026, 7, 20, 8, 0),
@@ -4832,7 +4838,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
 
     def test_create_historical_task_uses_mileage_before_case_time(self):
         for identity, clock, mileage in (("earlier", "0800", "12000"), ("later", "1500", "12060")):
-            self.store.create(AmbulanceReturnRequest(
+            self.create_saved_mileage_reference(AmbulanceReturnRequest(
                 task_id=identity, created_at=datetime(2026, 6, 7, 18), raw_text="",
                 vehicle="新坡91", case_date="2026/06/07", case_time=clock, mileage=mileage,
             ))
@@ -4848,7 +4854,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertEqual(400, invalid.status_code)
 
     def test_create_task_rejects_mileage_below_or_more_than_300_from_previous_entry(self):
-        self.store.create(
+        self.create_saved_mileage_reference(
             AmbulanceReturnRequest(
                 task_id="previous-ems-mileage",
                 created_at=datetime(2026, 6, 6, 8, 0),
@@ -13424,7 +13430,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
 
     def test_mileage_hint_history_preserves_prior_case_despite_later_creation(self):
         for task_id, day, mileage in [("later", "2026/09/07", "10050"), ("earlier", "2026/09/06", "10000")]:
-            app_module.store.create(AmbulanceReturnRequest(
+            self.create_saved_mileage_reference(AmbulanceReturnRequest(
                 task_id=task_id, created_at=datetime.now(), raw_text="", vehicle="新坡91",
                 case_date=day, case_time="0800", mileage=mileage,
             ))
@@ -13444,7 +13450,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
                 vehicle="91A1" if index == 0 else f"91B{index:02d}",
                 mileage=str(10000 + index),
             )
-            app_module.store.create(request)
+            self.create_saved_mileage_reference(request)
 
         mileages = app_module.last_vehicle_mileages()
 
@@ -13469,8 +13475,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             case_date="2026-08-14",
             case_time="0800",
         )
-        app_module.store.create(older)
-        app_module.store.create(newer)
+        self.create_saved_mileage_reference(older)
+        self.create_saved_mileage_reference(newer)
         app_module.store.update_site_result(
             older.task_id,
             app_module.SiteAutomationResult("vehicle_mileage", "車輛里程", "vehicle_mileage_saved", "單站重登"),
@@ -13488,7 +13494,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             case_date="2026-08-22",
             case_time="1000",
         )
-        app_module.store.create(request)
+        self.create_saved_mileage_reference(request)
         nas_settings = {
             "ems_vehicles": [{"label": "新坡91", "ppe_name": "KEC-2608"}],
             "disaster_vehicles": [],

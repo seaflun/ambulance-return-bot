@@ -2208,6 +2208,9 @@
     updateConsumablePackageUi2();
     updateFieldVisualHints();
     if (taskForm) startVehicleMileageSync(data => {
+      Object.keys(lastVehicleMileages).forEach(key => delete lastVehicleMileages[key]);
+      Object.keys(lastVehicleMileageTimes).forEach(key => delete lastVehicleMileageTimes[key]);
+      Object.keys(vehicleMileageHintHistory).forEach(key => delete vehicleMileageHintHistory[key]);
       Object.assign(lastVehicleMileages, data.mileages);
       Object.assign(lastVehicleMileageTimes, data.times);
       Object.assign(vehicleMileageHintHistory, data.history);

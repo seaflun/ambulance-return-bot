@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.24.1447">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.24.1447') }}</p>
+          <h2 class="update-card__title">修正救災里程參考值與衝突提示</h2>
+        </div>
+        <span class="update-card__versions">2026.10.24.1447</span>
+      </header>
+      <ul class="update-card__items">
+        <li>上次里程與歷史參考只採用該車已確認儲存的數值，排除失敗、待確認及尚未執行的輸入，避免影響後續案件的里程判斷。</li>
+        <li>救災多車各自保留成功結果；確認已有官方紀錄時，不將可能不同的原始輸入當成已儲存里程。</li>
+        <li>救災與救護表單同步時移除失效舊參考；里程衝突提示補上車輛、案件時間、前後筆編號與里程，保留連續性及防重複檢查。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.24.1149">
       <header class="update-card__heading">
         <div>

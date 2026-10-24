@@ -1,11 +1,36 @@
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import unittest
 
 
 class VehicleMileageSyncTests(unittest.TestCase):
+    def test_successful_refresh_removes_references_no_longer_confirmed_by_the_server(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js required for mileage synchronization behavior tests")
+        for template in ("new_task.html", "disaster_task.html"):
+            source = (Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包/templates" / template).read_text(encoding="utf-8")
+            callback = re.search(r"startVehicleMileageSync\(data\s*=>\s*\{(.*?)\n\s*\}\);", source, re.S).group(1)
+            harness = """
+const assert = require('assert');
+const lastVehicleMileages = {failed: '35477'}, lastVehicleMileageTimes = {failed: '202610241336'};
+const vehicleMileageHintHistory = {failed: [{time:'202610241336', mileage:'35477'}]};
+const list = {querySelectorAll: () => []};
+function updateLastMileageHints() {} function updateLastMileageHint() {}
+const data = {mileages:{saved:'25449'}, times:{saved:'202610241336'}, history:{saved:[]}};
+""" + callback + """
+assert.deepEqual(lastVehicleMileages, data.mileages);
+assert.deepEqual(lastVehicleMileageTimes, data.times);
+"""
+            if template == "new_task.html":
+                harness += "assert.deepEqual(vehicleMileageHintHistory, data.history);"
+            with self.subTest(template=template):
+                result = subprocess.run([node, "-e", harness], text=True, encoding="utf-8", capture_output=True, timeout=10)
+                self.assertEqual(0, result.returncode, result.stderr)
+
     def test_visible_polling_focus_dedup_and_failures_preserve_last_reference(self):
         node = shutil.which("node")
         if node is None:

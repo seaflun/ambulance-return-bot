@@ -64,6 +64,8 @@ class EntryDataParityTests(unittest.TestCase):
             "created_at": "2026-10-20T12:00:00", "service_type": "ems", "case_date": "2026/10/20",
             "case_time": time, "vehicle": "新坡95", "driver": "隔離員", "mileage": mileage})
         self.stores[mode].create(model)
+        self.stores[mode].update_site_result(task_id, runtime.SiteAutomationResult(
+            "vehicle_mileage", "里程", "vehicle_mileage_saved", "里程已回查確認"))
 
     def test_local_and_nas_mileage_hints_include_cases_created_only_on_nas(self):
         self.add_mileage("local", "earlier-local", "0900", "100")
