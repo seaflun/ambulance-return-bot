@@ -5717,7 +5717,8 @@ def _wait_for_case_query_page(
             const totalPages = Math.max(1, Math.ceil(total / 10));
             const select = document.querySelector('select[name="pageSelect"]');
             const hidden = document.getElementById('selectedPage');
-            const page = Number(select?.value || hidden?.value || (totalPages === 1 ? 1 : NaN));
+            const page = !select && totalPages === 1 && hidden?.value === '0' ? 1
+              : Number(select?.value || hidden?.value || (totalPages === 1 ? 1 : NaN));
             if (!Number.isInteger(page) || page < 1 || page > totalPages || page !== arguments[0]) return null;
             return {page: page, total_pages: totalPages, total: total};
             """, expected_page,

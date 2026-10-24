@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.24.1130">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.24.1130') }}</p>
+          <h2 class="update-card__title">修正勤務案件單頁查詢逾時</h2>
+        </div>
+        <span class="update-card__versions">2026.10.24.1130</span>
+      </header>
+      <ul class="update-card__items">
+        <li>修正勤務網站已查到案件卻停在查詢結果的問題，正確處理只有一頁時的頁碼，讓「其他－受困」等案件可繼續依完整案號選取及帶入地址。</li>
+        <li>保留查詢完成、總筆數與多頁逐頁核對，避免讀取尚未完成或不完整的案件清單。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.24.0952">
       <header class="update-card__heading">
         <div>

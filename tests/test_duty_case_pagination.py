@@ -25,7 +25,8 @@ class _QueryElement:
 
 
 class _CasePageDriver:
-    def __init__(self, pages, current_page=1, duplicate_page_ids=True, response_text=None):
+    def __init__(self, pages, current_page=1, duplicate_page_ids=True, response_text=None,
+                 hidden_page=None, has_page_select=True):
         self.pages = pages
         self.current_page = current_page
         self.duplicate_page_ids = duplicate_page_ids
@@ -38,6 +39,8 @@ class _CasePageDriver:
         self.clicked_while_loading = False
         self.complete_checks = 0
         self.response_text = response_text
+        self.hidden_page = hidden_page
+        self.has_page_select = has_page_select
 
     def find_element(self, _by, value):
         if value != "_btnQuery":
@@ -52,19 +55,21 @@ class _CasePageDriver:
         const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
         let requestedPage = null, clicked = [];
         const options = Object.keys(input.pages).map(value => ({value}));
-        const select = {value: String(input.current), options,
-          dispatchEvent: () => {requestedPage = Number(select.value);}};
+        const select = input.has_page_select ? {value: String(input.current), options,
+          dispatchEvent: () => {requestedPage = Number(select.value);}} : null;
         const label = {innerText: '下一頁', id: 'pageSelect'};
         const rows = input.pages[String(input.current)].map(caseId => {
           const button = {value: '選擇', innerText: '', title: '', id: 'choose', name: 'choose',
             disabled: false, getAttribute: () => '', click: () => clicked.push(caseId)};
-          return {children: [{tagName: 'TD', innerText: caseId}],
-            querySelectorAll: () => [button]};
+          const cells = [caseId, '115/10/24 08:37', '115/10/24 09:28', '其他-受困', '測試地點']
+            .map(innerText => ({tagName: 'TD', innerText}));
+          return {children: cells,
+            querySelectorAll: selector => selector === 'td, th' ? cells : [button]};
         });
         const text = input.response_text ?? ('QUY-000:查詢完成 共 ' + (Object.keys(input.pages).length * 10) + ' 筆');
         global.document = {readyState: input.loading ? 'loading' : 'complete', body: {innerText: text},
-          getElementById: id => id === 'pageSelect' ? (input.duplicate ? label : select) :
-            (id === 'selectedPage' ? {value: String(input.current)} : (id === '_btnQuery' ? {} : null)),
+          getElementById: id => id === 'pageSelect' ? (input.has_page_select ? (input.duplicate ? label : select) : null) :
+            (id === 'selectedPage' ? {value: String(input.hidden_page ?? input.current)} : (id === '_btnQuery' ? {} : null)),
           querySelector: selector => selector === 'select[name="pageSelect"]' || selector === "select[name='pageSelect']"
             || selector === 'select#pageSelect' ? select : (selector === '.page' ? {innerText: text} : null),
           querySelectorAll: selector => selector === 'tr' ? rows : []};
@@ -77,6 +82,8 @@ class _CasePageDriver:
                                 input=json.dumps({"script": script, "args": args, "pages": self.pages,
                                                   "current": self.current_page, "loading": self.loading,
                                                   "duplicate": self.duplicate_page_ids,
+                                                  "hidden_page": self.hidden_page,
+                                                  "has_page_select": self.has_page_select,
                                                   "response_text": self.response_text}),
                                 text=True, capture_output=True, encoding="utf-8", check=True)
         value = json.loads(result.stdout)
@@ -100,6 +107,66 @@ class DutyCasePaginationTests(unittest.TestCase):
     target = "20260801000100001"
     other = "20260801000200001"
     third = "20260801000300001"
+
+    def waits(self, seconds=0.5):
+        real_wait = runtime.WebDriverWait
+        return patch.object(runtime, "WebDriverWait", side_effect=lambda d, t, **kw:
+                            real_wait(d, seconds, poll_frequency=0.001))
+
+    def test_complete_single_page_with_hidden_zero_loads_both_cases_after_new_query(self):
+        driver = _CasePageDriver({1: [self.target, self.other]},
+                                 response_text="QUY-000:查詢完成 共 2 筆",
+                                 hidden_page="0", has_page_select=False)
+
+        def submit(*args):
+            driver.pending_page = 1
+            driver.loading = True
+
+        with self.waits(), patch.object(runtime, "_click_by_text_or_id", side_effect=submit):
+            runtime._click_query_if_present(driver)
+            cases = runtime._extract_all_emergency_cases(driver)
+        self.assertEqual([self.target, self.other], [case["case_id"] for case in cases])
+        self.assertEqual("其他-受困", cases[0]["category"])
+        self.assertEqual(1, driver.generation)
+        self.assertFalse(driver.loading)
+        self.assertEqual([], driver.navigation)
+
+    def test_official_empty_single_page_with_hidden_zero_returns_no_cases(self):
+        for response in ("QUY-300:查無資料", "QUY-500:查無資料"):
+            driver = _CasePageDriver({1: []}, response_text=response,
+                                     hidden_page="0", has_page_select=False)
+            with self.subTest(response=response), self.waits():
+                self.assertEqual([], runtime._extract_all_emergency_cases(driver))
+
+    def test_hidden_zero_cannot_accept_the_old_document_after_query(self):
+        driver = _CasePageDriver({1: [self.target, self.other]},
+                                 response_text="QUY-000:查詢完成 共 2 筆",
+                                 hidden_page="0", has_page_select=False)
+        with self.waits(0.05), patch.object(runtime, "_click_by_text_or_id"), \
+             self.assertRaises(runtime.TimeoutException):
+            runtime._click_query_if_present(driver)
+        self.assertEqual(0, driver.generation)
+
+    def test_multiple_pages_without_a_page_number_are_rejected(self):
+        for hidden_page in ("", "0"):
+            driver = _CasePageDriver({1: [self.target], 2: [self.other]},
+                                     response_text="QUY-000:查詢完成 共 11 筆",
+                                     hidden_page=hidden_page, has_page_select=False)
+            with self.subTest(hidden_page=hidden_page), self.waits(0.05), \
+                 self.assertRaises(runtime.TimeoutException):
+                runtime._extract_all_emergency_cases(driver)
+
+    def test_select_on_wrong_page_is_not_replaced_by_hidden_zero_sentinel(self):
+        driver = _CasePageDriver({1: [self.target], 2: [self.other]}, current_page=2,
+                                 response_text="QUY-000:查詢完成 共 11 筆", hidden_page="0")
+        with self.waits(0.05), self.assertRaises(runtime.TimeoutException):
+            runtime._extract_all_emergency_cases(driver)
+
+    def test_single_page_with_hidden_zero_still_requires_an_official_response(self):
+        driver = _CasePageDriver({1: [self.target, self.other]}, response_text="共 2 筆",
+                                 hidden_page="0", has_page_select=False)
+        with self.waits(0.05), self.assertRaises(runtime.TimeoutException):
+            runtime._extract_all_emergency_cases(driver)
 
     def choose(self, driver, case_id):
         real_wait = runtime.WebDriverWait
