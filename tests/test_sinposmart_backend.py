@@ -206,6 +206,92 @@ class NoticeCollectionBackendTests(unittest.TestCase):
         SinpoSmartBackendStore(absent)
         self.assertTrue(absent.is_dir())
 
+    def test_notice_failure_codes_store_only_fixed_safe_messages_and_reach_card_view(self):
+        messages = {
+            "browser_start_failed": "通報專用瀏覽器無法啟動，請確認 Chrome 狀態。",
+            "browser_window_closed": "通報專用視窗已關閉，下輪將重新開啟。",
+            "snapshot_failed": "通報頁未正常回應，請確認通報專用瀏覽器。",
+            "snapshot_invalid": "通報頁資料格式無法確認。",
+            "origin_mismatch": "通報頁來源不符，已停止操作。",
+            "account_mismatch": "通報頁登入身分不符，僅允許新坡分隊公務信箱。",
+            "login_target_mismatch": "登入頁來源或路徑不符，未填入任何帳號密碼。",
+            "login_page_failed": "通報登入頁重新整理失敗，請確認連線。",
+            "list_navigation_failed": "通報列表重新整理失敗，請確認連線。",
+            "list_wait_timeout": "未讀列表尚未完成載入或資料不完整，已停止本輪收取。",
+            "page_limit": "未讀通報頁數過多，請先人工確認收取範圍。",
+            "list_changed": "未讀列表在查詢期間變動，將於下輪重新確認。",
+            "duplicate_notice_id": "通報分頁出現重複識別碼，已停止本輪收取。",
+            "next_page_ambiguous": "無法唯一確認通報下一頁按鈕。",
+            "count_mismatch": "未讀通報數量不符，已停止本輪收取。",
+            "notice_url_invalid": "通報內文網址無法確認，已停止讀取。",
+            "scan_unexpected": "通報列表載入未完成，已保留原有未讀狀態。",
+            "session_expired": "入口網作業逾時，將於下輪重新登入。",
+            "login_failed": "通報背景登入未成功，請確認已儲存的密碼與網站狀態。",
+            "credentials_missing": "通報帳號尚未設定密碼，請先至值班台設定。",
+            "cancelled": "通報收取已停止。",
+        }
+        for index, (code, message) in enumerate(messages.items(), 1):
+            for state in ("failed", "partial", "uncertain"):
+                with self.subTest(code=code, state=state):
+                    station = f"PUBLIC-{index}-{state}"
+                    raw = self.event(run=index, station=station, state=state, error_stage="scan",
+                                     error_code=code, unread_count=None, message="password=must-not-retain")
+                    stored = self.put(raw)
+                    report = stored["snapshot"]["notice_collection"]
+                    self.assertEqual(report["error_code"], code)
+                    self.assertEqual(report["message"], message)
+                    self.assertNotIn("must-not-retain", json.dumps(stored))
+                    self.assertEqual(backend.normalize_sinposmart_event(stored)["snapshot"], stored["snapshot"])
+                    view = self.view(workstation=station)
+                    self.assertTrue(view["parts_complete"])
+                    self.assertEqual(view["error"], message)
+                    self.assertEqual(view["history"][0]["error"], message)
+
+    def test_notice_missing_unknown_or_secret_error_codes_keep_legacy_shape_and_summary(self):
+        legacy = self.event(state="failed", error_stage="scan", unread_count=None)
+        expected = backend.normalize_sinposmart_event(legacy)["snapshot"]["notice_collection"]
+        self.assertNotIn("error_code", expected)
+        self.assertEqual(expected["message"], "未能完成未讀通報檢查。")
+        for code in (None, "", "unknown", "browser_start_failed password=must-not-retain",
+                     "browser_start_failed\n", " browser_start_failed", "BROWSER_START_FAILED",
+                     "https://unsafe.invalid/must-not-retain", ["browser_start_failed"],
+                     {"token": "must-not-retain"}, True, 21):
+            with self.subTest(code=code):
+                raw = copy.deepcopy(legacy)
+                raw["snapshot"]["notice_collection"].update(error_code=code, message="token=must-not-retain")
+                stored = backend.normalize_sinposmart_event(raw)
+                self.assertEqual(stored["snapshot"]["notice_collection"], expected)
+                self.assertNotIn("must-not-retain", json.dumps(stored))
+
+    def test_notice_nonfailure_states_ignore_even_valid_error_code_without_shape_change(self):
+        for state in ("success", "running", "waiting", "missing_credentials"):
+            with self.subTest(state=state):
+                raw = self.event(state=state)
+                expected = backend.normalize_sinposmart_event(raw)
+                raw["snapshot"]["notice_collection"]["error_code"] = "browser_start_failed"
+                self.assertEqual(backend.normalize_sinposmart_event(raw), expected)
+
+    def test_notice_parts_require_matching_safe_failure_code_but_unknown_code_is_legacy(self):
+        for index, (first_code, second_code, complete) in enumerate((
+                ("browser_start_failed", "browser_start_failed", True),
+                ("browser_start_failed", "snapshot_failed", False),
+                ("browser_start_failed", None, False),
+                ("password=must-not-retain", None, True)), 1):
+            with self.subTest(first=first_code, second=second_code):
+                station = f"PUBLIC-PARTS-{index}"
+                for part, code in enumerate((first_code, second_code)):
+                    event = self.event(run=index, station=station, state="failed", part_count=2,
+                                       part_index=part, error_stage="scan", unread_count=None)
+                    if code is not None:
+                        event["snapshot"]["notice_collection"]["error_code"] = code
+                    self.put(event)
+                view = self.view(workstation=station)
+                self.assertEqual(view["parts_complete"], complete)
+                expected = ("通報專用瀏覽器無法啟動，請確認 Chrome 狀態。" if index == 1 else
+                            "未能完成未讀通報檢查。" if index == 4 else "無法確認完整通報數量。")
+                self.assertEqual(view["error"], expected)
+                self.assertNotIn("must-not-retain", json.dumps(self.store.read_day("2026-10-22")))
+
     def test_invalid_notice_metadata_never_becomes_normal_zero(self):
         for changes in ({"new_count": True}, {"new_count": -1}, {"state": "ok"},
                         {"reported_at": "2026-10-22T09:01:00"}, {"calendar_day": "2026-10-21"},

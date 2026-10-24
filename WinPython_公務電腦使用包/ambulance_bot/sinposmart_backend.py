@@ -1779,6 +1779,29 @@ NOTICE_REASONS = {
     "mark_read": "通報已入表，但部分已讀狀態尚未確認。", "state": "通報收取狀態待確認。",
     "busy": "瀏覽器忙碌，等待下一次檢查。", "unknown": "通報收取發生異常，請至值班台確認。",
 }
+NOTICE_ERROR_MESSAGES = {
+    "browser_start_failed": "通報專用瀏覽器無法啟動，請確認 Chrome 狀態。",
+    "browser_window_closed": "通報專用視窗已關閉，下輪將重新開啟。",
+    "snapshot_failed": "通報頁未正常回應，請確認通報專用瀏覽器。",
+    "snapshot_invalid": "通報頁資料格式無法確認。",
+    "origin_mismatch": "通報頁來源不符，已停止操作。",
+    "account_mismatch": "通報頁登入身分不符，僅允許新坡分隊公務信箱。",
+    "login_target_mismatch": "登入頁來源或路徑不符，未填入任何帳號密碼。",
+    "login_page_failed": "通報登入頁重新整理失敗，請確認連線。",
+    "list_navigation_failed": "通報列表重新整理失敗，請確認連線。",
+    "list_wait_timeout": "未讀列表尚未完成載入或資料不完整，已停止本輪收取。",
+    "page_limit": "未讀通報頁數過多，請先人工確認收取範圍。",
+    "list_changed": "未讀列表在查詢期間變動，將於下輪重新確認。",
+    "duplicate_notice_id": "通報分頁出現重複識別碼，已停止本輪收取。",
+    "next_page_ambiguous": "無法唯一確認通報下一頁按鈕。",
+    "count_mismatch": "未讀通報數量不符，已停止本輪收取。",
+    "notice_url_invalid": "通報內文網址無法確認，已停止讀取。",
+    "scan_unexpected": "通報列表載入未完成，已保留原有未讀狀態。",
+    "session_expired": "入口網作業逾時，將於下輪重新登入。",
+    "login_failed": "通報背景登入未成功，請確認已儲存的密碼與網站狀態。",
+    "credentials_missing": "通報帳號尚未設定密碼，請先至值班台設定。",
+    "cancelled": "通報收取已停止。",
+}
 NOTICE_COUNT_FIELDS = ("unread_count", "new_count", "marked_read_count", "pending_write_count", "pending_read_count")
 NOTICE_VERIFICATION_FILENAME = "notice_verifications.json"
 NOTICE_VERIFICATION_NOTES = {
@@ -1894,6 +1917,10 @@ def normalize_notice_collection_report(value: Any) -> dict[str, Any]:
     if not isinstance(stage, str) or stage not in {"", *NOTICE_REASONS} or not isinstance(message, str) or len(message) > 300:
         return {}
     clean.update(error_stage=stage, message=NOTICE_REASONS.get(stage, ""))
+    code = value.get("error_code")
+    if (value["state"] in {"failed", "partial", "uncertain"}
+            and isinstance(code, str) and code in NOTICE_ERROR_MESSAGES):
+        clean.update(error_code=code, message=NOTICE_ERROR_MESSAGES[code])
     records, new_keys = value.get("records"), value.get("new_keys")
     if not isinstance(records, list) or len(records) > 200 or not isinstance(new_keys, list):
         return {}

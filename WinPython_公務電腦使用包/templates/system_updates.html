@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.24.1149">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.24.1149') }}</p>
+          <h2 class="update-card__title">顯示通報檢查的安全失敗原因</h2>
+        </div>
+        <span class="update-card__versions">2026.10.24.1149</span>
+      </header>
+      <ul class="update-card__items">
+        <li>後台辨識值班台回報的固定錯誤代碼，顯示瀏覽器啟動、登入身分或列表讀取的具體失敗步驟。</li>
+        <li>保留舊版通報回報相容性與分片完整性檢查，只採用白名單代碼，不接收原始例外或敏感內容。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.24.1130">
       <header class="update-card__heading">
         <div>
