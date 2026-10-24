@@ -1,10 +1,12 @@
-{% from "_page_chrome.html" import page_chrome %}
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SinpoSmart - 救災救護Worker 面板</title>
+{% extends "sinposmart_base.html" %}
+{% set page_accent = 'brand' %}
+
+{% block page_title %}SinpoSmart - 救災救護Worker 面板{% endblock %}
+{% block body_class %}workspace-page workspace-page--worker{% endblock %}
+{% block eyebrow %}公務電腦控制台{% endblock %}
+{% block page_heading %}SinpoSmart - 救災救護Worker 面板{% endblock %}
+
+{% block legacy_head %}
   <style>
     :root {
       color-scheme: light;
@@ -121,12 +123,13 @@
       button { font-size: 17px; }
     }
   </style>
-  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+{% endblock %}
+
+{% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
-</head>
-<body class="workspace-page workspace-page--worker">
-  <main>
-    {{ page_chrome('公務電腦控制台', 'SinpoSmart - 救災救護Worker 面板', 'brand') }}
+{% endblock %}
+
+{% block content %}
     <p class="sub">這個面板顯示公務電腦 Worker 狀態；已勾選站別會由 Worker 自動登打，並在系統回查確認後才回傳完成。</p>
 
     <section class="panel">
@@ -179,6 +182,4 @@
         {% endfor %}
       </div>
     </section>
-  </main>
-</body>
-</html>
+{% endblock %}

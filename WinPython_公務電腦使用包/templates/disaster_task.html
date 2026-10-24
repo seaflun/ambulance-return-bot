@@ -1,11 +1,14 @@
-{% from "_page_chrome.html" import page_chrome %}
-<!doctype html>
-<html lang="zh-Hant" data-ui="task-console">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f766e">
-  <title>SinpoSmart - 救災Worker</title>
+{% extends "sinposmart_base.html" %}
+{% set task_form_enabled = selected_case.case_id %}
+{% set personnel_titles = personnel_titles | default({}) %}
+{% set page_accent = 'disaster' %}
+
+{% block page_title %}SinpoSmart - 救災Worker{% endblock %}
+{% block body_class %}workspace-page workspace-page--task workspace-page--disaster-task{% endblock %}
+{% block eyebrow %}救災勤務登打中心{% endblock %}
+{% block page_heading %}SinpoSmart - 救災Worker{% endblock %}
+
+{% block legacy_head %}
   <style>
     :root {
       color-scheme: light;
@@ -167,17 +170,20 @@
       .recent-card .status { justify-self: start; }
     }
   </style>
-  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+{% endblock %}
+
+{% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
-</head>
-<body class="workspace-page workspace-page--task workspace-page--disaster-task">
-  <main>
-  {% call page_chrome('救災勤務登打中心', 'SinpoSmart - 救災Worker', 'disaster') %}
+{% endblock %}
+
+{% block header_actions %}
     {% if show_nas_home_button() or show_vehicle_settings_button() or show_task_entry_controls() %}
       {% if show_nas_home_button() or show_task_entry_controls() %}<a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>{% endif %}
       {% if show_vehicle_settings_button() %}<a class="button secondary header-navigation-button" href="/admin/disaster-vehicles">救災各項設定</a>{% endif %}
     {% endif %}
-  {% endcall %}
+{% endblock %}
+
+{% block content %}
   {% if page_notice %}
     <div class="lookup-message task-form-notice" role="status" aria-live="polite">{{ page_notice }}</div>
   {% endif %}
@@ -212,7 +218,6 @@
       </div>
     {% endif %}
   </section>
-  {% set task_form_enabled = selected_case.case_id %}
   {% if task_form_enabled %}
       {% set default_disaster_entries = [{'vehicle': '新坡11'}, {'vehicle': '新坡15'}] %}
       {% set disaster_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else default_disaster_entries %}
@@ -223,7 +228,6 @@
         {% endif %}
       {% endfor %}
       {% set current_personnel = selected_case.personnel or [] %}
-      {% set personnel_titles = personnel_titles | default({}) %}
       {% if current_personnel is string %}
         {% set current_personnel = current_personnel.split(',') %}
       {% endif %}
@@ -323,7 +327,9 @@
   {% if not task_form_enabled %}
   {% include "_recent_tasks.html" %}
   {% endif %}
-</main>
+{% endblock %}
+
+{% block scripts %}
 {% include "_task_form_error_dialog.html" %}
 <script src="{{ url_for('static', filename='task-entry-mileages.js', v=task_entry_asset_version) }}"></script>
 <script>
@@ -660,5 +666,4 @@
   window.setTimeout(()=>{ if(!document.querySelector('form:focus-within')&&!document.getElementById('client-form-errors').open) window.location.reload(); },2000);
   {% endif %}
 </script>
-</body>
-</html>
+{% endblock %}

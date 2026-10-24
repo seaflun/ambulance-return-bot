@@ -1,20 +1,19 @@
 :root {
   --workspace-max-width: 1120px;
-  --workspace-radius: 18px;
-  --workspace-radius-large: 26px;
-  --workspace-shadow: 0 18px 50px rgba(29, 29, 31, .08);
-  --workspace-shadow-hover: 0 24px 64px rgba(29, 29, 31, .12);
+  --workspace-radius: var(--radius-medium);
+  --workspace-radius-large: var(--radius-large);
+  --workspace-shadow: var(--shadow-card);
+  --workspace-shadow-hover: var(--shadow-raised);
 }
 
 body.workspace-page {
   --bg: #f5f5f7;
   --bg-top: #fbfbfd;
   --bg-line: transparent;
-  --surface: rgba(255, 255, 255, .9);
   --ink: #1d1d1f;
   --muted: #6e6e73;
-  --line: rgba(60, 60, 67, .15);
-  --line-strong: rgba(60, 60, 67, .28);
+  --line: var(--separator);
+  --line-strong: var(--separator-strong);
   --accent: #0f766e;
   --accent-rgb: 15, 118, 110;
   --accent-soft: #e5f4f2;
@@ -30,13 +29,19 @@ body.workspace-page {
   --waiting-bg: #fff7e6;
   --idle-bg: #f2f2f7;
   --shadow: var(--workspace-shadow);
-  --workspace-type-body: 1rem;
-  --workspace-type-label: .9375rem;
-  --workspace-type-helper: .8125rem;
-  --workspace-type-section: 1.125rem;
-  --workspace-type-subsection: 1rem;
-  --workspace-type-control-small: .9375rem;
-  --workspace-type-vehicle: 1.375rem;
+  --workspace-type-body: var(--type-body);
+  --workspace-type-label: var(--type-body);
+  --workspace-type-helper: var(--type-small);
+  --workspace-type-section: var(--type-section);
+  --workspace-type-subsection: var(--type-subsection);
+  --workspace-type-control-small: var(--type-small);
+  --workspace-type-vehicle: var(--type-section);
+  --text-xs: var(--type-small);
+  --text-sm: var(--type-small);
+  --text-md: var(--type-body);
+  --text-label: var(--type-body);
+  --text-lg: var(--type-section);
+  --text-xl: clamp(1.45rem, 2.7vw, 2rem);
   min-height: 100vh;
   background:
     radial-gradient(circle at 12% -8%, rgba(var(--accent-rgb), .16), transparent 34rem),
@@ -45,8 +50,9 @@ body.workspace-page {
   background-attachment: fixed;
   color: var(--ink);
   font-size: var(--workspace-type-body);
-  line-height: 1.5;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Noto Sans TC", sans-serif;
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
+  font-family: var(--font-family-ui);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -83,60 +89,17 @@ body.workspace-page--ems-settings {
   box-sizing: border-box;
 }
 
-.workspace-page main {
-  width: min(var(--workspace-max-width), 100%);
-  max-width: none;
-  margin: 0 auto;
-  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(56px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
-}
 
-.workspace-page .page-chrome {
-  align-items: center;
-}
 
-.workspace-page .page-chrome__copy {
-  min-width: 0;
-}
 
-.workspace-page .page-chrome__eyebrow {
-  margin: 0 0 2px;
-  color: var(--accent);
-  font-size: .76rem;
-  font-weight: 750;
-  letter-spacing: .08em;
-  line-height: 1.3;
-}
 
-.workspace-page .page-chrome h1 {
-  margin: 0;
-  color: var(--accent);
-  font-size: clamp(1.45rem, 2.7vw, 2rem);
-  font-weight: 760;
-  letter-spacing: -.025em;
-  line-height: 1.18;
-}
 
-.workspace-page .page-chrome__actions {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-}
 
-.workspace-page h1 {
-  margin: 0;
-  color: var(--ink);
-  font-size: clamp(24px, 2.6vw, 32px);
-  font-weight: 760;
-  letter-spacing: -.025em;
-  line-height: 1.16;
-}
 
 .workspace-page h2 {
   color: var(--ink);
-  font-size: var(--workspace-type-section);
-  font-weight: 740;
+  font-size: var(--type-section);
+  font-weight: var(--weight-heading);
   letter-spacing: -.012em;
   line-height: 1.3;
 }
@@ -144,8 +107,8 @@ body.workspace-page--ems-settings {
 .workspace-page h3 {
   margin: 16px 0 8px;
   color: var(--ink);
-  font-size: var(--workspace-type-subsection);
-  font-weight: 740;
+  font-size: var(--type-subsection);
+  font-weight: var(--weight-heading);
   letter-spacing: -.01em;
   line-height: 1.35;
 }
@@ -191,8 +154,8 @@ body.workspace-page--ems-settings {
 }
 
 .workspace-page--disaster-task .processing-section-title {
-  font-size: var(--workspace-type-subsection);
-  font-weight: 740;
+  font-size: var(--type-subsection);
+  font-weight: var(--weight-heading);
   letter-spacing: -.01em;
   line-height: 1.35;
 }
@@ -201,8 +164,8 @@ body.workspace-page--ems-settings {
 .workspace-page--disaster-task #processing-preview {
   font-family: inherit;
   font-size: var(--workspace-type-body);
-  font-weight: 400;
-  line-height: 1.5;
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
 }
 
 .workspace-page .vehicle-card-label,
@@ -222,22 +185,23 @@ body.workspace-page--ems-settings {
 .workspace-page .recent-meta,
 .workspace-page .case-meta,
 .workspace-page .site-note {
-  font-size: .875rem;
+  font-size: var(--type-small);
   font-weight: 500;
   line-height: 1.45;
 }
 
 .workspace-page button,
 .workspace-page .button {
-  min-height: 46px;
+  min-height: var(--control-height);
   border: 1px solid transparent;
-  border-radius: 14px;
-  padding: 0 16px;
+  border-radius: 999px;
+  padding: 0 18px;
   background: var(--accent);
   color: #fff;
   font: inherit;
   font-size: var(--workspace-type-body);
-  font-weight: 700;
+  font-weight: var(--weight-control);
+  line-height: var(--leading-body);
   box-shadow: 0 7px 18px rgba(var(--accent-rgb), .16);
   transition: transform .18s ease, box-shadow .18s ease, background-color .18s ease, border-color .18s ease;
 }
@@ -254,16 +218,14 @@ body.workspace-page--ems-settings {
   transform: scale(.985);
 }
 
-.workspace-page .secondary,
-.workspace-page .button.secondary {
+.workspace-page .secondary {
   border-color: var(--line);
   background: rgba(255, 255, 255, .82);
   color: var(--ink);
   box-shadow: none;
 }
 
-.workspace-page .secondary:hover,
-.workspace-page .button.secondary:hover {
+.workspace-page .secondary:hover {
   border-color: rgba(var(--accent-rgb), .36);
   background: #fff;
   box-shadow: 0 8px 22px rgba(29, 29, 31, .08);
@@ -327,18 +289,7 @@ body.workspace-page--ems-settings {
   box-shadow: 0 6px 16px rgba(29, 29, 31, .16);
 }
 
-.workspace-page .page-chrome__actions .button.secondary {
-  border-color: color-mix(in srgb, var(--accent) 18%, var(--line));
-  background: rgba(255, 255, 255, .76);
-  color: var(--accent);
-  box-shadow: 0 8px 24px rgba(29, 29, 31, .07), inset 0 1px 0 rgba(255, 255, 255, .82);
-}
 
-.workspace-page .page-chrome__actions .button.secondary:hover {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
-  background: rgba(255, 255, 255, .94);
-  box-shadow: 0 10px 28px rgba(var(--accent-rgb), .12);
-}
 
 .workspace-page button:focus-visible,
 .workspace-page .button:focus-visible,
@@ -356,7 +307,7 @@ body.workspace-page--ems-settings {
 .workspace-page .summary-card,
 .workspace-page .event-card,
 .workspace-page .empty,
-.workspace-page main > form {
+.workspace-page .app-content > form {
   border: 1px solid var(--line);
   border-radius: var(--workspace-radius);
   background: var(--surface);
@@ -365,8 +316,8 @@ body.workspace-page--ems-settings {
 
 .workspace-page .panel,
 .workspace-page .site-card,
-.workspace-page main > form {
-  padding: 20px;
+.workspace-page .app-content > form {
+  padding: var(--card-padding);
 }
 
 .workspace-page .site-card,
@@ -388,7 +339,7 @@ body.workspace-page--ems-settings {
 .workspace-page input,
 .workspace-page select,
 .workspace-page textarea {
-  min-height: 48px;
+  min-height: var(--control-height);
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   background: rgba(255, 255, 255, .96);
@@ -591,39 +542,12 @@ body.workspace-page--ems-settings {
   color: #fff;
 }
 
-/* Duty cards keep their shared material and use one page-wide typography scale. */
+/* Duty-specific content layout uses the shared task-center typography. */
 body.workspace-page--duty {
-  --duty-row-radius: 12px;
+  --duty-row-radius: var(--radius-small);
   --duty-card-surface: var(--surface);
-  --workspace-type-body: .875rem;
-  --workspace-type-label: .875rem;
-  --workspace-type-helper: .875rem;
-  --workspace-type-control-small: .875rem;
-  --text-sm: .875rem;
-  --text-md: .875rem;
-  --duty-text-leading: 1.6;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
-  font-size: var(--workspace-type-body);
-  font-weight: 500;
-  line-height: var(--duty-text-leading);
+  --duty-text-leading: var(--leading-body);
 }
-
-body.workspace-page--duty main * { font-family: inherit; }
-body.workspace-page--duty :is(.section-note, .summary-label, .event-time, .event-meta, .event-detail,
-  .event-step, .event-step-name, .unreturned-return-meta, .credential-sync-login, .notice-times,
-  .notice-error, .notice-table, .notice-problems, .daily-vehicle-row, .rescue-video-diagnostic-row,
-  .waiting-reason, .pause-reason, .empty, .system-overview-card, .system-health-meta,
-  .remote-update-detail, .remote-update-meta, .remote-update-label, .version-label),
-body.workspace-page--duty .page-chrome .page-chrome__eyebrow,
-body.workspace-page--duty :is(.system-overview-card, .section, .day-nav, .page-chrome__actions) :is(.button, button, input,
-  select, textarea, .status, summary, .worker-health-version, .version-difference) {
-  font-size: var(--workspace-type-body);
-  font-weight: 500;
-  line-height: var(--duty-text-leading);
-}
-body.workspace-page--duty :is(h1, h2, h3) { line-height: var(--duty-text-leading); }
-body.workspace-page--duty h2 { font-size: var(--workspace-type-section); font-weight: 740; }
-body.workspace-page--duty :is(.system-overview-card, .section) h3 { font-size: var(--workspace-type-subsection); font-weight: 740; }
 
 body.workspace-page--duty :is(.section, .summary-card, .event-card, .empty) {
   min-width: 0;
@@ -631,7 +555,7 @@ body.workspace-page--duty :is(.section, .summary-card, .event-card, .empty) {
 }
 
 .workspace-page--duty .section {
-  padding: 20px;
+  padding: var(--card-padding);
 }
 
 body.workspace-page--duty :is(.section-head, .event-head) > * { min-width: 0; }
@@ -646,14 +570,14 @@ body.workspace-page--duty details.section > summary.section-head {
   align-items: center;
   justify-content: space-between;
   gap: .75rem;
-  min-height: 44px;
+  min-height: var(--card-header-height);
   margin: 0;
   padding: .75rem;
   border-radius: var(--duty-row-radius);
   color: var(--ink);
-  font-size: var(--workspace-type-body);
-  font-weight: 500;
-  line-height: var(--duty-text-leading);
+  font-size: var(--type-small);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
   list-style: none;
   cursor: pointer;
   touch-action: manipulation;
@@ -667,8 +591,8 @@ body.workspace-page--duty :is(details.section, .section details) > summary::afte
   content: "展開";
   flex: 0 0 auto;
   color: var(--accent);
-  font-size: var(--workspace-type-body);
-  font-weight: 500;
+  font-size: var(--type-small);
+  font-weight: var(--weight-body);
   white-space: nowrap;
 }
 body.workspace-page--duty :is(details.section, .section details)[open] > summary::after { content: "收合"; }
@@ -678,7 +602,8 @@ body.workspace-page--duty :is(details.section, .section details) > summary:focus
 body.workspace-page--duty details.section > summary.section-head {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr) auto;
-  margin: -.5rem -.5rem 0;
+  margin: 0 -.5rem;
+  padding-block: 0;
 }
 body.workspace-page--duty details.section[open] > summary.section-head { margin-bottom: .75rem; }
 body.workspace-page--duty :is(.unreturned-return-history, .notice-problem-history,
@@ -752,7 +677,7 @@ body.workspace-page--duty .section .status { min-width: 0; max-width: 100%; whit
 .workspace-page .event-card,
 .workspace-page .summary-card,
 .workspace-page .empty {
-  padding: 16px;
+  padding: var(--card-padding);
 }
 
 .workspace-page .summary-value,
@@ -796,36 +721,23 @@ body.workspace-page--duty .section .status { min-width: 0; max-width: 100%; whit
 
 .workspace-page .form-actions button,
 .workspace-page .form-actions .button {
-  border-radius: 16px;
+  border-radius: 999px;
 }
 
-.workspace-page--settings main,
-.workspace-page--duty main {
-  width: min(100%, var(--workspace-max-width));
-}
 
-.workspace-page--settings main > form + .panel {
+.workspace-page--settings .app-content > form + .panel {
   margin-top: 18px;
 }
 
 @media (max-width: 720px) {
-  .workspace-page main {
-    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
-  }
-
-  .workspace-page .page-chrome__actions .button {
-    width: 100%;
-    min-height: 44px;
-  }
-
   .workspace-page .panel,
   .workspace-page .site-card,
-  .workspace-page main > form {
-    padding: 16px;
+  .workspace-page .app-content > form {
+    padding: var(--card-padding);
   }
 
   .workspace-page--duty .section {
-    padding: 16px;
+    padding: var(--card-padding);
   }
 
   .workspace-page--task .recent-actions {
@@ -881,9 +793,33 @@ body.workspace-page--duty .section .status { min-width: 0; max-width: 100%; whit
   .workspace-page .summary-card,
   .workspace-page .event-card,
   .workspace-page .empty,
-  .workspace-page main > form {
+  .workspace-page .app-content > form {
     background: #fff;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+}
+
+.workspace-page :is(.section, .site-card, .panel) { margin-bottom: var(--card-gap); }
+.workspace-page :is(.section-head, .event-head) { min-height: var(--card-header-height); }
+.workspace-page :is(.event-title, .notice-records-heading) { font-size: var(--type-subsection); font-weight: var(--weight-heading); }
+.workspace-page :is(.section-note, .summary-label, .event-time, .event-meta, .event-detail,
+  .event-step, .unreturned-return-meta, .credential-sync-login, .notice-times, .notice-error,
+  .notice-table, .notice-problems, .daily-vehicle-row, .rescue-video-diagnostic-row,
+  .waiting-reason, .pause-reason, .case-meta, .recent-time, .recent-progress) {
+  font-size: var(--type-small);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
+}
+.workspace-page .status { font-size: var(--type-small); font-weight: var(--weight-body); line-height: var(--leading-body); }
+.workspace-page .system-overview-card { --status-accent: var(--accent); }
+
+.workspace-page .address-row { grid-template-columns: minmax(0, 1fr) auto; }
+.workspace-page .clock-button,
+.workspace-page .icon-button { padding: 0; }
+.workspace-page .clock-glyph { flex: 0 0 18px; }
+.workspace-page--settings .vehicle-row:not(.header-row) > [data-field]::before {
+  font-size: var(--type-small);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
 }

@@ -1,12 +1,30 @@
-{% from "_page_chrome.html" import page_chrome %}
+{% extends "sinposmart_base.html" %}
 {% set available_summary_type_options = disaster_reason_options_by_type | default({'火災': [], '災害搶救': [], '救護': case_reason_options}, true) %}
-<!doctype html>
-<html lang="zh-Hant" data-ui="task-console">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f766e">
-  <title>{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}</title>
+
+{% set task_form_enabled = cancel_url or selected_case.case_id %}
+{% set vehicle_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [] %}
+{% set second_vehicle = vehicle_entries[1] if vehicle_entries|length > 1 else {} %}
+{% set primary_fuel = selected_case.fuel_record if selected_case.fuel_record is defined else {} %}
+{% set second_fuel = second_vehicle.fuel_record if second_vehicle and second_vehicle.fuel_record is defined else {} %}
+{% set default_fuel_date = selected_case_date_input(selected_case) %}
+{% set primary_fuel_date = primary_fuel.date or default_fuel_date %}
+{% if primary_fuel_date|length == 8 and '/' not in primary_fuel_date and '-' not in primary_fuel_date %}
+  {% set primary_fuel_date = primary_fuel_date[:4] ~ '/' ~ primary_fuel_date[4:6] ~ '/' ~ primary_fuel_date[6:8] %}
+{% endif %}
+{% set second_fuel_date = second_fuel.date or default_fuel_date %}
+{% if second_fuel_date|length == 8 and '/' not in second_fuel_date and '-' not in second_fuel_date %}
+  {% set second_fuel_date = second_fuel_date[:4] ~ '/' ~ second_fuel_date[4:6] ~ '/' ~ second_fuel_date[6:8] %}
+{% endif %}
+{% set second_consumables = second_vehicle.consumables if second_vehicle and second_vehicle.consumables is defined else default_consumables %}
+{% set second_disinfection_items = second_vehicle.disinfection_items if second_vehicle and second_vehicle.disinfection_items is defined else default_disinfection_items %}
+{% set page_accent = 'ems' %}
+
+{% block page_title %}{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}{% endblock %}
+{% block body_class %}workspace-page workspace-page--task workspace-page--ems-task{% endblock %}
+{% block eyebrow %}救護勤務登打中心{% endblock %}
+{% block page_heading %}{{ 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker' }}{% endblock %}
+
+{% block legacy_head %}
   <style>
     :root {
       color-scheme: light;
@@ -305,12 +323,13 @@
       .form-actions { grid-template-columns: 1fr; }
     }
   </style>
-  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+{% endblock %}
+
+{% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
-</head>
-<body class="workspace-page workspace-page--task workspace-page--ems-task">
-  <main>
-    {% call page_chrome('救護勤務登打中心', 'SinpoSmart - 救護Worker - 編輯狀態' if cancel_url else 'SinpoSmart - 救護Worker', 'ems') %}
+{% endblock %}
+
+{% block header_actions %}
       {% if not cancel_url and (show_vehicle_settings_button() or show_nas_home_button() or show_task_entry_controls()) %}
         {% if show_nas_home_button() or show_task_entry_controls() %}
           <a class="button secondary header-navigation-button" href="/task-entry">返回上一頁</a>
@@ -319,8 +338,9 @@
           <a class="button secondary header-navigation-button" href="/admin/vehicles">救護各項設定</a>
         {% endif %}
       {% endif %}
-    {% endcall %}
+{% endblock %}
 
+{% block content %}
     {% if page_notice %}
       <div class="lookup-message task-form-notice" role="status" aria-live="polite">{{ page_notice }}</div>
     {% endif %}
@@ -366,22 +386,6 @@
       </section>
     {% endif %}
 
-    {% set task_form_enabled = cancel_url or selected_case.case_id %}
-    {% set vehicle_entries = selected_case.vehicle_entries if selected_case.vehicle_entries is defined and selected_case.vehicle_entries else [] %}
-    {% set second_vehicle = vehicle_entries[1] if vehicle_entries|length > 1 else {} %}
-    {% set primary_fuel = selected_case.fuel_record if selected_case.fuel_record is defined else {} %}
-    {% set second_fuel = second_vehicle.fuel_record if second_vehicle and second_vehicle.fuel_record is defined else {} %}
-    {% set default_fuel_date = selected_case_date_input(selected_case) %}
-    {% set primary_fuel_date = primary_fuel.date or default_fuel_date %}
-    {% if primary_fuel_date|length == 8 and '/' not in primary_fuel_date and '-' not in primary_fuel_date %}
-      {% set primary_fuel_date = primary_fuel_date[:4] ~ '/' ~ primary_fuel_date[4:6] ~ '/' ~ primary_fuel_date[6:8] %}
-    {% endif %}
-    {% set second_fuel_date = second_fuel.date or default_fuel_date %}
-    {% if second_fuel_date|length == 8 and '/' not in second_fuel_date and '-' not in second_fuel_date %}
-      {% set second_fuel_date = second_fuel_date[:4] ~ '/' ~ second_fuel_date[4:6] ~ '/' ~ second_fuel_date[6:8] %}
-    {% endif %}
-    {% set second_consumables = second_vehicle.consumables if second_vehicle and second_vehicle.consumables is defined else default_consumables %}
-    {% set second_disinfection_items = second_vehicle.disinfection_items if second_vehicle and second_vehicle.disinfection_items is defined else default_disinfection_items %}
     {% if task_form_enabled %}
     <form method="post" action="{{ form_action or '/tasks' }}" id="task-form" autocomplete="off" novalidate>
       <input type="hidden" name="case_id" value="{{ selected_case.case_id or '' }}">
@@ -900,7 +904,9 @@
     {% if not task_form_enabled %}
     {% include "_recent_tasks.html" %}
     {% endif %}
-  </main>
+{% endblock %}
+
+{% block scripts %}
   {% include "_task_form_error_dialog.html" %}
   {% set auto_refresh = case_lookup.is_running or recent_tasks_need_refresh(recent_tasks) %}
   <script src="{{ url_for('static', filename='task-entry-mileages.js', v=task_entry_asset_version) }}"></script>
@@ -2221,5 +2227,4 @@
       addConsumableButton.addEventListener("click", () => addConsumableRow());
     }
   </script>
-</body>
-</html>
+{% endblock %}

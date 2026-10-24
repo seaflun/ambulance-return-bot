@@ -1,12 +1,119 @@
-{% from "_page_chrome.html" import page_chrome %}
+{% extends "sinposmart_base.html" %}
 {% set site_login_accounts = task_site_login_accounts(payload) %}
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#fafaf8">
-  <title>{{ task_title(payload.task) }}</title>
+{% macro mileage_overlap_confirmation_forms(task_id, site, task_active) -%}
+  {% set site_key = 'vehicle_mileage' %}
+  {% if not task_active %}
+    {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}
+      {% if mileage_overlap_confirmation_available(site_key, vehicle_result) and site_manual_complete_token(task_id, site_key, vehicle_key) %}
+        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
+          <input type="hidden" name="vehicle_key" value="{{ vehicle_key }}">
+          <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key, vehicle_key) }}">
+          <label><input type="checkbox" name="confirmed_existing_mileage" value="1" required>已核對 PPE，確認{{ vehicle_key }}此案已由人工登打</label>
+          <button class="secondary" type="submit">確認{{ vehicle_key }}既有里程</button>
+          <span class="label">只標示人工完成，不修改 PPE；請先核對時間、地址及里程。</span>
+        </form>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+{%- endmacro %}
+{% macro manual_confirmation_forms(task_id, site_key, site, task_active) -%}
+  {% if not task_active and site_waits_for_confirmation(site.status) %}
+    {% set confirmation = namespace(has_vehicle=false) %}
+    {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}
+      {% if site_waits_for_confirmation(vehicle_result.status) %}
+        {% set confirmation.has_vehicle = true %}
+        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
+          <input type="hidden" name="vehicle_key" value="{{ vehicle_key }}">
+          <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key, vehicle_key) }}">
+          <button class="secondary" type="submit" title="請先在官方頁確認資料已存在">
+            已確認 {{ vehicle_result.vehicle_label or vehicle_key }}
+          </button>
+        </form>
+      {% endif %}
+    {% endfor %}
+    {% if not confirmation.has_vehicle %}
+      <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
+        <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key) }}">
+        <button class="secondary" type="submit" title="請先在官方頁確認資料已存在">已在官方頁確認完成</button>
+      </form>
+    {% endif %}
+  {% endif %}
+{%- endmacro %}
+{% macro vehicle_candidate_controls(task_id, site_key, site, task_active) -%}
+  {% set candidate_rows = site_vehicle_candidate_rows(site) %}
+  {% if candidate_rows %}
+    <section class="vehicle-reconciliation" aria-live="polite" role="alert">
+      <div class="vehicle-reconciliation__title">同案件不同車</div>
+      {% for row in candidate_rows %}
+        <div class="vehicle-reconciliation__copy">系統車輛：{{ row.original_vehicle }}</div>
+        {% if row.state == 'selected' %}
+          <div class="vehicle-reconciliation__selected">已選擇查找車輛：{{ row.selected_vehicle }}</div>
+        {% elif row.state == 'resolved' %}
+          <div class="vehicle-reconciliation__selected">已完成查找車輛：{{ row.selected_vehicle }}</div>
+        {% else %}
+          <div class="vehicle-reconciliation__copy">原車紀錄可能尚未同步；查到另一台出勤車不代表原車填錯。可保留原車重新查找，只有確認車號有誤時才改選候選車輛。</div>
+        {% endif %}
+        {% if row.state in ['available', 'selected'] %}
+          <div class="vehicle-reconciliation__choices">
+            {% if row.state == 'available' or row.selected_vehicle != row.original_vehicle %}
+              <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/vehicle-candidate">
+                <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
+                <input type="hidden" name="candidate_vehicle" value="{{ row.vehicle_key }}">
+                <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task_id, site_key, row.vehicle_key, row.vehicle_key) }}">
+                <button class="secondary" type="submit" {% if task_active %}disabled{% endif %}>保留{{ row.original_vehicle }}重新查找</button>
+              </form>
+            {% endif %}
+            {% if row.state == 'available' %}
+              {% for candidate in row.candidates %}
+                <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/vehicle-candidate">
+                  <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
+                  <input type="hidden" name="candidate_vehicle" value="{{ candidate.vehicle }}">
+                  <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task_id, site_key, row.vehicle_key, candidate.vehicle) }}">
+                  <button class="secondary" type="submit" {% if task_active %}disabled{% endif %}>確認使用{{ candidate.vehicle }}</button>
+                </form>
+                {% if candidate.source %}<span class="label">來源：{{ candidate.source }}</span>{% endif %}
+              {% endfor %}
+            {% endif %}
+          </div>
+        {% endif %}
+      {% endfor %}
+      <div class="vehicle-reconciliation__copy">選擇後按此站「單獨登打」重試。原始案件車輛不變；本次選擇只套用於此站查找與登打。原車仍查不到時會停止，不會自動改用其他車輛。</div>
+    </section>
+  {% endif %}
+{%- endmacro %}
+{% macro task_card_head(task_id, site_key, site, title, stage_label, task_active, completion) -%}
+  {% set candidate_ready = site_vehicle_reconciliation_ready_to_retry(site) %}
+  {% set can_run = (show_task_entry_controls() or status_class(site.status) == 'failed' or site_waits_for_confirmation(site.status) or candidate_ready) and (not task_has_vehicle_reconciliation(payload) or candidate_ready) %}
+  <div class="card-head">
+    <div class="card-title">
+      {% if stage_label %}<span class="card-stage-label">{{ stage_label }}</span>{% endif %}
+      <h3>{{ title }}</h3>
+    </div>
+    <div class="card-state">
+      {% if can_run and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, site_key) %}
+        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/run">
+          <button class="secondary" type="submit">{{ site_action_button_label(site.status, site_key) }}</button>
+        </form>
+      {% endif %}
+      {{ manual_confirmation_forms(task_id, site_key, site, task_active) }}
+      <span class="status {{ status_class(site.status) }}">{{ status_label(site.status, site.detail) }}</span>
+    </div>
+  </div>
+  {% set login_sites = [('vehicle_mileage', '里程'), ('fuel_record', '加油')] if site_key in ['vehicle_mileage', 'fuel_record'] and task_has_active_fuel_site(payload.task, payload.site_statuses) else [(site_key, title)] %}
+  {% for login_site_key, login_title in login_sites %}
+    <div class="card-login-account" aria-label="{{ login_title }}登入帳號">{% if login_sites|length > 1 %}{{ login_title }}{% endif %}登入帳號：{{ site_login_accounts.get(login_site_key) or '尚未回報' }}</div>
+  {% endfor %}
+{%- endmacro %}
+{% set page_accent = 'disaster' if payload.task.service_type == 'disaster' else 'ems' %}
+{% set chrome_class = 'page-head' %}
+{% set chrome_actions_class = 'head-actions' %}
+
+{% block page_title %}{{ task_title(payload.task) }}{% endblock %}
+{% block body_class %}workspace-page workspace-page--task workspace-page--{{ payload.task.service_type }}-task{% endblock %}
+{% block eyebrow %}任務明細{% endblock %}
+{% block page_heading %}{{ task_detail_title(payload.task) }}{% endblock %}
+
+{% block legacy_head %}
   <style>
     :root {
       color-scheme: light;
@@ -429,119 +536,17 @@
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
     }
   </style>
-  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
-</head>
-{% macro mileage_overlap_confirmation_forms(task_id, site, task_active) -%}
-  {% set site_key = 'vehicle_mileage' %}
-  {% if not task_active %}
-    {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}
-      {% if mileage_overlap_confirmation_available(site_key, vehicle_result) and site_manual_complete_token(task_id, site_key, vehicle_key) %}
-        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
-          <input type="hidden" name="vehicle_key" value="{{ vehicle_key }}">
-          <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key, vehicle_key) }}">
-          <label><input type="checkbox" name="confirmed_existing_mileage" value="1" required>已核對 PPE，確認{{ vehicle_key }}此案已由人工登打</label>
-          <button class="secondary" type="submit">確認{{ vehicle_key }}既有里程</button>
-          <span class="label">只標示人工完成，不修改 PPE；請先核對時間、地址及里程。</span>
-        </form>
-      {% endif %}
-    {% endfor %}
-  {% endif %}
-{%- endmacro %}
-{% macro manual_confirmation_forms(task_id, site_key, site, task_active) -%}
-  {% if not task_active and site_waits_for_confirmation(site.status) %}
-    {% set confirmation = namespace(has_vehicle=false) %}
-    {% for vehicle_key, vehicle_result in (site.vehicle_results or {}).items() %}
-      {% if site_waits_for_confirmation(vehicle_result.status) %}
-        {% set confirmation.has_vehicle = true %}
-        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
-          <input type="hidden" name="vehicle_key" value="{{ vehicle_key }}">
-          <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key, vehicle_key) }}">
-          <button class="secondary" type="submit" title="請先在官方頁確認資料已存在">
-            已確認 {{ vehicle_result.vehicle_label or vehicle_key }}
-          </button>
-        </form>
-      {% endif %}
-    {% endfor %}
-    {% if not confirmation.has_vehicle %}
-      <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/complete">
-        <input type="hidden" name="confirmation_token" value="{{ site_manual_complete_token(task_id, site_key) }}">
-        <button class="secondary" type="submit" title="請先在官方頁確認資料已存在">已在官方頁確認完成</button>
-      </form>
-    {% endif %}
-  {% endif %}
-{%- endmacro %}
-{% macro vehicle_candidate_controls(task_id, site_key, site, task_active) -%}
-  {% set candidate_rows = site_vehicle_candidate_rows(site) %}
-  {% if candidate_rows %}
-    <section class="vehicle-reconciliation" aria-live="polite" role="alert">
-      <div class="vehicle-reconciliation__title">同案件不同車</div>
-      {% for row in candidate_rows %}
-        <div class="vehicle-reconciliation__copy">系統車輛：{{ row.original_vehicle }}</div>
-        {% if row.state == 'selected' %}
-          <div class="vehicle-reconciliation__selected">已選擇查找車輛：{{ row.selected_vehicle }}</div>
-        {% elif row.state == 'resolved' %}
-          <div class="vehicle-reconciliation__selected">已完成查找車輛：{{ row.selected_vehicle }}</div>
-        {% else %}
-          <div class="vehicle-reconciliation__copy">原車紀錄可能尚未同步；查到另一台出勤車不代表原車填錯。可保留原車重新查找，只有確認車號有誤時才改選候選車輛。</div>
-        {% endif %}
-        {% if row.state in ['available', 'selected'] %}
-          <div class="vehicle-reconciliation__choices">
-            {% if row.state == 'available' or row.selected_vehicle != row.original_vehicle %}
-              <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/vehicle-candidate">
-                <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
-                <input type="hidden" name="candidate_vehicle" value="{{ row.vehicle_key }}">
-                <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task_id, site_key, row.vehicle_key, row.vehicle_key) }}">
-                <button class="secondary" type="submit" {% if task_active %}disabled{% endif %}>保留{{ row.original_vehicle }}重新查找</button>
-              </form>
-            {% endif %}
-            {% if row.state == 'available' %}
-              {% for candidate in row.candidates %}
-                <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/vehicle-candidate">
-                  <input type="hidden" name="vehicle_key" value="{{ row.vehicle_key }}">
-                  <input type="hidden" name="candidate_vehicle" value="{{ candidate.vehicle }}">
-                  <input type="hidden" name="candidate_token" value="{{ site_vehicle_candidate_token(task_id, site_key, row.vehicle_key, candidate.vehicle) }}">
-                  <button class="secondary" type="submit" {% if task_active %}disabled{% endif %}>確認使用{{ candidate.vehicle }}</button>
-                </form>
-                {% if candidate.source %}<span class="label">來源：{{ candidate.source }}</span>{% endif %}
-              {% endfor %}
-            {% endif %}
-          </div>
-        {% endif %}
-      {% endfor %}
-      <div class="vehicle-reconciliation__copy">選擇後按此站「單獨登打」重試。原始案件車輛不變；本次選擇只套用於此站查找與登打。原車仍查不到時會停止，不會自動改用其他車輛。</div>
-    </section>
-  {% endif %}
-{%- endmacro %}
-{% macro task_card_head(task_id, site_key, site, title, stage_label, task_active, completion) -%}
-  {% set candidate_ready = site_vehicle_reconciliation_ready_to_retry(site) %}
-  {% set can_run = (show_task_entry_controls() or status_class(site.status) == 'failed' or site_waits_for_confirmation(site.status) or candidate_ready) and (not task_has_vehicle_reconciliation(payload) or candidate_ready) %}
-  <div class="card-head">
-    <div class="card-title">
-      {% if stage_label %}<span class="card-stage-label">{{ stage_label }}</span>{% endif %}
-      <h3>{{ title }}</h3>
-    </div>
-    <div class="card-state">
-      {% if can_run and not task_active and not completion.all_complete and site_can_run_individually(payload.site_statuses, site_key) %}
-        <form class="card-actions" method="post" action="/tasks/{{ task_id }}/sites/{{ site_key }}/run">
-          <button class="secondary" type="submit">{{ site_action_button_label(site.status, site_key) }}</button>
-        </form>
-      {% endif %}
-      {{ manual_confirmation_forms(task_id, site_key, site, task_active) }}
-      <span class="status {{ status_class(site.status) }}">{{ status_label(site.status, site.detail) }}</span>
-    </div>
-  </div>
-  {% set login_sites = [('vehicle_mileage', '里程'), ('fuel_record', '加油')] if site_key in ['vehicle_mileage', 'fuel_record'] and task_has_active_fuel_site(payload.task, payload.site_statuses) else [(site_key, title)] %}
-  {% for login_site_key, login_title in login_sites %}
-    <div class="card-login-account" aria-label="{{ login_title }}登入帳號">{% if login_sites|length > 1 %}{{ login_title }}{% endif %}登入帳號：{{ site_login_accounts.get(login_site_key) or '尚未回報' }}</div>
-  {% endfor %}
-{%- endmacro %}
-<body class="workspace-page workspace-page--task workspace-page--{{ payload.task.service_type }}-task">
-  <main>
-    {% call page_chrome('任務明細', task_detail_title(payload.task), 'disaster' if payload.task.service_type == 'disaster' else 'ems', 'page-head', 'head-actions') %}
-      <a class="button secondary header-navigation-button" href="{{ '/app/disaster' if payload.task.service_type == 'disaster' else '/app' }}">返回首頁</a>
-    {% endcall %}
+{% endblock %}
 
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
+{% endblock %}
+
+{% block header_actions %}
+      <a class="button secondary header-navigation-button" href="{{ '/app/disaster' if payload.task.service_type == 'disaster' else '/app' }}">返回首頁</a>
+{% endblock %}
+
+{% block content %}
     <section class="task-section" aria-label="任務內容">
       {% set task_active = task_payload_is_active(payload) %}
       {% set task_edit_locked = task_edit_is_locked(payload) %}
@@ -802,11 +807,12 @@
         {% endfor %}
       </ul>
     </section>
-  </main>
+{% endblock %}
+
+{% block scripts %}
   {% if task_payload_is_active(payload) %}
     <script>
       window.setTimeout(() => window.location.reload(), 1500);
     </script>
   {% endif %}
-</body>
-</html>
+{% endblock %}

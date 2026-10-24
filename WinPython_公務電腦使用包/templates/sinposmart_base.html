@@ -6,12 +6,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f5f5f7">
   <title>{% block page_title %}SinpoSmart{% endblock %}</title>
+  {% block legacy_head %}{% endblock %}
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
   {% block extra_head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
   <main class="app-shell">
-    {% call page_chrome(self.eyebrow(), self.page_heading(), page_accent|default('brand')) %}
+    {% call page_chrome(self.eyebrow(), self.page_heading(), page_accent|default('brand'), chrome_class|default(''), chrome_actions_class|default('')) %}
       {% block header_actions %}{% endblock %}
     {% endcall %}
     <section class="app-content">

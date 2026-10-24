@@ -1,4 +1,4 @@
-{% from "_page_chrome.html" import page_chrome %}
+{% extends "sinposmart_base.html" %}
 {% from "_admin_system_status.html" import system_overview, health_card, remote_update_card %}
 {% macro notice_time(value, fallback='') %}{{ value | replace('T', ' ') | replace('+08:00', '') if value else fallback }}{% endmacro %}
 {% macro notice_section(view) %}
@@ -46,12 +46,14 @@
     </div>
   </details>
 {% endmacro %}
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>SinpoSmart 值班後台</title>
+{% set page_accent = 'duty' %}
+
+{% block page_title %}SinpoSmart 值班後台{% endblock %}
+{% block body_class %}workspace-page workspace-page--duty{% endblock %}
+{% block eyebrow %}值班任務管理{% endblock %}
+{% block page_heading %}SinpoSmart - 值班後台{% endblock %}
+
+{% block legacy_head %}
   <style>
     :root {
       color-scheme: light;
@@ -274,16 +276,18 @@
       .button:hover { transform: none; }
     }
   </style>
-  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
+{% endblock %}
+
+{% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='admin-system-status.css') }}">
-</head>
-<body class="workspace-page workspace-page--duty">
-  <main>
-    {% call page_chrome('值班任務管理', 'SinpoSmart - 值班後台', 'duty') %}
-      <a class="button secondary header-navigation-button" href="/">返回首頁</a>
-    {% endcall %}
+{% endblock %}
 
+{% block header_actions %}
+      <a class="button secondary header-navigation-button" href="/">返回首頁</a>
+{% endblock %}
+
+{% block content %}
     {% call system_overview() %}
       <div class="system-health-grid" aria-label="值班台存活狀態" aria-live="polite">
         {% set gui = duty_gui_health.gui %}
@@ -699,7 +703,9 @@
       {{ notice_section(notice_view) }}
       <section class="empty">目前尚未收到 SinpoSmart 值班事件。</section>
     {% endif %}
-  </main>
+{% endblock %}
+
+{% block scripts %}
   <script>
     (() => {
       let inFlight = false;
@@ -839,5 +845,4 @@
       setInterval(refreshHealth, 10000);
     })();
   </script>
-</body>
-</html>
+{% endblock %}

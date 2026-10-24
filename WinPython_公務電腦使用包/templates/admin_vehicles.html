@@ -1,11 +1,12 @@
-{% from "_page_chrome.html" import page_chrome %}
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#b86b5b">
-  <title>救護各項設定</title>
+{% extends "sinposmart_base.html" %}
+{% set page_accent = 'ems' %}
+
+{% block page_title %}救護各項設定{% endblock %}
+{% block body_class %}workspace-page workspace-page--settings workspace-page--ems-settings{% endblock %}
+{% block eyebrow %}救護登打設定{% endblock %}
+{% block page_heading %}救護各項設定{% endblock %}
+
+{% block legacy_head %}
   {% if refresh_manual_queries %}<meta http-equiv="refresh" content="4;url={{ url_for('admin_vehicles') }}">{% endif %}
   <style>
     :root {
@@ -105,7 +106,7 @@
       border-radius: 12px;
       background: #fff;
     }
-    .vehicle-row:not(.header-row) { height: var(--vehicle-row-height); }
+    .vehicle-row:not(.header-row) { min-height: var(--vehicle-row-height); height: auto; }
     .vehicle-row.header-row {
       min-height: 34px;
       padding-top: 0;
@@ -179,10 +180,11 @@
           "recorder mileage"
           "sync sync"
           "action action";
-        grid-template-rows: repeat(3, 68px) 52px;
+        grid-template-rows: repeat(3, minmax(68px, auto)) minmax(52px, auto);
         align-items: stretch;
         gap: 8px;
-        height: var(--vehicle-card-height);
+        min-height: var(--vehicle-card-height);
+        height: auto;
         padding: 10px;
       }
       .vehicle-row:not(.header-row) > [data-field] {
@@ -205,11 +207,10 @@
         line-height: 1.2;
       }
       .vehicle-row:not(.header-row) .vehicle-value {
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
+        display: block;
         white-space: normal;
-        line-height: 1.35;
+        overflow-wrap: anywhere;
+        line-height: var(--leading-body);
       }
       .vehicle-row:not(.header-row) .vehicle-label { grid-area: label; }
       .vehicle-row:not(.header-row) .vehicle-plate { grid-area: plate; }
@@ -233,15 +234,17 @@
       .button { width: 100%; }
     }
   </style>
-  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-ui.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
-</head>
-<body class="workspace-page workspace-page--settings workspace-page--ems-settings">
-  <main>
-    {% call page_chrome('救護登打設定', '救護各項設定', 'ems') %}
-      <a class="button secondary header-navigation-button" href="/app">返回救護登打</a>
-    {% endcall %}
+{% endblock %}
 
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
+{% endblock %}
+
+{% block header_actions %}
+      <a class="button secondary header-navigation-button" href="/app">返回救護登打</a>
+{% endblock %}
+
+{% block content %}
     {% if sync_source or pending_sync_commands %}
       <section class="panel sync-panel" aria-live="polite">
         {% if sync_source %}<p>{{ sync_source }}</p>{% endif %}
@@ -346,6 +349,4 @@
       <input type="hidden" name="settings_revision" value="{{ settings_revision }}">
       <button type="submit">儲存常出勤人員</button>
     </form>
-  </main>
-</body>
-</html>
+{% endblock %}

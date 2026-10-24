@@ -8,7 +8,7 @@
   --running: #176fa6;
   --running-bg: #edf7ff;
   --idle-bg: #f2f2f7;
-  font-size: 16px;
+  font-size: var(--type-body);
 }
 
 .admin-report-page--disaster {
@@ -31,7 +31,7 @@
 }
 
 .admin-report-page .app-content {
-  font-size: 1rem;
+  font-size: var(--type-body);
 }
 
 .admin-report-page h2,
@@ -51,7 +51,7 @@
   background: var(--admin-accent);
   color: #fff;
   font: inherit;
-  font-weight: 720;
+  font-weight: var(--weight-control);
   cursor: pointer;
   transition: transform 120ms ease-out, box-shadow 160ms ease, background-color 160ms ease;
 }
@@ -126,11 +126,11 @@
 
 .task-list {
   display: grid;
-  gap: 14px;
+  gap: var(--card-gap);
 }
 
 .task-card {
-  padding: 18px;
+  padding: var(--card-padding);
   transition: transform 160ms ease-out, box-shadow 180ms ease, border-color 180ms ease;
 }
 
@@ -149,15 +149,16 @@
 }
 
 .title {
-  font-size: 1.08rem;
-  font-weight: 760;
+  font-size: var(--type-section);
+  font-weight: var(--weight-heading);
   overflow-wrap: anywhere;
 }
 
 .meta {
   margin-top: 4px;
   color: var(--secondary-label);
-  font-size: .82rem;
+  font-size: var(--type-small);
+  line-height: var(--leading-body);
 }
 
 .status {
@@ -169,9 +170,11 @@
   border-radius: 999px;
   background: var(--idle-bg);
   color: var(--secondary-label);
-  font-size: .78rem;
-  font-weight: 720;
-  white-space: nowrap;
+  font-size: var(--type-small);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .status.complete { background: var(--complete-bg); color: var(--complete); }
@@ -192,8 +195,8 @@
 
 .site-summary-title {
   margin: 14px 0 10px;
-  font-size: .94rem;
-  font-weight: 720;
+  font-size: var(--type-subsection);
+  font-weight: var(--weight-control);
 }
 
 .site,
@@ -212,7 +215,7 @@
 
 .site-name {
   margin-bottom: 5px;
-  font-weight: 720;
+  font-weight: var(--weight-control);
 }
 
 .site-heading {
@@ -241,7 +244,7 @@
 .site-title-status .status {
   min-height: 24px;
   padding: 0 8px;
-  font-size: .75rem;
+  font-size: var(--type-small);
 }
 
 .site-duration {
@@ -251,8 +254,8 @@
   margin-left: auto;
   flex-shrink: 0;
   color: var(--secondary-label);
-  font-size: .72rem;
-  line-height: 1.35;
+  font-size: var(--type-small);
+  line-height: var(--leading-body);
   text-align: right;
 }
 
@@ -270,7 +273,7 @@
 
 .site-duration-value {
   color: var(--label);
-  font-size: .94rem;
+  font-size: var(--type-subsection);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -278,7 +281,7 @@
 
 .site-login-account {
   margin-top: 10px;
-  font-size: .8125rem;
+  font-size: var(--type-small);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -298,7 +301,7 @@
 .site-account-line .login-account-value {
   min-width: 0;
   color: var(--secondary-label);
-  font-size: .8125rem;
+  font-size: var(--type-small);
   overflow-wrap: anywhere;
 }
 
@@ -309,7 +312,7 @@
   border-radius: 999px;
   background: var(--surface-muted);
   color: var(--secondary-label);
-  font-size: .6875rem;
+  font-size: var(--type-small);
   line-height: 1.6;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -325,7 +328,8 @@
 .site-retry-form button {
   min-height: 34px;
   padding: 0 12px;
-  font-size: .78rem;
+  font-size: var(--type-small);
+  line-height: var(--leading-body);
 }
 
 .site-vehicle-choices {
@@ -334,7 +338,7 @@
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--separator);
-  font-size: .76rem;
+  font-size: var(--type-small);
   overflow-wrap: anywhere;
 }
 
@@ -353,14 +357,14 @@
   padding-top: 8px;
   border-top: 1px solid var(--separator);
   color: var(--secondary-label);
-  font-size: .76rem;
+  font-size: var(--type-small);
   overflow-wrap: anywhere;
 }
 
 .site-error-history {
   margin-top: 10px;
   border-top: 1px solid var(--separator);
-  font-size: .76rem;
+  font-size: var(--type-small);
   overflow-wrap: anywhere;
 }
 
@@ -417,7 +421,7 @@
 }
 
 .failure-shot:hover img { border-color: var(--failed); }
-.failure-shot-caption { font-size: .7rem; overflow-wrap: anywhere; }
+.failure-shot-caption { font-size: var(--type-small); overflow-wrap: anywhere; }
 .failure-shot-error { overflow-wrap: anywhere; }
 
 .login-summary {
@@ -427,7 +431,7 @@
 
 .login-title {
   margin-bottom: 8px;
-  font-weight: 720;
+  font-weight: var(--weight-control);
 }
 
 .login-account {
@@ -438,12 +442,12 @@
 .login-account-name {
   display: block;
   margin-bottom: 3px;
-  font-weight: 720;
+  font-weight: var(--weight-control);
 }
 
 .login-account-value {
   color: var(--secondary-label);
-  font-size: .76rem;
+  font-size: var(--type-small);
   overflow-wrap: anywhere;
 }
 
@@ -455,7 +459,7 @@
 
 .vehicle-line {
   padding: 9px;
-  font-size: .82rem;
+  font-size: var(--type-small);
   overflow-wrap: anywhere;
 }
 
@@ -472,7 +476,7 @@
 .task-details summary {
   padding: 11px 0;
   color: var(--label);
-  font-weight: 720;
+  font-weight: var(--weight-control);
   cursor: pointer;
 }
 
@@ -485,7 +489,7 @@
 
 .events li {
   display: grid;
-  grid-template-columns: 128px minmax(0, 1fr);
+  grid-template-columns: 20ch minmax(0, 1fr);
   gap: 10px;
   padding: 9px 0;
   border-bottom: 1px solid var(--separator);
@@ -494,16 +498,16 @@
 .event-time,
 .event-operator {
   color: var(--secondary-label);
-  font-size: .76rem;
+  font-size: var(--type-small);
 }
 
 .event-main { min-width: 0; }
 .event-action { font-weight: 720; }
 .event-operator { margin-top: 2px; }
-.event-detail { margin-top: 2px; color: var(--secondary-label); font-size: .82rem; overflow-wrap: anywhere; }
+.event-detail { margin-top: 2px; color: var(--secondary-label); font-size: var(--type-small); overflow-wrap: anywhere; }
 
 .empty {
-  padding: 20px;
+  padding: var(--card-padding);
   color: var(--secondary-label);
 }
 
@@ -553,7 +557,7 @@
   }
 
   .task-card {
-    padding: 15px;
+    padding: var(--card-padding);
   }
 }
 

@@ -25,15 +25,15 @@
     align-items: stretch;
     width: 100%;
     max-width: none;
-    gap: 16px;
+    gap: var(--card-gap);
   }
 
   .update-card {
-    padding: 22px 24px;
-    border: 1px solid rgba(60, 60, 67, .12);
-    border-radius: 22px;
-    background: rgba(255, 255, 255, .82);
-    box-shadow: 0 12px 30px rgba(30, 42, 38, .06);
+    padding: var(--card-padding);
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-medium);
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
   }
 
   .update-card__heading {
@@ -47,15 +47,15 @@
   .update-card__period {
     margin: 0 0 4px;
     color: var(--brand);
-    font-size: .85rem;
-    font-weight: 750;
+    font-size: var(--type-small);
+    font-weight: var(--weight-body);
   }
 
   .update-card__title {
     margin: 0;
-    font-size: 1.15rem;
-    font-weight: 760;
-    line-height: 1.4;
+    font-size: var(--type-section);
+    font-weight: var(--weight-heading);
+    line-height: 1.3;
   }
 
   .update-card__versions {
@@ -64,8 +64,8 @@
     border-radius: 999px;
     background: #eaf7f5;
     color: var(--brand);
-    font-size: .76rem;
-    font-weight: 700;
+    font-size: var(--type-small);
+    font-weight: var(--weight-body);
   }
 
   .update-card__items {
@@ -74,18 +74,18 @@
     margin: 0;
     padding-left: 1.25rem;
     color: var(--secondary-label);
-    line-height: 1.75;
+    line-height: var(--leading-body);
   }
 
   .update-note {
     margin: 18px 0 0;
     color: var(--secondary-label);
-    font-size: .86rem;
+    font-size: var(--type-small);
   }
 
   @media (max-width: 1000px) {
     .update-card {
-      padding: 18px;
+      padding: var(--card-padding);
     }
 
   }
@@ -93,7 +93,7 @@
 {% endblock %}
 
 {% block header_actions %}
-  <a class="button secondary header-navigation-button" href="/">返回勤務中心</a>
+  <a class="button secondary header-navigation-button" href="/">返回首頁</a>
 {% endblock %}
 
 {% block content %}
@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.24.2350">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.24.2350') }}</p>
+          <h2 class="update-card__title">首頁、後台與登打頁面統一版型</h2>
+        </div>
+        <span class="update-card__versions">2026.10.24.2350</span>
+      </header>
+      <ul class="update-card__items">
+        <li>首頁、值班／救災／救護後台、登打表單、設定及任務明細共用頁面模板，統一內容寬度、大標題與返回按鈕規格。</li>
+        <li>統一系統字型、標題與內文字級、行高、卡片內距、圓角及間距；值班後台各折疊卡片標頭高度一致。</li>
+        <li>更新頁與首頁入口卡片採用相同規格，修正手機放大文字時清除按鈕、時鐘圖示擠壓及車輛卡片固定高度造成的文字裁切。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.24.2308">
       <header class="update-card__heading">
         <div>

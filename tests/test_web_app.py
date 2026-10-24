@@ -1967,13 +1967,13 @@ class WebAppTests(unittest.TestCase):
             css = response.data.decode("utf-8")
 
             self.assertEqual(200, response.status_code)
-            self.assertIn(".workspace-page main", css)
+            self.assertIn(".workspace-page .app-content > form", css)
             self.assertIn("max-width: 1120px", css)
-            self.assertIn(".workspace-page .page-chrome", css)
+            self.assertNotIn(".workspace-page .page-chrome", css)
             self.assertNotIn(".workspace-page main > header", css)
             self.assertIn(".workspace-page .panel", css)
-            self.assertIn("--workspace-type-body: 1rem;", css)
-            self.assertIn("--workspace-type-label: .9375rem;", css)
+            self.assertIn("--workspace-type-body: var(--type-body);", css)
+            self.assertIn("--workspace-type-label: var(--type-body);", css)
             self.assertIn(".workspace-page h3 {\n  margin: 16px 0 8px;", css)
             self.assertIn(".workspace-page .field-label-helper {", css)
             self.assertIn(
@@ -1996,10 +1996,10 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("body.workspace-page--ems-task,\nbody.workspace-page--ems-settings {\n  --accent: #1677d2;", css)
             self.assertIn("--page-tint: #f1f7ff;", css)
             self.assertIn("linear-gradient(180deg, var(--page-tint) 0, #f5f5f7 34rem)", css)
-            self.assertIn(
-                "padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(56px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));",
-                css,
-            )
+            with self.client.get("/static/sinposmart-ui.css") as shared_response:
+                shared_css = shared_response.get_data(as_text=True)
+            self.assertIn(".app-shell {", shared_css)
+            self.assertIn("width: min(1120px, 100%);", shared_css)
         finally:
             response.close()
 
@@ -2030,10 +2030,23 @@ class WebAppTests(unittest.TestCase):
     def test_base_pages_share_page_chrome(self):
         headers = {"Host": "100.114.126.58:8080"}
 
-        for path in ("/", "/task-entry", "/admin/public-pc"):
+        pages = ("/", "/task-entry", "/admin/public-pc", "/admin/ems", "/admin/disaster",
+                 "/admin/sinposmart", "/app", "/app/disaster", "/admin/vehicles",
+                 "/admin/disaster-vehicles", "/updates")
+        for path in pages:
             with self.subTest(path=path):
-                body = html.unescape(self.client.get(path, headers=headers).data.decode("utf-8"))
-                self.assertIn('<header class="page-chrome" data-page-accent="brand">', body)
+                response = self.client.get(path, headers=headers)
+                body = html.unescape(response.get_data(as_text=True))
+                self.assertEqual(200, response.status_code)
+                self.assertEqual(1, body.count('<main class="app-shell">'))
+                self.assertEqual(1, body.count('<section class="app-content">'))
+                self.assertEqual(1, body.count('class="page-chrome"'))
+                self.assertEqual(1, body.count('<h1>'))
+                self.assertEqual(1, body.count('filename="sinposmart-ui.css"') + body.count('href="/static/sinposmart-ui.css"'))
+                if 'sinposmart-workspace.css' in body:
+                    self.assertLess(body.index('sinposmart-ui.css'), body.index('sinposmart-workspace.css'))
+                if '<style>' in body and 'sinposmart-workspace.css' in body:
+                    self.assertLess(body.index('<style>'), body.index('sinposmart-ui.css'))
 
     def test_page_chrome_navigation_uses_one_shared_style_and_stable_scrollbar_gutter(self):
         headers = {"Host": "100.114.126.58:8080"}
@@ -2084,7 +2097,7 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertIn(
             ".page-chrome .page-chrome__actions .header-navigation-button {\n"
-            "    min-height: 44px;\n"
+            "    min-height: var(--control-height);\n"
             "    padding: 0 14px;",
             base_css,
         )
@@ -2092,8 +2105,8 @@ class WebAppTests(unittest.TestCase):
             ".workspace-page .page-chrome__actions .header-navigation-button {",
             workspace_css,
         )
-        self.assertIn(".workspace-page .page-chrome h1 {\n  margin: 0;\n  color: var(--accent);", workspace_css)
-        self.assertIn(".workspace-page .page-chrome__actions .button.secondary {", workspace_css)
+        self.assertNotIn(".workspace-page .page-chrome h1 {", workspace_css)
+        self.assertNotIn(".workspace-page .page-chrome__actions .button.secondary {", workspace_css)
         self.assertIn("backdrop-filter: blur(18px) saturate(150%);", base_css)
 
     def test_workspace_package_controls_are_compact_and_keep_selected_state(self):
@@ -2135,10 +2148,10 @@ class WebAppTests(unittest.TestCase):
                 css,
             )
             self.assertIn(".workspace-page .event-card,\n.workspace-page .summary-card,\n"
-                          ".workspace-page .empty {\n  padding: 16px;", css)
-            self.assertIn(".workspace-page--duty .section {\n  padding: 20px;", css)
+                          ".workspace-page .empty {\n  padding: var(--card-padding);", css)
+            self.assertIn(".workspace-page--duty .section {\n  padding: var(--card-padding);", css)
             self.assertIn("body.workspace-page--duty :is(.section-note, .event-title) { overflow-wrap: anywhere; }", css)
-            self.assertIn(".workspace-page--duty .section {\n    padding: 16px;", css)
+            self.assertIn(".workspace-page--duty .section {\n    padding: var(--card-padding);", css)
         finally:
             response.close()
 
@@ -2297,8 +2310,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(".workspace-page .field-label-helper {", workspace_css)
         self.assertIn(
             ".workspace-page--disaster-task .processing-section-title {\n"
-            "  font-size: var(--workspace-type-subsection);\n"
-            "  font-weight: 740;\n"
+            "  font-size: var(--type-subsection);\n"
+            "  font-weight: var(--weight-heading);\n"
             "  letter-spacing: -.01em;\n"
             "  line-height: 1.35;",
             workspace_css,
@@ -2308,8 +2321,8 @@ class WebAppTests(unittest.TestCase):
             ".workspace-page--disaster-task #processing-preview {\n"
             "  font-family: inherit;\n"
             "  font-size: var(--workspace-type-body);\n"
-            "  font-weight: 400;\n"
-            "  line-height: 1.5;",
+            "  font-weight: var(--weight-body);\n"
+            "  line-height: var(--leading-body);",
             workspace_css,
         )
         self.assertIn("return vehicle&&driver?`${vehicle}司機:${driver}`:'';", disaster_body)
@@ -2919,7 +2932,7 @@ process.stdout.write(JSON.stringify(states));
         disaster_page = self.client.get("/app/disaster")
         self.assertIn("新坡71", html.unescape(disaster_page.data.decode("utf-8")))
 
-    def test_vehicle_settings_pages_share_columns_and_fixed_vehicle_card_height(self):
+    def test_vehicle_settings_pages_share_columns_and_grow_for_large_text(self):
         nas_headers = {"Host": "100.114.126.58:8080"}
         ems_body = html.unescape(self.client.get("/admin/vehicles", headers=nas_headers).data.decode("utf-8"))
         disaster_body = html.unescape(
@@ -2943,8 +2956,10 @@ process.stdout.write(JSON.stringify(states));
             self.assertNotIn("現有車輛皆為內建；建立自訂車輛後才可刪除。", body)
             self.assertIn("--vehicle-row-height: 68px;", body)
             self.assertIn("--vehicle-card-height: 300px;", body)
-            self.assertIn(".vehicle-row:not(.header-row) { height: var(--vehicle-row-height); }", body)
-            self.assertIn("grid-template-rows: repeat(3, 68px) 52px;", body)
+            self.assertIn(".vehicle-row:not(.header-row) { min-height: var(--vehicle-row-height); height: auto; }", body)
+            self.assertIn("min-height: var(--vehicle-card-height);", body)
+            self.assertNotIn("height: var(--vehicle-card-height);\n", body.replace("min-height: var(--vehicle-card-height);\n", ""))
+            self.assertIn("grid-template-rows: repeat(3, minmax(68px, auto)) minmax(52px, auto);", body)
             self.assertIn('"action action";', body)
             self.assertIn(".vehicle-sync .vehicle-value {", body)
             self.assertIn(".mileage-query-message {", body)
@@ -5131,7 +5146,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             self.assertIn(shared_columns, body)
             self.assertIn("--vehicle-row-height: 68px;", body)
             self.assertIn("--vehicle-card-height: 300px;", body)
-            self.assertIn("grid-template-rows: repeat(3, 68px) 52px;", body)
+            self.assertIn("grid-template-rows: repeat(3, minmax(68px, auto)) minmax(52px, auto);", body)
             self.assertIn("grid-template-areas:", body)
             self.assertIn("最新里程", body)
             self.assertIn("同步狀態", body)

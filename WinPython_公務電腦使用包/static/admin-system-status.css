@@ -1,11 +1,12 @@
 .system-overview-card {
   --status-accent: var(--admin-accent, var(--ems));
   --surface: rgba(255, 255, 255, .82);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Noto Sans TC", "Hiragino Sans", sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  margin-bottom: 18px;
-  padding: 18px;
+  font-family: var(--font-family-ui);
+  font-size: var(--type-body);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
+  margin-bottom: var(--card-gap);
+  padding: var(--card-padding);
   border: 1px solid rgba(255, 255, 255, .9);
   border-radius: var(--radius-medium);
   background: var(--surface);
@@ -18,8 +19,8 @@
 .system-overview-head { margin-bottom: 12px; }
 .system-overview-card h2,
 .system-overview-card h3,
-.system-overview-card p { margin: 0; color: var(--label); line-height: 1.5; letter-spacing: normal; }
-.system-overview-head h2 { font-size: 1.15rem; font-weight: 760; }
+.system-overview-card p { margin: 0; color: var(--label); line-height: var(--leading-body); letter-spacing: normal; }
+.system-overview-head h2 { font-size: var(--type-section); font-weight: var(--weight-heading); }
 
 .system-overview-grid {
   display: grid;
@@ -39,7 +40,7 @@
 .system-overview-card .remote-update-card {
   min-width: 0;
   margin: 0;
-  padding: 17px;
+  padding: var(--card-padding);
   border: 1px solid var(--separator);
   border-radius: var(--radius-medium);
   background: rgba(255, 255, 255, .72);
@@ -47,8 +48,8 @@
   overflow-wrap: anywhere;
 }
 
-.system-overview-card .version-label { color: var(--secondary-label); font-size: .82rem; }
-.system-overview-card .version-value { margin-top: 3px; font-size: 1.08rem; font-weight: 760; }
+.system-overview-card .version-label { color: var(--secondary-label); font-size: var(--type-small); }
+.system-overview-card .version-value { margin-top: 3px; font-size: var(--type-subsection); font-weight: var(--weight-heading); }
 
 .system-health-head,
 .system-overview-card .remote-update-title {
@@ -60,14 +61,14 @@
 }
 
 .system-health-head h3,
-.system-overview-card .remote-update-title h3 { font-size: 1.08rem; font-weight: 760; }
+.system-overview-card .remote-update-title h3 { font-size: var(--type-subsection); font-weight: var(--weight-heading); }
 
 .system-health-meta {
   display: grid;
   gap: 4px;
   margin-top: 9px;
   color: var(--secondary-label);
-  font-size: .82rem;
+  font-size: var(--type-small);
 }
 
 .system-health-meta .worker-health-version { color: var(--label); font-weight: 700; }
@@ -86,9 +87,9 @@
   border-radius: 999px;
   background: var(--surface-muted);
   color: var(--secondary-label);
-  font-size: .76rem;
-  font-weight: 700;
-  line-height: 1.5;
+  font-size: var(--type-small);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
   white-space: normal;
   text-align: center;
 }
@@ -107,14 +108,14 @@
 
 .system-overview-card .remote-update-card > div { min-width: 0; }
 .system-overview-card .remote-update-title { justify-content: flex-start; }
-.system-overview-card .remote-update-detail { margin-top: 8px; color: var(--secondary-label); font-size: .82rem; }
+.system-overview-card .remote-update-detail { margin-top: 8px; color: var(--secondary-label); font-size: var(--type-small); }
 .system-overview-card .remote-update-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 5px 14px;
   margin-top: 8px;
   color: var(--secondary-label);
-  font-size: .76rem;
+  font-size: var(--type-small);
 }
 
 .remote-update-meta span {
@@ -122,10 +123,10 @@
   overflow-wrap: anywhere;
 }
 
-.system-overview-card .remote-update-label { display: block; color: var(--secondary-label); font-size: .82rem; font-weight: 400; line-height: 1.5; }
+.system-overview-card .remote-update-label { display: block; color: var(--secondary-label); font-size: var(--type-small); font-weight: var(--weight-body); line-height: var(--leading-body); }
 .system-overview-card .remote-update-secret {
   width: 100%;
-  min-height: 44px;
+  min-height: var(--control-height);
   margin: 4px 0 8px;
   padding: 0 13px;
   border: 1px solid var(--separator-strong);
@@ -145,7 +146,7 @@
   background: var(--status-accent);
   color: #fff;
   font: inherit;
-  font-weight: 720;
+  font-weight: var(--weight-control);
   white-space: normal;
   box-shadow: none;
   cursor: pointer;
@@ -174,14 +175,8 @@
   outline-offset: 3px;
 }
 
-@media (max-width: 760px) {
-  .workspace-page--duty main {
-    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
-  }
-}
-
 @media (max-width: 720px) {
-  .system-overview-card { padding: 15px; }
+  .system-overview-card { padding: var(--card-padding); }
   .system-overview-card .remote-update-card { grid-template-columns: minmax(0, 1fr); }
 }
 
