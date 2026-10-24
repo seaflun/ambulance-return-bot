@@ -6360,11 +6360,13 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             self.assertIn("day-link", classes)
             self.assertEqual("active" in classes, day == view["date"])
             self.assertEqual('aria-current="date"' in attributes, day == view["date"])
-        form = re.search(r'<form\b[^>]*class="notice-filters"[^>]*>(.*?)</form>', body, re.S)
-        self.assertIsNotNone(form)
-        self.assertRegex(form.group(1), r'<input\b(?=[^>]*type="hidden")(?=[^>]*name="notice_day")(?=[^>]*value="2026-10-21")[^>]*>')
-        self.assertNotRegex(form.group(1), r'<input\b[^>]*type="date"')
-        self.assertIn('name="notice_workstation"', form.group(1))
+        notice_section = re.search(r'<details\b[^>]*id="notice-section"[^>]*>(.*?)</details>', body, re.S)
+        self.assertIsNotNone(notice_section)
+        notice_markup = notice_section.group(1)
+        self.assertNotIn('class="notice-filter-panel"', notice_markup)
+        self.assertNotIn('class="notice-filters"', notice_markup)
+        self.assertNotRegex(notice_markup, r'<select\b[^>]*name="notice_workstation"')
+        self.assertNotRegex(notice_markup, r'<input\b[^>]*name="notice_day"')
 
     def test_sinposmart_notice_sheet_link_is_beside_check_times_once(self):
         store = app_module.sinposmart_store()

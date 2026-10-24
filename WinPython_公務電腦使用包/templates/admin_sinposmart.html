@@ -29,16 +29,6 @@
         <a class="button day-link {{ 'active' if calendar_day == view.date else '' }}" href="{{ url_for('admin_sinposmart', fire_day=selected_fire_day, notice_day=calendar_day, notice_workstation=view.workstation, _anchor='notice-section') }}"{% if calendar_day == view.date %} aria-current="date"{% endif %}>{{ calendar_day }}</a>
       {% endfor %}
     </nav>
-    <details class="notice-filter-panel"><summary>篩選來源電腦</summary>
-      <form class="notice-filters" action="{{ url_for('admin_sinposmart') }}" method="get">
-        {% if selected_fire_day %}<input type="hidden" name="fire_day" value="{{ selected_fire_day }}">{% endif %}
-        <input type="hidden" name="notice_day" value="{{ view.date }}">
-        <label>來源電腦 <select name="notice_workstation" aria-label="通報來源電腦">
-          {% for source in view.sources %}<option value="{{ source.workstation }}"{% if source.workstation == view.workstation %} selected{% endif %}>{{ source.workstation }}</option>{% else %}<option value="">尚未辨識來源</option>{% endfor %}
-        </select></label>
-        <button class="button" type="submit">查看</button>
-      </form>
-    </details>
     <div class="notice-history" id="notice-history">
       <h3 class="notice-records-heading">通報紀錄（<span id="notice-record-count">{{ view.records | length }}</span> 則）</h3>
       <div class="notice-table-wrap"><table class="notice-table">
@@ -187,11 +177,6 @@
     .notice-times span, .notice-error { overflow-wrap: anywhere; }
     .notice-error { margin: 10px 0; color: var(--attention); }
     #notice-day-nav { margin-top: 12px; }
-    .notice-filter-panel { margin-top: 10px; }
-    .notice-filter-panel > summary { cursor: pointer; min-height: 32px; color: var(--muted); }
-    .notice-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 14px; }
-    .notice-filters label { display: grid; gap: 4px; color: var(--muted); font-size: var(--text-sm); }
-    .notice-filters input, .notice-filters select { min-height: 44px; min-width: 150px; max-width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: var(--surface); color: var(--ink); font: inherit; }
     .notice-history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
     .notice-records-heading { font-size: var(--text-md); font-weight: 700; }
     .notice-table-wrap { overflow-x: auto; margin-top: 10px; }
@@ -752,8 +737,6 @@
         const error = document.getElementById("notice-error");
         error.textContent = view.error || "";
         error.hidden = !view.error;
-        const dateInput = notice.querySelector('[name="notice_day"]');
-        if (document.activeElement !== dateInput) dateInput.value = view.date;
         const calendarLinks = document.createDocumentFragment();
         (view.calendar_days || [view.date]).forEach(day => {
           const link = document.createElement("a");
@@ -770,24 +753,6 @@
         });
         const calendarNav = document.getElementById("notice-day-nav");
         if (!calendarNav.contains(document.activeElement)) calendarNav.replaceChildren(calendarLinks);
-        const sourceInput = notice.querySelector('[name="notice_workstation"]');
-        if (document.activeElement !== sourceInput) {
-          const options = document.createDocumentFragment();
-          (view.sources || []).forEach(source => {
-            const option = document.createElement("option");
-            option.value = source.workstation;
-            option.textContent = source.workstation;
-            option.selected = source.workstation === view.workstation;
-            options.append(option);
-          });
-          if (!options.childNodes.length) {
-            const option = document.createElement("option");
-            option.value = "";
-            option.textContent = "尚未辨識來源";
-            options.append(option);
-          }
-          sourceInput.replaceChildren(options);
-        }
         const sheetUrl = new URL(view.spreadsheet_url, window.location.origin);
         if (sheetUrl.origin !== window.location.origin || sheetUrl.pathname !== "/admin/sinposmart/notices/spreadsheet"
             || sheetUrl.searchParams.get("notice_day") !== view.date || sheetUrl.username || sheetUrl.password || sheetUrl.hash) {
