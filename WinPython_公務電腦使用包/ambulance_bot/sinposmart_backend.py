@@ -2003,7 +2003,10 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
                                  preferred_workstation: str = "", now: datetime | None = None,
                                  verifications: Any = None) -> dict[str, Any]:
     current = _heartbeat_now(now)
+    current_day = current.astimezone(TAIPEI_TIMEZONE).date()
     target = date.fromisoformat(calendar_day)
+    calendar_days = {(current_day - timedelta(days=offset)).isoformat() for offset in range(7)}
+    calendar_days.add(target.isoformat())
     groups = _notice_groups(events)
     daily = [group for group in groups if group["at"].astimezone(TAIPEI_TIMEZONE).date() == target]
     sources = {group["workstation"] for group in daily}
@@ -2016,8 +2019,9 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
     selected = requested if has_request else (daily[-1]["workstation"] if daily else "")
     relevant = [group for group in groups if group["workstation"] == selected]
     today = [group for group in daily if group["workstation"] == selected]
-    historical = target != current.astimezone(TAIPEI_TIMEZONE).date()
-    view = {"date": calendar_day, "historical": historical, "workstation": selected, "count_known": False, "today_count": None, "shift_count": None,
+    historical = target != current_day
+    view = {"date": calendar_day, "calendar_days": sorted(calendar_days, reverse=True), "historical": historical,
+            "workstation": selected, "count_known": False, "today_count": None, "shift_count": None,
             "shift_label": "", "state": "unknown", "status_label": "尚無回報", "status_class": "",
             "last_reported_at": "", "last_checked_at": "", "last_success_at": "", "last_received_at": "",
             "last_received_count": None, "next_check_at": "", "error": "", "records": [], "history": [], "parts_complete": False,

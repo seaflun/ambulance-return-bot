@@ -2134,8 +2134,9 @@ class WebAppTests(unittest.TestCase):
                 "  color: var(--ink);",
                 css,
             )
-            self.assertIn("--duty-card-padding: 1.25rem;", css)
-            self.assertIn("padding: var(--duty-card-padding);", css)
+            self.assertIn(".workspace-page .event-card,\n.workspace-page .summary-card,\n"
+                          ".workspace-page .empty {\n  padding: 16px;", css)
+            self.assertIn(".workspace-page--duty .section {\n  padding: 20px;", css)
             self.assertIn("body.workspace-page--duty :is(.section-note, .event-title) { overflow-wrap: anywhere; }", css)
             self.assertIn(".workspace-page--duty .section {\n    padding: 16px;", css)
         finally:
@@ -5955,7 +5956,10 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             response = self.client.post("/api/sinposmart/events", headers=headers, json=event)
             self.assertEqual(response.status_code, 200)
 
+        stored_path = app_module.sinposmart_store().path_for_day(fire_day)
+        stored_before = stored_path.read_bytes()
         body = html.unescape(self.client.get("/admin/sinposmart").data.decode("utf-8"))
+        self.assertEqual(stored_path.read_bytes(), stored_before)
 
         self.assertIn("待處理 0 筆", body)
         self.assertIn("未返隊處理歷程", body)
@@ -5975,13 +5979,16 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIsNotNone(history)
         self.assertNotRegex(history.group("attributes"), r'\bopen\b')
         transitions = history.group("transitions")
-        self.assertLess(transitions.index(f"{fire_day}T10:00:00"), transitions.index(f"{fire_day}T10:10:00"))
-        self.assertLess(transitions.index(f"{fire_day}T10:10:00"), transitions.index(f"{fire_day}T12:41:00"))
+        self.assertLess(transitions.index(f"{fire_day} 10:00:00"), transitions.index(f"{fire_day} 10:10:00"))
+        self.assertLess(transitions.index(f"{fire_day} 10:10:00"), transitions.index(f"{fire_day} 12:41:00"))
+        self.assertIn(f'datetime="{fire_day}T10:00:00"', transitions)
+        self.assertIn(f'datetime="{fire_day}T12:41:00"', transitions)
         compact = body.replace(history.group(0), "")
         self.assertIn("已確認返隊", compact)
-        self.assertIn(f"最新回報：{fire_day}T12:41:00", compact)
-        self.assertIn(f"首次暫停：{fire_day}T10:00:00", compact)
-        self.assertIn(f"最後結果：{fire_day}T12:41:00", compact)
+        self.assertIn(f'<time class="event-time" datetime="{fire_day}T12:41:00">{fire_day} 12:41:00</time>', compact)
+        self.assertNotIn("最新回報：", compact)
+        self.assertIn(f"首次暫停：{fire_day} 10:00:00", compact)
+        self.assertIn(f"最後結果：{fire_day} 12:41:00", compact)
         self.assertNotIn("自動偵測未返隊", compact)
         self.assertNotIn("自動返隊確認", compact)
 
@@ -6147,6 +6154,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
     def _notice_view_fixture(self, **changes):
         view = {
             "date": "2026-10-22", "sources": [{"workstation": "SP-76F413", "selected": True}],
+            "calendar_days": ["2026-10-24", "2026-10-23", "2026-10-22", "2026-10-21", "2026-10-20",
+                              "2026-10-19", "2026-10-18"],
             "workstation": "SP-76F413", "count_known": True, "today_count": 5,
             "shift_count": 2, "shift_label": "14-16", "state": "success",
             "status_label": "檢查正常", "status_class": "complete",
@@ -6323,6 +6332,50 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         query = parse_qs(urlsplit(html.unescape(link.group(1))).query)
         self.assertEqual(query.get("notice_day"), ["2026-10-21"])
         self.assertEqual(query.get("notice_workstation"), ["PC-B"])
+
+    def test_sinposmart_notice_day_links_preserve_fire_day_source_and_selected_civil_day(self):
+        from urllib.parse import parse_qs, urlsplit
+        store = app_module.sinposmart_store()
+        view = self._notice_view_fixture(date="2026-10-21", workstation="PC-B")
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=view):
+            body = self.client.get("/admin/sinposmart?fire_day=2026-10-20&notice_day=2026-10-21&notice_workstation=PC-B").get_data(as_text=True)
+        nav = re.search(r'<nav\b(?P<attributes>[^>]*\bid="notice-day-nav"[^>]*)>(?P<links>.*?)</nav>', body, re.S)
+        self.assertIsNotNone(nav)
+        self.assertIn('aria-label="通報曆日"', nav.group("attributes"))
+        self.assertIn('class="day-nav"', nav.group("attributes"))
+        links = re.findall(r'<a\b([^>]*)>(.*?)</a>', nav.group("links"), re.S)
+        self.assertEqual(len(links), len(view["calendar_days"]))
+        for (attributes, text), day in zip(links, view["calendar_days"]):
+            href = re.search(r'href="([^"]+)"', attributes)
+            self.assertIsNotNone(href)
+            url = urlsplit(html.unescape(href.group(1)))
+            self.assertEqual(url.path, "/admin/sinposmart")
+            self.assertEqual(parse_qs(url.query), {"fire_day": ["2026-10-20"], "notice_day": [day],
+                                                 "notice_workstation": ["PC-B"]})
+            self.assertEqual(url.fragment, "notice-section")
+            self.assertIn(day, text)
+            classes = re.search(r'class="([^"]+)"', attributes).group(1).split()
+            self.assertIn("button", classes)
+            self.assertIn("day-link", classes)
+            self.assertEqual("active" in classes, day == view["date"])
+            self.assertEqual('aria-current="date"' in attributes, day == view["date"])
+        form = re.search(r'<form\b[^>]*class="notice-filters"[^>]*>(.*?)</form>', body, re.S)
+        self.assertIsNotNone(form)
+        self.assertRegex(form.group(1), r'<input\b(?=[^>]*type="hidden")(?=[^>]*name="notice_day")(?=[^>]*value="2026-10-21")[^>]*>')
+        self.assertNotRegex(form.group(1), r'<input\b[^>]*type="date"')
+        self.assertIn('name="notice_workstation"', form.group(1))
+
+    def test_sinposmart_notice_sheet_link_is_beside_check_times_once(self):
+        store = app_module.sinposmart_store()
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=self._notice_view_fixture()):
+            body = self.client.get("/admin/sinposmart").get_data(as_text=True)
+        row = re.search(r'<div\b[^>]*class="notice-check-row"[^>]*>(.*?)</a>\s*</div>', body, re.S)
+        self.assertIsNotNone(row)
+        for field in ("notice-last-checked", "notice-last-received", "notice-next-check", "notice-sheet-link"):
+            self.assertIn(f'id="{field}"', row.group(1))
+        self.assertEqual(len(re.findall(r'<a\b[^>]*id="notice-sheet-link"', body)), 1)
 
     def test_sinposmart_notice_section_refreshes_safely_and_marks_lost_connection(self):
         store = app_module.sinposmart_store()

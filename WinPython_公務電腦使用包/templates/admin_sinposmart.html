@@ -3,7 +3,8 @@
 {% macro notice_time(value, fallback='') %}{{ value | replace('T', ' ') | replace('+08:00', '') if value else fallback }}{% endmacro %}
 {% macro notice_section(view) %}
   <details class="section notice-section" id="notice-section" aria-label="已收通報"
-           data-notice-day="{{ view.date }}" data-notice-source="{{ view.workstation }}">
+           data-notice-day="{{ view.date }}" data-notice-source="{{ view.workstation }}"
+           data-fire-day="{{ selected_fire_day or '' }}"{% if request.args.get('notice_day') or request.args.get('notice_workstation') %} open{% endif %}>
     <summary class="section-head">
       <h2 class="section-title">已收通報</h2>
       <div class="section-note notice-overview">
@@ -13,20 +14,25 @@
     </summary>
     <div class="section-note notice-meta">曆日 <span id="notice-date">{{ view.date }}</span> · 臺灣時間午夜歸零 · 來源：<span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span></div>
     <p id="notice-verification" class="section-note"{% if not view.verification_checked_at %} hidden{% endif %}>{% if view.verification_checked_at %}本次人工查核：已讀核實 {{ view.verified_read_count }} 則，原件未找到 {{ view.original_not_found_count }} 則。查核時間：{{ notice_time(view.verification_checked_at) }}。{{ view.verification_note }}{% endif %}</p>
-    <div class="notice-times">
-      <span>最後檢查：<span id="notice-last-checked">{{ notice_time(view.last_checked_at, '尚未取得檢查回報') }}</span></span>
-      <span>最近新增：<span id="notice-last-received">{{ notice_time(view.last_received_at, '尚無新增回報') }}{% if view.last_received_count %}，共 {{ view.last_received_count }} 則{% endif %}</span></span>
-      <span>下次檢查：<span id="notice-next-check">{{ notice_time(view.next_check_at, '待回報') }}</span></span>
+    <div class="notice-check-row">
+      <div class="notice-times">
+        <span>最後檢查：<span id="notice-last-checked">{{ notice_time(view.last_checked_at, '尚未取得檢查回報') }}</span></span>
+        <span>最近新增：<span id="notice-last-received">{{ notice_time(view.last_received_at, '尚無新增回報') }}{% if view.last_received_count %}，共 {{ view.last_received_count }} 則{% endif %}</span></span>
+        <span>下次檢查：<span id="notice-next-check">{{ notice_time(view.next_check_at, '待回報') }}</span></span>
+      </div>
+      <a class="button" id="notice-sheet-link" href="{{ view.spreadsheet_url }}" target="_blank" rel="noopener noreferrer">查看 Google 試算表</a>
     </div>
     <p id="notice-error" class="notice-error"{% if not view.error %} hidden{% endif %}>{{ view.error }}</p>
     <div class="section-note">最後成功：<span id="notice-last-success">{{ notice_time(view.last_success_at, '尚未取得成功回報') }}</span> · 當班時段：<span id="notice-shift">{{ view.shift_label or '待取得' }}</span></div>
-    <div class="notice-actions">
-      <a class="button" id="notice-sheet-link" href="{{ view.spreadsheet_url }}" target="_blank" rel="noopener noreferrer">查看 Google 試算表</a>
-    </div>
-    <details class="notice-filter-panel"><summary>篩選日期／來源</summary>
+    <nav class="day-nav" id="notice-day-nav" aria-label="通報曆日">
+      {% for calendar_day in view.calendar_days or [view.date] %}
+        <a class="button day-link {{ 'active' if calendar_day == view.date else '' }}" href="{{ url_for('admin_sinposmart', fire_day=selected_fire_day, notice_day=calendar_day, notice_workstation=view.workstation, _anchor='notice-section') }}"{% if calendar_day == view.date %} aria-current="date"{% endif %}>{{ calendar_day }}</a>
+      {% endfor %}
+    </nav>
+    <details class="notice-filter-panel"><summary>篩選來源電腦</summary>
       <form class="notice-filters" action="{{ url_for('admin_sinposmart') }}" method="get">
         {% if selected_fire_day %}<input type="hidden" name="fire_day" value="{{ selected_fire_day }}">{% endif %}
-        <label>曆日 <input type="date" name="notice_day" value="{{ view.date }}" required></label>
+        <input type="hidden" name="notice_day" value="{{ view.date }}">
         <label>來源電腦 <select name="notice_workstation" aria-label="通報來源電腦">
           {% for source in view.sources %}<option value="{{ source.workstation }}"{% if source.workstation == view.workstation %} selected{% endif %}>{{ source.workstation }}</option>{% else %}<option value="">尚未辨識來源</option>{% endfor %}
         </select></label>
@@ -175,10 +181,12 @@
     .notice-overview .status { flex-shrink: 0; white-space: normal; }
     .notice-counts { overflow-wrap: anywhere; }
     .notice-meta { margin-bottom: 10px; overflow-wrap: anywhere; }
-    .notice-times { display: flex; flex-wrap: wrap; column-gap: 24px; row-gap: 6px; margin-bottom: 8px; color: var(--muted); }
+    .notice-check-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .notice-times { display: grid; gap: 6px; color: var(--muted); }
+    #notice-sheet-link { margin-inline-start: auto; }
     .notice-times span, .notice-error { overflow-wrap: anywhere; }
     .notice-error { margin: 10px 0; color: var(--attention); }
-    .notice-actions { margin-top: 12px; }
+    #notice-day-nav { margin-top: 12px; }
     .notice-filter-panel { margin-top: 10px; }
     .notice-filter-panel > summary { cursor: pointer; min-height: 32px; color: var(--muted); }
     .notice-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 14px; }
@@ -213,7 +221,7 @@
     .credential-sync-login { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .credential-sync-statuses { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
     .event-head { display: grid; grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; align-items: start; }
-    .login-card .event-head { align-items: center; }
+    .login-card .event-head { align-items: start; }
     .login-diagnostic { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
     .login-diagnostic > summary { cursor: pointer; color: var(--ink); font-weight: 760; }
     .login-page-text { margin: 10px 0; padding: 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); font: inherit; }
@@ -392,7 +400,7 @@
         {% for event in admin_view.unreturned_return_history_events or [] %}
           <article class="event-card">
             <div class="event-head">
-              <time class="event-time">最新回報：{{ event.occurred_at }}</time>
+              <time class="event-time" datetime="{{ event.occurred_at }}">{{ notice_time(event.occurred_at) }}</time>
               <div>
                 <h3 class="event-title">{{ event.item_title }}</h3>
                 <div class="event-meta">
@@ -410,19 +418,19 @@
                 <span class="status {{ event.status_class }}">{{ event.status_label }}</span>
               </div>
             </div>
-            <div class="event-detail">首次暫停：{{ event.first_paused_at or event.occurred_at }}{% if event.last_result_at %}｜最後結果：{{ event.last_result_at }}{% endif %}</div>
+            <div class="event-detail">首次暫停：{{ notice_time(event.first_paused_at or event.occurred_at) }}{% if event.last_result_at %}｜最後結果：{{ notice_time(event.last_result_at) }}{% endif %}</div>
             {% if event.is_active %}
               <div class="unreturned-return-meta">
-                最近確認：{{ event.last_attempt_at or '尚未確認' }}
-                ｜下次重試：{{ event.next_retry_at or '等待登入' }}
+                最近確認：{{ notice_time(event.last_attempt_at, '尚未確認') }}
+                ｜下次重試：{{ notice_time(event.next_retry_at, '等待登入') }}
                 ｜間隔：{{ event.retry_interval_minutes or 0 }} 分鐘
-                ｜到期：{{ event.expires_at or '未標示' }}
+                ｜到期：{{ notice_time(event.expires_at, '未標示') }}
                 {% if event.owner_actor_no %}｜目前處理番號：{{ event.owner_actor_no }}{% endif %}
               </div>
             {% endif %}
             {% set cancellation = (unreturned_cancellations or {}).get(event.queue_id, {}) %}
             {% if cancellation %}
-              <div class="event-detail">取消要求：{{ cancellation.requested_at }}｜{{ cancellation.requested_by }}
+              <div class="event-detail">取消要求：{{ notice_time(cancellation.requested_at) }}｜{{ cancellation.requested_by }}
                 {% if cancellation.status == 'pending' %}｜等待值班台確認；目前執行中的作業完成前不會強制中斷。{% elif cancellation.status == 'cancelled' %}｜值班台已確認停止重查與補登。{% else %}｜該筆已完成或逾期，未取消既有結果。{% endif %}
               </div>
             {% elif event.is_active and event.queue_id and event.workstation and duty_gui_remote_update_enabled %}
@@ -446,7 +454,7 @@
               {% for transition in event.transitions or [] %}
                 <div class="event-step">
                   <div class="event-step-name">{{ transition.trigger_label }}{% if transition.owner_actor_no %}｜{{ transition.owner_actor_no }}番{% endif %}</div>
-                  <time>{{ transition.occurred_at }}</time>
+                  <time datetime="{{ transition.occurred_at }}">{{ notice_time(transition.occurred_at) }}</time>
                   <span class="status {{ transition.status_class }}">{{ transition.status_label }}</span>
                 </div>
               {% endfor %}
@@ -469,7 +477,7 @@
           {% set repeat_count = (event.repeat_count or 1) | int %}
           <article class="event-card">
             <div class="event-head">
-              <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
+              <time class="event-time" datetime="{{ event.last_occurred_at or event.occurred_at }}">{{ notice_time(event.last_occurred_at or event.occurred_at) }}</time>
               <div>
                 <h3 class="event-title">{{ event.item_title }}</h3>
                 <div class="event-meta">{{ event.record_label }}｜{{ event.trigger_label }}｜{{ event.person_label }}</div>
@@ -489,7 +497,7 @@
                 {% for step in event.steps %}
                   <div class="event-step">
                     <div class="event-step-name">{{ step.label }}</div>
-                    <time>{{ step.occurred_at or '尚未完成' }}</time>
+                    <time datetime="{{ step.occurred_at or '' }}">{{ notice_time(step.occurred_at, '尚未完成') }}</time>
                     <span class="status {{ step.status_class }}">{{ step.status_label }}</span>
                   </div>
                 {% endfor %}
@@ -520,7 +528,7 @@
         {% for event in admin_view.tool_events or [] %}
           <article class="event-card">
             <div class="event-head">
-              <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
+              <time class="event-time" datetime="{{ event.last_occurred_at or event.occurred_at }}">{{ notice_time(event.last_occurred_at or event.occurred_at) }}</time>
               <div>
                 <h3 class="event-title">{{ event.item_title }}</h3>
                 <div class="event-meta">{{ event.record_label }}｜{{ event.person_label }}</div>
@@ -534,7 +542,7 @@
                 {% for step in event.steps %}
                   <div class="event-step">
                     <div class="event-step-name">{{ step.label }}</div>
-                    <time>{{ step.occurred_at or '尚未完成' }}</time>
+                    <time datetime="{{ step.occurred_at or '' }}">{{ notice_time(step.occurred_at, '尚未完成') }}</time>
                     <span class="status {{ step.status_class }}">{{ step.status_label }}</span>
                   </div>
                 {% endfor %}
@@ -610,7 +618,7 @@
         {% for event in admin_view.login_events or [] %}
           <article class="event-card login-card">
             <div class="event-head">
-              <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
+              <time class="event-time" datetime="{{ event.last_occurred_at or event.occurred_at }}">{{ notice_time(event.last_occurred_at or event.occurred_at) }}</time>
               <div class="login-person">
                 <h3 class="event-title">{{ event.person_label }}</h3>
                 {% if event.login_detail %}
@@ -684,7 +692,7 @@
         {% for event in admin_view.background_updates or [] %}
           <article class="event-card">
             <div class="event-head">
-              <time class="event-time">{{ event.last_occurred_at or event.occurred_at }}</time>
+              <time class="event-time" datetime="{{ event.last_occurred_at or event.occurred_at }}">{{ notice_time(event.last_occurred_at or event.occurred_at) }}</time>
               <div>
                 <h3 class="event-title">{{ event.item_title }}</h3>
                 <div class="event-meta">{{ event.record_label }}｜{{ event.person_label }}</div>
@@ -746,6 +754,22 @@
         error.hidden = !view.error;
         const dateInput = notice.querySelector('[name="notice_day"]');
         if (document.activeElement !== dateInput) dateInput.value = view.date;
+        const calendarLinks = document.createDocumentFragment();
+        (view.calendar_days || [view.date]).forEach(day => {
+          const link = document.createElement("a");
+          const url = new URL(window.location.href);
+          if (notice.dataset.fireDay) url.searchParams.set("fire_day", notice.dataset.fireDay);
+          url.searchParams.set("notice_day", day);
+          url.searchParams.set("notice_workstation", view.workstation || "");
+          url.hash = "notice-section";
+          link.className = "button day-link" + (day === view.date ? " active" : "");
+          link.textContent = day;
+          link.href = url.href;
+          if (day === view.date) link.setAttribute("aria-current", "date");
+          calendarLinks.append(link);
+        });
+        const calendarNav = document.getElementById("notice-day-nav");
+        if (!calendarNav.contains(document.activeElement)) calendarNav.replaceChildren(calendarLinks);
         const sourceInput = notice.querySelector('[name="notice_workstation"]');
         if (document.activeElement !== sourceInput) {
           const options = document.createDocumentFragment();

@@ -449,6 +449,27 @@ class NoticeCollectionBackendTests(unittest.TestCase):
             with self.subTest(day=day):
                 self.assertEqual(self.view(day)["spreadsheet_url"], "/admin/sinposmart/notices/spreadsheet?notice_day=" + day)
 
+    def test_notice_calendar_offers_seven_taiwan_civil_days_without_events(self):
+        for current, expected_today in (
+            (datetime(2026, 10, 23, 15, 59, 59, tzinfo=timezone.utc), "2026-10-23"),
+            (datetime(2026, 10, 23, 16, 0, 1, tzinfo=timezone.utc), "2026-10-24"),
+        ):
+            with self.subTest(current=current):
+                view = self.view(expected_today, now=current)
+                today = datetime.fromisoformat(expected_today)
+                self.assertEqual(view["calendar_days"],
+                                 [(today - timedelta(days=offset)).date().isoformat() for offset in range(7)])
+                self.assertEqual(view["records"], [])
+
+    def test_notice_calendar_retains_selected_historical_day_once_in_descending_order(self):
+        current = datetime(2026, 10, 24, 0, 1, tzinfo=backend.TAIPEI_TIMEZONE)
+        view = self.view("2026-09-30", now=current)
+        self.assertEqual(view["calendar_days"], ["2026-10-24", "2026-10-23", "2026-10-22", "2026-10-21",
+                                                 "2026-10-20", "2026-10-19", "2026-10-18", "2026-09-30"])
+        selected = self.view("2026-10-22", now=current)
+        self.assertEqual(len(selected["calendar_days"]), 7)
+        self.assertEqual(selected["calendar_days"].count("2026-10-22"), 1)
+
     def test_untrusted_source_query_and_invalid_payload_never_fallback_to_normal_host(self):
         self.put(self.event())
         view = self.view(workstation='<script>alert(1)</script>')
