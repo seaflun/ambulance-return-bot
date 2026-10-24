@@ -1836,11 +1836,31 @@ class JsonTaskStore:
         return self.tasks_dir / f"{value}.json"
 
     def save_payload(self, task_id: str, payload: dict[str, Any]) -> None:
-        payload["updated_at"] = now_text()
-        path = self.path_for(task_id)
-        tmp_path = path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(path)
+        with self._lock:
+            payload["updated_at"] = now_text()
+            path = self.path_for(task_id)
+            tmp_path = path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+
+    def save_payload_if_unchanged(
+        self,
+        task_id: str,
+        expected_payload: dict[str, Any] | None,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Replace an unchanged snapshot, or create only if absent when expected is None."""
+        with self._lock:
+            try:
+                current = self.get(task_id)
+            except FileNotFoundError:
+                if expected_payload is not None:
+                    return False
+            else:
+                if expected_payload is None or current != expected_payload:
+                    return False
+            self.save_payload(task_id, payload)
+            return True
 
     def add_event_to_payload(
         self,

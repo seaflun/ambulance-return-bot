@@ -30,6 +30,7 @@ from flask import Flask, abort, g, has_request_context, jsonify, make_response, 
 from ambulance_bot.adapters import SITE_DEFINITIONS, SiteAutomationResult
 from ambulance_bot.browser_case_selection import BrowserCaseSelectionStore
 from ambulance_bot.failure_evidence import collect_task_failure_evidence, store_task_failure_evidence
+from ambulance_bot.worker_http import create_worker_api_opener
 from ambulance_bot.chrome_startup import cleanup_worker_chrome_residue
 from ambulance_bot.civilpower_roster import (
     ROSTER_LOADED_STATUS,
@@ -189,6 +190,7 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+_NAS_API_OPENER = create_worker_api_opener()
 artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
 store = JsonTaskStore(artifacts_dir / "tasks")
 runner = TaskRunner(artifacts_dir, store=store)
@@ -401,6 +403,50 @@ def task_entry_settings_value() -> dict:
     except (ValueError, AttributeError):
         return invalid
     return {"state": "configured", "url": url, "detail": ""}
+
+
+@app.before_request
+def reject_cross_site_browser_mutations():
+    browser_endpoints = {
+        "query_cases", "record_folder_preview", "import_case", "clear_imported_case",
+        "create_task", "create_disaster_task", "update_task", "confirm_ems_case_closed",
+        "delete_task", "run_task", "run_task_site", "select_site_vehicle_candidate",
+        "complete_site", "abort_task", "save_disaster_vehicle_option",
+        "delete_disaster_vehicle_option", "request_disaster_vehicle_mileage_query",
+        "save_disaster_action_package_options", "admin_public_pc_remote_update",
+        "admin_sinposmart_cancel_unreturned", "admin_sinposmart_remote_update",
+        "create_vehicle_option", "delete_vehicle_option", "request_vehicle_mileage_query",
+        "save_civilpower_preferences", "request_civilpower_roster_query",
+        "delete_pending_vehicle_settings_command",
+    }
+    if request.method in {"GET", "HEAD", "OPTIONS"} or request.endpoint not in browser_endpoints:
+        return None
+    if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+        abort(403)
+    origin = request.headers.get("Origin")
+    if origin is None:
+        return None
+    try:
+        supplied = urllib.parse.urlsplit(origin)
+        expected = urllib.parse.urlsplit("//" + request.host)
+        default_port = 443 if supplied.scheme == "https" else 80
+        supplied_port = default_port if supplied.port is None else supplied.port
+        expected_port = default_port if expected.port is None else expected.port
+        # TLS proxies may change the scheme while preserving the public authority.
+        same_authority = (
+            supplied.scheme in {"http", "https"}
+            and supplied.hostname is not None
+            and supplied.username is None and supplied.password is None
+            and not supplied.path and not supplied.query and not supplied.fragment
+            and not any(c.isspace() or c == "\\" for c in origin)
+            and supplied.hostname.lower() == str(expected.hostname or "").lower()
+            and supplied_port == expected_port
+        )
+    except ValueError:
+        same_authority = False
+    if not same_authority:
+        abort(403)
+    return None
 
 
 @app.before_request
@@ -872,9 +918,11 @@ def confirm_ems_case_closed(task_id: str):
     if task_payload_is_active(payload):
         return "任務正在執行中，無法變更結案確認。", 409
     if not payload.get("ems_case_closed_confirmed"):
+        expected_payload = deepcopy(payload)
         payload["ems_case_closed_confirmed"] = True
         store.add_event_to_payload(payload, "ems_case_closed_confirmed", "已確認救護案件結案")
-        store.save_payload(task_id, payload)
+        if not store.save_payload_if_unchanged(task_id, expected_payload, payload):
+            return "任務內容或執行狀態已變更，請重新載入後再確認結案。", 409
         report_public_pc_task_event(payload, "確認救護案件已結案")
     return redirect(url_for("task_detail", task_id=task_id))
 
@@ -915,6 +963,8 @@ def run_task(task_id: str):
     if reconciliation_detail:
         return reconciliation_detail, 409
     payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
+    if task_payload_is_active(payload):
+        return "任務已排隊或開始執行，請重新載入目前狀態。", 409
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
         report_public_pc_task_event(payload, f"按下{task_site_count_label(payload.get('task') or {})}登打")
@@ -968,7 +1018,11 @@ def run_task_site(task_id: str, site_key: str):
         return reconciliation_detail, 409
     if return_service in {"ems", "disaster", "public_pc"}:
         payload = mark_public_pc_report_retry_task(task_id, payload)
+        if task_payload_is_active(payload):
+            return "任務已排隊或開始執行，請重新載入目前狀態。", 409
     payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
+    if task_payload_is_active(payload):
+        return "任務已排隊或開始執行，請重新載入目前狀態。", 409
     mode = effective_task_execution_mode()
     if mode == "desktop_fast":
         report_public_pc_task_event(payload, f"按下單站登打：{site_display_name(site_key)}")
@@ -3691,14 +3745,15 @@ def upsert_public_pc_report(data: dict) -> dict:
         }
         reports = [item for item in current_reports if str(item.get("task_id") or "") != task_id]
         existing = next((item for item in current_reports if str(item.get("task_id") or "") == task_id), {})
+        events = list(existing.get("events") or [])
+        known_event_ids = {str(item.get("event_id") or "").strip() for item in events if isinstance(item, dict)}
+        if event_id in known_event_ids:
+            return existing
         record_folders = list(existing.get("record_folders") or [])
         for folder_path in data.get("record_folders") or []:
             if isinstance(folder_path, str) and folder_path.strip() and folder_path not in record_folders:
                 record_folders.append(folder_path)
-        events = list(existing.get("events") or [])
-        known_event_ids = {str(item.get("event_id") or "").strip() for item in events if isinstance(item, dict)}
-        if event_id not in known_event_ids:
-            events.append(event)
+        events.append(event)
         site_login_accounts = (
             data.get("site_login_accounts")
             if isinstance(data.get("site_login_accounts"), dict)
@@ -4013,7 +4068,7 @@ def _post_public_pc_report(server_url: str, payload: dict) -> dict:
         headers={**worker_headers(), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=3) as response:
+    with _NAS_API_OPENER.open(req, timeout=3) as response:
         response_body = response.read().decode("utf-8")
     try:
         return json.loads(response_body) if response_body else {}
@@ -4752,7 +4807,7 @@ def request_nas_vehicle_settings(
         method=method,
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as response:
+        with _NAS_API_OPENER.open(req, timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
@@ -4793,7 +4848,7 @@ def request_nas_manual_refresh_command(kind: object, *, vehicle_key: object = ""
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as response:
+        with _NAS_API_OPENER.open(req, timeout=2) as response:
             response_payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
@@ -5306,11 +5361,13 @@ def effective_disaster_vehicle_recorder_codes() -> dict[str, str]:
 
 
 def hydrate_disaster_task_mileage_system_names(task_id: str, payload: dict) -> dict:
+    expected_payload = deepcopy(payload)
     task_request = AmbulanceReturnRequest.from_dict(dict(payload.get("task") or {}))
     if not apply_disaster_vehicle_mileage_system_names(task_request, effective_disaster_vehicle_records()):
         return payload
     payload["task"] = task_request.to_dict()
-    store.save_payload(task_id, payload)
+    if not store.save_payload_if_unchanged(task_id, expected_payload, payload):
+        return store.get(task_id)
     return payload
 
 
@@ -5729,7 +5786,7 @@ def request_nas_civilpower_roster() -> dict[str, object] | None:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as response:
+        with _NAS_API_OPENER.open(req, timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, UnicodeError, ValueError, urllib.error.URLError):
         return None
@@ -6304,7 +6361,8 @@ def materialize_public_pc_report_task(task_id: str) -> dict | None:
         "site_attempts": deepcopy(report_attempts) if isinstance(report_attempts, dict) else initial_site_attempts(),
         "events": deepcopy(report_events) if isinstance(report_events, list) else [],
     }
-    store.save_payload(task_request.task_id, payload)
+    if not store.save_payload_if_unchanged(task_request.task_id, None, payload):
+        return store.get(task_request.task_id)
     return payload
 
 
@@ -6317,7 +6375,8 @@ def mark_public_pc_report_retry_task(task_id: str, payload: dict) -> dict:
         return payload
     marked_payload = dict(payload)
     marked_payload["task_source"] = PUBLIC_PC_REPORT_RETRY_SOURCE
-    store.save_payload(task_id, marked_payload)
+    if not store.save_payload_if_unchanged(task_id, payload, marked_payload):
+        return store.get(task_id)
     return marked_payload
 
 
@@ -6348,7 +6407,8 @@ def recover_public_pc_report_retry_task(
         return payload
     marked_payload = dict(payload)
     marked_payload["task_source"] = PUBLIC_PC_REPORT_RETRY_SOURCE
-    store.save_payload(task_id, marked_payload)
+    if not store.save_payload_if_unchanged(task_id, payload, marked_payload):
+        return store.get(task_id)
     return marked_payload
 
 
@@ -6483,6 +6543,7 @@ def _sync_public_pc_recovered_statuses_to_task_store(
         return
     if not public_pc_report_retry_task(local_payload) or task_payload_is_active(local_payload):
         return
+    expected_payload = deepcopy(local_payload)
     local_statuses = local_payload.get("site_statuses")
     local_statuses = deepcopy(local_statuses) if isinstance(local_statuses, Mapping) else {}
     changed = False
@@ -6509,7 +6570,7 @@ def _sync_public_pc_recovered_statuses_to_task_store(
     local_payload["completion"] = snapshot
     if snapshot["all_complete"]:
         local_payload["overall_status"] = "desktop_fast_completed"
-    store.save_payload(task_id, local_payload)
+    store.save_payload_if_unchanged(task_id, expected_payload, local_payload)
 
 
 def reconcile_public_pc_report_retries(reports: Sequence[dict]) -> list[dict]:
@@ -6931,7 +6992,7 @@ def _fetch_public_pc_worker_json(path: str) -> dict | None:
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as response:
+        with _NAS_API_OPENER.open(req, timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, UnicodeError, ValueError):
         return None
@@ -7044,7 +7105,8 @@ def sync_local_public_pc_task_from_nas(
         return local_payload
     merged = _merge_public_pc_remote_payload(local_payload, remote_payload)
     try:
-        store.save_payload(task_id, merged)
+        if not store.save_payload_if_unchanged(task_id, local_payload, merged):
+            return store.get(task_id)
     except OSError:
         return merged
     return merged

@@ -78,6 +78,7 @@ from ambulance_bot.vehicle_reconciliation import (
     selected_vehicle_target_key,
 )
 from ambulance_bot.window_layout import maximize_worker_site_windows
+from ambulance_bot.worker_http import create_worker_api_opener
 
 
 load_dotenv()
@@ -102,6 +103,10 @@ _EXECUTION_LEASES: dict[
     tuple[Path, str, threading.Event, threading.Thread, threading.Event],
 ] = {}
 _EXECUTION_LEASES_LOCK = threading.Lock()
+_WORKER_CONTROL_CLIENT: worker_routes.WorkerControlClient | None = None
+
+
+_WORKER_API_OPENER = create_worker_api_opener()
 
 
 class StaleWorkerClaimError(TaskCancellationError):
@@ -120,6 +125,7 @@ def task_site_count_label(request: AmbulanceReturnRequest) -> str:
 
 
 def main() -> None:
+    global _WORKER_CONTROL_CLIENT
     server_url = os.getenv("WORKER_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
     worker_id = os.getenv("WORKER_ID", socket.gethostname() or "public-duty-pc")
     poll_seconds = int(os.getenv("WORKER_POLL_SECONDS", "10"))
@@ -150,6 +156,7 @@ def main() -> None:
 
     runtime_state = worker_control.WorkerRuntimeState()
     control = build_worker_control_loop(server_url, worker_id, artifacts_dir, runtime_state)
+    control_client = _WORKER_CONTROL_CLIENT
     print(f"[worker] starting worker_id={worker_id} server={server_url}", flush=True)
     try:
         runtime_state.set("starting")
@@ -259,7 +266,11 @@ def main() -> None:
                 time.sleep(poll_seconds)
     finally:
         runtime_state.set("stopping")
-        control.stop(timeout_seconds=2.0)
+        try:
+            control.stop(timeout_seconds=2.0)
+        finally:
+            if _WORKER_CONTROL_CLIENT is control_client:
+                _WORKER_CONTROL_CLIENT = None
 
 
 def remote_update_idle_seconds() -> int:
@@ -319,6 +330,7 @@ def build_worker_control_loop(
     artifacts_dir: Path,
     runtime_state: worker_control.WorkerRuntimeState,
 ) -> worker_control.WorkerControlLoop:
+    global _WORKER_CONTROL_CLIENT
     choice = worker_control_route_choice(server_url)
     client_options: dict[str, object] = {
         "request_json": request_json,
@@ -338,6 +350,7 @@ def build_worker_control_loop(
         choice,
         **client_options,
     )
+    _WORKER_CONTROL_CLIENT = client
     return worker_control.WorkerControlLoop(
         client=client,
         worker_id=worker_id,
@@ -1389,7 +1402,7 @@ def claim_task(server_url: str, task_id: str, worker_id: str) -> dict[str, objec
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+        with _open_worker_api_request(req, timeout=worker_api_timeout()) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         message = worker_api_error_message(exc)
@@ -3428,10 +3441,23 @@ def run_consumables_worker_task(
     return result
 
 
+def _open_worker_api_request(req: urllib.request.Request, *, timeout: int):
+    client = _WORKER_CONTROL_CLIENT
+    target_url = client.api_request_url(req.full_url) if client is not None else req.full_url
+    if target_url != req.full_url:
+        req = urllib.request.Request(
+            target_url,
+            data=req.data,
+            headers=dict(req.header_items()),
+            method=req.get_method(),
+        )
+    return _WORKER_API_OPENER.open(req, timeout=timeout)
+
+
 def request_json(url: str) -> dict[str, object]:
     req = urllib.request.Request(url, headers=worker_headers())
     try:
-        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+        with _open_worker_api_request(req, timeout=worker_api_timeout()) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         message = worker_api_error_message(exc)
@@ -3448,7 +3474,7 @@ def post_json(url: str, payload: Mapping[str, object]) -> dict[str, object]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+        with _open_worker_api_request(req, timeout=worker_api_timeout()) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         message = worker_api_error_message(exc)
@@ -3750,8 +3776,13 @@ def _send_worker_status(server_url: str, task_id: str, payload: dict[str, object
         headers={**worker_headers(), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
-        response.read()
+    with _open_worker_api_request(req, timeout=worker_api_timeout()) as response:
+        try:
+            acknowledgement = json.loads(response.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise OSError("NAS worker status acknowledgement is invalid") from exc
+        if not isinstance(acknowledgement, dict) or acknowledgement.get("ok") is not True:
+            raise OSError("NAS worker status acknowledgement is invalid")
 
 
 def post_cases(
@@ -3781,7 +3812,7 @@ def post_cases(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+        with _open_worker_api_request(req, timeout=worker_api_timeout()) as response:
             response.read()
     except urllib.error.HTTPError as exc:
         message = worker_api_error_message(exc)
@@ -3814,7 +3845,7 @@ def ack_credential_sync_request(server_url: str, request_id: str, status: str, d
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+        with _open_worker_api_request(req, timeout=worker_api_timeout()) as response:
             response.read()
     except urllib.error.HTTPError as exc:
         message = worker_api_error_message(exc)
@@ -3854,7 +3885,7 @@ def post_remote_update_status(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=worker_api_timeout()) as response:
+        with _open_worker_api_request(req, timeout=worker_api_timeout()) as response:
             response.read()
     except urllib.error.HTTPError as exc:
         message = worker_api_error_message(exc)

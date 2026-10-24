@@ -28,6 +28,8 @@ TRANSPORT_FAILURE_TEXT = (
     "name or service not known",
 )
 KNOWN_SERVER_IDENTITY_LOCK_TIMEOUT_SECONDS = 0.5
+BUILTIN_NAS_LAN_URL = "http://10.30.65.30:8080"
+BUILTIN_NAS_TAILSCALE_URL = "http://100.114.126.58:8080"
 _known_server_identity_thread_lock = threading.Lock()
 
 
@@ -83,6 +85,7 @@ class WorkerControlClient:
     ) -> None:
         self._choice_lock = threading.RLock()
         self._choice = choice
+        self._api_route: tuple[RouteChoice, RequestRouteSnapshot] | None = None
         self._request_json = request_json
         self._post_json = post_json
         self._bootstrap_url = _normalized_url(bootstrap_url)
@@ -99,6 +102,39 @@ class WorkerControlClient:
     def choice(self, value: RouteChoice) -> None:
         with self._choice_lock:
             self._choice = value
+            self._api_route = None
+
+    def api_request_url(self, url: str) -> str:
+        """Reuse only the fixed builtin route confirmed by a control response."""
+
+        with self._choice_lock:
+            choice = self._choice
+            confirmed = self._api_route
+        if confirmed is None:
+            return url
+        confirmed_choice, route = confirmed
+        if (
+            choice != confirmed_choice
+            or choice.provenance != "builtin"
+            or choice.identity_status != "verified"
+            or choice.route_name != "lan"
+            or choice.primary_url != BUILTIN_NAS_LAN_URL
+            or choice.fallback_url != BUILTIN_NAS_TAILSCALE_URL
+            or route.url != BUILTIN_NAS_TAILSCALE_URL
+            or route.route_name != "tailscale"
+            or route.identity_status != "verified"
+            or route.provenance != "builtin"
+            or not choice.instance_id
+            or route.instance_id != choice.instance_id
+        ):
+            return url
+        prefix = choice.primary_url + "/worker/"
+        if not url.startswith(prefix):
+            return url
+        endpoint = url[len(prefix):].split("?", 1)[0]
+        if endpoint in {"control", "identity"}:
+            return url
+        return route.url + url[len(choice.primary_url):]
 
     def control(self, payload: Mapping[str, object]) -> ControlResponse:
         with self._choice_lock:
@@ -119,7 +155,17 @@ class WorkerControlClient:
                 _control_url(request_route.url),
                 self._payload_for_route(payload, request_route),
             )
-        return self._validate_control_response(response, request_route)
+        try:
+            validated = self._validate_control_response(response, request_route)
+        except RuntimeError:
+            with self._choice_lock:
+                if self._choice is choice and self._api_route is not None and self._api_route[0] is choice:
+                    self._api_route = None
+            raise
+        with self._choice_lock:
+            if self._choice is choice:
+                self._api_route = (choice, request_route)
+        return validated
 
     def _can_use_fallback(self, exc: BaseException, request_route: RequestRouteSnapshot) -> bool:
         return bool(

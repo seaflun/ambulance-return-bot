@@ -16,6 +16,7 @@ import urllib.error
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 from werkzeug.datastructures import MultiDict
@@ -2059,8 +2060,8 @@ class WebAppTests(unittest.TestCase):
 
         ui_response = self.client.get("/static/sinposmart-ui.css")
         admin_response = self.client.get("/static/sinposmart-admin.css")
-        ui_css = ui_response.data.decode("utf-8")
-        admin_css = admin_response.data.decode("utf-8")
+        ui_css = ui_response.data.decode("utf-8").replace("\r\n", "\n")
+        admin_css = admin_response.data.decode("utf-8").replace("\r\n", "\n")
         self.assertIn(".page-chrome__actions .button.secondary {", ui_css)
         self.assertIn("backdrop-filter: blur(18px) saturate(150%);", ui_css)
         self.assertIn(".result-filters {\n  display: flex;\n  flex-wrap: wrap;\n  width: fit-content;", admin_css)
@@ -3423,7 +3424,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         fake_response = mock.MagicMock()
         fake_response.__enter__.return_value.read.return_value = json.dumps(remote_payload).encode("utf-8")
 
-        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=fake_response) as urlopen:
+        with mock.patch.object(app_module._NAS_API_OPENER, "open", return_value=fake_response) as urlopen:
             response = self.client.post(
                 "/admin/vehicles",
                 headers={"Host": "127.0.0.1:8090"},
@@ -3465,8 +3466,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         app_module.cache_nas_vehicle_settings(initial_settings)
 
         with mock.patch.object(
-            app_module.urllib.request,
-            "urlopen",
+            app_module._NAS_API_OPENER,
+            "open",
             side_effect=urllib.error.URLError("offline"),
         ):
             queued = self.client.post(
@@ -3490,8 +3491,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             {"ok": True, "status": "civilpower_roster_failed", "members": []}
         ).encode("utf-8")
         with mock.patch.object(
-            app_module.urllib.request,
-            "urlopen",
+            app_module._NAS_API_OPENER,
+            "open",
             side_effect=[get_response, post_response, roster_response],
         ) as urlopen:
             recovered = self.client.get("/admin/vehicles", headers={"Host": "127.0.0.1:8090"})
@@ -3699,7 +3700,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
                 "personnel": ["甲"],
             }
         )
-        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=fake_response) as urlopen:
+        with mock.patch.object(app_module._NAS_API_OPENER, "open", return_value=fake_response) as urlopen:
             ems_body = html.unescape(self.client.get("/app").data.decode("utf-8"))
             self.import_case_for_form(
                 {
@@ -10343,7 +10344,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         online_response = mock.MagicMock()
         online_response.__enter__.return_value.read.return_value = json.dumps(remote_payload).encode("utf-8")
 
-        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=online_response) as urlopen, mock.patch.object(
+        with mock.patch.object(app_module._NAS_API_OPENER, "open", return_value=online_response) as urlopen, mock.patch.object(
             app_module, "request_is_local_host", return_value=True
         ):
             roster = app_module.effective_civilpower_roster()
@@ -10356,8 +10357,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertEqual("test-token", urlopen.call_args.args[0].get_header("X-worker-token"))
 
         with mock.patch.object(
-            app_module.urllib.request,
-            "urlopen",
+            app_module._NAS_API_OPENER,
+            "open",
             side_effect=urllib.error.URLError("offline"),
         ), mock.patch.object(app_module, "request_is_local_host", return_value=True):
             fallback = app_module.effective_civilpower_roster()
@@ -10418,7 +10419,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             }
         ).encode("utf-8")
 
-        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=empty_response), mock.patch.object(
+        with mock.patch.object(app_module._NAS_API_OPENER, "open", return_value=empty_response), mock.patch.object(
             app_module, "request_is_local_host", return_value=True
         ):
             roster = app_module.effective_civilpower_roster()
@@ -12773,7 +12774,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             def read(self):
                 return json.dumps({"ok": True, "payload": nas_payload}).encode("utf-8")
 
-        with mock.patch.object(app_module.urllib.request, "urlopen", return_value=FakeResponse()):
+        with mock.patch.object(app_module._NAS_API_OPENER, "open", return_value=FakeResponse()):
             response = self.client.get(
                 f"/tasks/{task_id}",
                 base_url="http://127.0.0.1:8090",
@@ -14763,6 +14764,368 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn("五站登打啟動", body)
         self.assertNotIn("單獨登打", body)
         self.assertIn("返回編輯", body)
+
+    def test_retry_source_markers_preserve_concurrent_worker_claims(self):
+        for helper in ("mark", "recover"):
+            with self.subTest(helper=helper):
+                task_id = f"audit-source-race-{helper}"
+                original = self.store.create(AmbulanceReturnRequest(
+                    task_id=task_id, created_at=datetime.now(), raw_text="",
+                ))
+                original["worker_queue"]["run_site_key"] = "consumables"
+                self.store.save_payload(task_id, original)
+                report = {"task_id": task_id, "events": original["events"]}
+                current = {}
+
+                def lookup_then_claim(*args):
+                    current.update(self.store.claim_task_for_worker(task_id, "audit-worker"))
+                    return report if helper == "mark" else True
+
+                target = ("public_pc_report_for_task" if helper == "mark"
+                          else "legacy_materialized_public_pc_report_retry_task")
+                with mock.patch.object(app_module, target, side_effect=lookup_then_claim):
+                    result = (app_module.mark_public_pc_report_retry_task(task_id, original)
+                              if helper == "mark" else
+                              app_module.recover_public_pc_report_retry_task(task_id, original, report))
+
+                self.assertEqual(self.store.get(task_id), current)
+                self.assertEqual(result, current)
+
+    def test_site_retry_stops_when_source_lookup_observes_a_new_worker_claim(self):
+        task_id = "audit-retry-source-route"
+        self.store.create(AmbulanceReturnRequest(task_id=task_id, created_at=datetime.now(), raw_text=""))
+        current = {}
+
+        def lookup_then_claim(*args):
+            current.update(self.store.claim_task_for_worker(task_id, "audit-worker"))
+            return {"task_id": task_id}
+
+        with mock.patch.object(app_module, "public_pc_report_for_task", side_effect=lookup_then_claim), \
+                mock.patch.object(app_module, "hydrate_disaster_task_mileage_system_names") as hydrate, \
+                mock.patch.object(app_module, "report_public_pc_task_event") as report:
+            response = self.client.post(
+                f"/tasks/{task_id}/sites/consumables/run", data={"return_service": "ems"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.store.get(task_id), current)
+        hydrate.assert_not_called()
+        report.assert_not_called()
+
+    def test_manual_completion_source_lookup_does_not_erase_a_new_claim(self):
+        os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
+        task_id = "audit-complete-source-route"
+        self.store.create(AmbulanceReturnRequest(task_id=task_id, created_at=datetime.now(), raw_text=""))
+        self.store.update_site_result(task_id, app_module.SiteAutomationResult(
+            "consumables", "耗材", "consumables_waiting_confirmation", "請人工確認",
+        ))
+        current = {}
+
+        def lookup_then_claim(*args):
+            current.update(self.store.claim_task_for_worker(task_id, "audit-worker"))
+            return {"task_id": task_id}
+
+        with mock.patch.object(app_module, "public_pc_report_for_task", side_effect=lookup_then_claim), \
+                mock.patch.object(app_module, "report_public_pc_task_event") as report:
+            response = self.client.post(
+                f"/tasks/{task_id}/sites/consumables/complete",
+                data={"confirmation_token": app_module.site_manual_complete_token(task_id, "consumables")},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.store.get(task_id), current)
+        self.assertEqual(report.call_args.args[0], current)
+
+    def test_mileage_name_hydration_preserves_a_new_worker_claim(self):
+        task_id = "audit-hydration-race"
+        original = self.store.create(AmbulanceReturnRequest(
+            task_id=task_id, created_at=datetime.now(), raw_text="",
+        ))
+        current = {}
+
+        def records_then_claim():
+            current.update(self.store.claim_task_for_worker(task_id, "audit-worker"))
+            return []
+
+        def changed_names(task, records):
+            task.vehicle = "新的系統車名"
+            return True
+
+        with mock.patch.object(app_module, "effective_disaster_vehicle_records", side_effect=records_then_claim), \
+                mock.patch.object(app_module, "apply_disaster_vehicle_mileage_system_names", side_effect=changed_names):
+            result = app_module.hydrate_disaster_task_mileage_system_names(task_id, original)
+
+        self.assertEqual(self.store.get(task_id), current)
+        self.assertEqual(result, current)
+
+    def test_recovered_report_statuses_do_not_erase_a_new_worker_claim(self):
+        task_id = "audit-recovered-status-race"
+        payload = self.store.create(AmbulanceReturnRequest(
+            task_id=task_id, created_at=datetime.now(), raw_text="",
+        ))
+        payload["task_source"] = app_module.PUBLIC_PC_REPORT_RETRY_SOURCE
+        self.store.save_payload(task_id, payload)
+        original_time = app_module._public_pc_event_time
+        current = {}
+
+        def parse_after_claim(value):
+            if not current:
+                current.update(self.store.claim_task_for_worker(task_id, "audit-worker"))
+            return original_time(value)
+
+        with mock.patch.object(app_module, "_public_pc_event_time", side_effect=parse_after_claim):
+            app_module._sync_public_pc_recovered_statuses_to_task_store(task_id, {
+                "consumables": {"status": "consumables_saved", "updated_at": "2099-01-01T00:00:00"},
+            })
+
+        self.assertEqual(self.store.get(task_id), current)
+
+    def test_report_materialization_keeps_a_task_created_and_claimed_during_lookup(self):
+        task_id = "audit-materialize-race"
+        task = AmbulanceReturnRequest(task_id=task_id, created_at=datetime.now(), raw_text="")
+        current = {}
+
+        def lookup_then_create_and_claim(*args):
+            self.store.create(task)
+            current.update(self.store.claim_task_for_worker(task_id, "audit-worker"))
+            return {"task_id": task_id, "task": task.to_dict()}
+
+        with mock.patch.object(app_module, "public_pc_report_for_task", side_effect=lookup_then_create_and_claim):
+            result = app_module.materialize_public_pc_report_task(task_id)
+
+        self.assertEqual(self.store.get(task_id), current)
+        self.assertEqual(result, current)
+
+    def test_nas_token_requests_never_follow_redirects(self):
+        seen = []
+        redirect_code = [302]
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("X-Worker-Token")))
+                if self.path == "/sink":
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                else:
+                    self.send_response(redirect_code[0])
+                    self.send_header("Location", "/sink")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                self.do_GET()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        try:
+            with mock.patch.dict(os.environ, {"WORKER_TOKEN": "synthetic-redirect-token"}), \
+                    mock.patch.object(app_module, "nas_vehicle_settings_server_url", return_value=base_url), \
+                    mock.patch.object(app_module, "public_pc_report_server_url", return_value=base_url):
+                for code in (301, 302, 303, 307, 308):
+                    redirect_code[0] = code
+                    operations = [
+                        lambda: app_module._post_public_pc_report(base_url, {"task_id": "audit-redirect"}),
+                        lambda: app_module.request_nas_vehicle_settings(),
+                        lambda: app_module.request_nas_manual_refresh_command("vehicle_mileage", vehicle_key="audit"),
+                        lambda: app_module.request_nas_civilpower_roster(),
+                        lambda: app_module._fetch_public_pc_worker_json("/worker/tasks"),
+                    ]
+                    for operation in operations:
+                        with self.subTest(code=code, operation=operations.index(operation)):
+                            seen.clear()
+                            try:
+                                operation()
+                            except urllib.error.HTTPError as exc:
+                                self.assertEqual(exc.code, code)
+                                exc.close()
+                            self.assertEqual(len(seen), 1, "NAS requests must not reach the redirect destination")
+                            self.assertNotEqual(seen[0][0], "/sink")
+                            self.assertEqual(seen[0][1], "synthetic-redirect-token")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_confirm_case_closed_preserves_a_concurrent_worker_claim_or_result(self):
+        for change in ("claim", "result"):
+            with self.subTest(change=change):
+                task_id = f"audit-confirm-race-{change}"
+                self.store.create(AmbulanceReturnRequest(
+                    task_id=task_id, created_at=datetime.now(), raw_text="",
+                ))
+                current = {}
+
+                def refresh_then_change(payload):
+                    if change == "claim":
+                        current.update(self.store.claim_task_for_worker(task_id, "audit-worker"))
+                    else:
+                        current.update(self.store.update_site_result(task_id, app_module.SiteAutomationResult(
+                            "consumables", "耗材", "consumables_failed", "較新的執行結果",
+                        )))
+                    return payload
+
+                with mock.patch.object(app_module, "refresh_stale_running_task", side_effect=refresh_then_change), \
+                        mock.patch.object(app_module, "report_public_pc_task_event") as report:
+                    response = self.client.post(f"/tasks/{task_id}/confirm-case-closed")
+
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(self.store.get(task_id), current)
+                self.assertFalse(self.store.get(task_id).get("ems_case_closed_confirmed"))
+                report.assert_not_called()
+
+    def test_nas_readback_preserves_a_concurrent_worker_claim_or_result(self):
+        for change in ("claim", "result"):
+            with self.subTest(change=change):
+                task_id = f"audit-sync-race-{change}"
+                local = self.store.create(AmbulanceReturnRequest(
+                    task_id=task_id, created_at=datetime.now(), raw_text="",
+                ))
+                remote = json.loads(json.dumps(local))
+                remote["updated_at"] = (datetime.now() + timedelta(seconds=5)).isoformat(timespec="seconds")
+                current = {}
+
+                def fetch_then_change(path):
+                    self.assertEqual(path, f"/worker/tasks/{task_id}")
+                    if change == "claim":
+                        current.update(self.store.claim_task_for_worker(task_id, "audit-worker"))
+                    else:
+                        current.update(self.store.update_site_result(task_id, app_module.SiteAutomationResult(
+                            "consumables", "耗材", "consumables_failed", "較新的執行結果",
+                        )))
+                    return {"ok": True, "payload": remote}
+
+                with mock.patch.object(app_module, "request_is_local_host", return_value=True), \
+                        mock.patch.object(app_module, "public_pc_reporting_enabled", return_value=True), \
+                        mock.patch.object(app_module, "_fetch_public_pc_worker_json", side_effect=fetch_then_change):
+                    result = app_module.sync_local_public_pc_task_from_nas(task_id, local)
+
+                self.assertEqual(self.store.get(task_id), current)
+                self.assertEqual(result, current)
+
+    def test_public_pc_replayed_event_cannot_replace_a_newer_result(self):
+        os.environ["WORKER_TOKEN"] = "audit-worker-token"
+        headers = {"X-Worker-Token": "audit-worker-token"}
+        outcomes = [
+            ("consumables_failed", "consumables_saved"),
+            ("consumables_saved", "consumables_failed"),
+        ]
+        for index, (old_status, new_status) in enumerate(outcomes):
+            with self.subTest(old_status=old_status, new_status=new_status):
+                task = AmbulanceReturnRequest(
+                    task_id=f"audit-replay-{index}", created_at=datetime.now(), raw_text="",
+                ).to_dict()
+                old = {
+                    "event_id": f"audit-old-{index}", "task_id": task["task_id"], "task": task,
+                    "action": "四站登打結果", "status": old_status,
+                    "overall_status": old_status, "time": "2026-10-24T10:00:00",
+                    "site_statuses": {"consumables": {
+                        "status": old_status, "updated_at": "2026-10-24T10:00:00",
+                    }},
+                }
+                new = {
+                    **old, "event_id": f"audit-new-{index}", "status": new_status,
+                    "overall_status": new_status, "time": "2026-10-24T10:01:00",
+                    "site_statuses": {"consumables": {
+                        "status": new_status, "updated_at": "2026-10-24T10:01:00",
+                    }},
+                }
+                self.assertEqual(self.client.post(
+                    "/worker/public-pc-task-events", headers=headers, json=old,
+                ).status_code, 200)
+                newer = self.client.post("/worker/public-pc-task-events", headers=headers, json=new)
+                self.assertEqual(newer.status_code, 200)
+                expected = newer.get_json()["payload"]
+                before = app_module.public_pc_report_file().read_bytes()
+
+                replay = self.client.post("/worker/public-pc-task-events", headers=headers, json=old)
+
+                self.assertEqual(replay.status_code, 200)
+                self.assertEqual(replay.get_json()["ack_id"], old["event_id"])
+                self.assertEqual(replay.get_json()["payload"], expected)
+                self.assertEqual(app_module.public_pc_report_file().read_bytes(), before)
+
+    def test_browser_mutations_reject_explicit_cross_site_requests(self):
+        paths = [
+            "/cases/query", "/api/record-folder-preview", "/cases/import", "/cases/clear",
+            "/tasks", "/tasks/disaster", "/tasks/audit-task/edit",
+            "/tasks/audit-task/confirm-case-closed", "/tasks/audit-task/delete",
+            "/tasks/audit-task/run", "/tasks/audit-task/sites/consumables/run",
+            "/tasks/audit-task/sites/consumables/vehicle-candidate",
+            "/tasks/audit-task/sites/consumables/complete", "/tasks/audit-task/abort",
+            "/admin/disaster-vehicles", "/admin/disaster-vehicles/delete",
+            "/admin/disaster-vehicles/mileage-query", "/admin/disaster-vehicles/action-packages",
+            "/admin/public-pc/remote-update", "/admin/sinposmart/unreturned/cancel",
+            "/admin/sinposmart/remote-update", "/admin/vehicles", "/admin/vehicles/delete",
+            "/admin/vehicles/mileage-query", "/admin/civilpower-preferences",
+            "/admin/civilpower-roster/query", "/admin/vehicle-settings/pending/delete",
+        ]
+        headers = [
+            {"Origin": "https://outside.example", "Sec-Fetch-Site": "cross-site"},
+            {"Origin": "http://nas.audit.invalid:8080", "Sec-Fetch-Site": "cross-site"},
+            {"Origin": "https://outside.example"},
+            {"Sec-Fetch-Site": "cross-site"},
+            {"Origin": "null"},
+            {"Origin": "http://nas.audit.invalid:8081"},
+            {"Origin": "https://outside.example", "X-Forwarded-Host": "outside.example"},
+        ]
+        views = {endpoint: mock.Mock(return_value=("", 204))
+                 for endpoint in app_module.app.view_functions}
+        with mock.patch.dict(app_module.app.view_functions, views):
+            for path in paths:
+                for supplied in headers:
+                    with self.subTest(path=path, headers=supplied):
+                        response = self.client.post(
+                            path, base_url="http://nas.audit.invalid:8080", headers=supplied,
+                        )
+                        self.assertEqual(response.status_code, 403)
+
+    def test_browser_origin_gate_does_not_treat_port_zero_as_the_default(self):
+        with mock.patch.dict(app_module.app.view_functions, {"clear_imported_case": lambda: ("", 204)}):
+            response = self.client.post(
+                "/cases/clear", base_url="http://nas.audit.invalid",
+                headers={"Origin": "http://nas.audit.invalid:0"},
+            )
+        self.assertEqual(response.status_code, 403)
+
+    def test_browser_origin_gate_preserves_same_authority_and_legacy_task_creation(self):
+        requests = [
+            ({}, "http://nas.audit.invalid:8080"),
+            ({"Sec-Fetch-Site": "none"}, "http://nas.audit.invalid:8080"),
+            ({"Sec-Fetch-Site": "same-origin"}, "http://nas.audit.invalid:8080"),
+            ({"Origin": "http://nas.audit.invalid:8080", "Sec-Fetch-Site": "same-origin"},
+             "http://nas.audit.invalid:8080"),
+            ({"Origin": "https://entry.audit.invalid", "Sec-Fetch-Site": "same-origin"},
+             "http://entry.audit.invalid"),
+        ]
+        for index, (headers, base_url) in enumerate(requests):
+            with self.subTest(headers=headers, base_url=base_url):
+                response = self.client.post(
+                    "/tasks", base_url=base_url, headers=headers,
+                    data=self.valid_task_data(case_id=f"origin-compatible-{index}"),
+                )
+                self.assertEqual(response.status_code, 302)
+        self.assertEqual(len(self.store.list_recent()), len(requests))
+        self.assertTrue(all(payload["worker_queue"]["status"] == "queued"
+                            for payload in self.store.list_recent()))
+
+    def test_browser_origin_gate_does_not_replace_worker_token_authentication(self):
+        os.environ["WORKER_TOKEN"] = "audit-worker-token"
+        headers = {"Origin": "https://outside.example", "Sec-Fetch-Site": "cross-site"}
+        unauthorized = self.client.post("/worker/vehicle-settings", json={}, headers=headers)
+        authorized = self.client.post(
+            "/worker/vehicle-settings", json={},
+            headers={**headers, "X-Worker-Token": "audit-worker-token"},
+        )
+        self.assertEqual(unauthorized.status_code, 403)
+        self.assertEqual(authorized.status_code, 400)
 
     def test_desktop_fast_mode_environment_overrides_host(self):
         os.environ["DESKTOP_FAST_MODE"] = "1"

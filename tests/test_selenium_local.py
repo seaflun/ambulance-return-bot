@@ -2914,6 +2914,9 @@ class SeleniumLocalTests(unittest.TestCase):
             def execute_script(self, script: str):
                 return 6
 
+            def find_element(self, *args):
+                return object()
+
         def extract_page(_driver):
             return pages[state["page"]]
 
@@ -2923,7 +2926,8 @@ class SeleniumLocalTests(unittest.TestCase):
 
         with patch.object(selenium_local_module, "_extract_emergency_cases", side_effect=extract_page):
             with patch.object(selenium_local_module, "_click_next_page_if_present", side_effect=click_next_page):
-                with patch.object(selenium_local_module.time, "sleep", return_value=None):
+                with patch.object(selenium_local_module, "_wait_for_case_query_page", side_effect=lambda driver, expected_page, **kwargs:
+                                  {"page": expected_page, "total_pages": 6, "total": 60}):
                     cases = selenium_local_module._extract_all_emergency_cases(FakeDriver())
 
         self.assertEqual([f"case-{index}" for index in range(1, 7)], [case["case_id"] for case in cases])

@@ -32,7 +32,7 @@ class EntryDataParityTests(unittest.TestCase):
             mock.patch.dict(os.environ, {"TASK_ENTRY_PORT": "8091", "TASK_ENTRY_HOSTS": "",
                 "WORKER_SERVER_URL": "http://nas.test:8080", "WORKER_TOKEN": "isolated-data-parity-token-32-or-longer"}),
             mock.patch.object(runtime, "local_host_candidates", return_value={"local.test"}),
-            mock.patch.object(runtime.urllib.request, "urlopen", side_effect=self.nas_transport),
+            mock.patch.object(runtime._NAS_API_OPENER, "open", side_effect=self.nas_transport),
         ):
             patch.start()
             self.addCleanup(patch.stop)

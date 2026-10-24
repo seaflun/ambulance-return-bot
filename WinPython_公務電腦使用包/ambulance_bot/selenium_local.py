@@ -1558,7 +1558,6 @@ def _prepare_duty_work_log_form(
     _report_progress(progress, "查詢案件")
     _set_case_query_date_range(driver, lookup_range="24h", start_at=case_query_start_at)
     _click_query_if_present(driver)
-    time.sleep(1)
     cases = _extract_all_emergency_cases(driver)
     case = _match_case_for_request(cases, request)
     if not case:
@@ -1830,6 +1829,14 @@ def _verify_saved_duty_work_log(
     if len(records) != 1:
         raise RuntimeError("回查未找到唯一的同案件、同車輛工作紀錄")
     saved = records[0]
+    target_vehicles = {entry.vehicle for entry in request.effective_vehicle_entries() if entry.vehicle}
+    if len(target_vehicles) > 1:
+        saved_vehicles = _work_log_vehicle_labels(
+            saved["status"], set(vehicle_ppe_names()) | target_vehicles, saved["unit"],
+        )
+        missing_vehicles = target_vehicles - saved_vehicles
+        if missing_vehicles:
+            raise RuntimeError("既有工作紀錄未涵蓋全部任務車輛，缺少：" + "、".join(sorted(missing_vehicles)))
     if expected is not None:
         if not expected or any(saved.get(key) != value for key, value in expected.items()):
             raise RuntimeError("回查的勤務內容與儲存前表單不一致")
@@ -5256,7 +5263,6 @@ def _open_case_query(driver: webdriver.Chrome, lookup_range: str = "24h") -> Non
     time.sleep(1.5)
     _set_case_query_date_range(driver, lookup_range=lookup_range)
     _click_query_if_present(driver)
-    time.sleep(1)
 
 
 def _duty_login_credential_attempts(
@@ -5685,10 +5691,42 @@ def _attach_case_form_details(
 
 
 def _click_query_if_present(driver: webdriver.Chrome) -> None:
-    try:
-        _click_by_text_or_id(driver, ["_btnQuery"], ["\u67e5\u8a62"])
-    except WebDriverException:
-        return
+    previous_query = driver.find_element(By.ID, "_btnQuery")
+    _click_by_text_or_id(driver, ["_btnQuery"], ["\u67e5\u8a62"])
+    _wait_for_case_query_page(driver, expected_page=1, previous_query=previous_query)
+
+
+def _wait_for_case_query_page(
+    driver: webdriver.Chrome, expected_page: int,
+    previous_query=None,
+) -> dict[str, int]:
+    if previous_query is not None:
+        WebDriverWait(driver, 12).until(
+            EC.staleness_of(previous_query), "案件查詢或翻頁後文件尚未更新。",
+        )
+    state = WebDriverWait(driver, 12).until(
+        lambda current: current.execute_script(
+            r"""
+            if (document.readyState !== 'complete' || !document.getElementById('_btnQuery')) return null;
+            const text = document.body ? document.body.innerText : '';
+            const noRecords = /QUY-(?:300|500)\s*[:：]\s*查無資料/.test(text);
+            if (!/QUY-000/.test(text) && !noRecords) return null;
+            const match = text.match(/共\s*([0-9][0-9,]*)\s*筆/);
+            const total = match ? Number(match[1].replace(/,/g, '')) : (noRecords ? 0 : NaN);
+            if (!Number.isSafeInteger(total) || total < 0 || (noRecords && total !== 0)) return null;
+            const totalPages = Math.max(1, Math.ceil(total / 10));
+            const select = document.querySelector('select[name="pageSelect"]');
+            const hidden = document.getElementById('selectedPage');
+            const page = Number(select?.value || hidden?.value || (totalPages === 1 ? 1 : NaN));
+            if (!Number.isInteger(page) || page < 1 || page > totalPages || page !== arguments[0]) return null;
+            return {page: page, total_pages: totalPages, total: total};
+            """, expected_page,
+        ),
+        f"案件查詢第 {expected_page} 頁尚未取得完整正式回覆。",
+    )
+    if not isinstance(state, dict):
+        raise WebDriverException("案件查詢回覆格式改變，無法確認完整分頁。")
+    return state
 
 
 def _case_query_start_at(request: AmbulanceReturnRequest) -> datetime | None:
@@ -5831,16 +5869,22 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
 def _extract_all_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
     seen: set[str] = set()
     results: list[dict[str, str]] = []
-    total_pages = _case_lookup_total_pages(driver)
-    for _ in range(total_pages):
+    initial = _wait_for_case_query_page(driver, expected_page=1)
+    total_pages = initial["total_pages"]
+    for page_number in range(1, total_pages + 1):
         for item in _extract_emergency_cases(driver):
             case_id = item.get("case_id", "")
             if case_id and case_id not in seen:
                 seen.add(case_id)
                 results.append(item)
-        if not _click_next_page_if_present(driver):
+        if page_number == total_pages:
             break
-        time.sleep(1)
+        previous_query = driver.find_element(By.ID, "_btnQuery")
+        if not _click_next_page_if_present(driver):
+            raise WebDriverException(f"案件清單無法前往第 {page_number + 1} 頁，尚未完成全部查詢。")
+        current = _wait_for_case_query_page(driver, expected_page=page_number + 1, previous_query=previous_query)
+        if current["total_pages"] != total_pages or current["total"] != initial["total"]:
+            raise WebDriverException("案件清單翻頁期間總筆數已變動，請重新查詢。")
     return results
 
 

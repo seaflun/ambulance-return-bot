@@ -390,7 +390,7 @@ def _lookup_synced_credential_id_number_for_acs() -> None:
         return
 
     if result.ok and result.id_number:
-        print(f"[consumables] synced id lookup saved id_number={result.id_number}", flush=True)
+        print("[consumables] synced id lookup saved", flush=True)
     elif result.status != "already_has_id_number":
         print(f"[consumables] synced id lookup skipped status={result.status}", flush=True)
 

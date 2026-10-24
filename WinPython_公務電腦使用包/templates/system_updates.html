@@ -148,6 +148,24 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.24.0952">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.24.0952') }}</p>
+          <h2 class="update-card__title">補強網站讀取、任務狀態與更新傳輸可靠性</h2>
+        </div>
+        <span class="update-card__versions">2026.10.24.0952</span>
+      </header>
+      <ul class="update-card__items">
+        <li>勤務案件翻頁須確認新頁面及完整結果；慢速或缺頁時停止處理，避免漏列案件。</li>
+        <li>雙車任務逐車核對既有工作紀錄，保留原紀錄，缺少車輛時提示人工確認。</li>
+        <li>防止舊回報及同時更新覆蓋最新任務狀態或已領取的任務。</li>
+        <li>Worker 僅在收到有效成功回覆後移除待送事件；區網失效時可沿用已驗證的 Tailscale 備援連線，身分驗證失敗時撤銷備援快取。</li>
+        <li>單筆帳密損壞不再影響其他帳號；損壞檔案保留並避免覆寫，耗材同步日誌不再顯示完整身分證字號。</li>
+        <li>阻擋明確跨站的任務寫入，內部驗證連線拒絕重新導向，避免驗證資料被轉送。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.23.0910">
       <header class="update-card__heading">
         <div>

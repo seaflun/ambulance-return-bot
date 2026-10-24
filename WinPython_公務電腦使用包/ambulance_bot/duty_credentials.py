@@ -395,7 +395,7 @@ def set_last_selected_duty_automation_credential(identifier: str, path: Path | N
 
     source = path or saved_login_path()
     with _credential_write_lock(source):
-        payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+        payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path), for_write=True)
         accounts = payload.get("accounts")
         if not isinstance(accounts, list):
             raise ValueError("saved credential file does not contain synced accounts")
@@ -422,7 +422,7 @@ def update_saved_credential_id_number(
 
     source = path or saved_login_path()
     with _credential_write_lock(source):
-        payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+        payload = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path), for_write=True)
         accounts = payload.get("accounts")
         if isinstance(accounts, list):
             account = next(
@@ -551,7 +551,7 @@ def save_duty_automation_credentials(
 
     source = path or saved_login_path()
     with _credential_write_lock(source):
-        existing = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path))
+        existing = _read_saved_login_with_default_fallback(source, allow_fallback=_allow_default_saved_login_fallback(path), for_write=True)
         accounts = existing.get("accounts")
         account_list = [account for account in accounts if isinstance(account, dict)] if isinstance(accounts, list) else []
 
@@ -726,23 +726,33 @@ def _merge_existing_account_fields(existing: dict, updated: dict[str, str]) -> d
     return merged
 
 
-def _read_saved_login(path: Path) -> dict:
+def _read_saved_login(path: Path, *, for_write: bool = False) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if for_write:
+            raise ValueError("saved credential file is unreadable; original file was preserved") from exc
+        return {}
+    if not isinstance(payload, dict) and for_write:
+        raise ValueError("saved credential file is invalid; original file was preserved")
+    if isinstance(payload, dict) and for_write and "accounts" in payload:
+        accounts = payload["accounts"]
+        if not isinstance(accounts, list) or any(not isinstance(account, dict) for account in accounts):
+            raise ValueError("saved credential accounts are invalid; original file was preserved")
     return payload if isinstance(payload, dict) else {}
 
 
-def _read_saved_login_with_default_fallback(path: Path, allow_fallback: bool) -> dict:
-    payload = _read_saved_login(path)
+def _read_saved_login_with_default_fallback(path: Path, allow_fallback: bool, *, for_write: bool = False) -> dict:
+    payload = _read_saved_login(path, for_write=for_write)
     if payload or not allow_fallback:
         return payload
 
     legacy_path = legacy_localappdata_saved_login_path()
     if legacy_path.resolve() == path.resolve():
         return payload
-    return _read_saved_login(legacy_path)
+    return _read_saved_login(legacy_path, for_write=for_write)
 
 
 def _account_password(account: dict) -> str:
@@ -781,7 +791,10 @@ def encrypt_dpapi(password: str) -> str:
 
 
 def decrypt_dpapi(encrypted_password: str) -> str:
-    encrypted = base64.b64decode(encrypted_password)
+    try:
+        encrypted = base64.b64decode(encrypted_password, validate=True)
+    except (ValueError, TypeError):
+        return ""
     try:
         import win32crypt
 
@@ -790,7 +803,10 @@ def decrypt_dpapi(encrypted_password: str) -> str:
         decrypted = _decrypt_dpapi_ctypes(encrypted)
         if not decrypted:
             return ""
-    return decrypted.decode("utf-8")
+    try:
+        return decrypted.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
 
 
 def _encrypt_dpapi_ctypes(data: bytes) -> bytes:

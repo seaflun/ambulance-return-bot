@@ -48,8 +48,8 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
             },
         ):
             with mock.patch.object(
-                worker_module.urllib.request,
-                "urlopen",
+                worker_module._WORKER_API_OPENER,
+                "open",
                 side_effect=urllib.error.URLError("temporary outage"),
             ):
                 try:
@@ -80,8 +80,8 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
             },
         ):
             with mock.patch.object(
-                worker_module.urllib.request,
-                "urlopen",
+                worker_module._WORKER_API_OPENER,
+                "open",
                 side_effect=urllib.error.URLError("temporary outage"),
             ):
                 try:
@@ -89,7 +89,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                 except Exception as exc:  # pragma: no cover - explicit regression assertion
                     self.fail(f"transient status failure escaped instead of being queued: {exc}")
 
-            with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=successful_urlopen):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=successful_urlopen):
                 worker_module.post_status("http://nas", "task-1", "vehicle_mileage_saved", "saved")
 
             self.assertEqual(sent_statuses, ["worker_running", "vehicle_mileage_saved"])
@@ -118,7 +118,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                     },
                 }
             )
-            with mock.patch.object(worker_module.urllib.request, "urlopen", return_value=_Response()):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", return_value=_Response()):
                 flush = getattr(worker_module, "flush_status_outbox", None)
                 self.assertIsNotNone(flush, "worker.flush_status_outbox is missing")
                 self.assertEqual(flush(), 1)
@@ -148,7 +148,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                     "body": {"status": "worker_running", "status_event_id": "safe-event"},
                 }
             )
-            with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=successful_urlopen):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=successful_urlopen):
                 worker_module.flush_status_outbox()
 
         self.assertEqual(sent_urls, ["http://nas/worker/tasks/task-1/status"])
@@ -173,7 +173,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                     "body": {"status": "worker_running", "status_event_id": "stale-event"},
                 }
             )
-            with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=conflict):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=conflict):
                 self.assertEqual(worker_module.flush_status_outbox(), 0)
 
             self.assertEqual(outbox.pending(), [])
@@ -199,7 +199,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                     "body": {"status": "worker_running", "status_event_id": "retry-event"},
                 }
             )
-            with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=unavailable):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=unavailable):
                 self.assertEqual(worker_module.flush_status_outbox(), 0)
 
             self.assertEqual([item["event_id"] for item in outbox.pending()], [event_id])
@@ -230,7 +230,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                 {"task_id": "live", "body": {"status": "worker_running", "status_event_id": "live-event"}}
             )
 
-            with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=urlopen_by_task):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=urlopen_by_task):
                 self.assertEqual(worker_module.flush_status_outbox(), 1)
 
             self.assertEqual(outbox.pending(), [])
@@ -289,8 +289,8 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                 }
             )
             with mock.patch.object(WorkerStatusOutbox, "enqueue", new=transiently_locked), mock.patch.object(
-                worker_module.urllib.request,
-                "urlopen",
+                worker_module._WORKER_API_OPENER,
+                "open",
                 side_effect=urllib.error.URLError("NAS offline"),
             ):
                 worker_module.post_status("http://nas", "task-new", "desktop_fast_completed", "done")
@@ -300,7 +300,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                 [record["payload"]["body"]["status"] for record in restarted_outbox.pending()],
                 ["worker_running", "desktop_fast_completed"],
             )
-            with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=successful_urlopen):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=successful_urlopen):
                 self.assertEqual(worker_module.flush_status_outbox("http://nas"), 2)
 
         self.assertEqual(enqueue_attempts, 2)
@@ -319,7 +319,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
             WorkerStatusOutbox,
             "enqueue",
             side_effect=PermissionError("disk locked"),
-        ) as enqueue, mock.patch.object(worker_module.urllib.request, "urlopen") as urlopen:
+        ) as enqueue, mock.patch.object(worker_module._WORKER_API_OPENER, "open") as urlopen:
             with self.assertRaises(PermissionError):
                 worker_module.post_status("http://nas", "task-new", "desktop_fast_completed", "done")
 
@@ -335,8 +335,8 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                 "WORKER_STATUS_RETRY_BACKOFF_SECONDS": "60",
             },
         ), mock.patch.object(
-            worker_module.urllib.request,
-            "urlopen",
+            worker_module._WORKER_API_OPENER,
+            "open",
             side_effect=TimeoutError("NAS timeout"),
         ) as urlopen:
             worker_module.post_status("http://nas", "task-1", "worker_running", "first")
@@ -362,7 +362,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                         "body": {"status": "worker_running", "status_event_id": f"event-{index}"},
                     }
                 )
-            with mock.patch.object(worker_module.urllib.request, "urlopen", return_value=_Response()):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", return_value=_Response()):
                 self.assertEqual(worker_module.flush_status_outbox(), 2)
 
             self.assertEqual(len(outbox.pending()), 1)
@@ -379,7 +379,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                 {"task_id": "claimed-task"},
                 {"claim_id": "claim-a", "worker_id": "PC-01"},
             )
-            with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=conflict):
+            with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=conflict):
                 with self.assertRaises(stale_error):
                     worker_module.post_status("http://nas", "claimed-task", "worker_running", "running")
 
@@ -416,7 +416,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
             )
             worker_module._register_task_cancellation_event(task_id, cancellation_event)
             try:
-                with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=conflict):
+                with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=conflict):
                     worker_module.flush_status_outbox("http://nas")
 
                 self.assertFalse(cancellation_event.is_set())
@@ -464,7 +464,7 @@ class WorkerStatusDeliveryTests(unittest.TestCase):
                 }
             )
             try:
-                with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=conflict):
+                with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=conflict):
                     worker_module.flush_status_outbox("http://nas")
                 event_was_cancelled = cancellation_event.is_set()
                 claim_b_was_stale = worker_module._task_claim_is_stale(task_id, "claim-b")

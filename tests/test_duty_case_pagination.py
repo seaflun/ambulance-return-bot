@@ -25,7 +25,7 @@ class _QueryElement:
 
 
 class _CasePageDriver:
-    def __init__(self, pages, current_page=1, duplicate_page_ids=True):
+    def __init__(self, pages, current_page=1, duplicate_page_ids=True, response_text=None):
         self.pages = pages
         self.current_page = current_page
         self.duplicate_page_ids = duplicate_page_ids
@@ -37,6 +37,7 @@ class _CasePageDriver:
         self.navigation = []
         self.clicked_while_loading = False
         self.complete_checks = 0
+        self.response_text = response_text
 
     def find_element(self, _by, value):
         if value != "_btnQuery":
@@ -60,7 +61,7 @@ class _CasePageDriver:
           return {children: [{tagName: 'TD', innerText: caseId}],
             querySelectorAll: () => [button]};
         });
-        const text = '共 ' + (Object.keys(input.pages).length * 10) + ' 筆';
+        const text = input.response_text ?? ('QUY-000:查詢完成 共 ' + (Object.keys(input.pages).length * 10) + ' 筆');
         global.document = {readyState: input.loading ? 'loading' : 'complete', body: {innerText: text},
           getElementById: id => id === 'pageSelect' ? (input.duplicate ? label : select) :
             (id === 'selectedPage' ? {value: String(input.current)} : (id === '_btnQuery' ? {} : null)),
@@ -75,7 +76,8 @@ class _CasePageDriver:
         result = subprocess.run([shutil.which("node"), "-e", harness],
                                 input=json.dumps({"script": script, "args": args, "pages": self.pages,
                                                   "current": self.current_page, "loading": self.loading,
-                                                  "duplicate": self.duplicate_page_ids}),
+                                                  "duplicate": self.duplicate_page_ids,
+                                                  "response_text": self.response_text}),
                                 text=True, capture_output=True, encoding="utf-8", check=True)
         value = json.loads(result.stdout)
         if value["requestedPage"] is not None:

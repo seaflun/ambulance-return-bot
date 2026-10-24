@@ -130,6 +130,11 @@ class WorkerTests(unittest.TestCase):
         login.assert_not_called()
 
     def setUp(self):
+        status_artifacts = tempfile.TemporaryDirectory()
+        self.addCleanup(status_artifacts.cleanup)
+        status_env = mock.patch.dict(os.environ, {"ARTIFACTS_DIR": status_artifacts.name})
+        status_env.start()
+        self.addCleanup(status_env.stop)
         folders = mock.patch.object(worker_module, "ensure_ems_record_folders", return_value=[])
         folders.start()
         self.addCleanup(folders.stop)
@@ -589,7 +594,7 @@ class WorkerTests(unittest.TestCase):
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = json.dumps(response_payload).encode("utf-8")
 
-        with mock.patch.object(worker_module.urllib.request, "urlopen", return_value=response) as urlopen:
+        with mock.patch.object(worker_module._WORKER_API_OPENER, "open", return_value=response) as urlopen:
             task = worker_module.claim_task("http://nas", "task-manual", "worker-a")
 
         self.assertIsNotNone(task)
@@ -1268,7 +1273,7 @@ class WorkerTests(unittest.TestCase):
 
     def test_post_remote_update_status_sends_complete_json(self):
         captured: dict[str, object] = {}
-        original_urlopen = worker_module.urllib.request.urlopen
+        original_urlopen = worker_module._WORKER_API_OPENER.open
 
         class FakeResponse:
             def __enter__(self):
@@ -1278,7 +1283,7 @@ class WorkerTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return b"{}"
+                return b'{"ok":true}'
 
         def fake_urlopen(req, timeout):
             captured["url"] = req.full_url
@@ -1286,7 +1291,7 @@ class WorkerTests(unittest.TestCase):
             return FakeResponse()
 
         try:
-            worker_module.urllib.request.urlopen = fake_urlopen
+            worker_module._WORKER_API_OPENER.open = fake_urlopen
             worker_module.post_remote_update_status(
                 "http://nas",
                 "update-status",
@@ -1298,7 +1303,7 @@ class WorkerTests(unittest.TestCase):
                 exit_code=0,
             )
         finally:
-            worker_module.urllib.request.urlopen = original_urlopen
+            worker_module._WORKER_API_OPENER.open = original_urlopen
 
         self.assertTrue(str(captured["url"]).endswith("/worker/remote-update/update-status/status"))
         self.assertEqual(
@@ -1334,8 +1339,8 @@ class WorkerTests(unittest.TestCase):
             return FakeResponse()
 
         with mock.patch.dict(os.environ, {"WORKER_TOKEN": "test-token"}, clear=False), mock.patch.object(
-            worker_module.urllib.request,
-            "urlopen",
+            worker_module._WORKER_API_OPENER,
+            "open",
             side_effect=fake_urlopen,
         ):
             response = worker_module.post_json("http://nas/worker/control", {"state": "idle"})
@@ -1347,7 +1352,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(captured["content_type"], "application/json")
 
         error = worker_module.urllib.error.HTTPError("http://nas/worker/control", 403, "Forbidden", None, None)
-        with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=error):
+        with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=error):
             with self.assertRaises(RuntimeError) as raised:
                 worker_module.post_json("http://nas/worker/control", {"state": "idle"})
 
@@ -2425,7 +2430,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(intervals, [1800])
 
     def test_post_status_adds_site_failure_diagnostics(self):
-        original_urlopen = worker_module.urllib.request.urlopen
+        original_urlopen = worker_module._WORKER_API_OPENER.open
         captured: dict[str, object] = {}
 
         class FakeResponse:
@@ -2436,14 +2441,14 @@ class WorkerTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return b"{}"
+                return b'{"ok":true}'
 
         def fake_urlopen(req, timeout):
             captured["payload"] = json.loads(req.data.decode("utf-8"))
             return FakeResponse()
 
         try:
-            worker_module.urllib.request.urlopen = fake_urlopen
+            worker_module._WORKER_API_OPENER.open = fake_urlopen
             worker_module.post_status(
                 "http://nas",
                 "task-1",
@@ -2453,7 +2458,7 @@ class WorkerTests(unittest.TestCase):
                 site_name="一站通耗材",
             )
         finally:
-            worker_module.urllib.request.urlopen = original_urlopen
+            worker_module._WORKER_API_OPENER.open = original_urlopen
 
         payload = captured["payload"]
         self.assertEqual(payload["failure_stage"], "登入一站通")
@@ -3234,13 +3239,13 @@ class WorkerTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return b"{}"
+                return b'{"ok":true}'
 
         def fake_urlopen(request, timeout):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeResponse()
 
-        with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=fake_urlopen):
+        with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=fake_urlopen):
             worker_module.post_status(
                 "http://nas",
                 "task-two-vehicle",
@@ -3266,13 +3271,13 @@ class WorkerTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return b"{}"
+                return b'{"ok":true}'
 
         def fake_urlopen(request, timeout):
             payloads.append(json.loads(request.data.decode("utf-8")))
             return FakeResponse()
 
-        with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=fake_urlopen):
+        with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=fake_urlopen):
             worker_module.post_cases(
                 "http://nas", "cases_loaded", "ok", "24h", [], "hash-1", request_id="lookup-request-123"
             )
@@ -3395,7 +3400,7 @@ class WorkerTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return b"{}"
+                return b'{"ok":true}'
 
         response = {
             "ok": True,
@@ -3411,7 +3416,7 @@ class WorkerTests(unittest.TestCase):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeResponse()
 
-        with mock.patch.object(worker_module.urllib.request, "urlopen", side_effect=fake_urlopen):
+        with mock.patch.object(worker_module._WORKER_API_OPENER, "open", side_effect=fake_urlopen):
             worker_module.post_status("http://nas", "claimed-task", "vehicle_mileage_running", "running")
 
         self.assertEqual(captured["payload"]["claim_id"], "claim-2")
