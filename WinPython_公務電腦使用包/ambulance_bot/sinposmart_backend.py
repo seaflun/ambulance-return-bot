@@ -145,6 +145,15 @@ def _heartbeat_now(value: datetime | None = None) -> datetime:
     return current.astimezone(timezone.utc)
 
 
+def _heartbeat_time_label(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    try:
+        return taipei_local_datetime(value).isoformat(sep=" ", timespec="seconds")
+    except (ValueError, OverflowError):
+        return ""
+
+
 def _heartbeat_uuid(value: Any, *, optional: bool = False) -> str:
     if optional and value == "":
         return ""
@@ -294,6 +303,7 @@ class DutyGuiHeartbeatStore:
             if latest is None:
                 result[component] = {"alive": False, "fresh": False, "status_class": "",
                                      "status_label": "尚未收到心跳／狀態未知", "last_seen_at": "尚未收到",
+                                     "last_seen_label": "", "process_started_label": "",
                                      "age_seconds": None, "age_label": "未知", "app_version": "未知",
                                      "state_label": "未知", "login_label": "未知", "phase_label": "未知",
                                      "instance_id": "", "process_started_at": "", "workstation": "",
@@ -318,12 +328,14 @@ class DutyGuiHeartbeatStore:
             result[component] = {
                 "alive": alive, "fresh": fresh, "status_class": "complete" if alive else "" if stopping else "failed",
                 "status_label": status, "last_seen_at": received.isoformat(timespec="seconds"),
+                "last_seen_label": _heartbeat_time_label(received),
                 "age_seconds": int(age) if age >= 0 else None, "age_label": f"{int(age)} 秒前" if age >= 0 else "時間待確認",
                 "app_version": normalized["app_version"], "state_label": state_label + ("（最後回報）" if not fresh else ""),
                 "login_label": login + ("（最後回報）" if not fresh else ""),
                 "phase_label": GUI_HEARTBEAT_PHASE_LABELS[normalized["phase"]] + ("（最後回報）" if not fresh else ""),
                 "last_known_label": "" if fresh else "以下為最後回報",
                 "instance_id": normalized["instance_id"], "process_started_at": normalized["process_started_at"],
+                "process_started_label": _heartbeat_time_label(_heartbeat_datetime(normalized["process_started_at"])),
                 "workstation": normalized["workstation"], "startup_label": startup,
                 "retired_count": len(record["retired_instances"]) if isinstance(record.get("retired_instances"), list) else 0,
                 "update_request_id": normalized["update_request_id"], "result_code": normalized["result_code"],

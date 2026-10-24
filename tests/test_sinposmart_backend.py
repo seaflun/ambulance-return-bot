@@ -563,6 +563,64 @@ class DutyGuiHeartbeatTests(unittest.TestCase):
         self.assertEqual(self.store.admin_view(now=self.now + timedelta(seconds=60))["gui"]["last_known_label"], "")
         self.assertEqual(self.store.admin_view(now=self.now + timedelta(seconds=61))["gui"]["startup_label"], "啟動仍未完成")
 
+    def test_admin_time_labels_use_taipei_without_changing_raw_utc_or_liveness(self):
+        received = datetime(2026, 10, 24, 18, 40, 10, tzinfo=timezone.utc)
+        started = received - timedelta(seconds=10)
+        for component in ("gui", "installer"):
+            for sequence, zone in enumerate((timezone.utc, backend.TAIPEI_TIMEZONE), 1):
+                with self.subTest(component=component, zone=zone):
+                    fields = {"component": component, "sequence": sequence,
+                              "process_started_at": started.astimezone(zone).isoformat()}
+                    if component == "installer":
+                        fields.update(login_state="unknown", update_request_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+                    self.assertTrue(self.put(self.pulse(**fields), received.astimezone(zone)))
+                    persisted = self.store.path.read_bytes()
+                    view = self.store.admin_view(now=received + timedelta(seconds=30))[component]
+                    self.assertEqual(view["last_seen_label"], "2026-10-25 02:40:10")
+                    self.assertEqual(view["process_started_label"], "2026-10-25 02:40:00")
+                    self.assertEqual(view["last_seen_at"], received.isoformat(timespec="seconds"))
+                    self.assertEqual(view["process_started_at"], started.isoformat(timespec="seconds"))
+                    self.assertEqual(view["age_seconds"], 30)
+                    self.assertTrue(view["fresh"])
+                    self.assertTrue(view["alive"])
+                    self.assertEqual(self.store.path.read_bytes(), persisted)
+
+    def test_missing_or_invalid_heartbeat_time_labels_are_blank(self):
+        for component in ("gui", "installer"):
+            view = self.store.admin_view(now=self.now)[component]
+            self.assertEqual(view["last_seen_label"], "")
+            self.assertEqual(view["process_started_label"], "")
+            self.assertEqual(view["last_seen_at"], "尚未收到")
+            self.assertEqual(view["process_started_at"], "")
+        self.put(self.pulse())
+        self.put(self.pulse(component="installer", login_state="unknown",
+                            update_request_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd"))
+        data = json.loads(self.store.path.read_text(encoding="utf-8"))
+        data["workstations"]["SP-TEST"]["gui"]["received_at"] = "invalid timestamp"
+        data["workstations"]["SP-TEST"]["installer"]["process_started_at"] = "invalid timestamp"
+        self.store.path.write_text(json.dumps(data), encoding="utf-8")
+        for component in ("gui", "installer"):
+            view = self.store.admin_view(now=self.now)[component]
+            self.assertEqual(view["last_seen_label"], "")
+            self.assertEqual(view["process_started_label"], "")
+            self.assertIsNone(view["age_seconds"])
+            self.assertFalse(view["alive"])
+
+    def test_taipei_time_label_overflow_does_not_break_heartbeat_health(self):
+        limit = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+        for component in ("gui", "installer"):
+            fields = {"component": component, "process_started_at": limit.isoformat()}
+            if component == "installer":
+                fields.update(login_state="unknown", update_request_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+            self.put(self.pulse(**fields), limit)
+            view = self.store.admin_view(now=limit)[component]
+            self.assertEqual(view["last_seen_label"], "")
+            self.assertEqual(view["process_started_label"], "")
+            self.assertEqual(view["last_seen_at"], limit.isoformat(timespec="seconds"))
+            self.assertEqual(view["process_started_at"], limit.isoformat(timespec="seconds"))
+            self.assertEqual(view["age_seconds"], 0)
+            self.assertTrue(view["alive"])
+
     def test_duplicates_old_sequence_metadata_and_retired_instance_never_refresh(self):
         self.put(self.pulse(sequence=4))
         for pulse in (self.pulse(sequence=4), self.pulse(sequence=3),

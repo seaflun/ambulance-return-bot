@@ -302,7 +302,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn(f'data-health-status="{key}"', primary)
             self.assertIn(f'data-health-field="{key}.instance_id"', detail.group(1))
             self.assertIn(f'data-health-field="{key}.phase_label"', detail.group(1))
-        for field in ("gui.app_version", "gui.login_label", "gui.last_seen_at", "installer.progress_label"):
+        for field in ("gui.app_version", "gui.login_label", "gui.last_seen_label", "installer.progress_label"):
             self.assertIn(f'data-health-field="{field}"', primary)
         self.assertIn("未執行更新", primary)
         self.assertIn('data-health-field="gui.workstation" data-health-empty="尚未辨識"', primary)
@@ -317,6 +317,33 @@ class WebAppTests(unittest.TestCase):
         rescue = self.client.get("/admin/ems").get_data(as_text=True)
         self.assertEqual(len(re.findall(r'<section class="system-health-card"', rescue)), 1)
         self.assertIn('<section class="system-overview-card" aria-label="系統狀態">', rescue)
+
+    def test_duty_heartbeat_page_and_poll_use_taipei_labels_across_midnight(self):
+        from tests.test_sinposmart_backend import DutyGuiHeartbeatTests
+        received = datetime(2026, 10, 24, 18, 40, 10, tzinfo=timezone.utc)
+        started = received - timedelta(seconds=10)
+        store = app_module.duty_gui_heartbeat_store()
+        for component in ("gui", "installer"):
+            fields = {"component": component, "process_started_at": started.isoformat()}
+            if component == "installer":
+                fields.update(login_state="unknown", update_request_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+            store.upsert(DutyGuiHeartbeatTests.pulse(**fields),
+                         server_instance_id=DutyGuiHeartbeatTests.SERVER, now=received)
+        persisted = store.path.read_bytes()
+        with mock.patch.object(app_module, "sinposmart_admin_version_info", return_value={}):
+            body = self.client.get("/admin/sinposmart").get_data(as_text=True)
+        health = self.client.get("/api/sinposmart/health").get_json()
+        for component in ("gui", "installer"):
+            for field, expected in (("last_seen_label", "2026-10-25 02:40:10"),
+                                    ("process_started_label", "2026-10-25 02:40:00")):
+                self.assertEqual(health[component][field], expected)
+                self.assertRegex(body, rf'data-health-field="{component}\.{field}"[^>]*>{expected}</span>')
+            for raw_field in ("last_seen_at", "process_started_at"):
+                self.assertNotIn(f'data-health-field="{component}.{raw_field}"', body)
+            self.assertEqual(health[component]["last_seen_at"], received.isoformat(timespec="seconds"))
+            self.assertEqual(health[component]["process_started_at"], started.isoformat(timespec="seconds"))
+        self.assertIn("最後心跳（台灣時間）", body)
+        self.assertEqual(store.path.read_bytes(), persisted)
 
     def test_admin_status_active_updates_disable_both_password_and_submit(self):
         os.environ["WORKER_TOKEN"] = "test-token"

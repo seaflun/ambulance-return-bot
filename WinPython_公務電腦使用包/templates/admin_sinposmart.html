@@ -293,7 +293,7 @@
         {% set installer = duty_gui_health.installer %}
         {% call health_card('公務電腦狀態', gui, 'gui') %}
           <div>公務電腦：<span data-health-field="gui.workstation" data-health-empty="尚未辨識">{{ gui.workstation or '尚未辨識' }}</span></div>
-          <div>最後心跳：<span data-health-field="gui.last_seen_at">{{ gui.last_seen_at }}</span>・<span data-health-field="gui.age_label">{{ gui.age_label }}</span>・<span data-health-field="gui.login_label">{{ gui.login_label }}</span></div>
+          <div>最後心跳（台灣時間）：<span data-health-field="gui.last_seen_label" data-health-empty="尚未收到">{{ gui.last_seen_label or '尚未收到' }}</span>・<span data-health-field="gui.age_label">{{ gui.age_label }}</span>・<span data-health-field="gui.login_label">{{ gui.login_label }}</span></div>
           <div class="worker-health-version">公務電腦版本：<span data-health-field="gui.app_version">{{ gui.app_version }}</span></div>
           <div class="version-difference">NAS 後台版本：{{ nas_version }}</div>
           <div class="system-health-row">
@@ -309,7 +309,7 @@
               <div><strong>{{ title }}</strong></div>
               <div data-health-field="{{ key }}.last_known_label">{{ health.last_known_label }}</div>
               {% if key == 'installer' %}
-                <div>最後回報：<span data-health-field="installer.last_seen_at">{{ health.last_seen_at }}</span>・<span data-health-field="installer.age_label">{{ health.age_label }}</span></div>
+                <div>最後回報（台灣時間）：<span data-health-field="installer.last_seen_label" data-health-empty="尚未收到">{{ health.last_seen_label or '尚未收到' }}</span>・<span data-health-field="installer.age_label">{{ health.age_label }}</span></div>
                 <div>執行版本：<span data-health-field="installer.app_version">{{ health.app_version }}</span></div>
                 <div>電腦：<span data-health-field="installer.workstation">{{ health.workstation }}</span></div>
                 <div data-health-field="installer.result_label">{{ health.result_label }}</div>
@@ -321,7 +321,7 @@
               {% endif %}
               <div>階段：<span data-health-field="{{ key }}.state_label">{{ health.state_label }}</span>・<span data-health-field="{{ key }}.phase_label">{{ health.phase_label }}</span></div>
               <div>實例：<span data-health-field="{{ key }}.instance_id">{{ health.instance_id }}</span></div>
-              <div>啟動：<span data-health-field="{{ key }}.process_started_at">{{ health.process_started_at }}</span></div>
+              <div>啟動（台灣時間）：<span data-health-field="{{ key }}.process_started_label">{{ health.process_started_label }}</span></div>
               <div>已取代實例：<span data-health-field="{{ key }}.retired_count">{{ health.retired_count }}</span></div>
               <div>更新請求：<span data-health-field="{{ key }}.update_request_id">{{ health.update_request_id }}</span></div>
             {% endfor %}

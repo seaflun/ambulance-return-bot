@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.24.1734">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.24.1734') }}</p>
+          <h2 class="update-card__title">值班台心跳時間改為台灣時間</h2>
+        </div>
+        <span class="update-card__versions">2026.10.24.1734</span>
+      </header>
+      <ul class="update-card__items">
+        <li>值班後台的 GUI、更新安裝器最後心跳及啟動時間統一轉成台灣時間，首次載入與自動更新顯示一致。</li>
+        <li>保留原始 UTC 時間、心跳存活判斷及更新驗證；無效或尚未收到的時間維持空白或提示。</li>
+      </ul>
+    </article>
+
     <article class="update-card" data-release-version="2026.10.24.1447">
       <header class="update-card__heading">
         <div>
