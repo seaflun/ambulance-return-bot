@@ -1802,6 +1802,7 @@ NOTICE_ERROR_MESSAGES = {
     "oa_login_page_failed": "通報登入頁載入失敗，請確認網站與連線。",
     "oa_login_form_timeout": "通報登入表單載入逾時，未完成登入。",
     "oa_login_verification_timeout": "通報登入送出後驗證逾時，尚未確認登入成功。",
+    "recipient_unconfirmed": "通報簽收責任尚未確認，請人工核對。",
     "browser_start_failed": "通報專用瀏覽器無法啟動，請確認 Chrome 狀態。",
     "browser_window_closed": "通報專用視窗已關閉，下輪將重新開啟。",
     "snapshot_failed": "通報頁未正常回應，請確認通報專用瀏覽器。",
@@ -1961,6 +1962,12 @@ def normalize_notice_collection_report(value: Any) -> dict[str, Any]:
         subject = sanitize_login_text(re.sub(r"[<>\x00-\x1f]", "", subject), 240)
         row = {"key": key, "subject": subject, "received_at": received.astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds"),
                "read_state": read_state}
+        if "signing_state" in record:
+            signing, signed_by = record["signing_state"], record.get("signed_by")
+            if (signing not in {"confirmed", "unknown"} or not isinstance(signed_by, str) or len(signed_by) > 40
+                    or re.search(r"[<>\x00-\x1f]", signed_by) or (signing == "confirmed") != bool(signed_by)):
+                return {}
+            row.update(signing_state=signing, signed_by=signed_by)
         if "published_at" in record:
             published = _heartbeat_datetime(record["published_at"])
             if published is None or published > reported + timedelta(minutes=5):
@@ -2139,7 +2146,9 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
                         read_label="網站已讀（無自動入表收據）") for key, row in manual_ledger.items()
                    if key not in ledger and row["published_date"] == calendar_day]
     view.update(last_received_at=daily_rows[0]["received_at"] if daily_rows else "", last_received_count=received_count,
-                records=sorted([dict(row, write_confirmed=True, write_label="已確認入表",
+                records=sorted([dict(row, write_confirmed=True, write_label="已確認入表" + (
+                               " · 簽收：" + row["signed_by"] if row.get("signing_state") == "confirmed" else
+                               " · 簽收待確認" if row.get("signing_state") == "unknown" else ""),
                               read_label=row.get("verification_read_label") or {"confirmed": "已確認已讀", "pending": "已讀待確認", "unknown": "已讀狀態未知"}[row["read_state"]])
                          for row in visible_rows] + manual_rows,
                          key=lambda row: (row.get("published_at") or row["received_at"], row["key"]), reverse=True),
@@ -2172,7 +2181,7 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
         if known:
             view["shift_count"] = sum(start <= _heartbeat_datetime(row["received_at"]) < end for row in rows)
     if known:
-        view["today_count"] = len(daily_rows)
+        view["today_count"] = len(daily_rows) + len(manual_rows)
     if not latest["complete"] or conflicting_key:
         view.update(state="uncertain", status_label="回報分片缺漏或狀態待確認", status_class="attention", error="無法確認完整通報數量。")
     elif state == "success":

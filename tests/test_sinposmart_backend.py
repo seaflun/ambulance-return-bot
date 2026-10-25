@@ -25,6 +25,22 @@ from ambulance_bot.sinposmart_backend import (
 
 
 class NoticeCollectionBackendTests(unittest.TestCase):
+    def test_signing_receipt_is_visible_and_unconfirmed_signing_is_not_invented(self):
+        record = {**self.record(), "signing_state": "confirmed", "signed_by": "莊小"}
+        self.put(self.event(records=[record]))
+        self.assertIn("簽收：莊小", self.view()["records"][0]["write_label"])
+        report = self.event(records=[{**record, "signed_by": "<private>"}])["snapshot"]["notice_collection"]
+        self.assertEqual(backend.normalize_notice_collection_report(report), {})
+
+    def test_daily_total_includes_manual_publications_without_inflating_automatic_receipts(self):
+        manual = {"key": "e" * 64, "subject": "人工收取", "published_at": "2026-10-22T08:30:00+08:00",
+                  "published_date": "2026-10-22", "observed_at": "2026-10-22T09:00:00+08:00", "read_state": "confirmed"}
+        self.put(self.event(records=[self.record()], manual_records=[manual], new_keys=[self.record()["key"]], new_count=1))
+        view = self.view()
+        self.assertEqual(view["today_count"], 2)
+        self.assertEqual(view["manual_count"], 1)
+        self.assertEqual(view["history"][0]["new_count"], 1)
+
     def test_manual_notice_is_shown_on_its_publication_day_without_claiming_automatic_entry(self):
         manual = {"key": "e" * 64, "subject": "已由人工收取的通報", "published_at": "2026-10-22T22:30:00+08:00",
                   "published_date": "2026-10-22", "observed_at": "2026-10-23T08:01:00+08:00", "read_state": "confirmed"}

@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.25.1636">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.25.1636') }}</p>
+          <h2 class="update-card__title">通報簽收回報與每日總數精準呈現</h2>
+        </div>
+        <span class="update-card__versions">2026.10.25.1636</span>
+      </header>
+      <ul class="update-card__items">
+        <li>已收通報顯示雲端實際簽收回報；缺少責任確認時標示簽收待確認，保留已入表與已讀結果，不推造舊簽收人員。</li>
+        <li>今日累積包含當日自動收取及依公布日期歸屬的手動收取，同一通報只計一次；自動新增入表與寫入收據維持原有界線。</li>
+        <li>同步新版值班台更新日誌；通報責任依正式交班確認，跨時段重試不更換簽收責任人。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.25.0912">
       <header class="update-card__heading">
         <div>
