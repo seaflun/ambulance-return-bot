@@ -562,6 +562,7 @@ body.workspace-page--duty :is(.section-head, .event-head) > * { min-width: 0; }
 body.workspace-page--duty :is(.section-note, .event-title) { overflow-wrap: anywhere; }
 body.workspace-page--duty :is(.event-title, .credential-sync-name) { margin: 0; }
 body.workspace-page--duty :is(.event-time, .event-step time, .summary-value) { font-variant-numeric: tabular-nums; }
+body.workspace-page--duty time { white-space: nowrap; }
 
 /* Content disclosures share feedback at every depth, including diagnostics. */
 body.workspace-page--duty :is(details.section, .section details) > summary,
@@ -619,13 +620,13 @@ body.workspace-page--duty :is(.unreturned-return-history, .notice-problem-histor
 body.workspace-page--duty :is(.login-diagnostic > .event-detail, .login-page-text) { margin-inline: .75rem; }
 
 /* History rows use the same time / description / result alignment as event cards. */
-body.workspace-page--duty .event-head { grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; }
+body.workspace-page--duty .event-head { grid-template-columns: minmax(max-content, 142px) minmax(0, 1fr) auto; gap: 12px 2rem; }
 body.workspace-page--duty .event-steps { gap: 0; margin-top: .75rem; padding-top: .25rem; }
 body.workspace-page--duty .unreturned-return-history .event-steps { margin: 0; padding: 0 .75rem; border: 0; }
 body.workspace-page--duty .event-step {
   min-width: 0;
-  grid-template-columns: 142px minmax(0, 1fr) auto;
-  gap: .75rem;
+  grid-template-columns: minmax(max-content, 142px) minmax(0, 1fr) auto;
+  gap: .75rem 2rem;
   align-items: start;
   padding: .75rem 0;
   color: var(--muted);
@@ -655,7 +656,14 @@ body.workspace-page--duty :is(.waiting-reason, .pause-reason, .login-page-text, 
 body.workspace-page--duty .notice-overview .status { flex-shrink: 1; max-width: 100%; }
 body.workspace-page--duty .section .status { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 
+@media (min-width: 761px) {
+  body.workspace-page--duty .day-nav { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; }
+  body.workspace-page--duty .day-link { min-width: 0; padding-inline: 4px; white-space: nowrap; }
+}
+
 @media (max-width: 760px) {
+  body.workspace-page--duty .day-nav { display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr)); gap: 4px; }
+  body.workspace-page--duty .day-link { width: auto; min-width: 0; padding-inline: 4px; white-space: nowrap; }
   body.workspace-page--duty details.section > summary.section-head { grid-template-columns: minmax(0, 1fr) auto; gap: .375rem .75rem; }
   body.workspace-page--duty details.section > summary.section-head > .section-note { grid-column: 1 / -1; grid-row: 2; }
   body.workspace-page--duty details.section > summary.section-head::after { grid-column: 2; grid-row: 1; justify-self: end; margin: 0; }

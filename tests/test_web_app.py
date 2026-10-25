@@ -5227,6 +5227,34 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("內建救護車不能刪除", builtin_body)
         self.assertIn("新坡92", builtin_body)
 
+    def test_admin_event_times_render_taipei_seconds_without_rewriting_history(self):
+        cases = (
+            ("2026-10-25T11:18:06", "2026-10-25 11:18:06"),
+            ("2026-10-25T11:18:06.123456+08:00", "2026-10-25 11:18:06"),
+            ("2026-10-25T16:30:10Z", "2026-10-26 00:30:10"),
+            ("未提供有效時間", "未提供有效時間"),
+        )
+        for service in ("ems", "disaster"):
+            with self.subTest(service=service):
+                task_id = f"event-time-display-{service}"
+                for index, (raw_time, _) in enumerate(cases):
+                    app_module.upsert_public_pc_report({
+                        "task_id": task_id, "event_id": f"{task_id}-{index}",
+                        "task": {"task_id": task_id, "service_type": service,
+                                 "vehicle": "新坡91" if service == "ems" else "新坡11"},
+                        "time": raw_time, "action": "原始測試事件", "status": "display_test",
+                        "detail": "保留原始事件內容。",
+                    })
+                response = self.client.get(f"/admin/{service}")
+                self.assertEqual(200, response.status_code)
+                labels = re.findall(r'<time class="event-time"[^>]*>(.*?)</time>',
+                                    response.get_data(as_text=True))
+                for _, expected in cases:
+                    self.assertIn(expected, labels)
+                stored = app_module.public_pc_report_for_task(task_id)
+                self.assertEqual([raw for raw, _ in cases],
+                                 [event["time"] for event in stored["events"]])
+
     def test_admin_public_pc_receives_and_lists_local_task_events(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         worker_headers = {"X-Worker-Token": "test-token"}
