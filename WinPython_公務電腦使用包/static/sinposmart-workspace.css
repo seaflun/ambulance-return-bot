@@ -562,6 +562,7 @@ body.workspace-page--duty :is(.section-head, .event-head) > * { min-width: 0; }
 body.workspace-page--duty :is(.section-note, .event-title) { overflow-wrap: anywhere; }
 body.workspace-page--duty :is(.event-title, .credential-sync-name) { margin: 0; }
 body.workspace-page--duty :is(.event-time, .event-step time, .summary-value) { font-variant-numeric: tabular-nums; }
+body.workspace-page--duty time { white-space: nowrap; }
 
 /* Content disclosures share feedback at every depth, including diagnostics. */
 body.workspace-page--duty :is(details.section, .section details) > summary,
@@ -619,12 +620,12 @@ body.workspace-page--duty :is(.unreturned-return-history, .notice-problem-histor
 body.workspace-page--duty :is(.login-diagnostic > .event-detail, .login-page-text) { margin-inline: .75rem; }
 
 /* History rows use the same time / description / result alignment as event cards. */
-body.workspace-page--duty .event-head { grid-template-columns: 142px minmax(0, 1fr) auto; gap: 12px; }
+body.workspace-page--duty .event-head { grid-template-columns: minmax(max-content, 142px) minmax(0, 1fr) auto; gap: 12px; }
 body.workspace-page--duty .event-steps { gap: 0; margin-top: .75rem; padding-top: .25rem; }
 body.workspace-page--duty .unreturned-return-history .event-steps { margin: 0; padding: 0 .75rem; border: 0; }
 body.workspace-page--duty .event-step {
   min-width: 0;
-  grid-template-columns: 142px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(max-content, 142px) minmax(0, 1fr) auto;
   gap: .75rem;
   align-items: start;
   padding: .75rem 0;
