@@ -6224,6 +6224,21 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn("今日累積 0 則", body)
         self.assertIn("尚未取得檢查回報", body)
 
+    def test_notice_manual_collection_displays_publication_time_and_separate_login_check(self):
+        store = app_module.sinposmart_store()
+        view = self._notice_view_fixture(manual_count=1, authentication_label="本輪列表身分已驗證",
+            scan_verified_at="2026-10-25T09:00:00+08:00", coverage_label="公布日期補查：2026-10-23 至 2026-10-25（含已讀）",
+            records=[{"subject": "人工通報", "published_at": "2026-10-24T22:30:00+08:00", "received_at": "",
+                      "write_label": "手動收取", "read_label": "網站已讀（無自動入表收據）"}])
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=view, create=True):
+            body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn("公布時間", body)
+        self.assertIn("2026-10-24 22:30:00", body)
+        self.assertIn("手動收取", body)
+        self.assertIn("本輪列表身分已驗證", body)
+        self.assertIn("是否入表請以試算表為準", body)
+
     def test_sinposmart_notice_problem_history_is_collapsed_with_latest_summary_and_escaped_rows(self):
         store = app_module.sinposmart_store()
         problems = [

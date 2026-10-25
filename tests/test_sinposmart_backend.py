@@ -25,6 +25,70 @@ from ambulance_bot.sinposmart_backend import (
 
 
 class NoticeCollectionBackendTests(unittest.TestCase):
+    def test_manual_notice_is_shown_on_its_publication_day_without_claiming_automatic_entry(self):
+        manual = {"key": "e" * 64, "subject": "已由人工收取的通報", "published_at": "2026-10-22T22:30:00+08:00",
+                  "published_date": "2026-10-22", "observed_at": "2026-10-23T08:01:00+08:00", "read_state": "confirmed"}
+        event = self.event(reported="2026-10-23T08:01:00+08:00", manual_records=[manual],
+            scan_scope="publication_window", scan_from="2026-10-21", scan_to="2026-10-23",
+            scan_verified_at="2026-10-23T08:01:00+08:00", new_keys=[], new_count=0)
+        self.put(event)
+        view = self.view("2026-10-22", now=datetime(2026, 10, 23, 8, 2, tzinfo=backend.TAIPEI_TIMEZONE))
+        row = view["records"][0]
+        self.assertEqual(row["write_label"], "手動收取")
+        self.assertFalse(row["write_confirmed"])
+        self.assertEqual(row["published_at"], manual["published_at"])
+        self.assertEqual(row["received_at"], "")
+        self.assertEqual(view["manual_count"], 1)
+        self.assertEqual(view["today_count"], None)
+        self.assertEqual(view["records"][0]["subject"], manual["subject"])
+
+    def test_publication_coverage_is_required_for_a_full_list_success_label(self):
+        self.put(self.event(records=[], coverage=False))
+        old = self.view()
+        self.assertIn("未讀列表", old["status_label"])
+        self.assertNotEqual(old["status_label"], "收取正常")
+        self.put(self.event(run=2, reported="2026-10-22T09:02:00+08:00", records=[], manual_records=[],
+            scan_scope="publication_window", scan_from="2026-10-20", scan_to="2026-10-22",
+            scan_verified_at="2026-10-22T09:02:00+08:00"))
+        view = self.view()
+        self.assertEqual(view["status_label"], "列表檢查完成（無新增入表）")
+        self.assertEqual(view["authentication_label"], "本輪列表身分已驗證")
+
+    def test_invalid_manual_evidence_and_incomplete_manual_parts_never_claim_success(self):
+        manual = {"key": "e" * 64, "subject": "人工通報", "published_at": "2026-10-22T08:00:00+08:00",
+                  "published_date": "2026-10-22", "observed_at": "2026-10-22T09:00:00+08:00", "read_state": "confirmed"}
+        for changes in ({"published_date": "2026-10-21"}, {"read_state": "unknown"}, {"key": "unsafe"},
+                        {"published_at": "2026-10-23T08:00:00+08:00"}, {"observed_at": "2026-10-23T08:00:00+08:00"}):
+            with self.subTest(changes=changes):
+                report = self.event(manual_records=[{**manual, **changes}])["snapshot"]["notice_collection"]
+                self.assertEqual(backend.normalize_notice_collection_report(report), {})
+        self.put(self.event(manual_records=[manual], part_count=2))
+        view = self.view()
+        self.assertEqual(view["records"], [])
+        self.assertFalse(view["parts_complete"])
+        self.assertNotEqual(view["status_class"], "complete")
+        self.assertNotEqual(view["authentication_label"], "本輪列表身分已驗證")
+
+    def test_automatic_receipt_takes_precedence_over_an_earlier_manual_observation(self):
+        record = self.record()
+        manual = {"key": record["key"], "subject": record["subject"], "published_at": "2026-10-22T08:00:00+08:00",
+                  "published_date": "2026-10-22", "observed_at": "2026-10-22T09:00:00+08:00", "read_state": "confirmed"}
+        self.put(self.event(manual_records=[manual], new_count=0, new_keys=[]))
+        self.put(self.event(run=2, reported="2026-10-22T09:02:00+08:00", records=[record]))
+        view = self.view()
+        self.assertEqual(len(view["records"]), 1)
+        self.assertEqual(view["manual_count"], 0)
+        self.assertTrue(view["records"][0]["write_confirmed"])
+        self.assertEqual(view["records"][0]["published_at"], manual["published_at"])
+
+    def test_notice_discovered_two_days_later_is_still_visible_on_publication_day(self):
+        manual = {"key": "e" * 64, "subject": "跨兩日補查", "published_at": "2026-10-22T22:30:00+08:00",
+                  "published_date": "2026-10-22", "observed_at": "2026-10-24T09:00:00+08:00", "read_state": "confirmed"}
+        self.put(self.event(reported="2026-10-24T09:00:00+08:00", manual_records=[manual]))
+        view = self.view("2026-10-22", now=datetime(2026, 10, 24, 9, 1, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertEqual(view["manual_count"], 1)
+        self.assertEqual(view["records"][0]["published_at"], manual["published_at"])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -39,6 +103,7 @@ class NoticeCollectionBackendTests(unittest.TestCase):
         run_id = f"00000000-0000-4000-8000-{run:012d}"
         current = datetime.fromisoformat(reported)
         state = changes.pop("state", "success")
+        coverage = changes.pop("coverage", True)
         report = {
             "schema_version": 1, "run_id": run_id, "part_index": 0, "part_count": 1, "state": state,
             "started_at": reported, "completed_at": reported if state not in {"running", "waiting"} else "",
@@ -49,6 +114,12 @@ class NoticeCollectionBackendTests(unittest.TestCase):
             "records": records, "new_keys": [row["key"] for row in records],
         }
         report.update(changes)
+        if coverage and state == "success":
+            report.setdefault("manual_records", [])
+            report.setdefault("scan_scope", "publication_window")
+            report.setdefault("scan_from", (current.date() - timedelta(days=2)).isoformat())
+            report.setdefault("scan_to", current.date().isoformat())
+            report.setdefault("scan_verified_at", reported)
         return {"event_id": f"notice-{run}-{state}-{report['part_index']}", "occurred_at": reported,
                 "record_type": "notice_collection", "trigger_type": "notice_poll", "status": state,
                 "snapshot": {"app_version": "2026.10.22.1200", "workstation": station, "run_id": run_id,

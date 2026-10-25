@@ -8,7 +8,7 @@
     <summary class="section-head">
       <h2 class="section-title">已收通報</h2>
       <div class="section-note notice-overview">
-        <span class="notice-counts" id="notice-counts">{% if view.count_known and view.shift_count is not none %}當班已收 {{ view.shift_count }} 則{% elif view.shift_label %}當班已收待確認{% else %}當班時段待取得{% endif %}｜{% if view.count_known and view.today_count is not none %}今日累積 {{ view.today_count }} 則{% else %}今日累積待確認{% endif %}</span>
+        <span class="notice-counts" id="notice-counts">{% if view.count_known and view.shift_count is not none %}當班已收 {{ view.shift_count }} 則{% elif view.shift_label %}當班已收待確認{% else %}當班時段待取得{% endif %}｜{% if view.count_known and view.today_count is not none %}今日累積 {{ view.today_count }} 則{% else %}今日累積待確認{% endif %}｜手動收取 {{ view.manual_count | default(0) }} 則</span>
         <span id="notice-status" class="status {{ view.status_class }}">{{ view.status_label }}</span>
       </div>
     </summary>
@@ -23,6 +23,9 @@
       <a class="button" id="notice-sheet-link" href="{{ view.spreadsheet_url }}" target="_blank" rel="noopener noreferrer">查看 Google 試算表</a>
     </div>
     <p id="notice-error" class="notice-error"{% if not view.error %} hidden{% endif %}>{{ view.error }}</p>
+    <p class="section-note">登入驗證：<span id="notice-authentication">{{ view.authentication_label | default('尚無登入驗證回報') }}</span><span id="notice-authentication-time">{% if view.scan_verified_at %} · {{ notice_time(view.scan_verified_at) }}{% endif %}</span></p>
+    <p class="section-note" id="notice-coverage">{{ view.coverage_label | default('尚未取得公布日期補查回報') }}</p>
+    <p class="section-note" id="notice-manual-note"{% if not view.manual_count %} hidden{% endif %}>手動收取表示網站已讀且無自動入表收據，是否入表請以試算表為準。</p>
     <div class="section-note">最後成功：<span id="notice-last-success">{{ notice_time(view.last_success_at, '尚未取得成功回報') }}</span> · 當班時段：<span id="notice-shift">{{ view.shift_label or '待取得' }}</span></div>
     <nav class="day-nav" id="notice-day-nav" aria-label="通報曆日">
       {% for calendar_day in view.calendar_days or [view.date] %}
@@ -32,11 +35,11 @@
     <div class="notice-history" id="notice-history">
       <h3 class="notice-records-heading">通報紀錄（<span id="notice-record-count">{{ view.records | length }}</span> 則）</h3>
       <div class="notice-table-wrap"><table class="notice-table">
-        <thead><tr><th scope="col">收取時間</th><th scope="col">通報主旨</th><th scope="col">入表</th><th scope="col">已讀確認</th></tr></thead>
+        <thead><tr><th scope="col">公布時間</th><th scope="col">收取時間</th><th scope="col">通報主旨</th><th scope="col">入表</th><th scope="col">已讀確認</th></tr></thead>
         <tbody id="notice-records">{% for record in view.records %}<tr>
-          <td>{{ notice_time(record.received_at) }}</td><td>{{ record.subject or '先前已確認收取（未保存主旨）' }}</td>
+          <td>{{ notice_time(record.published_at, '尚未取得') }}</td><td>{{ notice_time(record.received_at, '未提供（人工）') }}</td><td>{{ record.subject or '先前已確認收取（未保存主旨）' }}</td>
           <td>{{ record.write_label }}</td><td>{{ record.read_label }}</td>
-        </tr>{% else %}<tr><td colspan="4">目前沒有已確認入表的通報明細。</td></tr>{% endfor %}</tbody>
+        </tr>{% else %}<tr><td colspan="5">目前沒有通報明細。</td></tr>{% endfor %}</tbody>
       </table></div>
       {% set problems = view.history | rejectattr('state', 'in', ['success', 'running']) | list %}
       <details id="notice-problem-history" class="notice-problem-history"{% if not problems %} hidden{% endif %}>
@@ -182,9 +185,12 @@
     .notice-history { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
     .notice-records-heading { font-size: var(--text-md); font-weight: 700; }
     .notice-table-wrap { overflow-x: auto; margin-top: 10px; }
-    .notice-table { width: 100%; border-collapse: collapse; text-align: left; font-size: var(--text-sm); }
+    .notice-table { width: 100%; min-width: 860px; table-layout: auto; border-collapse: collapse; text-align: left; font-size: var(--text-sm); }
     .notice-table th, .notice-table td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    .notice-table td:nth-child(2) { min-width: 180px; overflow-wrap: anywhere; }
+    .notice-table td:nth-child(3) { min-width: 220px; overflow-wrap: anywhere; }
+    .notice-table th:nth-child(1), .notice-table td:nth-child(1),
+    .notice-table th:nth-child(2), .notice-table td:nth-child(2),
+    .notice-table th:nth-child(4), .notice-table td:nth-child(4) { white-space: nowrap; }
     .notice-problems { color: var(--attention); font-size: var(--text-sm); }
     .notice-problems p { margin-top: 8px; overflow-wrap: anywhere; }
     .unreturned-return-card { margin-bottom: 14px; border-color: #e7b76b; background: #fffaf1; }
@@ -731,7 +737,11 @@
         status.className = "status " + statusClass(view.status_class);
         const shift = view.count_known && Number.isInteger(view.shift_count) ? "當班已收 " + view.shift_count + " 則" : (view.shift_label ? "當班已收待確認" : "當班時段待取得");
         const today = view.count_known && Number.isInteger(view.today_count) ? "今日累積 " + view.today_count + " 則" : "今日累積待確認";
-        setText("notice-counts", shift + "｜" + today);
+        setText("notice-counts", shift + "｜" + today + "｜手動收取 " + (view.manual_count || 0) + " 則");
+        setText("notice-authentication", view.authentication_label || "尚無登入驗證回報");
+        setText("notice-authentication-time", view.scan_verified_at ? " · " + stamp(view.scan_verified_at) : "");
+        setText("notice-coverage", view.coverage_label || "尚未取得公布日期補查回報");
+        document.getElementById("notice-manual-note").hidden = !view.manual_count;
         setText("notice-last-checked", stamp(view.last_checked_at) || "尚未取得檢查回報");
         setText("notice-last-received", view.last_received_at ? stamp(view.last_received_at) + (view.last_received_count ? "，共 " + view.last_received_count + " 則" : "") : "尚無新增回報");
         setText("notice-next-check", stamp(view.next_check_at) || "待回報");
@@ -768,7 +778,7 @@
         const rows = document.createDocumentFragment();
         view.records.forEach(record => {
           const row = document.createElement("tr");
-          [stamp(record.received_at), record.subject || "先前已確認收取（未保存主旨）", record.write_label, record.read_label].forEach(value => {
+          [stamp(record.published_at) || "尚未取得", stamp(record.received_at) || "未提供（人工）", record.subject || "先前已確認收取（未保存主旨）", record.write_label, record.read_label].forEach(value => {
             const cell = document.createElement("td");
             cell.textContent = value;
             row.append(cell);
@@ -778,8 +788,8 @@
         if (!view.records.length) {
           const row = document.createElement("tr");
           const cell = document.createElement("td");
-          cell.colSpan = 4;
-          cell.textContent = "目前沒有已確認入表的通報明細。";
+          cell.colSpan = 5;
+          cell.textContent = "目前沒有通報明細。";
           row.append(cell);
           rows.append(row);
         }

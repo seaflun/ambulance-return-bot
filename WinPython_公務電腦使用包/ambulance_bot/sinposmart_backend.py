@@ -1781,7 +1781,7 @@ NOTICE_STATE_PRIORITY = {"running": 0, "waiting": 1, "success": 2, "missing_cred
                          "partial": 3, "uncertain": 3, "failed": 3, "invalid": 4}
 NOTICE_STATUS = {
     "running": ("收取中", "running"), "waiting": ("等待收取", "running"),
-    "missing_credentials": ("尚未設定通報帳密", "attention"), "success": ("收取正常", "complete"),
+    "missing_credentials": ("尚未設定通報帳密", "attention"), "success": ("未讀列表檢查完成", "attention"),
     "partial": ("部分完成，請確認", "attention"), "uncertain": ("收取結果待確認", "attention"),
     "failed": ("收取失敗", "failed"), "invalid": ("回報格式不符，狀態待確認", "attention"),
 }
@@ -1792,6 +1792,16 @@ NOTICE_REASONS = {
     "busy": "瀏覽器忙碌，等待下一次檢查。", "unknown": "通報收取發生異常，請至值班台確認。",
 }
 NOTICE_ERROR_MESSAGES = {
+    "publication_invalid": "通報公布日期時間或已讀狀態無法確認，補查尚未完成。",
+    "oa_ocr_unavailable": "通報驗證碼辨識元件未就緒，請確認公務電腦執行環境。",
+    "oa_captcha_not_ready": "通報驗證碼圖片尚未完整載入，未送出登入。",
+    "oa_captcha_unrecognized": "通報驗證碼未能辨識，未送出登入。",
+    "oa_captcha_ocr_failed": "通報驗證碼辨識元件執行失敗，未送出登入。",
+    "oa_captcha_rejected": "通報網站判定驗證碼不正確，請稍後重試。",
+    "oa_credentials_rejected": "通報網站拒絕帳號密碼，請確認已儲存的通報帳密。",
+    "oa_login_page_failed": "通報登入頁載入失敗，請確認網站與連線。",
+    "oa_login_form_timeout": "通報登入表單載入逾時，未完成登入。",
+    "oa_login_verification_timeout": "通報登入送出後驗證逾時，尚未確認登入成功。",
     "browser_start_failed": "通報專用瀏覽器無法啟動，請確認 Chrome 狀態。",
     "browser_window_closed": "通報專用視窗已關閉，下輪將重新開啟。",
     "snapshot_failed": "通報頁未正常回應，請確認通報專用瀏覽器。",
@@ -1949,12 +1959,52 @@ def normalize_notice_collection_report(value: Any) -> dict[str, Any]:
         keys.add(key)
         subject = re.sub(r"<[^>]*>", "", subject)
         subject = sanitize_login_text(re.sub(r"[<>\x00-\x1f]", "", subject), 240)
-        rows.append({"key": key, "subject": subject, "received_at": received.astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds"),
-                     "read_state": read_state})
+        row = {"key": key, "subject": subject, "received_at": received.astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds"),
+               "read_state": read_state}
+        if "published_at" in record:
+            published = _heartbeat_datetime(record["published_at"])
+            if published is None or published > reported + timedelta(minutes=5):
+                return {}
+            row["published_at"] = published.astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds")
+        rows.append(row)
     if (any(not isinstance(key, str) or key not in keys for key in new_keys)
             or len(set(new_keys)) != len(new_keys)):
         return {}
     clean.update(records=rows, new_keys=list(new_keys))
+    if "manual_records" in value:
+        manual_records = value["manual_records"]
+        if not isinstance(manual_records, list) or len(manual_records) > 200:
+            return {}
+        manual, manual_keys = [], set()
+        for record in manual_records:
+            if not isinstance(record, dict):
+                return {}
+            key, subject = record.get("key"), record.get("subject")
+            published, observed = _heartbeat_datetime(record.get("published_at")), _heartbeat_datetime(record.get("observed_at"))
+            if (not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None or key in keys or key in manual_keys
+                    or not isinstance(subject, str) or len(subject) > 240 or record.get("read_state") != "confirmed"
+                    or published is None or observed is None or observed > reported or published > observed + timedelta(minutes=5)
+                    or record.get("published_date") != published.astimezone(TAIPEI_TIMEZONE).date().isoformat()):
+                return {}
+            manual_keys.add(key)
+            manual.append({"key": key, "subject": sanitize_login_text(re.sub(r"<[^>]*>|[<>\x00-\x1f]", "", subject), 240),
+                "published_at": published.astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds"),
+                "published_date": record["published_date"],
+                "observed_at": observed.astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds"), "read_state": "confirmed"})
+        clean["manual_records"] = manual
+    if any(field in value for field in ("scan_scope", "scan_from", "scan_to", "scan_verified_at")):
+        verified = _heartbeat_datetime(value.get("scan_verified_at"))
+        try:
+            scan_from, scan_to = date.fromisoformat(value["scan_from"]), date.fromisoformat(value["scan_to"])
+        except (KeyError, ValueError, TypeError):
+            return {}
+        if (value.get("scan_scope") != "publication_window" or not 0 <= (scan_to - scan_from).days <= 7
+                or "manual_records" not in value
+                or not 0 <= (reported.astimezone(TAIPEI_TIMEZONE).date() - scan_to).days <= 1 or verified is None or verified > reported
+                or dates["started_at"] and verified < dates["started_at"]):
+            return {}
+        clean.update(scan_scope="publication_window", scan_from=scan_from.isoformat(), scan_to=scan_to.isoformat(),
+                     scan_verified_at=verified.astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds"))
     return clean
 
 
@@ -1979,8 +2029,8 @@ def _notice_groups(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         group = groups.setdefault(key, {"workstation": station, "at": moment, "report": report, "parts": {}, "conflict": False})
         if not report:
             continue
-        shared = {k: v for k, v in report.items() if k not in {"part_index", "records", "new_keys"}}
-        original = {k: v for k, v in group["report"].items() if k not in {"part_index", "records", "new_keys"}}
+        shared = {k: v for k, v in report.items() if k not in {"part_index", "records", "new_keys", "manual_records"}}
+        original = {k: v for k, v in group["report"].items() if k not in {"part_index", "records", "new_keys", "manual_records"}}
         part = group["parts"].get(report["part_index"])
         if shared != original or part is not None and part != report:
             group["conflict"] = True
@@ -1988,14 +2038,18 @@ def _notice_groups(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for group in groups.values():
         report, parts = group["report"], group["parts"]
         complete = bool(report) and not group["conflict"] and set(parts) == set(range(report["part_count"]))
-        rows, keys = [], []
+        rows, keys, manual = [], [], []
         if complete:
             for index in sorted(parts):
                 rows.extend(parts[index]["records"])
                 keys.extend(parts[index]["new_keys"])
+                manual.extend(parts[index].get("manual_records", []))
             complete = (len({row["key"] for row in rows}) == len(rows) and len(set(keys)) == len(keys)
+                        and len({row["key"] for row in manual}) == len(manual)
+                        and not {row["key"] for row in manual} & {row["key"] for row in rows}
                         and (report["new_count"] is None or report["new_count"] == len(keys)))
-        group.update(complete=bool(complete), records=rows if complete else [], new_keys=keys if complete else [])
+        group.update(complete=bool(complete), records=rows if complete else [], new_keys=keys if complete else [],
+                     manual_records=manual if complete else [])
     return sorted(groups.values(), key=lambda group: (group["at"], NOTICE_STATE_PRIORITY[group["report"].get("state", "invalid")]))
 
 
@@ -2009,14 +2063,15 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
     calendar_days.add(target.isoformat())
     groups = _notice_groups(events)
     daily = [group for group in groups if group["at"].astimezone(TAIPEI_TIMEZONE).date() == target]
-    sources = {group["workstation"] for group in daily}
+    observed = [group for group in groups if any(row["published_date"] == calendar_day for row in group.get("manual_records", []))]
+    sources = {group["workstation"] for group in daily + observed}
     requested = workstation or preferred_workstation
     has_request = bool(requested)
     if not isinstance(requested, str) or re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", requested) is None:
         requested = ""
     if requested and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", requested):
         sources.add(requested)
-    selected = requested if has_request else (daily[-1]["workstation"] if daily else "")
+    selected = requested if has_request else ((daily or observed)[-1]["workstation"] if daily or observed else "")
     relevant = [group for group in groups if group["workstation"] == selected]
     today = [group for group in daily if group["workstation"] == selected]
     historical = target != current_day
@@ -2025,6 +2080,7 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
             "shift_label": "", "state": "unknown", "status_label": "尚無回報", "status_class": "",
             "last_reported_at": "", "last_checked_at": "", "last_success_at": "", "last_received_at": "",
             "last_received_count": None, "next_check_at": "", "error": "", "records": [], "history": [], "parts_complete": False,
+            "manual_count": 0, "authentication_label": "尚無登入驗證回報", "scan_verified_at": "", "coverage_label": "尚未取得公布日期補查回報",
             "spreadsheet_url": "/admin/sinposmart/notices/spreadsheet?notice_day=" + target.isoformat(),
             "sources": [{"workstation": source, "selected": source == selected,
                          "last_reported_at": next((group["at"].astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds")
@@ -2037,7 +2093,7 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
         view.update(state=state, parts_complete=latest["complete"], last_reported_at=latest["at"].astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds"),
                     next_check_at=report.get("next_check_at", ""), error=report.get("message", ""))
         view["status_label"], view["status_class"] = NOTICE_STATUS[state]
-    ledger, history, received_count, conflicting_key = {}, [], None, False
+    ledger, history, received_count, conflicting_key, manual_ledger = {}, [], None, False, {}
     checked_groups = []
     for group in relevant:
         row_report = group["report"]
@@ -2047,6 +2103,8 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
                                 "state": "uncertain", "status_label": "回報分片缺漏或格式不符", "status_class": "attention",
                                 "new_count": None, "error": "無法確認完整通報數量。", "records": []})
             continue
+        for row in group.get("manual_records", []):
+            manual_ledger[row["key"]] = row
         new_rows = [row for row in group["records"] if row["key"] in group["new_keys"] and row["key"] not in ledger]
         for row in group["records"]:
             old = ledger.get(row["key"])
@@ -2068,20 +2126,35 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
             history.append({"run_id": row_report["run_id"], "reported_at": row_report["reported_at"], "state": row_report["state"],
                             "status_label": NOTICE_STATUS[row_report["state"]][0], "status_class": NOTICE_STATUS[row_report["state"]][1],
                             "new_count": len(new_rows), "error": row_report["message"], "records": new_rows})
+    for key, row in manual_ledger.items():
+        if key in ledger and not ledger[key].get("published_at"):
+            ledger[key]["published_at"] = row["published_at"]
     rows = sorted(ledger.values(), key=lambda row: (row["received_at"], row["key"]), reverse=True)
     start, end = _heartbeat_datetime(report.get("shift_start")), _heartbeat_datetime(report.get("shift_end"))
     daily_rows = [row for row in rows if _heartbeat_datetime(row["received_at"]).astimezone(TAIPEI_TIMEZONE).date() == target]
-    visible_rows = [row for row in rows if row in daily_rows
+    visible_rows = [row for row in rows if row in daily_rows or row.get("published_at", "")[:10] == calendar_day
                     or start and end and start <= _heartbeat_datetime(row["received_at"]) < end]
     view.update(apply_notice_verifications(visible_rows, verifications, selected, now=current))
+    manual_rows = [dict(row, received_at="", collection_method="manual", write_confirmed=False, write_label="手動收取",
+                        read_label="網站已讀（無自動入表收據）") for key, row in manual_ledger.items()
+                   if key not in ledger and row["published_date"] == calendar_day]
     view.update(last_received_at=daily_rows[0]["received_at"] if daily_rows else "", last_received_count=received_count,
-                records=[dict(row, write_confirmed=True, write_label="已確認入表",
+                records=sorted([dict(row, write_confirmed=True, write_label="已確認入表",
                               read_label=row.get("verification_read_label") or {"confirmed": "已確認已讀", "pending": "已讀待確認", "unknown": "已讀狀態未知"}[row["read_state"]])
-                         for row in visible_rows],
+                         for row in visible_rows] + manual_rows,
+                         key=lambda row: (row.get("published_at") or row["received_at"], row["key"]), reverse=True),
+                manual_count=len(manual_rows),
                 history=list(reversed(history)))
+    if historical:
+        covering = [group for group in relevant if group["complete"] and group["report"].get("scan_scope") == "publication_window"
+                    and group["report"]["scan_from"] <= calendar_day <= group["report"]["scan_to"]]
+        if covering:
+            proof = covering[-1]["report"]
+            view.update(scan_verified_at=proof["scan_verified_at"], authentication_label="補查時列表身分已驗證",
+                        coverage_label=f"公布日期補查：{proof['scan_from']} 至 {proof['scan_to']}（含已讀）")
     if not today:
         if historical:
-            view["status_label"] = "歷史：尚無回報"
+            view["status_label"] = "歷史：已完成公布日期補查" if view["scan_verified_at"] else "歷史：尚無回報"
         return view
     if checked_groups:
         view["last_checked_at"] = checked_groups[-1]["report"]["completed_at"]
@@ -2111,10 +2184,21 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
             view.update(state="reviewed", status_label=f"已核對，{len(unresolved)}則原件未找到", status_class="")
         elif not clean_poll or unresolved:
             view.update(state="uncertain", status_label="入表或已讀狀態待確認", status_class="attention")
+        elif report.get("scan_scope") == "publication_window":
+            view.update(status_label=(f"列表檢查完成（新增入表 {report['new_count']} 則）" if report.get("new_count")
+                                      else "列表檢查完成（無新增入表）"), status_class="complete")
+    if not historical and latest["complete"] and report.get("scan_scope") == "publication_window":
+        view.update(scan_verified_at=report["scan_verified_at"], authentication_label="本輪列表身分已驗證",
+                    coverage_label=f"公布日期補查：{report['scan_from']} 至 {report['scan_to']}（含已讀）")
+    elif not historical and state == "failed" and report.get("error_stage") == "login":
+        view["authentication_label"] = "本輪登入未完成"
+    elif not historical and state == "running":
+        view["authentication_label"] = "本輪登入與列表檢查中"
     if latest["at"] > current + timedelta(minutes=5):
         view.update(count_known=False, today_count=None, shift_count=None, status_label="回報時間待確認", status_class="attention")
     elif target == current.astimezone(TAIPEI_TIMEZONE).date() and report.get("next_check_at") and current > _heartbeat_datetime(report["next_check_at"]) + timedelta(minutes=2):
         view.update(status_label="超過預定檢查時間，狀態待確認", status_class="attention")
+        view["authentication_label"] = "上次驗證已過期，等待新回報"
     if historical:
         view["status_label"] = "歷史：" + view["status_label"]
     return view
@@ -2163,13 +2247,13 @@ class SinpoSmartBackendStore:
             target = None
         target = target or _heartbeat_now(now).astimezone(TAIPEI_TIMEZONE).date()
         events = []
-        # A civil day straddles two fire-day files. Include its neighbour for delayed, cross-midnight receipt parts.
+        # Civil days straddle fire-day files; the three-day publication scan may report two days later.
         with self._lock:
             try:
                 verifications = json.loads((self.root_dir / NOTICE_VERIFICATION_FILENAME).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 verifications = None
-            for offset in (-1, 0, 1):
+            for offset in (-1, 0, 1, 2):
                 try:
                     path = self.path_for_day((target + timedelta(days=offset)).isoformat())
                 except OverflowError:
