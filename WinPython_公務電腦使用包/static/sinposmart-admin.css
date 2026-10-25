@@ -489,8 +489,8 @@
 
 .events li {
   display: grid;
-  grid-template-columns: 20ch minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 10px 1rem;
   padding: 9px 0;
   border-bottom: 1px solid var(--separator);
 }
@@ -502,6 +502,7 @@
 }
 
 .event-main { min-width: 0; }
+.event-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .event-action { font-weight: 720; }
 .event-operator { margin-top: 2px; }
 .event-detail { margin-top: 2px; color: var(--secondary-label); font-size: var(--type-small); overflow-wrap: anywhere; }

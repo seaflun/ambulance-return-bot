@@ -160,6 +160,7 @@ from ambulance_bot.sinposmart_backend import (
     sinposmart_status_class,
     sinposmart_status_label,
     sinposmart_trigger_label,
+    taipei_local_datetime,
 )
 from ambulance_bot.task_runner import TaskRunner
 from ambulance_bot.task_cancellation import clear_task_cancellation, request_task_cancellation
@@ -8591,6 +8592,17 @@ def event_site_name(event: dict) -> str:
     return "任務"
 
 
+def event_datetime_label(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return taipei_local_datetime(parsed).isoformat(sep=" ", timespec="seconds")
+    except (ValueError, OverflowError):
+        return raw
+
+
 def update_release_datetime(version: object, fallback: object = "") -> str:
     value = str(version or "")
     original = "" if fallback is None else str(fallback)
@@ -8606,6 +8618,7 @@ def update_release_datetime(version: object, fallback: object = "") -> str:
 def template_helpers() -> dict:
     return {
         "update_release_datetime": update_release_datetime,
+        "event_datetime_label": event_datetime_label,
         "task_entry_asset_version": package_version(),
         "last_vehicle_mileage_times": last_vehicle_mileage_times,
         "vehicle_mileage_hint_history": vehicle_mileage_hint_history,

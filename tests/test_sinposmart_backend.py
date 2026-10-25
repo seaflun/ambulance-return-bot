@@ -157,10 +157,10 @@ class NoticeCollectionBackendTests(unittest.TestCase):
         self.assertEqual((view["today_count"], view["verified_read_count"], view["original_not_found_count"]), (34, 33, 1))
         self.assertEqual((view["state"], view["status_class"], view["status_label"]), ("reviewed", "", "已核對，1則原件未找到"))
         by_key = {row["key"]: row for row in view["records"]}
-        self.assertEqual(by_key[records[0]["key"]]["read_label"], "已人工核實已讀")
+        self.assertEqual(by_key[records[0]["key"]]["read_label"], "已確認已讀")
         missing = by_key[records[-1]["key"]]
         self.assertEqual(missing["read_state"], "unknown")
-        self.assertEqual(missing["read_label"], "原件未找到（疑似撤回／重發）")
+        self.assertEqual(missing["read_label"], "原件未找到")
         self.assertEqual(missing["subject"], records[-1]["subject"])
         self.assertEqual(missing["related_key"], records[-2]["key"])
         self.assertEqual(view["verification_checked_at"], entries[-1]["verified_at"])

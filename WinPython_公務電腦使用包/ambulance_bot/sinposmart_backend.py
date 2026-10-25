@@ -1882,9 +1882,9 @@ def apply_notice_verifications(rows: list[dict[str, Any]], value: Any, workstati
         if not row["subject"]:
             row["subject"] = entry["subject"]
         if entry["result"] == "read_confirmed":
-            row.update(read_state="confirmed", verification_read_label="已人工核實已讀")
+            row.update(read_state="confirmed", verification_read_label="已確認已讀")
         else:
-            row.update(verification_read_label="原件未找到（疑似撤回／重發）", related_key=entry["related_key"])
+            row.update(verification_read_label="原件未找到", related_key=entry["related_key"])
         applied.append(entry)
     read_count = sum(entry["result"] == "read_confirmed" for entry in applied)
     missing_count = len(applied) - read_count
@@ -2136,7 +2136,7 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
                     or start and end and start <= _heartbeat_datetime(row["received_at"]) < end]
     view.update(apply_notice_verifications(visible_rows, verifications, selected, now=current))
     manual_rows = [dict(row, received_at="", collection_method="manual", write_confirmed=False, write_label="手動收取",
-                        read_label="網站已讀（無自動入表收據）") for key, row in manual_ledger.items()
+                        read_label="網站已讀") for key, row in manual_ledger.items()
                    if key not in ledger and row["published_date"] == calendar_day]
     view.update(last_received_at=daily_rows[0]["received_at"] if daily_rows else "", last_received_count=received_count,
                 records=sorted([dict(row, write_confirmed=True, write_label="已確認入表",

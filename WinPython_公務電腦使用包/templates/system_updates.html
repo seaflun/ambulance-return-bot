@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.25.1245">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.25.1245') }}</p>
+          <h2 class="update-card__title">精簡通報資訊並統一後台事件時間</h2>
+        </div>
+        <span class="update-card__versions">2026.10.25.1245</span>
+      </header>
+      <ul class="update-card__items">
+        <li>已收通報摘要改為緊湊排列，登入驗證、補查範圍與最後成功時間收合至「更多狀態」，自動刷新後維持相同格式。</li>
+        <li>桌機七個日期排成同一行，手機採緊湊分列；通報公布與收取時間僅顯示時分秒，已讀標籤移除括號說明。</li>
+        <li>值班後台拉開時間與標題間距，救災／救護完整事件縮短空白，統一顯示台灣日期與時分秒。</li>
+        <li>保留原始事件紀錄，改善 UTC、跨日與舊格式時間的顯示相容性，並完成既有時區問題的回歸檢查。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.25.1048">
       <header class="update-card__heading">
         <div>

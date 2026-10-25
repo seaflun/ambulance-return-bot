@@ -530,7 +530,7 @@
               <ul class="events">
                 {% for event in public_pc_event_rows(item) | reverse %}
                   <li>
-                    <time class="event-time">{{ event.time }}</time>
+                    <time class="event-time" datetime="{{ event.time }}">{{ event_datetime_label(event.time) }}</time>
                     <div class="event-main">
                       <div class="event-action">{{ event.action }}</div>
                       {% for folder_path in event.folder_paths or [] %}
