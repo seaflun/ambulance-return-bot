@@ -2143,13 +2143,16 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
                     or start and end and start <= _heartbeat_datetime(row["received_at"]) < end]
     view.update(apply_notice_verifications(visible_rows, verifications, selected, now=current))
     manual_rows = [dict(row, received_at="", collection_method="manual", write_confirmed=False, write_label="手動收取",
-                        read_label="網站已讀") for key, row in manual_ledger.items()
+                        write_detail="無自動入表收據，請核對試算表。", read_label="確認", read_detail="網站已讀")
+                   for key, row in manual_ledger.items()
                    if key not in ledger and row["published_date"] == calendar_day]
     view.update(last_received_at=daily_rows[0]["received_at"] if daily_rows else "", last_received_count=received_count,
-                records=sorted([dict(row, write_confirmed=True, write_label="已確認入表" + (
-                               " · 簽收：" + row["signed_by"] if row.get("signing_state") == "confirmed" else
-                               " · 簽收待確認" if row.get("signing_state") == "unknown" else ""),
-                              read_label=row.get("verification_read_label") or {"confirmed": "已確認已讀", "pending": "已讀待確認", "unknown": "已讀狀態未知"}[row["read_state"]])
+                records=sorted([dict(row, write_confirmed=True,
+                              write_label="簽收：" + row["signed_by"] if row.get("signing_state") == "confirmed" else
+                                          "不明" if row.get("signing_state") == "unknown" else "已入表",
+                              write_detail="已確認入表" + ("；簽收待確認" if row.get("signing_state") == "unknown" else ""),
+                              read_label={"confirmed": "確認", "pending": "待確認", "unknown": "不明"}[row["read_state"]],
+                              read_detail=row.get("verification_read_label") or {"confirmed": "已確認已讀", "pending": "已讀待確認", "unknown": "已讀狀態未知"}[row["read_state"]])
                          for row in visible_rows] + manual_rows,
                          key=lambda row: (row.get("published_at") or row["received_at"], row["key"]), reverse=True),
                 manual_count=len(manual_rows),

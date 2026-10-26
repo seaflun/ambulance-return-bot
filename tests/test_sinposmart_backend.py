@@ -28,9 +28,21 @@ class NoticeCollectionBackendTests(unittest.TestCase):
     def test_signing_receipt_is_visible_and_unconfirmed_signing_is_not_invented(self):
         record = {**self.record(), "signing_state": "confirmed", "signed_by": "莊小"}
         self.put(self.event(records=[record]))
-        self.assertIn("簽收：莊小", self.view()["records"][0]["write_label"])
+        self.assertEqual(self.view()["records"][0]["write_label"], "簽收：莊小")
         report = self.event(records=[{**record, "signed_by": "<private>"}])["snapshot"]["notice_collection"]
         self.assertEqual(backend.normalize_notice_collection_report(report), {})
+
+    def test_compact_confirmation_labels_keep_uncertainty_and_details(self):
+        records = [{**self.record(), "key": key * 64, "read_state": state,
+                    "signing_state": "unknown", "signed_by": ""}
+                   for key, state in (("a", "confirmed"), ("b", "pending"), ("c", "unknown"))]
+        self.put(self.event(records=records))
+        rows = {row["key"]: row for row in self.view()["records"]}
+        for key, state, label in (("a", "confirmed", "確認"), ("b", "pending", "待確認"), ("c", "unknown", "不明")):
+            self.assertEqual(rows[key * 64]["write_label"], "不明")
+            self.assertIn("簽收待確認", rows[key * 64]["write_detail"])
+            self.assertEqual(rows[key * 64]["read_label"], label)
+            self.assertEqual(rows[key * 64]["read_state"], state)
 
     def test_daily_total_includes_manual_publications_without_inflating_automatic_receipts(self):
         manual = {"key": "e" * 64, "subject": "人工收取", "published_at": "2026-10-22T08:30:00+08:00",
@@ -51,6 +63,7 @@ class NoticeCollectionBackendTests(unittest.TestCase):
         view = self.view("2026-10-22", now=datetime(2026, 10, 23, 8, 2, tzinfo=backend.TAIPEI_TIMEZONE))
         row = view["records"][0]
         self.assertEqual(row["write_label"], "手動收取")
+        self.assertEqual(row["read_label"], "確認")
         self.assertFalse(row["write_confirmed"])
         self.assertEqual(row["published_at"], manual["published_at"])
         self.assertEqual(row["received_at"], "")
@@ -173,10 +186,11 @@ class NoticeCollectionBackendTests(unittest.TestCase):
         self.assertEqual((view["today_count"], view["verified_read_count"], view["original_not_found_count"]), (34, 33, 1))
         self.assertEqual((view["state"], view["status_class"], view["status_label"]), ("reviewed", "", "已核對，1則原件未找到"))
         by_key = {row["key"]: row for row in view["records"]}
-        self.assertEqual(by_key[records[0]["key"]]["read_label"], "已確認已讀")
+        self.assertEqual(by_key[records[0]["key"]]["read_label"], "確認")
         missing = by_key[records[-1]["key"]]
         self.assertEqual(missing["read_state"], "unknown")
-        self.assertEqual(missing["read_label"], "原件未找到")
+        self.assertEqual(missing["read_label"], "不明")
+        self.assertEqual(missing["read_detail"], "原件未找到")
         self.assertEqual(missing["subject"], records[-1]["subject"])
         self.assertEqual(missing["related_key"], records[-2]["key"])
         self.assertEqual(view["verification_checked_at"], entries[-1]["verified_at"])
@@ -214,7 +228,7 @@ class NoticeCollectionBackendTests(unittest.TestCase):
                             new_keys=[], new_count=0))
         view = self.view(now=datetime(2026, 10, 22, 9, 3, tzinfo=backend.TAIPEI_TIMEZONE))
         self.assertEqual(view["original_not_found_count"], 0)
-        self.assertEqual(view["records"][0]["read_label"], "已確認已讀")
+        self.assertEqual(view["records"][0]["read_label"], "確認")
         self.assertEqual(view["verification_checked_at"], "")
         self.assertEqual(view["status_class"], "complete")
 

@@ -6210,7 +6210,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             "spreadsheet_url": "/admin/sinposmart/notices/spreadsheet?notice_day=2026-10-22",
             "records": [{"key": "a" * 64, "subject": "通報主旨 <script>alert(1)</script>",
                          "received_at": "2026-10-22T15:45:00+08:00", "read_state": "pending",
-                         "write_confirmed": True, "write_label": "已入表", "read_label": "已讀待確認"}],
+                         "write_confirmed": True, "write_label": "簽收：佳諭", "read_label": "待確認",
+                         "write_detail": "已確認入表", "read_detail": "已讀待確認"}],
             "history": [],
         }
         view.update(changes)
@@ -6227,7 +6228,10 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("今日累積 5 則", body)
         self.assertIn("曆日", body)
         self.assertIn("SP-76F413", body)
-        self.assertIn("已讀待確認", body)
+        self.assertIn('<th scope="col">入表確認</th>', body)
+        self.assertIn('<td title="已確認入表">簽收：佳諭</td><td title="已讀待確認">待確認</td>', body)
+        self.assertIn('record.write_detail', body)
+        self.assertIn('record.read_detail', body)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", body)
         self.assertNotIn("<script>alert(1)</script>", body)
         self.assertIn('id="notice-history"', body)

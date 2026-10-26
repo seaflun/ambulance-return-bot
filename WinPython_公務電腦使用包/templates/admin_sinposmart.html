@@ -40,10 +40,10 @@
     <div class="notice-history" id="notice-history">
       <h3 class="notice-records-heading">通報紀錄（<span id="notice-record-count">{{ view.records | length }}</span> 則）</h3>
       <div class="notice-table-wrap"><table class="notice-table">
-        <thead><tr><th scope="col">公布時間</th><th scope="col">收取時間</th><th scope="col">通報主旨</th><th scope="col">入表</th><th scope="col">已讀確認</th></tr></thead>
+        <thead><tr><th scope="col">公布時間</th><th scope="col">收取時間</th><th scope="col">通報主旨</th><th scope="col">入表確認</th><th scope="col">已讀確認</th></tr></thead>
         <tbody id="notice-records">{% for record in view.records %}<tr>
           <td title="{{ notice_time(record.published_at) }}">{{ notice_clock(record.published_at, '尚未取得') }}</td><td title="{{ notice_time(record.received_at) }}">{{ notice_clock(record.received_at, '未提供') }}</td><td>{{ record.subject or '先前已確認收取（未保存主旨）' }}</td>
-          <td>{{ record.write_label }}</td><td>{{ record.read_label }}</td>
+          <td title="{{ record.write_detail or record.write_label }}">{{ record.write_label }}</td><td title="{{ record.read_detail or record.read_label }}">{{ record.read_label }}</td>
         </tr>{% else %}<tr><td colspan="5">目前沒有通報明細。</td></tr>{% endfor %}</tbody>
       </table></div>
       {% set problems = view.history | rejectattr('state', 'in', ['success', 'running']) | list %}
@@ -794,6 +794,8 @@
             const cell = document.createElement("td");
             cell.textContent = value;
             if (column < 2) cell.title = stamp(column === 0 ? record.published_at : record.received_at);
+            if (column === 3) cell.title = record.write_detail || record.write_label;
+            if (column === 4) cell.title = record.read_detail || record.read_label;
             row.append(cell);
           });
           rows.append(row);
