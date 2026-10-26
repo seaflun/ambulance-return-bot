@@ -561,6 +561,14 @@
             {% if event.duty_sheet_summary %}
               <div class="event-detail">檔案：{{ event.duty_sheet_summary.workbook_name }}｜登打日期：{{ event.duty_sheet_summary.target_date }}｜執行模式：{{ event.duty_sheet_summary.mode_label }}</div>
             {% endif %}
+            {% if event.preflight_checks %}
+              <details class="event-detail rescue-video-checks">
+                <summary>檢查明細（{{ event.preflight_checks | length }} 項）</summary>
+                {% for check in event.preflight_checks %}
+                  <div>{{ check.label }}｜{{ check.status_label }}：{{ check.detail }}{% if check.code %}（{{ check.code }}）{% endif %}</div>
+                {% endfor %}
+              </details>
+            {% endif %}
             {% if event.daily_vehicle_report %}
               {% set vehicle_report = event.daily_vehicle_report %}
               <div class="event-detail">清點日期：{{ vehicle_report.target_date or '未提供日期' }}｜執行模式：{{ vehicle_report.mode_label }}</div>
@@ -583,6 +591,9 @@
               <div class="event-detail">
                 日期：{{ event.rescue_video_summary.target_date }}｜車輛：{{ event.rescue_video_summary.vehicle }}{% if event.rescue_video_summary.mode_label %}｜模式：{{ event.rescue_video_summary.mode_label }}{% endif %}｜案件數：{{ event.rescue_video_summary.case_count }}｜總數量：{{ event.rescue_video_summary.total_count }}｜使用時間：{{ event.rescue_video_summary.usage_time }}
               </div>
+              {% if 'ready_count' in event.rescue_video_summary %}
+                <div class="event-detail">{{ '可備份' if event.rescue_video_state == 'previewed' else '已備份' }}：{{ event.rescue_video_summary.ready_count }} 段｜待確認：{{ event.rescue_video_summary.pending_count }} 段｜失敗：{{ event.rescue_video_summary.failed_count }} 段</div>
+              {% endif %}
               {% if event.rescue_video_summary.classification_rows %}
                 <details class="event-detail rescue-video-diagnostics">
                   <summary>分類排查明細（{{ event.rescue_video_summary.classification_rows | length }} / {{ event.rescue_video_summary.total_count }} 筆）</summary>

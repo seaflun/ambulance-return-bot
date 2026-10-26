@@ -6834,6 +6834,26 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("結果：勤務表登打完成：115/06/19", body)
         self.assertNotIn("duty_sheet", body)
 
+    def test_sinposmart_admin_preflight_shows_safe_checks_and_input_state(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+            "event_id": "rescue-input", "occurred_at": datetime.now().replace(hour=16).isoformat(),
+            "record_type": "tool_action_finished", "status": "waiting", "content": "請選車號。",
+            "snapshot": {
+                "tool_name": "rescue_video_preflight", "run_id": "rescue-input",
+                "rescue_video_state": "needs_input",
+                "preflight_checks": [{"key": "vehicle_date", "label": "日期／車號", "level": "error",
+                                      "code": "vehicle_required", "detail": '<script>alert("unsafe")</script>'}],
+            },
+        })
+        self.assertEqual(response.status_code, 200)
+        body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn("待補資料", body)
+        self.assertIn("檢查明細（1 項）", body)
+        self.assertIn("vehicle_required", body)
+        self.assertIn("&lt;script&gt;", body)
+        self.assertNotIn('<script>alert("unsafe")</script>', body)
+
     def test_sinposmart_admin_shows_each_rescue_video_summary_separately(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}

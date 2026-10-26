@@ -904,6 +904,56 @@ def sinposmart_duty_sheet_summary(event: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def sinposmart_rescue_video_state(event: dict[str, Any]) -> dict[str, str]:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    if snapshot.get("tool_name") not in {"rescue_video", "rescue_video_preflight"}:
+        return {}
+    states = {
+        "loaded": ("已讀取", "idle"), "needs_input": ("待補資料", "attention"),
+        "checked": ("檢查完成", "idle"), "previewed": ("預覽完成", "idle"),
+        "backed_up": ("備份完成", "complete"), "partial": ("部分完成", "attention"),
+        "failed": ("失敗", "failed"),
+    }
+    state = sanitize_scalar(snapshot.get("rescue_video_state"), 40)
+    if state not in states:
+        return {}
+    if sinposmart_status_class(str(event.get("status") or "")) == "failed":
+        state = "failed"
+    elif state == "backed_up":
+        try:
+            if any(int(snapshot.get(key) or 0) > 0 for key in ("pending_count", "failed_count")):
+                state = "partial"
+        except (TypeError, ValueError):
+            state = "partial"
+    label, status_class = states[state]
+    return {"rescue_video_state": state, "status_label": label, "status_class": status_class}
+
+
+def sinposmart_rescue_video_checks(event: dict[str, Any]) -> list[dict[str, str]]:
+    snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    if snapshot.get("tool_name") not in {"rescue_video", "rescue_video_preflight"}:
+        return []
+    rows = snapshot.get("preflight_checks")
+    if not isinstance(rows, list):
+        return []
+    checks = []
+    for row in rows[:6]:
+        if not isinstance(row, dict):
+            continue
+        key = sanitize_scalar(row.get("key"), 40)
+        level = sanitize_scalar(row.get("level"), 20)
+        if key not in {"source", "destination", "work_log", "vehicle_date", "report", "videos"}:
+            continue
+        if level not in {"ok", "error", "pending"}:
+            continue
+        checks.append({
+            "key": key, "label": sanitize_scalar(row.get("label"), 80), "level": level,
+            "code": sanitize_scalar(row.get("code"), 80), "detail": sanitize_scalar(row.get("detail"), 600),
+            "status_label": {"ok": "可用", "error": "待處理", "pending": "待檢查"}[level],
+        })
+    return checks
+
+
 def sinposmart_rescue_video_summary(event: dict[str, Any]) -> dict[str, Any]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     if sanitize_scalar(snapshot.get("tool_name"), 120) != "rescue_video":
@@ -957,6 +1007,12 @@ def sinposmart_rescue_video_summary(event: dict[str, Any]) -> dict[str, Any]:
     }
     if mode_label:
         summary["mode_label"] = mode_label
+    if sinposmart_rescue_video_state(event):
+        for key in ("ready_count", "pending_count", "failed_count"):
+            try:
+                summary[key] = min(total_count, max(0, int(snapshot.get(key) or 0)))
+            except (TypeError, ValueError):
+                summary[key] = 0
     if classification_rows:
         summary["classification_rows"] = classification_rows
         summary["classification_rows_omitted"] = max(0, total_count - len(classification_rows))
@@ -1487,6 +1543,11 @@ def sinposmart_admin_tool_event(
     card["last_occurred_at"] = finished_at or started_at or card["last_occurred_at"]
     card["result_text"] = str(base_event.get("error") or base_event.get("content") or "")
     card["rescue_video_summary"] = sinposmart_rescue_video_summary(base_event)
+    card["preflight_checks"] = sinposmart_rescue_video_checks(base_event)
+    rescue_state = sinposmart_rescue_video_state(base_event) if finished_event else {}
+    if rescue_state:
+        card.update(rescue_state)
+        steps[-1].update(status_label=card["status_label"], status_class=card["status_class"])
     card["duty_sheet_summary"] = sinposmart_duty_sheet_summary(base_event)
     snapshot = base_event.get("snapshot") if isinstance(base_event.get("snapshot"), dict) else {}
     is_daily_vehicle = snapshot.get("tool_name") == "daily_vehicle"
@@ -2868,6 +2929,10 @@ def summarize_sinposmart_events(events: list[dict[str, Any]]) -> dict[str, int]:
         record_type = str(event.get("record_type") or "")
         trigger_type = str(event.get("trigger_type") or "")
         status_class = sinposmart_status_class(str(event.get("status") or ""))
+        if record_type == "tool_action_finished":
+            rescue_state = sinposmart_rescue_video_state(event)
+            if rescue_state:
+                status_class = rescue_state["status_class"]
         if record_type == "login":
             summary["login"] += 1
         if record_type == "tool_action_started":

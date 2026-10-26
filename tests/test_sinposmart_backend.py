@@ -2005,6 +2005,60 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["tool_events"][0]["result_text"], "勤務表登打完成：115/06/19")
         self.assertEqual([step["label"] for step in view["tool_events"][0]["steps"]], ["開始執行", "結束執行"])
 
+    def test_rescue_video_states_distinguish_input_preview_and_partial_backup(self):
+        for state, raw_status, label, tone in (
+            ("loaded", "loaded", "已讀取", "idle"),
+            ("needs_input", "waiting", "待補資料", "attention"),
+            ("checked", "completed", "檢查完成", "idle"),
+            ("previewed", "completed", "預覽完成", "idle"),
+            ("backed_up", "completed", "備份完成", "complete"),
+            ("partial", "partial", "部分完成", "attention"),
+            ("failed", "failed", "失敗", "failed"),
+        ):
+            with self.subTest(state=state):
+                event = normalize_sinposmart_event({
+                    "event_id": state, "record_type": "tool_action_finished",
+                    "status": raw_status, "occurred_at": "2026-10-27T01:00:00+08:00",
+                    "snapshot": {"tool_name": "rescue_video", "rescue_video_state": state},
+                })
+                card = backend.sinposmart_admin_tool_event({"finished": event})
+                self.assertEqual((card["status_label"], card["status_class"]), (label, tone))
+                self.assertEqual(card["steps"][-1]["status_label"], label)
+                self.assertEqual(card["steps"][-1]["status_class"], tone)
+
+    def test_preflight_checks_are_bounded_and_keep_safe_failure_reasons(self):
+        event = normalize_sinposmart_event({
+            "record_type": "tool_action_finished", "status": "waiting",
+            "snapshot": {
+                "tool_name": "rescue_video_preflight", "rescue_video_state": "needs_input",
+                "preflight_checks": [
+                    {"key": "vehicle_date", "label": "日期／車號", "level": "error",
+                     "code": "vehicle_required", "detail": "請選車號。", "password": "never-send"},
+                ] * 8,
+            },
+        })
+        card = backend.sinposmart_admin_tool_event({"finished": event})
+        self.assertEqual(len(card["preflight_checks"]), 6)
+        self.assertEqual(card["preflight_checks"][0], {
+            "key": "vehicle_date", "label": "日期／車號", "level": "error",
+            "code": "vehicle_required", "detail": "請選車號。", "status_label": "待處理",
+        })
+        self.assertNotIn("never-send", json.dumps(card))
+        self.assertEqual(card["status_class"], "attention")
+
+    def test_rescue_video_unfinished_counts_override_a_complete_claim(self):
+        event = {"status": "completed", "record_type": "tool_action_finished", "snapshot": {
+            "tool_name": "rescue_video", "rescue_video_state": "backed_up",
+            "target_date": "2026-10-26", "vehicle": "95", "case_count": 1,
+            "total_count": 4, "usage_seconds": 9, "ready_count": 2,
+            "pending_count": 1, "failed_count": 1,
+        }}
+        card = backend.sinposmart_admin_tool_event({"finished": event})
+        self.assertEqual(card["status_label"], "部分完成")
+        self.assertEqual(card["rescue_video_summary"]["pending_count"], 1)
+        event["status"] = "failed"
+        self.assertEqual(backend.sinposmart_admin_tool_event({"finished": event})["status_label"], "失敗")
+
     def test_admin_view_keeps_rescue_video_runs_separate_with_summary(self):
         events = []
         for run_id, occurred_at, case_count, total_count, usage_seconds in (
