@@ -7407,6 +7407,11 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertEqual(section.count('class="event-time"'), len(cases))
         self.assertEqual(section.count("更新前登出"), 1)
         self.assertIn("驗證服務暫時無回應", section)
+        self.assertIn('class="status complete">登入成功</span>', section)
+        self.assertIn('class="status failed">登入失敗</span>', section)
+        self.assertIn('class="status session-update">更新前登出</span>', section)
+        for label in ("自動登出", "手動登出", "系統登出", "登出"):
+            self.assertIn(f'class="status session-out">{label}</span>', section)
 
     def test_sinposmart_admin_login_section_can_show_logout(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"

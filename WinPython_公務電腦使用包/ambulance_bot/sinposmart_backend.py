@@ -1556,6 +1556,8 @@ def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[s
     if sinposmart_person_label_score(preferred_person) > sinposmart_person_label_score(current_person):
         current_person = preferred_person
     card = sinposmart_admin_event(event, label, current_person)
+    if label == "登入失效":
+        card["status_class"] = "attention"
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     diagnostic = sanitize_login_diagnostic(snapshot.get("login_diagnostic"))
     if diagnostic:
@@ -1581,7 +1583,13 @@ def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[s
             "system": "系統登出",
             "update": "更新前登出",
         }.get(method, "登出")
-    card["login_detail"] = diagnostic.get("reason") or card["error"] or (card["content"] if card["status_class"] == "failed" else "")
+        if sinposmart_status_class(str(event.get("status") or "")) == "failed":
+            card["status_label"] += "失敗"
+            card["status_class"] = "failed"
+        else:
+            card["status_class"] = "session-update" if method == "update" else "session-out"
+    card["login_detail"] = diagnostic.get("reason") or card["error"] or (
+        card["content"] if card["status_class"] == "failed" or label in {"登入失效", "密碼須更新"} else "")
     if record_type == "error":
         card["record_label"] = label
     occurred_at = sinposmart_event_time(event)
@@ -1601,8 +1609,8 @@ def sinposmart_admin_login_event(event: dict[str, Any], preferred_people: dict[s
             {
                 "label": step_label,
                 "occurred_at": occurred_at,
-                "status_label": label,
-                "status_class": sinposmart_display_status_class(label, str(event.get("status") or "")),
+                "status_label": card["status_label"],
+                "status_class": card["status_class"],
             }
         )
     card["login_at"] = login_at

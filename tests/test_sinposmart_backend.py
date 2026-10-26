@@ -3121,6 +3121,34 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(card["login_method_label"], "自動登入")
         self.assertEqual(card["status_label"], "登入失敗")
 
+    def test_login_result_colors_distinguish_logout_expiry_and_update_handoff(self):
+        cases = [
+            ("login", "login", "ok", {}, "登入成功", "complete"),
+            ("login_failed", "login", "failed", {}, "登入失敗", "failed"),
+            ("login_expired", "login", "failed", {}, "登入失效", "attention"),
+            ("logout", "manual", "ok", {}, "手動登出", "session-out"),
+            ("logout", "logout", "ok", {"logout_method": "automatic"}, "自動登出", "session-out"),
+            ("logout", "system", "ok", {}, "系統登出", "session-out"),
+            ("logout", "logout", "ok", {}, "登出", "session-out"),
+            ("logout", "update", "ok", {"logout_method": "manual"}, "更新前登出", "session-update"),
+            ("logout", "logout", "ok", {"logout_method": "update"}, "更新前登出", "session-update"),
+            ("logout", "update", "failed", {}, "更新前登出失敗", "failed"),
+        ]
+        for index, (record_type, trigger, status, snapshot, label, color) in enumerate(cases):
+            with self.subTest(label=label, trigger=trigger):
+                event = normalize_sinposmart_event({"event_id": f"session-color-{index}",
+                    "occurred_at": "2026-10-26T08:30:00", "record_type": record_type,
+                    "trigger_type": trigger, "status": status, "snapshot": snapshot,
+                    "content": "保留原始說明", "error": "驗證資訊過期" if record_type == "login_expired" else ""})
+                original = copy.deepcopy(event)
+                card = build_sinposmart_admin_view([event])["login_events"][0]
+                self.assertEqual(card["status_label"], label)
+                self.assertEqual(card["status_class"], color)
+                self.assertEqual(card["steps"][0]["status_class"], color)
+                if record_type == "login_expired":
+                    self.assertEqual(card["login_detail"], "驗證資訊過期")
+                self.assertEqual(event, original)
+
     def test_admin_view_login_section_keeps_logout_event_status(self):
         events = [
             normalize_sinposmart_event(
@@ -3217,7 +3245,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(len(view["login_events"]), 1)
         self.assertEqual(view["login_events"][0]["record_label"], "登入失效")
         self.assertEqual(view["login_events"][0]["status_label"], "登入失效")
-        self.assertEqual(view["login_events"][0]["status_class"], "failed")
+        self.assertEqual(view["login_events"][0]["status_class"], "attention")
 
     def test_admin_view_legacy_login_error_event_is_visible(self):
         event = {
@@ -3237,7 +3265,7 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(len(view["login_events"]), 1)
         self.assertEqual(view["login_events"][0]["record_label"], "登入失效")
         self.assertEqual(view["login_events"][0]["status_label"], "登入失效")
-        self.assertEqual(view["login_events"][0]["status_class"], "failed")
+        self.assertEqual(view["login_events"][0]["status_class"], "attention")
 
     def test_admin_view_login_cards_keep_their_own_event_time(self):
         events = [

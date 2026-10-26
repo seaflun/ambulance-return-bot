@@ -63,6 +63,21 @@ body.workspace-page--duty {
   --accent-soft: #f2efff;
   --page-tint: #f7f3ff;
   --focus: rgba(118, 87, 200, .24);
+  --session-update: #6842a0;
+  --session-update-bg: #f1ebfb;
+}
+
+body.workspace-page--duty .login-card .status.session-out {
+  background: var(--idle-bg);
+  color: var(--muted);
+}
+body.workspace-page--duty .login-card .status.session-update {
+  background: var(--session-update-bg);
+  color: var(--session-update);
+}
+body.workspace-page--duty .login-card .status.login-method {
+  background: transparent;
+  color: var(--muted);
 }
 
 body.workspace-page--disaster-task,
