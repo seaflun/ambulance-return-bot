@@ -39,7 +39,8 @@ class NoticeCollectionBackendTests(unittest.TestCase):
         self.put(self.event(records=records))
         rows = {row["key"]: row for row in self.view()["records"]}
         for key, state, label in (("a", "confirmed", "確認"), ("b", "pending", "待確認"), ("c", "unknown", "不明")):
-            self.assertEqual(rows[key * 64]["write_label"], "不明")
+            self.assertEqual(rows[key * 64]["write_label"], "已入表／簽收待確認")
+            self.assertTrue(rows[key * 64]["write_confirmed"])
             self.assertIn("簽收待確認", rows[key * 64]["write_detail"])
             self.assertEqual(rows[key * 64]["read_label"], label)
             self.assertEqual(rows[key * 64]["read_state"], state)

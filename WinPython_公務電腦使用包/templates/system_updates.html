@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.27.1210">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.27.1210') }}</p>
+          <h2 class="update-card__title">通報入表與簽收狀態說明</h2>
+        </div>
+        <span class="update-card__versions">2026.10.27.1210</span>
+      </header>
+      <ul class="update-card__items">
+        <li>已取得入表收據、但簽收人員未確認的通報，顯示「已入表／簽收待確認」，避免與內容入表結果混淆。</li>
+        <li>保留原始簽收收據、網站已讀狀態與人工填寫，不以目前值班人員回填歷史資料。</li>
+        <li>同步值班台延後交班、更新重啟、跨日及取消衝突的通報簽收責任修正說明。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.27.0850">
       <header class="update-card__heading">
         <div>

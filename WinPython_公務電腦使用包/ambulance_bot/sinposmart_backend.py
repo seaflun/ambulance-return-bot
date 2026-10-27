@@ -2218,7 +2218,7 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
     view.update(last_received_at=daily_rows[0]["received_at"] if daily_rows else "", last_received_count=received_count,
                 records=sorted([dict(row, write_confirmed=True,
                               write_label="簽收：" + row["signed_by"] if row.get("signing_state") == "confirmed" else
-                                          "不明" if row.get("signing_state") == "unknown" else "已入表",
+                                          "已入表／簽收待確認" if row.get("signing_state") == "unknown" else "已入表",
                               write_detail="已確認入表" + ("；簽收待確認" if row.get("signing_state") == "unknown" else ""),
                               read_label={"confirmed": "確認", "pending": "待確認", "unknown": "不明"}[row["read_state"]],
                               read_detail=row.get("verification_read_label") or {"confirmed": "已確認已讀", "pending": "已讀待確認", "unknown": "已讀狀態未知"}[row["read_state"]])
