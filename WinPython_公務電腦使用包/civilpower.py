@@ -584,24 +584,57 @@ def _login_once(driver, account: str, password: str, attempt: int) -> None:
 
 
 def _wait_for_oa_login_result(driver, wait: WebDriverWait) -> None:
+    notice_seen = False
+    notice_deferred = False
+
     def ready(current):
+        nonlocal notice_seen, notice_deferred
         state = current.execute_script("""
             const visible = element => Boolean(element.getClientRects().length)
                 && getComputedStyle(element).visibility !== 'hidden';
+            const text = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
+            const loginPage = Array.from(document.querySelectorAll(
+                '#login_name, #verify_code, #loginBtn'
+            )).some(visible);
+            const passwordNotice = /密碼.{0,80}(到期|過期|失效)|(必須|強制|請先|需要).{0,20}(變更|更改|修改|重設)密碼/.test(text)
+                || (!loginPage && Array.from(document.querySelectorAll('input[type="password"]')).some(visible));
+            const deferButton = passwordNotice ? Array.from(document.querySelectorAll(
+                'button, input[type="button"], input[type="submit"], a, [role="button"]'
+            )).find(element => visible(element) && element.getAttribute('aria-disabled') !== 'true'
+                && (element.innerText || element.value || element.textContent || '').replace(/\\s+/g, ' ').trim() === '暫不變更') : null;
             const errors = Array.from(document.querySelectorAll(
                 '.alert-danger, .swal2-popup, .sweet-alert, #error_msg, #errorMsg, [role="alert"]'
             )).filter(visible).map(element => element.innerText || '').join(' ');
-            return {loginPage: Boolean(document.querySelector('#login_name, #verify_code, #loginBtn')),
+            return {loginPage, passwordNotice, deferButton,
+                    dashboardReady: Array.from(document.querySelectorAll('#moduleBox_other')).some(visible),
                     error: errors};
         """)
         if isinstance(state, dict) and isinstance(state.get("loginPage"), bool):
             error = _clean_text(state.get("error"))
             if re.search(r"驗證碼.{0,8}(錯誤|不正確)|帳號.{0,8}密碼.{0,8}(錯誤|不正確)|登入失敗|驗證失敗|密碼錯誤", error):
                 raise RuntimeError("內部入口網登入失敗：" + error)
-            return not state["loginPage"]
-        return not _is_oa_login_page(current)
+            if state.get("passwordNotice"):
+                notice_seen = True
+                defer_button = state.get("deferButton")
+                if defer_button is not None and not notice_deferred:
+                    try:
+                        if defer_button.is_enabled():
+                            defer_button.click()
+                            notice_deferred = True
+                    except StaleElementReferenceException:
+                        return False
+                return False
+            return not state["loginPage"] and state.get("dashboardReady") is True
+        return False
 
-    wait.until(ready)
+    try:
+        wait.until(ready)
+    except TimeoutException as exc:
+        if notice_seen:
+            if notice_deferred:
+                raise RuntimeError("內部入口網已點選「暫不變更」，但密碼提醒尚未消失或登入首頁未就緒。") from exc
+            raise RuntimeError("內部入口網密碼到期／變更頁未提供可用的「暫不變更」按鈕，請人工處理密碼變更。") from exc
+        raise
 
 
 def _is_oa_login_page(driver) -> bool:
