@@ -13,6 +13,9 @@ CIVILPOWER_STAGE_LABELS = {
     "chrome": "啟動 Chrome",
     "login": "登入內部入口網",
     "roster": "查詢義消名冊",
+    "case_window_query": "查詢正式案件派遣與返隊時間",
+    "io_reconcile": "核對本案完整出入時段",
+    "requery_after_reply": "網站回覆後重新核對既有紀錄",
     "io_query": "查詢既有出／入登記",
     "io_add": "開啟出／入新增表單",
     "io_unit": "等待所屬單位重整",
@@ -36,7 +39,7 @@ CIVILPOWER_STAGE_GROUPS = (
         "登入與出／入登記",
         tuple(
             CIVILPOWER_STAGE_LABELS[key]
-            for key in ("chrome", "login", "roster", "io_query", "io_add", "io_unit", "io_person", "io_save_verify")
+            for key in ("chrome", "login", "roster", "case_window_query", "io_reconcile", "requery_after_reply", "io_query", "io_add", "io_unit", "io_person", "io_save_verify")
         ),
     ),
     (

@@ -159,6 +159,13 @@ class CivilpowerSafetyTests(unittest.TestCase):
 
     def test_out_submit_persists_original_account_before_click_and_survives_failed_readback(self):
         import json
+        from datetime import datetime, timedelta
+
+        start = datetime.strptime(self.plan.out_date + self.plan.out_time, "%Y/%m/%d%H%M")
+        end = datetime.strptime(self.plan.in_date + self.plan.in_time, "%Y/%m/%d%H%M")
+        window = civilpower.CivilpowerCaseWindow(self.plan.case_id, start, end)
+        duty = civilpower.CivilpowerIoRecord("1", start - timedelta(hours=1), self.plan.serve_unit,
+                                            self.plan.home_unit, self.plan.member_name, self.plan.member_title, "服勤")
 
         def login(**kwargs):
             kwargs["on_login_success"]("original-operator")
@@ -168,6 +175,10 @@ class CivilpowerSafetyTests(unittest.TestCase):
             root = Path(directory)
             path = civilpower._task_checkpoint_path(root, self.plan.task_id)
             observed = []
+            stack.enter_context(mock.patch("civilpower._resolve_official_case_plan", return_value=(self.plan, window)))
+            stack.enter_context(mock.patch("civilpower._query_civilpower_records", side_effect=lambda *args, **kwargs: [duty] if kwargs["kind"] == "io" else []))
+            stack.enter_context(mock.patch("civilpower._guard_case_io_snapshot"))
+            stack.enter_context(mock.patch("civilpower._case_io_record_exists", side_effect=[False, False]))
 
             def click(_wait, selector):
                 if selector == "#btn_IOWorkLogAdd":
@@ -191,7 +202,11 @@ class CivilpowerSafetyTests(unittest.TestCase):
             checkpoint = civilpower._load_task_checkpoint(root, self.plan)
             self.assertEqual("original-operator", checkpoint.get("civilpower_login_account"))
 
-    def test_retry_uses_persisted_original_account_and_finishes_existing_out_record(self):
+    def test_retry_uses_current_account_and_preserves_existing_record_ownership(self):
+        from tests import test_civilpower_manual_flow
+
+        fixture = test_civilpower_manual_flow.CivilpowerManualFlowTests()
+        fixture.setUp()
         checkpoint = {
             "fingerprint": civilpower._plan_fingerprint(self.plan),
             "civilpower_login_account": "original-operator",
@@ -199,21 +214,22 @@ class CivilpowerSafetyTests(unittest.TestCase):
         }
 
         def login(**kwargs):
-            self.assertEqual("original-operator", kwargs["required_user_id"])
-            kwargs["on_login_success"]("original-operator")
+            self.assertEqual("", kwargs["required_user_id"])
+            kwargs["on_login_success"]("current-operator")
             return object()
 
         with TemporaryDirectory() as directory, mock.patch("civilpower._load_task_checkpoint", return_value=checkpoint), mock.patch(
             "civilpower.login_civilpower_and_get_driver", side_effect=login
-        ), mock.patch("civilpower._find_io_record", return_value=True), mock.patch(
-            "civilpower._ensure_correct_in_io_record"
-        ) as inbound, mock.patch("civilpower._ensure_work_log", return_value=self.plan), mock.patch(
+        ), mock.patch("civilpower._resolve_official_case_plan", return_value=(fixture.plan, fixture.window)), mock.patch(
+            "civilpower._query_civilpower_records", side_effect=lambda *args, **kwargs: [fixture.out, fixture.inbound] if kwargs["kind"] == "io" else [fixture.work]
+        ), mock.patch("civilpower._ensure_io_record") as io_save, mock.patch(
             "civilpower.mark_driver_operation_active"
         ):
             result = civilpower.run_civilpower_task(self.request, Path(directory))
         self.assertEqual("volunteer_assist_saved", result.status)
-        self.assertTrue(inbound.call_args.kwargs["can_create_in_record"])
+        io_save.assert_not_called()
         self.assertEqual("verified", checkpoint.get("out_save_state"))
+        self.assertEqual("原登打人", checkpoint["verification"]["out"]["operator"])
 
     def test_work_log_recheck_does_not_accept_a_conflicting_visible_case_id(self):
         plan = replace(self.plan, case_id="20260819123200001")

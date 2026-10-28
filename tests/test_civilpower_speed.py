@@ -81,7 +81,16 @@ process.stdout.write(JSON.stringify(result.rows[0].cells));
         self.assertEqual(1, browser.page)
 
     def test_dry_run_stops_outbound_form_before_any_save_or_checkpoint(self):
+        from datetime import datetime, timedelta
+
+        start = datetime.strptime(self.plan.out_date + self.plan.out_time, "%Y/%m/%d%H%M")
+        end = datetime.strptime(self.plan.in_date + self.plan.in_time, "%Y/%m/%d%H%M")
+        window = civilpower.CivilpowerCaseWindow(self.plan.case_id, start, end)
+        duty = civilpower.CivilpowerIoRecord("1", start - timedelta(hours=1), self.plan.serve_unit,
+                                            self.plan.home_unit, self.plan.member_name, self.plan.member_title, "服勤")
         with mock.patch.dict(os.environ, {"SAVE_CIVILPOWER_RECORD": "false"}), TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(mock.patch("civilpower._resolve_official_case_plan", return_value=(self.plan, window)))
+            stack.enter_context(mock.patch("civilpower._query_civilpower_records", side_effect=lambda *args, **kwargs: [duty] if kwargs["kind"] == "io" else []))
             for name in ("mark_driver_operation_active", "_wait_visible", "_select_jqx_combobox",
                          "_wait_for_io_form_dependencies", "_select_io_person", "_set_input",
                          "_select_option_containing", "_wait_for_io_record_form_values"):
@@ -132,9 +141,7 @@ process.stdout.write(JSON.stringify(result.rows[0].cells));
     def test_dry_run_of_existing_records_never_marks_task_saved_or_persists_checkpoint(self):
         with mock.patch.dict(os.environ, {"AUTOMATION_DRY_RUN": "true"}), TemporaryDirectory() as directory, ExitStack() as stack:
             stack.enter_context(mock.patch("civilpower.mark_driver_operation_active"))
-            stack.enter_context(mock.patch("civilpower._ensure_io_record", return_value=False))
-            stack.enter_context(mock.patch("civilpower._ensure_correct_in_io_record"))
-            stack.enter_context(mock.patch("civilpower._ensure_work_log", return_value=self.plan))
+            stack.enter_context(mock.patch("civilpower._reconcile_civilpower_task", return_value=(self.plan, "已確認既有紀錄")))
             checkpoint = stack.enter_context(mock.patch("civilpower._save_task_checkpoint"))
             result = civilpower.run_civilpower_task(self.request, Path(directory), driver=object())
         self.assertEqual("volunteer_assist_prefilled", result.status)

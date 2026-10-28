@@ -987,6 +987,59 @@ def query_duty_emergency_cases(artifacts_dir: Path, lookup_range: str = "24h") -
             _release_selenium_session(f"case_lookup {lookup_range}")
 
 
+def query_duty_case_for_civilpower(
+    request: AmbulanceReturnRequest,
+    artifacts_dir: Path,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict[str, str]:
+    """Read the saved duty record used by civil-power case import, without submitting."""
+    from .civilpower_records import volunteer_in_status
+
+    if not re.fullmatch(r"\d{17}", request.case_id):
+        raise RuntimeError("缺少正式案件編號，無法唯一查核民力案件時段。")
+    if not request.vehicle:
+        raise RuntimeError("缺少可辨識車輛，尚未新增民力資料。")
+    case_day = datetime.strptime(request.case_id[:8], "%Y%m%d")
+    if cancel_check is not None:
+        cancel_check()
+    driver = None
+    try:
+        driver = _create_driver(
+            artifacts_dir,
+            profile_name=f"case_lookup_profile_civilpower_{time.time_ns()}",
+            attach_existing=False,
+            headless=True,
+        )
+        _set_case_lookup_driver_timeouts(driver)
+        if not _ensure_duty_login(driver, request):
+            raise RuntimeError("無法以本次任務帳號查詢正式案件時段，尚未新增民力資料。")
+        if cancel_check is not None:
+            cancel_check()
+        records = _query_duty_work_logs(
+            driver, request, cancel_check=cancel_check,
+            query_range=(case_day - timedelta(days=1), case_day + timedelta(days=1)),
+        )
+        if cancel_check is not None:
+            cancel_check()
+        unit = re.sub(r"\d+$", "", request.vehicle) + "分隊"
+        matches = [record for record in records
+                   if record.get("case_id", "") in {"", request.case_id}
+                   and record.get("unit") == unit
+                   and record.get("item") in {"救護", "緊急救護"}
+                   and request.vehicle in _work_log_vehicle_labels(record.get("status", ""), {request.vehicle}, unit)]
+        if len(matches) != 1:
+            raise RuntimeError("第一站正式工作紀錄尚未完成或無法唯一對應本案與車輛，尚未新增民力資料。")
+        record = matches[0]
+        if not str(record.get("record_id") or "").isdigit():
+            raise RuntimeError("第一站缺少正式紀錄識別，尚未新增民力資料。")
+        if not volunteer_in_status(str(record.get("status") or ""), request.volunteer_assist_member_name):
+            raise RuntimeError("第一站正式工作紀錄尚未確認本次協勤人員，尚未新增民力資料。")
+        return dict(record, case_id=request.case_id)
+    finally:
+        _quit_driver(driver)
+
+
 def lookup_synced_credential_id_number(artifacts_dir: Path, lookup_range: str = "24h") -> SyncedCredentialIdLookupResult:
     credential = load_synced_worker_credential()
     if credential is None:
@@ -1725,6 +1778,7 @@ def _manual_work_log_matches_request(record: dict[str, str], request: AmbulanceR
 def _query_duty_work_logs(
     driver: webdriver.Chrome, request: AmbulanceReturnRequest,
     cancel_check: Callable[[], None] | None = None,
+    *, query_range: tuple[datetime, datetime] | None = None,
 ) -> list[dict[str, str]]:
     if cancel_check:
         cancel_check()
@@ -1733,19 +1787,26 @@ def _query_duty_work_logs(
         raise ValueError("缺少可辨識的案件編號或車輛")
     day = datetime.strptime(case_id[:8], "%Y%m%d")
     roc_day = f"{day.year - 1911:03d}{day:%m%d}"
+    query_values = (roc_day,)
+    if query_range is not None:
+        start_day, end_day = query_range
+        if start_day > end_day or not start_day.date() <= day.date() <= end_day.date():
+            raise ValueError("正式工作紀錄查詢範圍未包含本案日期")
+        query_values = (f"{start_day.year - 1911:03d}{start_day:%m%d}",
+                        f"{end_day.year - 1911:03d}{end_day:%m%d}")
     driver.get(_ap_url(DUTY_WORK_LOG_AP))
     WebDriverWait(driver, 12).until(
         lambda d: bool(d.find_elements(By.ID, "_btnQuery")), "工作紀錄查詢頁載入逾時",
     )
     ready = driver.execute_script(
         """
-        const values = {_txtSDATE: arguments[0], _txtEDATE: arguments[0],
+        const values = {_txtSDATE: arguments[0], _txtEDATE: arguments[1] || arguments[0],
           _selSTIMEH: '00', _selSTIMEM: '00', _selETIMEH: '23', _selETIMEM: '59',
           _txtPageNum: '1000', _txtMan: '', _selList: ''};
         if (Object.keys(values).some(id => !document.getElementById(id))) return false;
         for (const [id, value] of Object.entries(values)) document.getElementById(id).value = value;
         return true;
-        """, roc_day,
+        """, *query_values,
     )
     if not ready:
         raise WebDriverException("工作紀錄查詢欄位不完整")

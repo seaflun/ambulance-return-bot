@@ -6,7 +6,7 @@ import os
 import re
 import time
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -15,7 +15,7 @@ from uuid import uuid4
 import ddddocr
 from PIL import Image
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
+from selenium.common.exceptions import NoAlertPresentException, NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -28,6 +28,19 @@ from ambulance_bot.chrome_startup import (
     mark_driver_operation_active,
 )
 from ambulance_bot.civilpower_roster import HOME_RESCUE_UNIT, normalize_roster_members
+from ambulance_bot.civilpower_records import (
+    CivilpowerCaseWindow,
+    CivilpowerIoDecision,
+    CivilpowerIoRecord,
+    CivilpowerRecordConflict,
+    CivilpowerWorkRecord,
+    find_civilpower_work_record,
+    io_pair_for_work_record,
+    plan_civilpower_io,
+    taipei_datetime,
+    taipei_minute,
+    volunteer_in_status as _volunteer_in_status,
+)
 from ambulance_bot.duty_credentials import LOGIN_POLICY_CIVILPOWER, load_duty_credential, task_login_credential_attempts
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
@@ -51,6 +64,7 @@ IN_REASON = "救護返隊"
 MAX_LOGIN_ATTEMPTS = 3
 DEFAULT_WAIT_SECONDS = 15
 IO_QUERY_SETTLE_SECONDS = 5
+_SAVE_SUCCESS_MARKERS = ("新增成功", "編輯成功", "儲存成功", "存檔成功", "操作成功")
 WORK_LOG_FORM_INITIAL_WAIT_SECONDS = 10
 WORK_LOG_FORM_RETRY_WAIT_SECONDS = 5
 _DATE_PATTERN = re.compile(r"(?<!\d)\d{1,4}[/-]\d{1,2}[/-]\d{1,2}(?!\d)")
@@ -82,6 +96,17 @@ class _IncompleteQueryError(RuntimeError):
 
 class _CivilpowerPrefilled(RuntimeError):
     pass
+
+
+class _CivilpowerRecordsChanged(RuntimeError):
+    pass
+
+
+class _CivilpowerSaveRejected(RuntimeError):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.evidence: dict[str, object] = {}
+        self.failure_stage = ""
 
 
 def _civilpower_save_enabled() -> bool:
@@ -391,7 +416,7 @@ def run_civilpower_task(
     try:
         original_plan = build_civilpower_task_plan(request)
         checkpoint = _load_task_checkpoint(artifacts_dir, original_plan)
-        plan = _plan_with_checkpointed_in_time(original_plan, checkpoint)
+        plan = original_plan
         login_account = ""
 
         def save_checkpoint() -> None:
@@ -410,66 +435,16 @@ def run_civilpower_task(
                 profile_name=profile_name,
                 debugger_port=debugger_port,
                 tile_name=tile_name,
-                required_user_id=_checkpointed_civilpower_login_account(checkpoint),
+                required_user_id="",
                 on_login_success=record_login_account,
             )
         mark_driver_operation_active(active_driver)
 
-        def persist_out_submission() -> None:
-            if login_account:
-                checkpoint["civilpower_login_account"] = login_account
-            save_checkpoint()
-
-        out_created = _ensure_io_record(
-            active_driver,
-            plan,
-            OUT_STATUS,
-            checkpoint,
-            cancel_check=cancel_check,
-            progress=report_stage,
-            before_save=persist_out_submission,
+        plan, completion_detail = _reconcile_civilpower_task(
+            active_driver, request, original_plan, checkpoint, artifacts_dir,
+            login_account=login_account, cancel_check=cancel_check,
+            progress=report_stage, save_checkpoint=save_checkpoint,
         )
-        if login_account and out_created:
-            checkpoint["civilpower_login_account"] = login_account
-        save_checkpoint()
-        can_create_in_record = out_created or bool(_checkpointed_civilpower_login_account(checkpoint))
-        _ensure_correct_in_io_record(
-            active_driver,
-            plan,
-            original_plan,
-            checkpoint,
-            cancel_check=cancel_check,
-            can_create_in_record=can_create_in_record,
-            progress=report_stage,
-        )
-        save_checkpoint()
-
-        def reconcile_inbound(imported_plan: CivilpowerTaskPlan) -> None:
-            _record_checkpointed_in_time(checkpoint, imported_plan)
-            save_checkpoint()
-            _ensure_correct_in_io_record(
-                active_driver,
-                imported_plan,
-                original_plan,
-                checkpoint,
-                cancel_check=cancel_check,
-                can_create_in_record=can_create_in_record,
-                progress=report_stage,
-            )
-            save_checkpoint()
-
-        saved_plan = _ensure_work_log(
-            active_driver,
-            request,
-            plan,
-            checkpoint,
-            cancel_check=cancel_check,
-            progress=report_stage,
-            reconcile_inbound=reconcile_inbound,
-            before_save=save_checkpoint,
-        )
-        if saved_plan is not None:
-            plan = saved_plan
         save_checkpoint()
         if not _civilpower_save_enabled():
             return SiteAutomationResult(
@@ -480,26 +455,29 @@ def run_civilpower_task(
             "volunteer_assist",
             "民力系統",
             "volunteer_assist_saved",
-            "已確認救護出勤／救護返隊出入登記，案件代入工作紀錄並回查確認。",
+            completion_detail,
         )
     except _CivilpowerPrefilled as exc:
         return SiteAutomationResult("volunteer_assist", "民力系統", "volunteer_assist_prefilled", str(exc))
     except TaskCancellationError:
         raise
     except Exception as exc:
+        if isinstance(exc, _CivilpowerSaveRejected) and exc.failure_stage:
+            current_stage = exc.failure_stage
         detail = _civilpower_failure_detail(current_stage, exc)
-        evidence: dict[str, object] = {}
+        evidence: dict[str, object] = dict(exc.evidence) if isinstance(exc, _CivilpowerSaveRejected) else {}
         if active_driver is not None:
             try:
-                evidence = capture_failure_artifacts(
-                    active_driver,
-                    Path(artifacts_dir) / "selenium",
-                    request.task_id,
-                    "volunteer_assist",
-                    exception=exc,
-                    target_url=str(getattr(active_driver, "current_url", "") or CIVILPOWER_BASE_URL),
-                    elapsed_seconds=time.monotonic() - started_at,
-                )
+                if not evidence:
+                    evidence = capture_failure_artifacts(
+                        active_driver,
+                        Path(artifacts_dir) / "selenium",
+                        request.task_id,
+                        "volunteer_assist",
+                        exception=exc,
+                        target_url=str(getattr(active_driver, "current_url", "") or CIVILPOWER_BASE_URL),
+                        elapsed_seconds=time.monotonic() - started_at,
+                    )
                 detail = augment_failure_detail(detail, evidence)
                 if current_stage not in detail:
                     detail = f"{current_stage}：{detail}"
@@ -655,6 +633,252 @@ def _is_civilpower_login_page(driver) -> bool:
     return _clean_text(getattr(driver, "title", "")).lower() == "login"
 
 
+def _resolve_official_case_plan(
+    request: AmbulanceReturnRequest,
+    plan: CivilpowerTaskPlan,
+    artifacts_dir: Path,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+) -> tuple[CivilpowerTaskPlan, CivilpowerCaseWindow]:
+    from ambulance_bot.selenium_local import query_duty_case_for_civilpower
+
+    case = query_duty_case_for_civilpower(request, artifacts_dir, cancel_check=cancel_check)
+    if str(case.get("case_id") or "").strip() != plan.case_id:
+        raise CivilpowerRecordConflict("正式案件編號與本次任務不符，尚未新增民力資料。")
+    if not str(case.get("record_id") or "").isdigit():
+        raise CivilpowerRecordConflict("第一站正式紀錄識別缺漏，尚未新增民力資料。")
+    description = str(case.get("description") or "")
+    returned_at = _summary_datetime(description, "返隊時間")
+    if returned_at is None:
+        raise CivilpowerRecordConflict("第一站正式工作紀錄未提供有效返隊時間，尚未新增民力資料。")
+    window = CivilpowerCaseWindow(plan.case_id, _record_datetime(str(case.get("work_at") or "")), returned_at,
+                                  source_record_id=str(case.get("record_id") or ""))
+    address = re.search(r"(?:^|\n)地點\s*[:：]\s*([^\n]+)", description)
+    return replace(
+        plan,
+        out_date=window.start.strftime("%Y/%m/%d"), out_time=window.start.strftime("%H%M"),
+        in_date=window.end.strftime("%Y/%m/%d"), in_time=window.end.strftime("%H%M"),
+        case_address=clean_case_address(address.group(1) if address else plan.case_address),
+        case_reason=_clean_text(case.get("reason") or plan.case_reason),
+    ), window
+
+
+def _case_io_decision(driver, plan: CivilpowerTaskPlan, window: CivilpowerCaseWindow):
+    for lookback in (1, 7, 30):
+        records = _query_civilpower_records(driver, plan, window, kind="io", lookback_days=lookback)
+        try:
+            decision = plan_civilpower_io(records, window, name=plan.member_name,
+                                         home_unit=plan.home_unit, serve_unit=plan.serve_unit, title=plan.member_title)
+        except CivilpowerRecordConflict as exc:
+            if exc.code == "missing_context" and lookback < 30:
+                continue
+            raise
+        return records, decision, lookback
+    raise CivilpowerRecordConflict("無法確認完整出入時段，尚未新增民力資料。")
+
+
+def _matching_case_work_record(records, request, plan, window):
+    return find_civilpower_work_record(records, window, name=plan.member_name, serve_unit=plan.serve_unit,
+                                      address=plan.case_address, vehicle=_clean_text(request.vehicle))
+
+
+def _assert_work_record_pair(work: CivilpowerWorkRecord, decision: CivilpowerIoDecision) -> None:
+    if (decision.action != "reuse_pair" or decision.out is None or decision.inbound is None
+            or work.io_out_at is None or work.io_in_at is None
+            or taipei_minute(work.io_out_at) != taipei_minute(decision.out.at)
+            or taipei_minute(work.io_in_at) != taipei_minute(decision.inbound.at)):
+        raise CivilpowerRecordConflict("既有工作紀錄與目前出入登記不一致，尚未新增或修改紀錄。")
+
+
+def _io_records_signature(records, plan: CivilpowerTaskPlan) -> str:
+    rows = [asdict(row) for row in records
+            if row.name == plan.member_name and row.home_unit == plan.home_unit and row.serve_unit == plan.serve_unit]
+    rows.sort(key=lambda row: row["record_id"])
+    return hashlib.sha256(json.dumps(rows, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _in_civilpower_query_tab(driver, operation):
+    original = driver.current_window_handle
+    query_handle = None
+    try:
+        driver.switch_to.new_window("tab")
+        query_handle = driver.current_window_handle
+        if query_handle == original:
+            raise RuntimeError("無法建立送出前查核分頁，尚未送出民力資料。")
+        return operation()
+    finally:
+        if query_handle is not None and query_handle != original:
+            try:
+                driver.switch_to.window(query_handle)
+                driver.close()
+            except WebDriverException:
+                pass
+        driver.switch_to.window(original)
+
+
+def _guard_case_io_snapshot(driver, plan, window, records, lookback):
+    def check():
+        current = _query_civilpower_records(driver, plan, window, kind="io", lookback_days=lookback)
+        if _io_records_signature(current, plan) != _io_records_signature(records, plan):
+            raise _CivilpowerRecordsChanged("送出前有人變更出入登記，已取消本次送出並重新核對。")
+    _in_civilpower_query_tab(driver, check)
+
+
+def _civilpower_verification(checkpoint, window, decision, work, *, created_out: bool, created_in: bool):
+    checkpoint["verification"] = {
+        "case_id": window.case_id,
+        "dispatch_at": taipei_datetime(window.dispatch_at).isoformat(),
+        "return_at": taipei_datetime(window.return_at).isoformat(),
+        "out": {"record_id": decision.out.record_id, "at": decision.out.at.isoformat(), "operator": decision.out.operator},
+        "in": {"record_id": decision.inbound.record_id, "at": decision.inbound.at.isoformat(), "operator": decision.inbound.operator},
+        "work_log_id": work.record_id,
+        "source_duty_record_id": window.source_record_id,
+        "work_log_operator": work.operator,
+        "work_log_fingerprint": work.fingerprint,
+        "created_out": created_out, "created_in": created_in,
+        "checked_by": checkpoint.get("current_login_account", ""),
+        "verified_at": datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds"),
+    }
+    for marker in ("out", "in", "work_log"):
+        checkpoint[f"{marker}_verified"] = True
+        checkpoint[f"{marker}_save_state"] = "verified"
+    work_identity = f"#{work.record_id}" if work.record_id else f"核對碼 {work.fingerprint[:12]}"
+    return (f"已回查出 #{decision.out.record_id}（{decision.out.at:%m/%d %H:%M}）、"
+            f"入 #{decision.inbound.record_id}（{decision.inbound.at:%m/%d %H:%M}）及工作紀錄 {work_identity}。")
+
+
+def _prepare_rejection_requery(driver, request, artifacts_dir, exc: _CivilpowerSaveRejected, stage: str):
+    exc.failure_stage = stage
+    try:
+        exc.evidence = capture_failure_artifacts(
+            driver, Path(artifacts_dir) / "selenium", request.task_id, "volunteer_assist",
+            exception=exc, target_url=str(getattr(driver, "current_url", "") or CIVILPOWER_BASE_URL),
+        )
+    except Exception as capture_exc:
+        print(f"[civilpower] rejected-save evidence unavailable: {capture_exc.__class__.__name__}", flush=True)
+    try:
+        alert = driver.switch_to.alert
+        if isinstance(alert.text, str) and not _civilpower_save_reply_is_success(alert.text):
+            alert.dismiss()
+    except (NoAlertPresentException, AttributeError):
+        pass
+
+
+def _reconcile_civilpower_task(
+    driver, request, original_plan, checkpoint, artifacts_dir, *, login_account,
+    cancel_check, progress, save_checkpoint,
+):
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["case_window_query"])
+    checkpoint["current_login_account"] = login_account
+    plan, window = _resolve_official_case_plan(request, original_plan, artifacts_dir, cancel_check=cancel_check)
+    checkpoint["official_case_window"] = {"dispatch_at": window.dispatch_at.isoformat(), "return_at": window.return_at.isoformat(),
+                                          "source_record_id": window.source_record_id}
+    created_out = created_in = False
+    rejections: dict[int, _CivilpowerSaveRejected] = {}
+
+    def remember_rejection(rank: int, exc: _CivilpowerSaveRejected, stage: str):
+        _prepare_rejection_requery(driver, request, artifacts_dir, exc, stage)
+        rejections[rank] = exc
+        checkpoint.setdefault("save_rejections", []).append({"stage": stage, "detail": str(exc)})
+        save_checkpoint()
+        _report_progress(progress, CIVILPOWER_STAGE_LABELS["requery_after_reply"])
+
+    def require_new_action(rank: int):
+        # A rejection allows read-only recovery and later steps, never the same save again.
+        if rejections and rank <= max(rejections):
+            raise rejections[max(rejections)]
+
+    for _attempt in range(5):
+        _raise_if_cancelled(cancel_check)
+        _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_query"])
+        work = _matching_case_work_record(_query_civilpower_records(driver, plan, window, kind="work"), request, plan, window)
+        _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_reconcile"])
+        if work is not None:
+            records = _query_civilpower_records(driver, plan, window, kind="io")
+            decision = io_pair_for_work_record(records, window, work, name=plan.member_name,
+                                               home_unit=plan.home_unit, serve_unit=plan.serve_unit, title=plan.member_title)
+            _assert_work_record_pair(work, decision)
+            latest_work = _matching_case_work_record(_query_civilpower_records(driver, plan, window, kind="work"), request, plan, window)
+            if latest_work is None or latest_work.fingerprint != work.fingerprint:
+                raise CivilpowerRecordConflict("完成回查前工作紀錄已變更，尚未宣告成功；未重複新增。")
+            detail = _civilpower_verification(checkpoint, window, decision, work, created_out=created_out, created_in=created_in)
+            save_checkpoint()
+            return plan, detail
+        records, decision, lookback = _case_io_decision(driver, plan, window)
+        if decision.action == "reuse_pair":
+            require_new_action(2)
+            try:
+                work = _submit_verified_work_log(driver, request, plan, window, decision, records, lookback,
+                                                checkpoint, cancel_check=cancel_check, progress=progress,
+                                                save_checkpoint=save_checkpoint)
+            except _CivilpowerRecordsChanged:
+                continue
+            except _CivilpowerSaveRejected as exc:
+                remember_rejection(2, exc, CIVILPOWER_STAGE_LABELS["work_log_save"])
+                continue
+            _assert_work_record_pair(work, decision)
+            detail = _civilpower_verification(checkpoint, window, decision, work, created_out=created_out, created_in=created_in)
+            save_checkpoint()
+            return plan, detail
+        status = OUT_STATUS if decision.action == "create_pair" else IN_STATUS
+        require_new_action(0 if status == OUT_STATUS else 1)
+        if window.start == window.end:
+            raise CivilpowerRecordConflict("正式派遣與返隊在同一分鐘，無法安全建立新的出入配對，請先確認紀錄。")
+
+        def before_save():
+            _guard_case_io_snapshot(driver, plan, window, records, lookback)
+            _raise_if_cancelled(cancel_check)
+            if login_account:
+                checkpoint["last_submit_account"] = login_account
+                marker = "out" if status == OUT_STATUS else "in"
+                checkpoint[f"{marker}_submit_account"] = login_account
+                if status == OUT_STATUS:
+                    checkpoint["civilpower_login_account"] = login_account
+            save_checkpoint()
+
+        try:
+            created = _ensure_io_record(driver, plan, status, checkpoint, cancel_check=cancel_check,
+                                        progress=progress, before_save=before_save,
+                                        case_window=window, lookback_days=lookback)
+        except _CivilpowerRecordsChanged:
+            continue
+        except _CivilpowerSaveRejected as exc:
+            remember_rejection(0 if status == OUT_STATUS else 1, exc, CIVILPOWER_STAGE_LABELS["io_save_verify"])
+            continue
+        if status == OUT_STATUS:
+            created_out = created_out or created
+        else:
+            created_in = created_in or created
+        save_checkpoint()
+    raise CivilpowerRecordConflict("民力資料持續變動，已停止後續送出，請確認目前出入及工作紀錄。")
+
+
+def _case_io_record_exists(
+    driver, plan: CivilpowerTaskPlan, status: str, window: CivilpowerCaseWindow,
+    *, lookback_days: int = 1, wait_for_match: bool = False,
+) -> bool:
+    date_text, time_text = ((plan.out_date, plan.out_time) if status == OUT_STATUS else (plan.in_date, plan.in_time))
+    expected = datetime.strptime(date_text + time_text, "%Y/%m/%d%H%M")
+
+    def found(_driver):
+        records = _query_civilpower_records(driver, plan, window, kind="io", lookback_days=lookback_days)
+        matches = [row for row in records if row.name == plan.member_name and row.home_unit == plan.home_unit
+                   and row.serve_unit == plan.serve_unit and row.title == plan.member_title
+                   and row.status == status and taipei_minute(row.at) == expected]
+        if len(matches) > 1:
+            raise CivilpowerRecordConflict("本案同一時間有多筆出入登記，尚未再次新增或確認完成。")
+        return bool(matches)
+
+    if found(driver):
+        return True
+    if not wait_for_match:
+        return False
+    try:
+        return bool(WebDriverWait(driver, DEFAULT_WAIT_SECONDS).until(found))
+    except TimeoutException:
+        return False
+
+
 def _ensure_io_record(
     driver,
     plan: CivilpowerTaskPlan,
@@ -665,19 +889,19 @@ def _ensure_io_record(
     require_lookup_confirmation: bool = False,
     progress: Callable[[str], None] | None = None,
     before_save: Callable[[], None] | None = None,
+    case_window: CivilpowerCaseWindow | None = None,
+    lookback_days: int = 1,
 ) -> bool:
     marker = "out" if status == OUT_STATUS else "in"
     lookup_kwargs = {"raise_on_timeout": True} if require_lookup_confirmation else {}
     _raise_if_cancelled(cancel_check)
     _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_query"])
-    if _find_io_record(
-        driver,
-        plan,
-        status,
-        wait_for_match=False,
-        require_query_confirmation=True,
-        **lookup_kwargs,
-    ):
+    if case_window is not None:
+        exists = _case_io_record_exists(driver, plan, status, case_window, lookback_days=lookback_days)
+    else:
+        exists = _find_io_record(driver, plan, status, wait_for_match=False,
+                                 require_query_confirmation=True, **lookup_kwargs)
+    if exists:
         checkpoint[f"{marker}_verified"] = True
         checkpoint[f"{marker}_save_state"] = "verified"
         return False
@@ -706,17 +930,17 @@ def _ensure_io_record(
     checkpoint[f"{marker}_save_state"] = "pending_verification"
     if before_save is not None:
         before_save()
+        _wait_for_io_record_form_values(driver, wait, plan, status)
+        _require_civilpower_save_enabled("出／入登記")
+        _raise_if_cancelled(cancel_check)
     _click(wait, "#btn_IOWorkLogAdd")
     _wait_after_save(driver, wait, "#jqxAddWindow")
     _raise_if_cancelled(cancel_check)
-    if not _find_io_record(
-        driver,
-        plan,
-        status,
-        wait_for_match=True,
-        reload_page=False,
-        **lookup_kwargs,
-    ):
+    if case_window is not None:
+        verified = _case_io_record_exists(driver, plan, status, case_window, lookback_days=lookback_days, wait_for_match=True)
+    else:
+        verified = _find_io_record(driver, plan, status, wait_for_match=True, reload_page=False, **lookup_kwargs)
+    if not verified:
         raise RuntimeError(f"出入登記簿儲存後回查不到{status}／{plan.out_reason if status == OUT_STATUS else plan.in_reason}紀錄。")
     checkpoint[f"{marker}_verified"] = True
     checkpoint[f"{marker}_save_state"] = "verified"
@@ -799,6 +1023,201 @@ def _find_io_record_row(
     if len(rows) > 1:
         raise RuntimeError(f"出入登記簿找到多筆相同{status}紀錄，無法安全判定。")
     return rows[0] if rows else None
+
+
+def _record_datetime(value: str) -> datetime:
+    raw = _clean_text(value)
+    packed = re.fullmatch(r"(\d{3,4})(\d{2})(\d{2})([ T].*)", raw)
+    if packed:
+        raw = f"{packed.group(1)}/{packed.group(2)}/{packed.group(3)}{packed.group(4)}"
+    match = _DATETIME_PATTERN.match(raw)
+    parts = _datetime_parts(match) if match is not None else None
+    if parts is None:
+        raise CivilpowerRecordConflict(f"民力紀錄未提供有效日期時間：{raw or '空白'}")
+    try:
+        return taipei_datetime(datetime.fromisoformat(raw.replace("/", "-")))
+    except ValueError:
+        pass
+    suffix = raw[match.end():]
+    second_match = re.fullmatch(r":(\d{1,2})", suffix) if suffix else None
+    if suffix and (second_match is None or int(second_match.group(1)) > 59):
+        raise CivilpowerRecordConflict(f"民力紀錄的日期時間格式無法確認：{raw}")
+    return datetime(*parts, int(second_match.group(1)) if second_match else 0)
+
+
+def _summary_datetime(summary: str, label_pattern: str) -> datetime | None:
+    labels = list(re.finditer(label_pattern + r"\s*[:：]\s*", summary))
+    if len(labels) > 1:
+        raise CivilpowerRecordConflict("工作概述包含重複的時間標示，無法唯一核對。")
+    if not labels:
+        return None
+    value = summary[labels[0].end():]
+    match = _DATETIME_PATTERN.match(value)
+    if match is None:
+        return None
+    suffix = value[match.end():]
+    seconds = re.match(r":\d{1,2}(?!\d)", suffix)
+    return _record_datetime(match.group(0) + (seconds.group(0) if seconds else ""))
+
+
+def _io_record_from_columns(columns: dict[str, str], record_id: str) -> CivilpowerIoRecord:
+    status = columns["狀態"]
+    if status not in {"服勤", "退勤", OUT_STATUS, IN_STATUS}:
+        raise CivilpowerRecordConflict("出入登記包含無法辨識的狀態，尚未新增資料。")
+    return CivilpowerIoRecord(
+        record_id=record_id,
+        at=_record_datetime(columns["時間"]),
+        serve_unit=columns["服勤單位"],
+        home_unit=columns["所屬單位"],
+        name=columns["姓名"],
+        title=columns["職稱"],
+        status=status,
+        reason=columns.get("事由", ""),
+        operator=columns.get("值班人員", ""),
+        signed=bool(columns.get("簽核人員", "")),
+    )
+
+
+def _work_record_from_columns(columns: dict[str, str], record_id: str) -> CivilpowerWorkRecord:
+    summary = columns["工作概述"]
+    case_ids = set(re.findall(r"(?:案件編號|案件號碼)\s*[:：]\s*(\d{17})(?!\d)", summary))
+    if columns.get("案件編號"):
+        case_ids.add(columns["案件編號"])
+    if len(case_ids) > 1:
+        raise CivilpowerRecordConflict("工作紀錄包含多個案件編號，尚未確認完成。")
+    return CivilpowerWorkRecord(
+        record_id=record_id,
+        at=_record_datetime(columns["時間"]),
+        serve_unit=columns["協勤單位"],
+        volunteers=tuple(name for name in re.split(r"[,，、;；\s]+", columns["協勤人員"]) if name),
+        summary=summary,
+        handling=columns["處理情形"],
+        official_return_at=_summary_datetime(summary, "返隊時間"),
+        io_out_at=_summary_datetime(summary, r"協勤時間\s*[（(]\s*出\s*[）)]"),
+        io_in_at=_summary_datetime(summary, r"協勤時間\s*[（(]\s*入\s*[）)]"),
+        case_id=next(iter(case_ids), ""),
+        operator=columns.get("建檔者", ""),
+        kind=columns["服勤項目"],
+    )
+
+
+def _record_row_id(row) -> str:
+    elements = row.find_elements(By.CSS_SELECTOR, "input[type='checkbox'][value], [data-id]")
+    identifiers = {
+        value for element in elements
+        if (value := _clean_text(element.get_attribute("data-id") or element.get_attribute("value"))).isdigit()
+    }
+    if len(identifiers) > 1:
+        raise CivilpowerRecordConflict("同一列表列出現不同登記識別，尚未確認完成。")
+    return next(iter(identifiers), "")
+
+
+def _typed_record_page(driver, *, kind: str) -> tuple[list, tuple]:
+    grid = driver.find_element(By.CSS_SELECTOR, "#tableresult")
+    snapshot = _table_page_snapshot(grid)
+    if snapshot is None:
+        raise _IncompleteQueryError("民力結果表無法完整讀取，尚未確認紀錄不存在。")
+    required = (
+        {"時間", "服勤單位", "所屬單位", "姓名", "職稱", "狀態"}
+        if kind == "io" else {"時間", "協勤單位", "協勤人員", "服勤項目", "工作概述", "處理情形"}
+    )
+    parser = _io_record_from_columns if kind == "io" else _work_record_from_columns
+    headers = None
+    records = []
+    signature = []
+    for row in snapshot["rows"]:
+        cells = [_clean_text(value) for value in row.get("cells", [])]
+        if required.issubset(cells):
+            named_headers = [value for value in cells if value]
+            if len(named_headers) != len(set(named_headers)):
+                raise _IncompleteQueryError("民力結果表出現重複欄位，尚未確認完成。")
+            if headers is not None and headers != cells:
+                raise _IncompleteQueryError("民力結果表欄位不一致，尚未確認完成。")
+            headers = cells
+            continue
+        if headers is None or len(cells) != len(headers):
+            raise _IncompleteQueryError("民力結果表欄位改變或資料不完整，尚未確認紀錄不存在。")
+        record_id = _record_row_id(row["element"])
+        columns = {key: value for key, value in zip(headers, cells) if key}
+        records.append(parser(columns, record_id))
+        signature.append((tuple(cells), record_id))
+    if headers is None:
+        raise _IncompleteQueryError("民力結果表缺少必要欄位，尚未確認紀錄不存在。")
+    return records, tuple(signature)
+
+
+def _read_typed_record_pages(driver, *, kind: str) -> list:
+    if kind not in {"io", "work"}:
+        raise ValueError("Unknown civil-power record kind")
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    result = []
+    signatures = []
+    identifiers = set()
+    while True:
+        records, signature = _typed_record_page(driver, kind=kind)
+        if signature in signatures and records:
+            raise _IncompleteQueryError("民力查詢重複回到已讀頁面，尚未確認完成。")
+        signatures.append(signature)
+        for record in records:
+            identifier = record.record_id or getattr(record, "fingerprint", "")
+            if identifier in identifiers:
+                raise _IncompleteQueryError("民力分頁出現重複紀錄識別，請重新查詢。")
+            identifiers.add(identifier)
+            result.append(record)
+        has_next = bool(_pagination_links(driver, "next"))
+        if not records and (has_next or len(signatures) > 1):
+            raise _IncompleteQueryError("民力分頁含空白資料頁，尚未確認完整結果。")
+        if not has_next:
+            break
+        if len(signatures) >= 100:
+            raise _IncompleteQueryError("民力查詢超過 100 頁，尚未確認紀錄不存在。")
+        _change_result_page(driver, wait, "next")
+    for expected in reversed(signatures[:-1]):
+        _change_result_page(driver, wait, "prev")
+        _records, signature = _typed_record_page(driver, kind=kind)
+        if signature != expected:
+            raise _IncompleteQueryError("民力查詢翻頁期間資料已變動，尚未新增或確認完成。")
+    return result
+
+
+def _assert_civilpower_query_unfiltered(driver) -> None:
+    selected = driver.execute_script("""
+        return ['ddl_IO','ddl_Kind','ddl_isSign','ddl_LV1Unit','ddl_LV2Unit','ddl_Type1Unit','ddl_Type2Unit','ddl_Type3Unit']
+            .flatMap(id => Array.from(document.getElementById(id)?.selectedOptions || [])
+                .filter(option => option.value && !option.textContent.includes('請選擇'))
+                .map(option => option.textContent.trim()));
+    """)
+    if not isinstance(selected, list) or selected:
+        raise _IncompleteQueryError("民力查詢仍有其他篩選條件，無法確認全部既有紀錄；尚未新增資料。")
+
+
+def _query_civilpower_records(
+    driver,
+    plan: CivilpowerTaskPlan,
+    window: CivilpowerCaseWindow,
+    *,
+    kind: str,
+    lookback_days: int = 1,
+) -> list:
+    wait = _open_io_work_log(driver) if kind == "io" else _open_work_log_form(driver)
+    if wait is None:
+        wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    start = window.start - timedelta(days=lookback_days) if kind == "io" else window.start
+    end = window.end + timedelta(days=1) if kind == "io" else window.end
+    values = {"#txt_Name": plan.member_name, "#txt_Date_S": start.strftime("%Y/%m/%d"), "#txt_Date_E": end.strftime("%Y/%m/%d")}
+    for selector, value in values.items():
+        _set_input(wait, selector, value)
+        if not _same_value(_control_value(driver, selector), value):
+            raise _IncompleteQueryError("民力查詢條件未正確帶入，尚未新增資料。")
+    if kind == "io":
+        _select_option_containing(wait, "#ddl_IO", "請選擇", clear_others=True)
+    _assert_civilpower_query_unfiltered(driver)
+    previous = _io_result_grid_signature(driver)
+    sentinel = _io_result_grid_sentinel(driver)
+    _click(wait, "#btn_Query")
+    if not _wait_for_io_query_result_grid(driver, [], previous, sentinel):
+        raise _IncompleteQueryError("民力查詢結果未完成更新，尚未確認紀錄不存在；已停止避免重複新增。")
+    return _read_typed_record_pages(driver, kind=kind)
 
 
 def _io_result_grid_signature(driver) -> str | None:
@@ -1058,7 +1477,9 @@ def _ensure_work_log(
     return plan
 
 
-def _select_out_io_record_for_work_log(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
+def _select_out_io_record_for_work_log(
+    driver, wait: WebDriverWait, plan: CivilpowerTaskPlan, *, record_id: str = "",
+) -> None:
     _set_input(wait, "#txt_IODate_S", plan.out_date)
     _set_input(wait, "#txt_IODate_E", plan.out_date)
     dialog = _open_selection_dialog(
@@ -1067,15 +1488,112 @@ def _select_out_io_record_for_work_log(driver, wait: WebDriverWait, plan: Civilp
         "#btn_AddSltIOWorkLog",
         "救護出勤登記",
     )
-    _select_dialog_row(
-        driver,
-        wait,
-        dialog,
-        [plan.member_name, plan.home_unit, plan.serve_unit, plan.out_reason, _datetime_token(plan.out_date, plan.out_time)],
-    )
+    if record_id:
+        wait.until(lambda current: current.execute_script("""
+            return Boolean(arguments[0].querySelector('table')) && !Boolean(window.jQuery && window.jQuery.active);
+        """, dialog))
+        rows = _find_paginated_table_rows(
+            dialog, wait,
+            [plan.member_name, plan.home_unit, plan.serve_unit, _datetime_token(plan.out_date, plan.out_time)],
+            row_filter=lambda row: _record_row_id(row) == record_id,
+        )
+        if len(rows) != 1:
+            raise _CivilpowerRecordsChanged("原出勤已被使用或配對已變更，已停止選取並重新查核工作紀錄。")
+        checkboxes = rows[0].find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+        if len(checkboxes) != 1 or not checkboxes[0].is_enabled():
+            raise CivilpowerRecordConflict("該出勤尚無可選取的完整返隊配對，尚未新增工作紀錄。")
+        _click_dialog_row(driver, rows[0])
+    else:
+        _select_dialog_row(
+            driver,
+            wait,
+            dialog,
+            [plan.member_name, plan.home_unit, plan.serve_unit, plan.out_reason, _datetime_token(plan.out_date, plan.out_time)],
+        )
     _confirm_dialog(driver, wait, dialog)
-    if not _control_value(driver, "#hf_AddIOLogIDs"):
+    selected = _control_value(driver, "#hf_AddIOLogIDs")
+    if not selected:
         raise RuntimeError("工作紀錄簿未選取救護出勤的出入登記。")
+    if record_id and set(filter(None, re.split(r"[,;\s]+", selected))) != {record_id}:
+        raise CivilpowerRecordConflict("工作紀錄選取的出勤識別與本案不符，尚未送出。")
+
+
+def _validate_case_work_form(driver, plan, window, decision, checkpoint):
+    imported = _read_imported_work_log_plan(driver, plan, checkpoint=checkpoint)
+    dispatch_time = _time_from_parts(_control_value(driver, "#txt_AddDisHour"), _control_value(driver, "#txt_AddDisMin"))
+    if dispatch_time != window.start.strftime("%H%M"):
+        raise CivilpowerRecordConflict("案件代入後派遣時間與正式案件不同，尚未送出工作紀錄。")
+    if imported.in_date != window.end.strftime("%Y/%m/%d") or imported.in_time != window.end.strftime("%H%M"):
+        raise CivilpowerRecordConflict("案件代入後返隊時間已變更，請重新查核正式時段；未修改人工出入紀錄。")
+    selected = set(filter(None, re.split(r"[,;\s]+", _control_value(driver, "#hf_AddIOLogIDs"))))
+    if selected != {decision.out.record_id}:
+        raise CivilpowerRecordConflict("送出前出勤識別已變更，尚未送出工作紀錄。")
+
+
+def _guard_case_work_log(driver, request, plan, window, decision, records, lookback):
+    def check():
+        current = _query_civilpower_records(driver, plan, window, kind="io", lookback_days=lookback)
+        if _io_records_signature(current, plan) != _io_records_signature(records, plan):
+            raise _CivilpowerRecordsChanged("送出工作紀錄前出入登記已變更，已取消送出並重新核對。")
+        work = _matching_case_work_record(_query_civilpower_records(driver, plan, window, kind="work"), request, plan, window)
+        if work is not None:
+            _assert_work_record_pair(work, decision)
+        return work
+    return _in_civilpower_query_tab(driver, check)
+
+
+def _submit_verified_work_log(
+    driver, request, plan, window, decision, records, lookback, checkpoint,
+    *, cancel_check, progress, save_checkpoint,
+) -> CivilpowerWorkRecord:
+    _raise_if_cancelled(cancel_check)
+    current = _matching_case_work_record(_query_civilpower_records(driver, plan, window, kind="work"), request, plan, window)
+    if current is not None:
+        _assert_work_record_pair(current, decision)
+        return current
+    wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_add"])
+    _click(wait, "#btn_Add")
+    _wait_visible(wait, "#jqxAddWindow")
+    _wait_for_work_log_add_controls(driver, wait)
+    io_plan = replace(plan, out_date=decision.out.at.strftime("%Y/%m/%d"), out_time=decision.out.at.strftime("%H%M"))
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_out_record"])
+    _select_out_io_record_for_work_log(driver, wait, io_plan, record_id=decision.out.record_id)
+    _raise_if_cancelled(cancel_check)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["case_import"])
+    _import_work_log_case(driver, wait, plan)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["case_verify"])
+    _validate_case_work_form(driver, plan, window, decision, checkpoint)
+    current = _guard_case_work_log(driver, request, plan, window, decision, records, lookback)
+    if current is not None:
+        # Discard this unsaved form; another person completed the same case.
+        current = _matching_case_work_record(_query_civilpower_records(driver, plan, window, kind="work"), request, plan, window)
+        if current is None:
+            raise _CivilpowerRecordsChanged("剛完成的工作紀錄再次變動，尚未確認完成。")
+        _assert_work_record_pair(current, decision)
+        return current
+    _raise_if_cancelled(cancel_check)
+    _validate_case_work_form(driver, plan, window, decision, checkpoint)
+    _require_civilpower_save_enabled("工作紀錄簿")
+    checkpoint["work_log_save_state"] = "pending_verification"
+    checkpoint["work_log_submit_account"] = checkpoint.get("current_login_account", "")
+    save_checkpoint()
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_save"])
+    _click(wait, "#btn_WorkLogAdd")
+    _wait_after_save(driver, wait, "#jqxAddWindow")
+    _raise_if_cancelled(cancel_check)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["work_log_verify"])
+    current = _matching_case_work_record(_query_civilpower_records(driver, plan, window, kind="work"), request, plan, window)
+    if current is None:
+        raise CivilpowerRecordConflict("儲存後回查不到本案正式工作紀錄，尚未宣告完成；請保留現況核對。")
+    _assert_work_record_pair(current, decision)
+    latest = _query_civilpower_records(driver, plan, window, kind="io", lookback_days=lookback)
+    latest_decision = plan_civilpower_io(latest, window, name=plan.member_name, home_unit=plan.home_unit,
+                                       serve_unit=plan.serve_unit, title=plan.member_title)
+    _assert_work_record_pair(current, latest_decision)
+    if latest_decision.out.record_id != decision.out.record_id or latest_decision.inbound.record_id != decision.inbound.record_id:
+        raise CivilpowerRecordConflict("工作紀錄回查時出入識別已改變，尚未確認完成。")
+    return current
 
 
 def _import_work_log_case(driver, wait: WebDriverWait, plan: CivilpowerTaskPlan) -> None:
@@ -1149,7 +1667,7 @@ def _read_imported_work_log_plan(
     if not _valid_hhmm(dispatch_time):
         raise RuntimeError("案件代入後未帶入有效案件派遣時間。")
     status_text = _control_value(driver, "#txt_AddStat")
-    if plan.duty_status_line not in status_text:
+    if not _volunteer_in_status(status_text, plan.member_name):
         raise RuntimeError(f"案件代入後未帶入第一站工作紀錄的 {plan.duty_status_line}。")
     imported_in_date = _normalized_civilpower_date(_control_value(driver, "#txt_AddBackDate"), "#txt_AddBackDate")
     imported_in_time = _time_from_parts(
@@ -1550,14 +2068,46 @@ def _wait_for_dialog_close(wait: WebDriverWait, dialog) -> None:
     wait.until(lambda _current: _is_stale(dialog) or not dialog.is_displayed())
 
 
+def _civilpower_save_reply_is_success(message: str) -> bool:
+    negatives = ("失敗", "錯誤", "無法", "尚未", "未成功", "未新增", "未儲存", "未編輯", "未存檔", "未完成", "不能", "不可", "不允許")
+    return any(marker in message for marker in _SAVE_SUCCESS_MARKERS) and not any(token in message for token in negatives)
+
+
+def _check_civilpower_save_reply(driver) -> bool:
+    native_success = False
+    try:
+        alert = driver.switch_to.alert
+        message = alert.text
+        if isinstance(message, str):
+            if not _civilpower_save_reply_is_success(message):
+                raise _CivilpowerSaveRejected("民力網站未接受儲存：" + _clean_text(message))
+            alert.accept()
+            native_success = True
+    except (NoAlertPresentException, AttributeError):
+        pass
+    for popup in driver.find_elements(By.CSS_SELECTOR, ".swal2-popup, .sweet-alert, [role='alertdialog']"):
+        if popup.is_displayed():
+            message = _clean_text(popup.text)
+            if message and not _civilpower_save_reply_is_success(message):
+                raise _CivilpowerSaveRejected("民力網站未接受儲存：" + message)
+    return native_success or _visible_save_success_dialog(driver) is not None
+
+
 def _wait_after_save(driver, wait: WebDriverWait, modal_selector: str) -> None:
     try:
-        wait.until(lambda current: not _element_displayed(current, modal_selector))
-    except TimeoutException:
-        body_text = _clean_text(driver.find_element(By.TAG_NAME, "body").text)
-        if any(token in body_text for token in ("失敗", "錯誤", "請輸入", "必填")):
-            raise RuntimeError("民力運用系統未接受儲存：" + body_text[-300:])
+        wait.until(lambda current: _check_civilpower_save_reply(current) or not _element_displayed(current, modal_selector))
+    except TimeoutException as exc:
+        if not _check_civilpower_save_reply(driver):
+            body_text = _clean_text(driver.find_element(By.TAG_NAME, "body").text)
+            if any(token in body_text for token in ("失敗", "錯誤", "請輸入", "必填", "無法", "尚未", "未位於")):
+                raise _CivilpowerSaveRejected("民力網站未接受儲存：" + body_text[-300:]) from exc
+            raise RuntimeError("儲存視窗未關閉且無成功回覆，尚未確認網站接受資料；未繼續送出。") from exc
     _dismiss_save_success_dialog(driver, wait)
+    if _element_displayed(driver, modal_selector):
+        try:
+            wait.until(lambda current: not _element_displayed(current, modal_selector))
+        except TimeoutException as exc:
+            raise RuntimeError("成功提示關閉後儲存視窗仍未關閉，尚未確認完成。") from exc
 
 
 def _dismiss_save_success_dialog(driver, wait: WebDriverWait) -> None:
@@ -1582,9 +2132,7 @@ def _visible_save_success_dialog(driver):
     for candidate in candidates:
         try:
             text = _clean_text(candidate.text)
-            if candidate.is_displayed() and any(
-                marker in text for marker in ("新增成功", "編輯成功", "儲存成功", "存檔成功", "操作成功")
-            ):
+            if candidate.is_displayed() and _civilpower_save_reply_is_success(text):
                 return candidate
         except Exception:
             continue

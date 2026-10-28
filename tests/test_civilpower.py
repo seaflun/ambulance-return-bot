@@ -371,36 +371,23 @@ class CivilpowerPlanTests(unittest.TestCase):
         login_once.assert_called_once_with(driver, "original-entry", "original-password", 1)
         self.assertEqual(["original-entry"], logged_in_accounts)
 
-    def test_runner_verifies_out_in_then_work_log_before_reporting_saved(self):
-        from civilpower import IN_STATUS, OUT_STATUS, run_civilpower_task
+    def test_runner_reports_the_verified_record_identifiers(self):
+        from civilpower import build_civilpower_task_plan, run_civilpower_task
 
-        checkpoints: list[str] = []
-
-        def ensure_io(_driver, _plan, status, _checkpoint, **_kwargs):
-            checkpoints.append(status)
-            return status == OUT_STATUS
-
-        def ensure_correct_in(_driver, _plan, _original_plan, _checkpoint, **_kwargs):
-            checkpoints.append(IN_STATUS)
-
-        def ensure_work_log(_driver, _request, _plan, _checkpoint, **_kwargs):
-            checkpoints.append("work_log")
-
-        with TemporaryDirectory() as temporary_directory, mock.patch("civilpower._ensure_io_record", side_effect=ensure_io), mock.patch(
-            "civilpower._ensure_correct_in_io_record", side_effect=ensure_correct_in
-        ), mock.patch(
-            "civilpower._ensure_work_log", side_effect=ensure_work_log
+        plan = build_civilpower_task_plan(self._enabled_request())
+        detail = "已回查出 #101、入 #102 及工作紀錄 #201。"
+        with TemporaryDirectory() as temporary_directory, mock.patch(
+            "civilpower._reconcile_civilpower_task", return_value=(plan, detail)
         ):
             result = run_civilpower_task(self._enabled_request(), Path(temporary_directory), driver=object())
-
-        self.assertEqual([OUT_STATUS, IN_STATUS, "work_log"], checkpoints)
         self.assertEqual("volunteer_assist_saved", result.status)
+        self.assertEqual(detail, result.detail)
 
     def test_runner_does_not_report_saved_when_work_log_verification_fails(self):
         from civilpower import run_civilpower_task
 
-        with TemporaryDirectory() as temporary_directory, mock.patch("civilpower._ensure_io_record"), mock.patch(
-            "civilpower._ensure_work_log", side_effect=RuntimeError("工作紀錄簿回查失敗")
+        with TemporaryDirectory() as temporary_directory, mock.patch(
+            "civilpower._reconcile_civilpower_task", side_effect=RuntimeError("工作紀錄簿回查失敗")
         ):
             result = run_civilpower_task(self._enabled_request(), Path(temporary_directory), driver=object())
 
@@ -416,8 +403,8 @@ class CivilpowerPlanTests(unittest.TestCase):
             kwargs["progress"]("案件代入")
             raise TimeoutException()
 
-        with TemporaryDirectory() as temporary_directory, mock.patch("civilpower._ensure_io_record"), mock.patch(
-            "civilpower._ensure_work_log", side_effect=case_import_timeout
+        with TemporaryDirectory() as temporary_directory, mock.patch(
+            "civilpower._reconcile_civilpower_task", side_effect=case_import_timeout
         ), mock.patch("civilpower.capture_failure_artifacts", return_value={}):
             result = run_civilpower_task(self._enabled_request(), Path(temporary_directory), driver=mock.Mock())
 
@@ -1191,6 +1178,7 @@ class CivilpowerPlanTests(unittest.TestCase):
         with mock.patch("civilpower._element_displayed", return_value=False), mock.patch(
             "civilpower._dismiss_save_success_dialog"
         ) as dismiss:
+            driver.find_elements.return_value = []
             _wait_after_save(driver, ImmediateWait(), "#jqxAddWindow")
 
         dismiss.assert_called_once_with(driver, mock.ANY)

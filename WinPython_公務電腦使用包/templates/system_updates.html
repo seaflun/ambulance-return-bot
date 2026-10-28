@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.29.0217">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.29.0217') }}</p>
+          <h2 class="update-card__title">民力沿用人工出入紀錄與案件時段查核</h2>
+        </div>
+        <span class="update-card__versions">2026.10.29.0217</span>
+      </header>
+      <ul class="update-card__items">
+        <li>以第一站正式工作紀錄的派遣至返隊時段核對民力出入，支援同日多案與跨日；不再使用最後修改時間或要求事由文字完全相同。</li>
+        <li>人員已登打完整出入時沿用原紀錄及登打人，只補缺少的工作紀錄；已完成的案件不再重複新增。</li>
+        <li>送出前再次查核人工異動；網站拒絕儲存時保留原始回覆並重新讀取現況，同一步不盲目重送。</li>
+        <li>重複出入、孤立入勤、退勤衝突、案件外時間或查詢不完整時停止送出；成功後保存正式出入識別與工作紀錄回查依據。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.28.2129">
       <header class="update-card__heading">
         <div>

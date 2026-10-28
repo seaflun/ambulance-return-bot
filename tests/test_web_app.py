@@ -11585,7 +11585,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("登入與出／入登記", civilpower_card)
         self.assertIn("返隊時間檢核", civilpower_card)
         self.assertIn('<span class="stage-summary-detail">按修改入登記</span>', civilpower_card)
-        self.assertIn('<summary>查看完整 19 段</summary>', civilpower_card)
+        self.assertIn('<summary>查看完整 22 段</summary>', civilpower_card)
         self.assertIn('1. 啟動 Chrome', civilpower_card)
         self.assertNotIn('<details class="civilpower-stage-details" open>', civilpower_card)
 
