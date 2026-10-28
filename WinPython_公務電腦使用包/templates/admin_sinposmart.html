@@ -4,16 +4,16 @@
 {% macro notice_clock(value, fallback='') %}{% set stamp = notice_time(value, fallback) | trim %}{{ stamp[11:19] if stamp[10:11] == ' ' else stamp }}{% endmacro %}
 {% macro notice_check_time(value, day, fallback='') %}{% set stamp = notice_time(value, fallback) | trim %}{{ stamp[11:] if stamp.startswith(day ~ ' ') else stamp }}{% endmacro %}
 {% macro notice_section(view) %}
-  <section class="section notice-section" id="notice-section" aria-label="已收通報"
+  <details class="section notice-section" id="notice-section" aria-label="已收通報"
            data-notice-day="{{ view.date }}" data-notice-source="{{ view.workstation }}"
-           data-fire-day="{{ selected_fire_day or '' }}">
-    <div class="notice-header">
+           data-fire-day="{{ selected_fire_day or '' }}"{% if request.args.get('notice_day') or request.args.get('notice_workstation') %} open{% endif %}>
+    <summary class="section-head">
       <h2 class="section-title">已收通報</h2>
       <div class="section-note notice-overview">
         <span class="notice-counts" id="notice-counts">{% if view.count_known and view.shift_count is not none %}當班已收 {{ view.shift_count }} 則{% elif view.shift_label %}當班已收待確認{% else %}當班時段待取得{% endif %}｜{% if view.count_known and view.today_count is not none %}今日累積 {{ view.today_count }} 則{% else %}今日累積待確認{% endif %}｜手動收取 {{ view.manual_count | default(0) }} 則</span>
         <span id="notice-status" class="status {{ view.status_class }}">{{ view.status_label }}</span>
       </div>
-    </div>
+    </summary>
     <div class="section-note notice-meta">曆日 <span id="notice-date">{{ view.date }}</span> · 當班 <span id="notice-shift">{{ view.shift_label or '待取得' }}</span></div>
     <p id="notice-verification" class="section-note"{% if not view.verification_checked_at %} hidden{% endif %}>{% if view.verification_checked_at %}本次人工查核：已讀核實 {{ view.verified_read_count }} 則，原件未找到 {{ view.original_not_found_count }} 則。查核時間：{{ notice_time(view.verification_checked_at) }}。{{ view.verification_note }}{% endif %}</p>
     <div class="notice-check-row">
@@ -25,9 +25,9 @@
       <a class="button" id="notice-sheet-link" href="{{ view.spreadsheet_url }}" target="_blank" rel="noopener noreferrer">Google 試算表</a>
     </div>
     <p id="notice-error" class="notice-error"{% if not view.error %} hidden{% endif %}>{{ view.error }}</p>
-    <nav class="day-nav" id="notice-day-nav" data-selected-day="{{ view.date }}" aria-label="通報曆日">
+    <nav class="day-nav" id="notice-day-nav" aria-label="通報曆日">
       {% for calendar_day in view.calendar_days or [view.date] %}
-        <a class="button day-link {{ 'active' if calendar_day == view.date else '' }}" href="{{ url_for('admin_sinposmart', fire_day=selected_fire_day, notice_day=calendar_day, notice_workstation=view.workstation, _anchor='notice-section') }}" title="{{ calendar_day }}" aria-label="{{ calendar_day }}"{% if calendar_day == view.date %} aria-current="date"{% endif %}>{{ calendar_day[5:] | replace('-', '/') }}</a>
+        <a class="button day-link {{ 'active' if calendar_day == view.date else '' }}" href="{{ url_for('admin_sinposmart', fire_day=selected_fire_day, notice_day=calendar_day, notice_workstation=view.workstation, _anchor='notice-section') }}" title="{{ calendar_day }}" aria-label="{{ calendar_day }}"{% if calendar_day == view.date %} aria-current="date"{% endif %}>{{ calendar_day }}</a>
       {% endfor %}
     </nav>
     <div class="notice-history" id="notice-history">
@@ -80,7 +80,7 @@
         <div id="notice-problems" class="notice-problems">{% for entry in problems %}<p>{{ notice_time(entry.reported_at) }} · {{ entry.status_label }}{% if entry.error %}：{{ entry.error }}{% endif %}</p>{% endfor %}</div>
       </details>
     </div>
-  </section>
+  </details>
 {% endmacro %}
 {% set page_accent = 'duty' %}
 
@@ -326,63 +326,16 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='admin-system-status.css') }}">
   <style>
-    body.workspace-page--duty #notice-section {
-      --notice-blue: #0066cc;
-      padding: clamp(16px, 2.5vw, 28px);
-      border: 1px solid #e5e5ea;
-      border-radius: 20px;
-      background: #fff;
-      box-shadow: 0 4px 20px rgb(0 0 0 / 3%);
-      color: #1d1d1f;
-    }
-    #notice-section .notice-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px 16px; }
-    #notice-section .section-title { font: 600 1.375rem/1.25 system-ui, sans-serif; letter-spacing: -.025em; }
-    #notice-section .notice-overview { display: contents; }
-    #notice-section #notice-counts { grid-column: 1 / -1; grid-row: 2; }
-    #notice-section #notice-status { grid-column: 2; grid-row: 1; max-width: min(18rem, 58vw); }
-    #notice-section .notice-counts { color: #6e6e73; font-size: 14px; font-weight: 400; }
-    #notice-section .notice-meta { margin: 6px 0 20px; font-size: 12px; color: #6e6e73; }
-    #notice-section .notice-check-row { gap: 16px; margin-block-end: 20px; }
-    #notice-section .notice-times { gap: 16px 32px; }
-    #notice-section .notice-times > span { display: grid; gap: 5px; color: #6e6e73; font-size: 12px; }
-    #notice-section .notice-times > span > span { color: #1d1d1f; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
-    #notice-section .button { width: auto; min-height: 40px; padding-inline: 16px; border-radius: 10px; box-shadow: none; font-size: 13px; font-weight: 500; }
-    #notice-section :is(#notice-sheet-link, .secondary) { border-color: transparent; background: #f0f5fc; color: var(--notice-blue); }
-    #notice-section .button:active { background: #e4edf9; transform: scale(.98); }
-    #notice-section :is(.button, summary):focus-visible { outline: 3px solid var(--notice-blue); outline-offset: 3px; }
-    #notice-section #notice-day-nav { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0; padding: 4px; min-width: 0; max-width: 100%; overflow-x: auto; border: 0; border-radius: 12px; background: #f5f5f7; box-shadow: none; }
-    #notice-section #notice-day-nav .day-link { flex: 0 0 auto; min-height: 36px; padding-inline: 14px; border: 0; border-radius: 8px; background: transparent; color: #6e6e73; }
-    #notice-section #notice-day-nav .day-link.active { background: #fff; color: #1d1d1f; box-shadow: 0 1px 4px rgb(0 0 0 / 10%); }
-    #notice-section .notice-history { margin-block-start: 20px; padding: 0; border: 0; }
-    #notice-section .notice-records-heading { font-size: 14px; font-weight: 500; }
-    #notice-section .notice-table-wrap { min-width: 0; max-width: 100%; margin-block: 12px 20px; border-radius: 10px; }
-    #notice-section .notice-table { min-width: 620px; font-size: 13px; }
-    #notice-section .notice-table :is(th, td) { padding: 12px 10px; border-color: #eeeef0; }
-    #notice-section .notice-table th { background: #f5f5f7; color: #6e6e73; font-weight: 500; }
-    #notice-section .notice-error { padding: 10px 12px; border-radius: 10px; background: #fff5e6; color: #8a5700; }
-    #notice-section :is(.notice-password, .notice-status-details, .notice-problem-history) { margin: 0; padding: 0; border: 0; border-top: 1px solid #eeeef0; border-radius: 0; background: transparent; }
-    #notice-section details > summary { min-height: 48px; padding: 10px 0; border-radius: 0; font-size: 14px; font-weight: 500; }
-    #notice-section details > summary::after { content: "⌄"; color: #86868b; font-size: 18px; }
-    #notice-section details[open] > summary::after { content: "⌃"; }
-    #notice-section details > summary:hover { background: transparent; color: var(--notice-blue); }
-    #notice-section .notice-password > summary .section-note { margin-inline-start: auto; margin-inline-end: 8px; }
-    #notice-section .notice-password-content { display: grid; gap: 12px; padding-block: 4px 16px; }
-    #notice-section .notice-password-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
-    #notice-section .notice-password-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    #notice-section .notice-password-fields label { display: grid; gap: 6px; min-width: 0; font-size: 13px; }
-    #notice-section .notice-password-fields input { width: 100%; min-width: 0; border: 1px solid #d2d2d7; border-radius: 10px; box-shadow: none; }
-    #notice-section #notice-credentials-submit { margin-block-start: 12px; border-color: transparent; background: var(--notice-blue); color: #fff; }
-    #notice-section #notice-credentials-submit:disabled { opacity: .5; }
-    #notice-section #notice-credentials-feedback { font-size: 13px; }
-    #notice-section #notice-credentials-feedback:empty { display: none; }
-    #notice-section .notice-status-details > :not(summary) { padding-block: 4px; font-size: 12px; overflow-wrap: anywhere; }
-    @media (max-width: 600px) {
-      #notice-section .notice-times { gap: 14px; }
-      #notice-section .notice-times > span > span { font-size: 13px; }
-      #notice-section .notice-password-fields { grid-template-columns: 1fr; }
-    }
-    @media (prefers-reduced-motion: reduce) { #notice-section .button:active { transform: none; } }
-    @media (prefers-contrast: more) { #notice-section { border-color: #6e6e73; } }
+    .notice-password { margin-top: .75rem; padding: .25rem; border: 1px solid var(--line); border-radius: var(--duty-row-radius); background: var(--duty-card-surface); }
+    .notice-password > summary .section-note { margin-inline-start: auto; }
+    .notice-password-content { display: grid; gap: .75rem; padding: .75rem; }
+    .notice-password-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; }
+    .notice-password-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+    .notice-password-fields label { display: grid; gap: .375rem; min-width: 0; }
+    .notice-password-fields input { width: 100%; min-width: 0; }
+    #notice-credentials-form > button { margin-block-start: .75rem; }
+    #notice-credentials-feedback:empty { display: none; }
+    @media (max-width: 600px) { .notice-password-fields { grid-template-columns: 1fr; } }
   </style>
 {% endblock %}
 
@@ -847,16 +800,6 @@
         if (filters.get(key)) noticeParams.set(key, filters.get(key));
       });
       const noticeQuery = noticeParams.size ? "?" + noticeParams.toString() : "";
-      function revealNoticeDay(nav) {
-        const selected = nav.querySelector('[aria-current="date"]');
-        if (selected) nav.scrollLeft += selected.getBoundingClientRect().left - nav.getBoundingClientRect().left
-          - (nav.clientWidth - selected.clientWidth) / 2;
-      }
-      const dayNav = document.getElementById("notice-day-nav");
-      if (dayNav) {
-        revealNoticeDay(dayNav);
-        window.addEventListener("resize", () => revealNoticeDay(dayNav));
-      }
       const statusClass = value => ["complete", "failed", "running", "attention"].includes(value) ? value : "";
       const stamp = value => value ? String(value).replace("T", " ").replace(/\+08:00$/, "") : "";
       const clock = value => { const text = stamp(value); return text[10] === " " ? text.slice(11, 19) : text; };
@@ -868,6 +811,7 @@
       const credentialFeedback = document.getElementById("notice-credentials-feedback");
       let credentialSubmitting = false, credentialUncertain = false, credentialRevision = 0;
       if (notice && credentials && window.location.hash === "#notice-remote-credentials") {
+        notice.open = true;
         credentials.open = true;
       }
       function refreshNoticeCredentials(view) {
@@ -963,7 +907,7 @@
           url.searchParams.set("notice_workstation", view.workstation || "");
           url.hash = "notice-section";
           link.className = "button day-link" + (day === view.date ? " active" : "");
-          link.textContent = day.slice(5).replace("-", "/");
+          link.textContent = day;
           link.title = day;
           link.setAttribute("aria-label", day);
           link.href = url.href;
@@ -971,12 +915,7 @@
           calendarLinks.append(link);
         });
         const calendarNav = document.getElementById("notice-day-nav");
-        if (!calendarNav.contains(document.activeElement)) {
-          const selectionChanged = calendarNav.dataset.selectedDay !== view.date;
-          calendarNav.replaceChildren(calendarLinks);
-          if (selectionChanged) revealNoticeDay(calendarNav);
-          calendarNav.dataset.selectedDay = view.date;
-        }
+        if (!calendarNav.contains(document.activeElement)) calendarNav.replaceChildren(calendarLinks);
         const sheetUrl = new URL(view.spreadsheet_url, window.location.origin);
         if (sheetUrl.origin !== window.location.origin || sheetUrl.pathname !== "/admin/sinposmart/notices/spreadsheet"
             || sheetUrl.searchParams.get("notice_day") !== view.date || sheetUrl.username || sheetUrl.password || sheetUrl.hash) {
