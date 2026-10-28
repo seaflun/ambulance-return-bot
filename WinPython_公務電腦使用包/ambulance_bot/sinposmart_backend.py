@@ -1888,6 +1888,12 @@ NOTICE_ERROR_MESSAGES = {
     "oa_captcha_ocr_failed": "通報驗證碼辨識元件執行失敗，未送出登入。",
     "oa_captcha_rejected": "通報網站判定驗證碼不正確，請稍後重試。",
     "oa_credentials_rejected": "通報網站拒絕帳號密碼，請確認已儲存的通報帳密。",
+    "oa_password_warning_blocked": "通報網站要求處理密碼提醒，尚未完成登入。",
+    "oa_password_change_required": "通報網站要求變更密碼，已停止自動登入。",
+    "oa_account_locked": "通報網站顯示帳號已鎖定，已停止自動登入。",
+    "oa_login_unconfirmed": "登入送出後無法確認結果，已停止重複送出。",
+    "oa_password_expired": "通報密碼已達設定期限，未送出登入。",
+    "oa_login_guard_unavailable": "登入保護狀態無法讀取，未送出登入。",
     "oa_login_page_failed": "通報登入頁載入失敗，請確認網站與連線。",
     "oa_login_form_timeout": "通報登入表單載入逾時，未完成登入。",
     "oa_login_verification_timeout": "通報登入送出後驗證逾時，尚未確認登入成功。",
@@ -1910,7 +1916,7 @@ NOTICE_ERROR_MESSAGES = {
     "notice_url_invalid": "通報內文網址無法確認，已停止讀取。",
     "scan_unexpected": "通報列表載入未完成，已保留原有未讀狀態。",
     "session_expired": "入口網作業逾時，將於下輪重新登入。",
-    "login_failed": "通報背景登入未成功，請確認已儲存的密碼與網站狀態。",
+    "login_failed": "通報登入驗證未完成，尚無法確認具體原因。",
     "credentials_missing": "通報帳號尚未設定密碼，請先至值班台設定。",
     "cancelled": "通報收取已停止。",
 }
@@ -2101,6 +2107,21 @@ def normalize_notice_collection_report(value: Any) -> dict[str, Any]:
             return {}
         clean.update(scan_scope="publication_window", scan_from=scan_from.isoformat(), scan_to=scan_to.isoformat(),
                      scan_verified_at=verified.astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds"))
+    if "verification_only" in value:
+        if (value["verification_only"] is not True or clean["state"] not in {"waiting", "failed"}
+                or clean["part_index"] != 0 or clean["part_count"] != 1
+                or any(clean[field] is not None for field in NOTICE_COUNT_FIELDS)
+                or clean["records"] or clean["new_keys"] or clean["shift_start"] or clean["shift_end"]
+                or "manual_records" in value or "scan_scope" in clean
+                or clean["state"] == "failed" and (not dates["started_at"] or not dates["completed_at"])
+                or clean["state"] == "waiting" and (dates["started_at"] or dates["completed_at"])
+                or clean["error_stage"] != ("busy" if clean["state"] == "waiting" else "login")):
+            return {}
+        clean["verification_only"] = True
+        if clean["state"] == "waiting":
+            clean["message"] = "通報登入驗證尚未開始，等待公務作業完成。"
+        elif "error_code" not in clean:
+            clean["message"] = "驗證未完成，原因待確認。"
     return clean
 
 
@@ -2182,7 +2203,8 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
                          "last_reported_at": next((group["at"].astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds")
                                                    for group in reversed(daily) if group["workstation"] == source), "")}
                         for source in sorted(sources)]}
-    latest = today[-1] if today else None
+    collections = [group for group in today if not group["report"].get("verification_only")]
+    latest = collections[-1] if collections else (today[-1] if today else None)
     report = latest["report"] if latest else {}
     state = report.get("state", "invalid")
     if latest:
@@ -2220,8 +2242,10 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
             received_count = len(new_rows)
         if new_rows or row_report["state"] in {"partial", "uncertain", "failed", "missing_credentials"}:
             history.append({"run_id": row_report["run_id"], "reported_at": row_report["reported_at"], "state": row_report["state"],
-                            "status_label": NOTICE_STATUS[row_report["state"]][0], "status_class": NOTICE_STATUS[row_report["state"]][1],
-                            "new_count": len(new_rows), "error": row_report["message"], "records": new_rows})
+                            "status_label": "登入驗證失敗" if row_report.get("verification_only") else NOTICE_STATUS[row_report["state"]][0],
+                            "status_class": NOTICE_STATUS[row_report["state"]][1],
+                            "new_count": None if row_report.get("verification_only") else len(new_rows),
+                            "error": row_report["message"], "records": new_rows})
     for key, row in manual_ledger.items():
         if key in ledger and not ledger[key].get("published_at"):
             ledger[key]["published_at"] = row["published_at"]
@@ -2295,11 +2319,26 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
         view["authentication_label"] = "本輪登入未完成"
     elif not historical and state == "running":
         view["authentication_label"] = "本輪登入與列表檢查中"
+    verification = today[-1]
+    if verification["report"].get("verification_only") and verification["at"] >= latest["at"]:
+        latest, report = verification, verification["report"]
+        state = report["state"]
+        view.update(state=state, parts_complete=latest["complete"],
+                    last_reported_at=report["reported_at"], next_check_at=report["next_check_at"] if state == "waiting" else "",
+                    status_label="等待登入驗證" if state == "waiting" else "登入驗證失敗",
+                    status_class="running" if state == "waiting" else "failed", error=report["message"],
+                    authentication_label="尚未嘗試登入（瀏覽器忙碌）" if state == "waiting" else "本輪登入驗證未完成")
+        if not latest["complete"]:
+            view.update(state="uncertain", status_label="驗證回報格式待確認", status_class="attention")
     if latest["at"] > current + timedelta(minutes=5):
-        view.update(count_known=False, today_count=None, shift_count=None, status_label="回報時間待確認", status_class="attention")
+        view.update(state="uncertain", status_label="回報時間待確認", status_class="attention")
+        if not report.get("verification_only") or not collections or collections[-1]["at"] > current + timedelta(minutes=5):
+            view.update(count_known=False, today_count=None, shift_count=None)
     elif target == current.astimezone(TAIPEI_TIMEZONE).date() and report.get("next_check_at") and current > _heartbeat_datetime(report["next_check_at"]) + timedelta(minutes=2):
-        view.update(status_label="超過預定檢查時間，狀態待確認", status_class="attention")
-        view["authentication_label"] = "上次驗證已過期，等待新回報"
+        view.update(state="uncertain", status_label="超過預定檢查時間，狀態待確認", status_class="attention")
+        view["authentication_label"] = "尚無近期登入驗證回報"
+        if view["error"]:
+            view["error"] = f"最後回報（{latest['at'].astimezone(TAIPEI_TIMEZONE):%H:%M}）：{view['error']}"
     if historical:
         view["status_label"] = "歷史：" + view["status_label"]
     return view
@@ -2714,7 +2753,8 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
             report = {}
         event["snapshot"] = {"app_version": version, "workstation": station,
                              "run_id": report.get("run_id", ""), "notice_collection": report}
-        event.update(status=report.get("state", "failed"), trigger_type="notice_poll", item_title="已收通報", source="SinpoSmart", item_kind="notice_collection",
+        event.update(status=report.get("state", "failed"), trigger_type="notice_verify" if report.get("verification_only") else "notice_poll",
+                     item_title="通報登入驗證" if report.get("verification_only") else "已收通報", source="SinpoSmart", item_kind="notice_collection",
                      actor_no="", user_id="", display_name="", content="", target="", target_time="", result_ref="",
                      error="" if report else "通報回報格式不符，狀態待確認。")
         event["fire_day"] = sinposmart_fire_day_for(occurred_at)

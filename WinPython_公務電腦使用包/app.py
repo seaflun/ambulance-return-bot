@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 from copy import deepcopy
+import gzip
 import hashlib
 import hmac
 import http.client
@@ -473,6 +474,31 @@ def restrict_task_entry_console():
     if request.endpoint not in allowed:
         abort(403, description="此入口僅提供救災、救護登打及相關設定。")
     return None
+
+
+@app.after_request
+def compress_admin_html(response):
+    if (request.endpoint not in {"admin_sinposmart", "admin_ems", "admin_disaster", "admin_public_pc"}
+            or request.method not in {"GET", "HEAD"}
+            or not 200 <= response.status_code < 300
+            or response.status_code in {204, 205, 206}
+            or response.mimetype != "text/html"
+            or response.is_streamed or response.direct_passthrough
+            or any(name in response.headers for name in ("Content-Encoding", "ETag", "Content-Range"))):
+        return response
+    body = response.get_data()
+    if len(body) < 1024:
+        return response
+    # Both representations must vary, including clients that decline compression.
+    response.vary.add("Accept-Encoding")
+    if request.accept_encodings["gzip"] <= 0:
+        return response
+    compressed = gzip.compress(body, compresslevel=1, mtime=0)
+    if len(compressed) < len(body):
+        response.set_data(compressed)
+        response.headers["Content-Encoding"] = "gzip"
+        response.content_length = len(compressed)
+    return response
 
 
 def serialized_task_creation(view):

@@ -27,6 +27,72 @@ from ambulance_bot.sinposmart_backend import (
 
 
 class NoticeCollectionBackendTests(unittest.TestCase):
+    def test_stale_report_does_not_claim_password_or_authentication_expiry(self):
+        self.put(self.event(state="waiting", error_stage="busy"))
+        view = self.view(now=datetime(2026, 10, 22, 9, 30, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertEqual(view["state"], "uncertain")
+        self.assertEqual(view["authentication_label"], "尚無近期登入驗證回報")
+        self.assertIn("最後回報（09:01）", view["error"])
+        self.assertNotIn("過期", view["authentication_label"])
+
+    def test_verification_reports_are_safe_and_preserve_collection_evidence(self):
+        self.put(self.event(records=[self.record()], shift_start="2026-10-22T08:00:00+08:00",
+                            shift_end="2026-10-22T10:00:00+08:00"))
+        counts = {field: None for field in backend.NOTICE_COUNT_FIELDS}
+        for number, (state, code, label) in enumerate((
+                ("waiting", "", "等待登入驗證"), ("failed", "oa_credentials_rejected", "登入驗證失敗"),
+                ("failed", "unconfirmed-private", "登入驗證失敗")), 2):
+            event = self.event(run=number, reported=f"2026-10-22T09:0{number}:00+08:00", state=state,
+                verification_only=True, error_stage="busy" if state == "waiting" else "login",
+                error_code=code, message="token=must-not-retain", **counts)
+            if state == "waiting":
+                event["snapshot"]["notice_collection"]["started_at"] = ""
+            stored = self.put(event)
+            self.assertTrue(stored["snapshot"]["notice_collection"]["verification_only"])
+            self.assertEqual(stored["trigger_type"], "notice_verify")
+            self.assertNotIn("must-not-retain", json.dumps(stored))
+            view = self.view(now=datetime(2026, 10, 22, 9, number, tzinfo=backend.TAIPEI_TIMEZONE))
+            self.assertEqual(view["status_label"], label)
+            self.assertEqual(view["today_count"], 1)
+            self.assertEqual(view["shift_count"], 1)
+            self.assertEqual(view["records"][0]["key"], self.record()["key"])
+            self.assertEqual(view["last_checked_at"], "2026-10-22T09:01:00+08:00")
+            if state == "failed":
+                self.assertEqual(view["next_check_at"], "")
+            if code == "unconfirmed-private":
+                self.assertEqual(view["error"], "驗證未完成，原因待確認。")
+        self.put(self.event(run=5, reported="2026-10-22T09:05:00+08:00", records=[self.record()]))
+        recovered = self.view(now=datetime(2026, 10, 22, 9, 5, tzinfo=backend.TAIPEI_TIMEZONE))
+        self.assertEqual(recovered["state"], "success")
+        self.assertEqual(recovered["error"], "")
+        self.assertEqual(recovered["authentication_label"], "本輪列表身分已驗證")
+        self.assertEqual(recovered["history"][0]["status_label"], "登入驗證失敗")
+
+    def test_verification_report_cannot_claim_collection_or_scan_success(self):
+        counts = {field: None for field in backend.NOTICE_COUNT_FIELDS}
+        for changes in ({"state": "success"}, {"new_count": 0}, {"records": [self.record()]},
+                        {"manual_records": []}, {"verification_only": "true"}):
+            raw = self.event(state="failed", verification_only=True, error_stage="login", **counts)
+            raw["snapshot"]["notice_collection"].update(changes)
+            self.assertEqual(backend.normalize_notice_collection_report(raw["snapshot"]["notice_collection"]), {})
+
+    def test_verification_report_requires_attempt_times_and_future_cannot_erase_real_counts(self):
+        counts = {field: None for field in backend.NOTICE_COUNT_FIELDS}
+        for state, started, completed in (("failed", "", ""), ("failed", "2026-10-22T09:01:00+08:00", ""),
+                                           ("waiting", "2026-10-22T09:01:00+08:00", "")):
+            raw = self.event(state=state, verification_only=True, error_stage="busy" if state == "waiting" else "login",
+                             started_at=started, completed_at=completed, **counts)
+            self.assertEqual(backend.normalize_notice_collection_report(raw["snapshot"]["notice_collection"]), {})
+        self.put(self.event(records=[self.record()], shift_start="2026-10-22T08:00:00+08:00",
+                            shift_end="2026-10-22T10:00:00+08:00"))
+        self.put(self.event(run=2, state="failed", reported="2026-10-22T09:30:00+08:00", verification_only=True,
+                            error_stage="login", error_code="oa_credentials_rejected", **counts))
+        view = self.view()
+        self.assertEqual(view["status_label"], "回報時間待確認")
+        self.assertEqual(view["today_count"], 1)
+        self.assertEqual(view["shift_count"], 1)
+        self.assertTrue(view["count_known"])
+
     def test_notice_reuses_parsing_across_instances_but_recomputes_time_and_isolates_results(self):
         record = self.record()
         self.put(self.event(records=[record], next_check_at="2026-10-22T09:04:00+08:00"))
@@ -376,7 +442,13 @@ class NoticeCollectionBackendTests(unittest.TestCase):
             "notice_url_invalid": "通報內文網址無法確認，已停止讀取。",
             "scan_unexpected": "通報列表載入未完成，已保留原有未讀狀態。",
             "session_expired": "入口網作業逾時，將於下輪重新登入。",
-            "login_failed": "通報背景登入未成功，請確認已儲存的密碼與網站狀態。",
+            "login_failed": "通報登入驗證未完成，尚無法確認具體原因。",
+            "oa_password_warning_blocked": "通報網站要求處理密碼提醒，尚未完成登入。",
+            "oa_password_change_required": "通報網站要求變更密碼，已停止自動登入。",
+            "oa_account_locked": "通報網站顯示帳號已鎖定，已停止自動登入。",
+            "oa_login_unconfirmed": "登入送出後無法確認結果，已停止重複送出。",
+            "oa_password_expired": "通報密碼已達設定期限，未送出登入。",
+            "oa_login_guard_unavailable": "登入保護狀態無法讀取，未送出登入。",
             "credentials_missing": "通報帳號尚未設定密碼，請先至值班台設定。",
             "cancelled": "通報收取已停止。",
         }

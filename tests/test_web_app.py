@@ -313,6 +313,26 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
         downloaded.close()
         self.assertEqual(self.client.get(url.replace(digest, "0" * 64)).status_code, 404)
 
+    def test_sinposmart_diagnostics_are_last_with_or_without_duty_days(self):
+        store = app_module.sinposmart_store()
+        fire_day = "2026-10-28"
+        report = {"fire_day": fire_day, "sha256": "a" * 64,
+                  "created_at": fire_day + "T10:00:00+08:00", "workstation": "TEST-DUTY-PC"}
+        for days in ([], [{"fire_day": fire_day, "admin_view": {}}]):
+            with self.subTest(has_duty_days=bool(days)), \
+                    mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                    mock.patch.object(store, "list_days", return_value=days), \
+                    mock.patch.object(store, "list_diagnostics", return_value=[report]), \
+                    mock.patch.object(app_module, "sinposmart_admin_version_info", return_value={}):
+                response = self.client.get("/admin/sinposmart")
+                self.assertEqual(response.status_code, 200)
+                body = response.get_data(as_text=True)
+                diagnostic = re.search(r'<details\b[^>]*id="diagnostic-reports"[^>]*>.*?</details>', body, re.S)
+                self.assertIsNotNone(diagnostic)
+                self.assertLess(body.index('id="notice-section"'), diagnostic.start())
+                self.assertRegex(body[diagnostic.end():], r'^\s*</section>\s*</main>\s*<script>')
+                self.assertIn("下載問題包", diagnostic.group(0))
+
     def test_sinposmart_diagnostics_reject_unsafe_or_unconfirmed_contents(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         headers = {"X-Credential-Sync-Token": "sync-token"}

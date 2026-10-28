@@ -148,6 +148,22 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.28.1857">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.28.1857') }}</p>
+          <h2 class="update-card__title">通報錯誤實況與後台傳輸優化</h2>
+        </div>
+        <span class="update-card__versions">2026.10.28.1857</span>
+      </header>
+      <ul class="update-card__items">
+        <li>依瀏覽器支援壓縮救護、救災及值班後台網頁，降低大型任務頁面的下載量。</li>
+        <li>網頁內容與原有操作功能完整保留，舊版瀏覽器仍可正常讀取。</li>
+        <li>通報無新回報時顯示狀態待確認，不再推定登入驗證已過期；舊異常標示最後回報時間。</li>
+        <li>支援通報登入驗證等待與失敗分類，保留原有收取筆數及明細，未知原因明確標示待確認。</li>
+        <li>問題包區塊移至值班後台最下方，保留下載及十四天保留規則。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.28.1823">
       <header class="update-card__heading">
         <div>

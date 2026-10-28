@@ -1,4 +1,6 @@
 import copy
+import gzip
+import random
 import unittest
 from unittest.mock import patch
 
@@ -6,6 +8,79 @@ import app as app_module
 
 
 class SiteCompletionTimingTests(unittest.TestCase):
+    def admin_response(self, *, path="/admin/ems", method="GET", accept="gzip", body=None,
+                       status=200, mimetype="text/html", extra_headers=None,
+                       streamed=False, passthrough=False):
+        body = body if body is not None else ("<p>救護與救災：已完成，歷史紀錄保留。</p>" * 100).encode("utf-8")
+        endpoints = {"/admin/ems": "admin_ems", "/admin/disaster": "admin_disaster",
+                     "/admin/sinposmart": "admin_sinposmart", "/admin/public-pc": "admin_public_pc",
+                     "/status": "status", "/updates": "system_updates"}
+
+        def view():
+            response = app_module.app.response_class(
+                iter([body]) if streamed else body, status=status, mimetype=mimetype,
+                direct_passthrough=passthrough)
+            response.headers.update({"Cache-Control": "private, no-store", "Vary": "Cookie",
+                                     "X-Fixture": "preserved", **(extra_headers or {})})
+            response.set_cookie("fixture-session", "fixture-value", httponly=True)
+            return response
+
+        headers = {} if accept is None else {"Accept-Encoding": accept}
+        with patch.dict(app_module.app.view_functions, {endpoints[path]: view}):
+            return app_module.app.test_client().open(path, method=method, headers=headers)
+
+    def test_admin_gzip_preserves_chinese_bytes_headers_and_head_representation(self):
+        for path in ("/admin/ems", "/admin/disaster", "/admin/sinposmart", "/admin/public-pc"):
+            with self.subTest(path=path):
+                identity = self.admin_response(path=path, accept=None)
+                compressed = self.admin_response(path=path)
+                head = self.admin_response(path=path, method="HEAD")
+                self.assertEqual("gzip", compressed.headers.get("Content-Encoding"))
+                self.assertEqual(identity.data, gzip.decompress(compressed.data))
+                self.assertLess(len(compressed.data), len(identity.data))
+                self.assertEqual(len(compressed.data), compressed.content_length)
+                self.assertEqual(b"\x00\x00\x00\x00", compressed.data[4:8])
+                for name in ("Cache-Control", "Content-Type", "X-Fixture", "Set-Cookie"):
+                    self.assertEqual(identity.headers.getlist(name), compressed.headers.getlist(name))
+                for response in (identity, compressed, head):
+                    self.assertEqual({"cookie", "accept-encoding"}, {value.lower() for value in response.vary})
+                self.assertEqual(b"", head.data)
+                self.assertEqual(compressed.content_length, head.content_length)
+                self.assertEqual("gzip", head.headers.get("Content-Encoding"))
+
+    def test_admin_gzip_negotiates_quality_and_preserves_identity_body(self):
+        expected = self.admin_response(accept=None).data
+        for accept in (None, "", "identity", "br", "gzip;q=0", "gzip;q=0, *;q=1", "gzip;q=invalid"):
+            with self.subTest(accept=accept):
+                response = self.admin_response(accept=accept)
+                self.assertNotIn("Content-Encoding", response.headers)
+                self.assertEqual(expected, response.data)
+                self.assertIn("Accept-Encoding", response.vary)
+        for accept in ("gzip", "br, gzip;q=0.5", "*;q=0.7", "GZip"):
+            with self.subTest(accept=accept):
+                response = self.admin_response(accept=accept)
+                self.assertEqual("gzip", response.headers.get("Content-Encoding"))
+                self.assertEqual(expected, gzip.decompress(response.data))
+
+    def test_admin_gzip_excludes_apis_errors_existing_encodings_and_streams(self):
+        cases = [
+            {"path": "/status", "mimetype": "application/json"}, {"path": "/updates"},
+            {"method": "POST"}, {"mimetype": "application/json"},
+            {"status": 302}, {"status": 404}, {"status": 500}, {"status": 206},
+            {"extra_headers": {"Content-Encoding": "br"}}, {"extra_headers": {"ETag": '"fixture"'}},
+            {"extra_headers": {"Content-Range": "bytes 0-1023/2048"}},
+            {"streamed": True}, {"passthrough": True}, {"body": b"x" * 1023},
+        ]
+        for options in cases:
+            with self.subTest(options=options):
+                response = self.admin_response(**options)
+                self.assertNotEqual("gzip", response.headers.get("Content-Encoding"))
+        incompressible = random.Random(0).randbytes(4096)
+        response = self.admin_response(body=incompressible)
+        self.assertEqual(incompressible, response.data)
+        self.assertNotIn("Content-Encoding", response.headers)
+        self.assertIn("Accept-Encoding", response.vary)
+
     def event(self, site, time, state="running", *, action="", detail="", **extra):
         return {"time": time, "status": f"{site}_{state}", "action": action,
                 "detail": detail, **extra}
