@@ -139,6 +139,42 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(oversized.status_code, 413)
         self.assertFalse(list((app_module.artifacts_dir / "sinposmart").rglob("*.zip")))
 
+    def test_sinposmart_diagnostic_upload_also_cleans_expired_archives(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        root = app_module.artifacts_dir / "sinposmart/diagnostics/2020-01-01"
+        root.mkdir(parents=True)
+        for suffix in (".zip", ".json"):
+            (root / ("a" * 64 + suffix)).write_bytes(b"expired")
+        raw = self._diagnostic_package()
+        digest = hashlib.sha256(raw).hexdigest()
+
+        response = self.client.post("/api/sinposmart/diagnostics/" + digest,
+            data=raw, content_type="application/zip", headers={"X-Credential-Sync-Token": "sync-token"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["ack_id"], digest)
+        self.assertFalse(root.exists())
+        saved = app_module.sinposmart_store().diagnostic_path(response.get_json()["fire_day"], digest)
+        self.assertEqual(saved.read_bytes(), raw)
+
+    def test_admin_lists_all_fourteen_retained_diagnostic_days(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        days = []
+        for age in range(14):
+            created_at = (datetime.now().astimezone() - timedelta(days=age)).isoformat(timespec="seconds")
+            raw = self._diagnostic_package(manifest_changes={"created_at": created_at})
+            digest = hashlib.sha256(raw).hexdigest()
+            result = self.client.post("/api/sinposmart/diagnostics/" + digest,
+                data=raw, content_type="application/zip", headers={"X-Credential-Sync-Token": "sync-token"})
+            self.assertEqual(result.status_code, 200)
+            days.append(result.get_json()["fire_day"])
+
+        page = self.client.get("/admin/sinposmart").get_data(as_text=True)
+
+        self.assertIn("保留 14 天", page)
+        for fire_day in days:
+            self.assertIn("/admin/sinposmart?fire_day=" + fire_day, page)
+
     def test_admin_overlap_manual_confirmation_requires_ack_token_and_syncs_exact_vehicle(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
         task = app_module.AmbulanceReturnRequest.from_dict({
@@ -4943,6 +4979,21 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             poll()
         self.assertEqual(2, tick.call_count)
         self.assertEqual([mock.call(10)] * 3, wait.call_args_list)
+
+    def test_scheduler_cleans_diagnostics_hourly_without_requests_and_survives_errors(self):
+        with mock.patch.object(app_module.threading, "Thread") as thread_factory:
+            stop, thread = app_module.start_task_auto_start_scheduler()
+            poll = thread_factory.call_args.kwargs["target"]
+        diagnostic_store = mock.Mock()
+        diagnostic_store.cleanup_diagnostics.side_effect = [OSError("test"), None]
+        with mock.patch.object(stop, "wait", side_effect=[False, False, False, True]) as wait, \
+                mock.patch.object(app_module.time, "monotonic", side_effect=[0, 3599, 3600]), \
+                mock.patch.object(app_module, "run_due_task_auto_starts", side_effect=[OSError("test"), None, None]) as tick, \
+                mock.patch.object(app_module, "sinposmart_store", return_value=diagnostic_store):
+            poll()
+        self.assertEqual(tick.call_count, 3)
+        self.assertEqual(diagnostic_store.cleanup_diagnostics.call_count, 2)
+        self.assertEqual([mock.call(10)] * 4, wait.call_args_list)
 
     def test_web_lifecycle_starts_and_stops_auto_start_scheduler(self):
         stop, thread = mock.Mock(), mock.Mock()

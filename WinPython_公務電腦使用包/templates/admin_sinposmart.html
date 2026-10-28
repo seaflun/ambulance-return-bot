@@ -370,7 +370,7 @@
 
     {% if diagnostic_reports %}
       <details class="section" id="diagnostic-reports">
-        <summary class="section-head"><h2 class="section-title">問題包</h2><span class="section-note">已保存至 NAS · {{ diagnostic_reports | length }} 份</span></summary>
+        <summary class="section-head"><h2 class="section-title">問題包</h2><span class="section-note">已保存至 NAS · 保留 14 天 · {{ diagnostic_reports | length }} 份</span></summary>
         <div class="event-list">
         {% for report in diagnostic_reports %}
           <article class="event-card">

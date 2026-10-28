@@ -1779,7 +1779,7 @@ def admin_public_pc_remote_update():
 
 @app.get("/admin/sinposmart")
 def admin_sinposmart():
-    days = sinposmart_store().list_days(limit=7)
+    days = sinposmart_store().list_days(limit=14)
     gui_health = duty_gui_health_view()
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()
@@ -8776,11 +8776,19 @@ def start_task_auto_start_scheduler() -> tuple[threading.Event, threading.Thread
     stop = threading.Event()
 
     def poll() -> None:
+        next_diagnostic_cleanup = 0.0
         while not stop.wait(10):
             try:
                 run_due_task_auto_starts()
             except Exception as exc:
                 print(f"[task-auto-start] scan deferred error={type(exc).__name__}", flush=True)
+            current = time.monotonic()
+            if current >= next_diagnostic_cleanup:
+                next_diagnostic_cleanup = current + 3600
+                try:
+                    sinposmart_store(create=False).cleanup_diagnostics()
+                except Exception as exc:
+                    print(f"[sinposmart-diagnostics] cleanup deferred error={type(exc).__name__}", flush=True)
 
     thread = threading.Thread(target=poll, name="task-auto-start", daemon=True)
     thread.start()

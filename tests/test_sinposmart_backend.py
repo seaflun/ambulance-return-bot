@@ -1167,6 +1167,114 @@ class PersonnelTitleSnapshotTests(unittest.TestCase):
 
 
 class SinpoSmartBackendStoreTests(unittest.TestCase):
+    def test_cleanup_keeps_fourteen_diagnostic_fire_days_and_seven_event_days(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = SinpoSmartBackendStore(root)
+            digest = "a" * 64
+            for fire_day in ("2026-10-14", "2026-10-15", "2026-10-28", "2026-10-29"):
+                folder = root / "diagnostics" / fire_day
+                folder.mkdir(parents=True)
+                for suffix in (".zip", ".json"):
+                    (folder / (digest + suffix)).write_bytes(b"diagnostic")
+            expired = root / "diagnostics/2026-10-14"
+            (expired / ("b" * 64 + ".zip")).write_bytes(b"orphan ZIP")
+            (expired / ("c" * 64 + ".json")).write_bytes(b"orphan index")
+            for fire_day in ("2026-10-21", "2026-10-22"):
+                (root / (fire_day + ".json")).write_text("{}", encoding="utf-8")
+
+            store.cleanup(datetime(2026, 10, 28, 8, 0))
+
+            self.assertFalse(expired.exists())
+            for fire_day in ("2026-10-15", "2026-10-28", "2026-10-29"):
+                for suffix in (".zip", ".json"):
+                    self.assertTrue((root / "diagnostics" / fire_day / (digest + suffix)).is_file())
+            self.assertFalse((root / "2026-10-21.json").exists())
+            self.assertTrue((root / "2026-10-22.json").is_file())
+
+    def test_diagnostic_retention_switches_at_taipei_eight_am(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            folder = Path(tmp) / "diagnostics/2026-10-14"
+            folder.mkdir(parents=True)
+            archive = folder / ("a" * 64 + ".zip")
+            archive.write_bytes(b"diagnostic")
+
+            store.cleanup(datetime(2026, 10, 27, 23, 59, 59, tzinfo=timezone.utc))
+            self.assertTrue(archive.is_file())
+            store.cleanup(datetime(2026, 10, 28, 0, 0, tzinfo=timezone.utc))
+            self.assertFalse(folder.exists())
+
+    def test_diagnostic_cleanup_preserves_unrecognized_files_and_nested_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = SinpoSmartBackendStore(root)
+            paths = [root / "diagnostics" / folder / name for folder, name in (
+                ("2026-10-14", "notes.txt"), ("2026-10-14", "manual.zip"),
+                ("2026-10-14/nested", "a" * 64 + ".zip"),
+                ("2026-13-01", "a" * 64 + ".zip"), ("notes", "a" * 64 + ".json"),
+            )]
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"preserve")
+            expired = root / "diagnostics/2026-10-14" / ("b" * 64 + ".zip")
+            expired.write_bytes(b"expired")
+
+            store.cleanup(datetime(2026, 10, 28, 8, 0))
+
+            self.assertFalse(expired.exists())
+            for path in paths:
+                self.assertEqual(path.read_bytes(), b"preserve")
+
+    def test_diagnostic_cleanup_retries_locked_files_on_the_next_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            folder = Path(tmp) / "diagnostics/2026-10-14"
+            folder.mkdir(parents=True)
+            archive = folder / ("a" * 64 + ".zip")
+            archive.write_bytes(b"diagnostic")
+            with patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+                store.cleanup(datetime(2026, 10, 28, 8, 0))
+            self.assertTrue(archive.is_file())
+            store.cleanup(datetime(2026, 10, 28, 8, 1))
+            self.assertFalse(folder.exists())
+
+    def test_diagnostic_cleanup_never_follows_root_day_or_file_links(self):
+        for linked_part in ("root", "day", "file", "day_inside"):
+            with self.subTest(linked_part=linked_part), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / "store"
+                store = SinpoSmartBackendStore(root)
+                target = (root / "diagnostics/2026-10-28" if linked_part == "day_inside"
+                          else Path(tmp) / "outside")
+                if linked_part == "root":
+                    target = target / "2026-10-14"
+                target.mkdir(parents=True)
+                protected = target / ("a" * 64 + ".zip")
+                protected.write_bytes(b"preserve")
+                link = root / "diagnostics"
+                destination = target.parent if linked_part == "root" else target
+                if linked_part != "root":
+                    link = link / "2026-10-14"
+                if linked_part == "file":
+                    link = link / protected.name
+                    destination = protected
+                link.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    link.symlink_to(destination, target_is_directory=linked_part != "file")
+                except OSError as exc:
+                    if linked_part == "file":
+                        self.skipTest(f"symbolic links unavailable: {exc}")
+                    try:
+                        import _winapi
+                        _winapi.CreateJunction(str(destination), str(link))
+                    except (ImportError, OSError):
+                        self.skipTest(f"directory links unavailable: {exc}")
+
+                store.cleanup(datetime(2026, 10, 28, 8, 0))
+
+                self.assertEqual(protected.read_bytes(), b"preserve")
+                self.assertTrue(link.exists())
+
     @staticmethod
     def daily_vehicle_report():
         return {"target_date": "2026-10-17", "execution_mode": "automatic", "verified": True, "reason_code": "",

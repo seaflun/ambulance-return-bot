@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.28.1152">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.28.1152') }}</p>
+          <h2 class="update-card__title">問題包保留 14 天與自動清理</h2>
+        </div>
+        <span class="update-card__versions">2026.10.28.1152</span>
+      </header>
+      <ul class="update-card__items">
+        <li>NAS 問題包按每日 08:00 切換消防日，保留當日及前 13 日；逾期自動移除 ZIP 與同名索引。</li>
+        <li>服務啟動後及每小時背景清理，沒有新上傳仍會移除到期問題包；檔案鎖定時保留供下次重試。</li>
+        <li>僅清除問題包目錄中的合法檔案，保護連結與其他資料；勤務事件原有 7 天保留規則維持。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.28.1049">
       <header class="update-card__heading">
         <div>

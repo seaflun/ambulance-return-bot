@@ -92,6 +92,7 @@ DAILY_VEHICLE_REASONS = {
 TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
 SINPOSMART_RESULT_ADVISORY_SECONDS = 15 * 60
 MAX_DIAGNOSTIC_ARCHIVE_BYTES = 8 * 1024 * 1024
+DIAGNOSTIC_RETENTION_DAYS = 14
 _STORE_LOCKS_GUARD = Lock()
 _STORE_LOCKS: dict[str, RLock] = {}
 
@@ -2365,6 +2366,7 @@ class SinpoSmartBackendStore:
     def save_diagnostic(self, body: bytes, digest: str) -> dict[str, Any]:
         metadata = validate_diagnostic_archive(body, digest)
         with self._lock:
+            self.cleanup_diagnostics()
             path = self.diagnostic_path(metadata["fire_day"], digest)
             path.parent.mkdir(parents=True, exist_ok=True)
             if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
@@ -2395,6 +2397,34 @@ class SinpoSmartBackendStore:
                 except (OSError, ValueError):
                     continue
         return sorted(records, key=lambda item: str(item.get("created_at") or ""), reverse=True)[:50]
+
+    def cleanup_diagnostics(self, now: datetime | None = None) -> None:
+        with self._lock:
+            try:
+                root = self.root_dir.resolve() / "diagnostics"
+                if root.is_symlink() or root.resolve() != root:
+                    return
+            except (OSError, RuntimeError):
+                return
+            current_day = date.fromisoformat(sinposmart_fire_day_for(now))
+            cutoff = current_day - timedelta(days=DIAGNOSTIC_RETENTION_DAYS - 1)
+            for folder in root.glob("????-??-??"):
+                try:
+                    fire_day = date.fromisoformat(folder.name)
+                    if (fire_day >= cutoff or folder.is_symlink()
+                            or not folder.is_dir() or folder.resolve() != folder):
+                        continue
+                    for path in folder.iterdir():
+                        if (re.fullmatch(r"[0-9a-f]{64}\.(?:zip|json)", path.name) is None
+                                or path.is_symlink() or not path.is_file() or path.resolve() != path):
+                            continue
+                        try:
+                            path.unlink()
+                        except OSError:
+                            pass
+                    folder.rmdir()
+                except (OSError, RuntimeError, ValueError):
+                    continue
 
     def upsert_event(self, raw_event: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
         with self._lock:
@@ -2529,6 +2559,7 @@ class SinpoSmartBackendStore:
 
     def cleanup(self, now: datetime | None = None) -> None:
         with self._lock:
+            self.cleanup_diagnostics(now)
             current_day = date.fromisoformat(sinposmart_fire_day_for(now))
             cutoff = current_day - timedelta(days=self.retention_days - 1)
             for path in self.root_dir.glob("*.json"):
