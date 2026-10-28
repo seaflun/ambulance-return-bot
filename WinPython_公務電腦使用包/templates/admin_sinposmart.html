@@ -4,17 +4,17 @@
 {% macro notice_clock(value, fallback='') %}{% set stamp = notice_time(value, fallback) | trim %}{{ stamp[11:19] if stamp[10:11] == ' ' else stamp }}{% endmacro %}
 {% macro notice_check_time(value, day, fallback='') %}{% set stamp = notice_time(value, fallback) | trim %}{{ stamp[11:] if stamp.startswith(day ~ ' ') else stamp }}{% endmacro %}
 {% macro notice_section(view) %}
-  <details class="section notice-section" id="notice-section" aria-label="已收通報"
+  <section class="section notice-section" id="notice-section" aria-label="已收通報"
            data-notice-day="{{ view.date }}" data-notice-source="{{ view.workstation }}"
-           data-fire-day="{{ selected_fire_day or '' }}"{% if request.args.get('notice_day') or request.args.get('notice_workstation') %} open{% endif %}>
-    <summary class="section-head">
+           data-fire-day="{{ selected_fire_day or '' }}">
+    <div class="notice-header">
       <h2 class="section-title">已收通報</h2>
       <div class="section-note notice-overview">
         <span class="notice-counts" id="notice-counts">{% if view.count_known and view.shift_count is not none %}當班已收 {{ view.shift_count }} 則{% elif view.shift_label %}當班已收待確認{% else %}當班時段待取得{% endif %}｜{% if view.count_known and view.today_count is not none %}今日累積 {{ view.today_count }} 則{% else %}今日累積待確認{% endif %}｜手動收取 {{ view.manual_count | default(0) }} 則</span>
         <span id="notice-status" class="status {{ view.status_class }}">{{ view.status_label }}</span>
       </div>
-    </summary>
-    <div class="section-note notice-meta">曆日 <span id="notice-date">{{ view.date }}</span> · 來源 <span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span> · 當班 <span id="notice-shift">{{ view.shift_label or '待取得' }}</span></div>
+    </div>
+    <div class="section-note notice-meta">曆日 <span id="notice-date">{{ view.date }}</span> · 當班 <span id="notice-shift">{{ view.shift_label or '待取得' }}</span></div>
     <p id="notice-verification" class="section-note"{% if not view.verification_checked_at %} hidden{% endif %}>{% if view.verification_checked_at %}本次人工查核：已讀核實 {{ view.verified_read_count }} 則，原件未找到 {{ view.original_not_found_count }} 則。查核時間：{{ notice_time(view.verification_checked_at) }}。{{ view.verification_note }}{% endif %}</p>
     <div class="notice-check-row">
       <div class="notice-times">
@@ -25,16 +25,9 @@
       <a class="button" id="notice-sheet-link" href="{{ view.spreadsheet_url }}" target="_blank" rel="noopener noreferrer">Google 試算表</a>
     </div>
     <p id="notice-error" class="notice-error"{% if not view.error %} hidden{% endif %}>{{ view.error }}</p>
-    <details class="notice-status-details">
-      <summary class="section-note">更多狀態</summary>
-      <p class="section-note">登入驗證：<span id="notice-authentication">{{ view.authentication_label | default('尚無登入驗證回報') }}</span><span id="notice-authentication-time">{% if view.scan_verified_at %} · {{ notice_time(view.scan_verified_at) }}{% endif %}</span></p>
-      <p class="section-note" id="notice-coverage">{{ view.coverage_label | default('尚未取得公布日期補查回報') }}</p>
-      <p class="section-note" id="notice-manual-note"{% if not view.manual_count %} hidden{% endif %}>手動收取表示網站已讀且無自動入表收據，是否入表請以試算表為準。</p>
-      <p class="section-note">最後成功：<span id="notice-last-success">{{ notice_time(view.last_success_at, '尚未取得成功回報') }}</span></p>
-    </details>
-    <nav class="day-nav" id="notice-day-nav" aria-label="通報曆日">
+    <nav class="day-nav" id="notice-day-nav" data-selected-day="{{ view.date }}" aria-label="通報曆日">
       {% for calendar_day in view.calendar_days or [view.date] %}
-        <a class="button day-link {{ 'active' if calendar_day == view.date else '' }}" href="{{ url_for('admin_sinposmart', fire_day=selected_fire_day, notice_day=calendar_day, notice_workstation=view.workstation, _anchor='notice-section') }}"{% if calendar_day == view.date %} aria-current="date"{% endif %}>{{ calendar_day }}</a>
+        <a class="button day-link {{ 'active' if calendar_day == view.date else '' }}" href="{{ url_for('admin_sinposmart', fire_day=selected_fire_day, notice_day=calendar_day, notice_workstation=view.workstation, _anchor='notice-section') }}" title="{{ calendar_day }}" aria-label="{{ calendar_day }}"{% if calendar_day == view.date %} aria-current="date"{% endif %}>{{ calendar_day[5:] | replace('-', '/') }}</a>
       {% endfor %}
     </nav>
     <div class="notice-history" id="notice-history">
@@ -46,13 +39,48 @@
           <td title="{{ record.write_detail or record.write_label }}">{{ record.write_label }}</td><td title="{{ record.read_detail or record.read_label }}">{{ record.read_label }}</td>
         </tr>{% else %}<tr><td colspan="5">目前沒有通報明細。</td></tr>{% endfor %}</tbody>
       </table></div>
+    {% set notice_credentials_active = notice_remote_credentials.status in ['pending', 'stored'] %}
+    {% set credential_labels = {'pending': '待接收', 'stored': '驗證中', 'verified': '驗證成功', 'failed': '修改失敗', 'expired': '已逾期'} %}
+    <details class="notice-password" id="notice-remote-credentials" aria-label="通報密碼" data-enabled="{{ 'true' if duty_gui_remote_update_enabled else 'false' }}" data-status="{{ notice_remote_credentials.status or '' }}" data-workstation="{{ notice_remote_credentials.workstation }}">
+      <summary>密碼設定 <span class="section-note" id="notice-credentials-label">{{ credential_labels.get(notice_remote_credentials.status, '尚無變更' if notice_remote_credentials.workstation else '等待電腦') }}</span></summary>
+      <div class="notice-password-content">
+        <div class="notice-password-status">
+          <span id="notice-credentials-progress" role="status" aria-live="polite">{% if notice_remote_credentials.status == 'pending' %}待電腦接收{% elif notice_remote_credentials.status == 'stored' %}已儲存，驗證中{% else %}{{ credential_labels.get(notice_remote_credentials.status, '設定後自動驗證') }}{% endif %}</span>
+          <button class="button secondary" id="notice-credentials-refresh" type="button">更新進度</button>
+        </div>
+        <p id="notice-credentials-feedback" role="status" aria-live="polite"></p>
+        <form id="notice-credentials-form" method="post" action="{{ url_for('admin_sinposmart_notice_credentials') }}" autocomplete="off"{% if notice_credentials_active %} hidden{% endif %}>
+          <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
+          <input type="hidden" name="workstation" value="{{ notice_remote_credentials.workstation }}">
+          <div class="notice-password-fields">
+            <label>新密碼 <input type="password" name="password" autocomplete="new-password" maxlength="256" required></label>
+            <label>管理密碼 <input type="password" name="admin_token" autocomplete="off" required></label>
+          </div>
+          <button class="button" id="notice-credentials-submit" type="submit"{% if not duty_gui_remote_update_enabled or not notice_remote_credentials.workstation %} disabled{% endif %}>傳送並驗證</button>
+        </form>
+        {% if not duty_gui_remote_update_enabled %}<p class="section-note">管理驗證未設定。</p>{% elif not notice_remote_credentials.workstation %}<p class="section-note">等待電腦連線。</p>{% endif %}
+        <noscript><p>請重新整理查看進度。</p></noscript>
+      </div>
+    </details>
+    <details class="notice-status-details">
+      <summary class="section-note">收取狀態</summary>
+      <p class="section-note">來源：<span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span></p>
+      <p class="section-note">登入驗證：<span id="notice-authentication">{{ view.authentication_label | default('尚無登入驗證回報') }}</span><span id="notice-authentication-time">{% if view.scan_verified_at %} · {{ notice_time(view.scan_verified_at) }}{% endif %}</span></p>
+      <p class="section-note" id="notice-coverage">{{ view.coverage_label | default('尚未取得公布日期補查回報') }}</p>
+      <p class="section-note" id="notice-manual-note"{% if not view.manual_count %} hidden{% endif %}>手動收取表示網站已讀且無自動入表收據，是否入表請以試算表為準。</p>
+      <p class="section-note">最後成功：<span id="notice-last-success">{{ notice_time(view.last_success_at, '尚未取得成功回報') }}</span></p>
+      <div class="section-note">電腦：{{ notice_remote_credentials.workstation or '待連線' }}</div>
+      <div id="notice-credentials-request">{% if notice_remote_credentials.request_id %}請求：{{ notice_remote_credentials.request_id }}{% endif %}</div>
+      <div id="notice-credentials-updated">{% if notice_remote_credentials.updated_at %}更新：{{ event_datetime_label(notice_remote_credentials.updated_at) }}{% endif %}</div>
+      <div class="section-note">待送密碼加密保存，24 小時後失效。</div>
+    </details>
       {% set problems = view.history | rejectattr('state', 'in', ['success', 'running']) | list %}
       <details id="notice-problem-history" class="notice-problem-history"{% if not problems %} hidden{% endif %}>
-        <summary class="section-note" id="notice-problem-summary">{% if problems %}最近異常：{{ notice_time(problems[0].reported_at) }} · {{ problems[0].status_label }}{% if problems[0].error %}：{{ problems[0].error }}{% endif %}（共 {{ problems | length }} 筆）{% endif %}</summary>
+        <summary class="section-note" id="notice-problem-summary">{% if problems %}異常紀錄（{{ problems | length }} 筆）{% endif %}</summary>
         <div id="notice-problems" class="notice-problems">{% for entry in problems %}<p>{{ notice_time(entry.reported_at) }} · {{ entry.status_label }}{% if entry.error %}：{{ entry.error }}{% endif %}</p>{% endfor %}</div>
       </details>
     </div>
-  </details>
+  </section>
 {% endmacro %}
 {% set page_accent = 'duty' %}
 
@@ -297,6 +325,65 @@
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='admin-system-status.css') }}">
+  <style>
+    body.workspace-page--duty #notice-section {
+      --notice-blue: #0066cc;
+      padding: clamp(16px, 2.5vw, 28px);
+      border: 1px solid #e5e5ea;
+      border-radius: 20px;
+      background: #fff;
+      box-shadow: 0 4px 20px rgb(0 0 0 / 3%);
+      color: #1d1d1f;
+    }
+    #notice-section .notice-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px 16px; }
+    #notice-section .section-title { font: 600 1.375rem/1.25 system-ui, sans-serif; letter-spacing: -.025em; }
+    #notice-section .notice-overview { display: contents; }
+    #notice-section #notice-counts { grid-column: 1 / -1; grid-row: 2; }
+    #notice-section #notice-status { grid-column: 2; grid-row: 1; max-width: min(18rem, 58vw); }
+    #notice-section .notice-counts { color: #6e6e73; font-size: 14px; font-weight: 400; }
+    #notice-section .notice-meta { margin: 6px 0 20px; font-size: 12px; color: #6e6e73; }
+    #notice-section .notice-check-row { gap: 16px; margin-block-end: 20px; }
+    #notice-section .notice-times { gap: 16px 32px; }
+    #notice-section .notice-times > span { display: grid; gap: 5px; color: #6e6e73; font-size: 12px; }
+    #notice-section .notice-times > span > span { color: #1d1d1f; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+    #notice-section .button { width: auto; min-height: 40px; padding-inline: 16px; border-radius: 10px; box-shadow: none; font-size: 13px; font-weight: 500; }
+    #notice-section :is(#notice-sheet-link, .secondary) { border-color: transparent; background: #f0f5fc; color: var(--notice-blue); }
+    #notice-section .button:active { background: #e4edf9; transform: scale(.98); }
+    #notice-section :is(.button, summary):focus-visible { outline: 3px solid var(--notice-blue); outline-offset: 3px; }
+    #notice-section #notice-day-nav { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0; padding: 4px; min-width: 0; max-width: 100%; overflow-x: auto; border: 0; border-radius: 12px; background: #f5f5f7; box-shadow: none; }
+    #notice-section #notice-day-nav .day-link { flex: 0 0 auto; min-height: 36px; padding-inline: 14px; border: 0; border-radius: 8px; background: transparent; color: #6e6e73; }
+    #notice-section #notice-day-nav .day-link.active { background: #fff; color: #1d1d1f; box-shadow: 0 1px 4px rgb(0 0 0 / 10%); }
+    #notice-section .notice-history { margin-block-start: 20px; padding: 0; border: 0; }
+    #notice-section .notice-records-heading { font-size: 14px; font-weight: 500; }
+    #notice-section .notice-table-wrap { min-width: 0; max-width: 100%; margin-block: 12px 20px; border-radius: 10px; }
+    #notice-section .notice-table { min-width: 620px; font-size: 13px; }
+    #notice-section .notice-table :is(th, td) { padding: 12px 10px; border-color: #eeeef0; }
+    #notice-section .notice-table th { background: #f5f5f7; color: #6e6e73; font-weight: 500; }
+    #notice-section .notice-error { padding: 10px 12px; border-radius: 10px; background: #fff5e6; color: #8a5700; }
+    #notice-section :is(.notice-password, .notice-status-details, .notice-problem-history) { margin: 0; padding: 0; border: 0; border-top: 1px solid #eeeef0; border-radius: 0; background: transparent; }
+    #notice-section details > summary { min-height: 48px; padding: 10px 0; border-radius: 0; font-size: 14px; font-weight: 500; }
+    #notice-section details > summary::after { content: "⌄"; color: #86868b; font-size: 18px; }
+    #notice-section details[open] > summary::after { content: "⌃"; }
+    #notice-section details > summary:hover { background: transparent; color: var(--notice-blue); }
+    #notice-section .notice-password > summary .section-note { margin-inline-start: auto; margin-inline-end: 8px; }
+    #notice-section .notice-password-content { display: grid; gap: 12px; padding-block: 4px 16px; }
+    #notice-section .notice-password-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+    #notice-section .notice-password-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    #notice-section .notice-password-fields label { display: grid; gap: 6px; min-width: 0; font-size: 13px; }
+    #notice-section .notice-password-fields input { width: 100%; min-width: 0; border: 1px solid #d2d2d7; border-radius: 10px; box-shadow: none; }
+    #notice-section #notice-credentials-submit { margin-block-start: 12px; border-color: transparent; background: var(--notice-blue); color: #fff; }
+    #notice-section #notice-credentials-submit:disabled { opacity: .5; }
+    #notice-section #notice-credentials-feedback { font-size: 13px; }
+    #notice-section #notice-credentials-feedback:empty { display: none; }
+    #notice-section .notice-status-details > :not(summary) { padding-block: 4px; font-size: 12px; overflow-wrap: anywhere; }
+    @media (max-width: 600px) {
+      #notice-section .notice-times { gap: 14px; }
+      #notice-section .notice-times > span > span { font-size: 13px; }
+      #notice-section .notice-password-fields { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) { #notice-section .button:active { transform: none; } }
+    @media (prefers-contrast: more) { #notice-section { border-color: #6e6e73; } }
+  </style>
 {% endblock %}
 
 {% block header_actions %}
@@ -367,30 +454,6 @@
         {% endfor %}
       </nav>
     {% endif %}
-
-    {% set notice_credentials_active = notice_remote_credentials.status in ['pending', 'stored'] %}
-    <details class="section" id="notice-remote-credentials" aria-label="遠端修改通報密碼" data-enabled="{{ 'true' if duty_gui_remote_update_enabled else 'false' }}" data-status="{{ notice_remote_credentials.status or '' }}" data-workstation="{{ notice_remote_credentials.workstation }}"{% if notice_remote_credentials.request_id %} open{% endif %}>
-      <summary class="section-head"><h2 class="section-title">通報密碼</h2><span class="section-note" id="notice-credentials-label">{{ notice_remote_credentials.status_label }}</span></summary>
-      <div class="event-card">
-        <div class="event-detail">目標電腦：{{ notice_remote_credentials.workstation or '尚未收到電腦回報' }}</div>
-        <p>輸入新密碼後，值班台會加密儲存並驗證登入。驗證成功後，自動恢復通報收取。</p>
-        <p id="notice-credentials-progress" role="status" aria-live="polite">{% if notice_remote_credentials.status == 'pending' %}新密碼已排入待送，等待公務電腦接收；尚未儲存或完成驗證。{% elif notice_remote_credentials.status == 'stored' %}公務電腦已加密儲存，等待登入驗證；請勿重複傳送。{% else %}{{ notice_remote_credentials.status_label }}{% endif %}</p>
-        <div class="event-detail" id="notice-credentials-request">{% if notice_remote_credentials.request_id %}請求編號：{{ notice_remote_credentials.request_id }}{% endif %}</div>
-        <div class="event-detail" id="notice-credentials-updated">{% if notice_remote_credentials.updated_at %}最後更新：{{ event_datetime_label(notice_remote_credentials.updated_at) }}{% endif %}</div>
-        <button class="button" id="notice-credentials-refresh" type="button">重新整理進度</button>
-        <p id="notice-credentials-feedback" role="status" aria-live="polite"></p>
-        <form id="notice-credentials-form" method="post" action="{{ url_for('admin_sinposmart_notice_credentials') }}" autocomplete="off"{% if notice_credentials_active %} hidden{% endif %}>
-          <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
-          <input type="hidden" name="workstation" value="{{ notice_remote_credentials.workstation }}">
-          <label>新通報密碼 <input type="password" name="password" autocomplete="new-password" maxlength="256" required></label>
-          <label>管理密碼 <input type="password" name="admin_token" autocomplete="off" required></label>
-          <button class="button" id="notice-credentials-submit" type="submit"{% if not duty_gui_remote_update_enabled or not notice_remote_credentials.workstation %} disabled{% endif %}>傳送並驗證</button>
-        </form>
-        {% if not duty_gui_remote_update_enabled %}<p>後台管理驗證尚未設定，暫時無法傳送。</p>{% elif not notice_remote_credentials.workstation %}<p>等待公務電腦回報後才能傳送。</p>{% endif %}
-        <noscript><p>已關閉 JavaScript；傳送後會重新載入頁面，請重新整理網頁查看後續進度。</p></noscript>
-        <div class="event-detail">密碼不會回顯；電腦確認儲存後清除待送內容。24 小時未完成會自動過期；驗證失敗時維持登入保護。</div>
-      </div>
-    </details>
 
     {% if diagnostic_reports %}
       <details class="section" id="diagnostic-reports">
@@ -784,6 +847,16 @@
         if (filters.get(key)) noticeParams.set(key, filters.get(key));
       });
       const noticeQuery = noticeParams.size ? "?" + noticeParams.toString() : "";
+      function revealNoticeDay(nav) {
+        const selected = nav.querySelector('[aria-current="date"]');
+        if (selected) nav.scrollLeft += selected.getBoundingClientRect().left - nav.getBoundingClientRect().left
+          - (nav.clientWidth - selected.clientWidth) / 2;
+      }
+      const dayNav = document.getElementById("notice-day-nav");
+      if (dayNav) {
+        revealNoticeDay(dayNav);
+        window.addEventListener("resize", () => revealNoticeDay(dayNav));
+      }
       const statusClass = value => ["complete", "failed", "running", "attention"].includes(value) ? value : "";
       const stamp = value => value ? String(value).replace("T", " ").replace(/\+08:00$/, "") : "";
       const clock = value => { const text = stamp(value); return text[10] === " " ? text.slice(11, 19) : text; };
@@ -794,21 +867,23 @@
       const credentialRefresh = document.getElementById("notice-credentials-refresh");
       const credentialFeedback = document.getElementById("notice-credentials-feedback");
       let credentialSubmitting = false, credentialUncertain = false, credentialRevision = 0;
+      if (notice && credentials && window.location.hash === "#notice-remote-credentials") {
+        credentials.open = true;
+      }
       function refreshNoticeCredentials(view) {
         if (!credentials || !view || typeof view.workstation !== "string" || typeof view.status_label !== "string") return;
         const active = ["pending", "stored"].includes(view.status);
         credentials.dataset.status = view.status || "";
         credentials.dataset.workstation = view.workstation;
         credentialForm.elements.workstation.value = view.workstation;
-        document.getElementById("notice-credentials-label").textContent = view.status_label;
+        const labels = {pending: "待接收", stored: "驗證中", verified: "驗證成功", failed: "修改失敗", expired: "已逾期"};
+        document.getElementById("notice-credentials-label").textContent = labels[view.status] || (view.workstation ? "尚無變更" : "等待電腦");
         document.getElementById("notice-credentials-progress").textContent = view.status === "pending"
-          ? "新密碼已排入待送，等待公務電腦接收；尚未儲存或完成驗證。"
-          : view.status === "stored" ? "公務電腦已加密儲存，等待登入驗證；請勿重複傳送。" : view.status_label;
-        document.getElementById("notice-credentials-request").textContent = view.request_id ? "請求編號：" + view.request_id : "";
-        document.getElementById("notice-credentials-updated").textContent = view.updated_at ? "最後更新：" + stamp(view.updated_at) : "";
+          ? "待電腦接收" : view.status === "stored" ? "已儲存，驗證中" : labels[view.status] || "設定後自動驗證";
+        document.getElementById("notice-credentials-request").textContent = view.request_id ? "請求：" + view.request_id : "";
+        document.getElementById("notice-credentials-updated").textContent = view.updated_at ? "更新：" + stamp(view.updated_at) : "";
         credentialForm.hidden = active || credentialUncertain;
         credentialSubmit.disabled = credentialSubmitting || active || credentialUncertain || credentials.dataset.enabled !== "true" || !view.workstation;
-        if (active) credentials.open = true;
       }
       if (credentialForm) credentialForm.addEventListener("submit", async event => {
         event.preventDefault();
@@ -817,7 +892,7 @@
         credentialRevision += 1;
         credentialSubmit.disabled = true;
         credentialSubmit.textContent = "傳送中…";
-        credentialFeedback.textContent = "正在安全傳送，請稍候…";
+        credentialFeedback.textContent = "傳送中…";
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 10000);
         try {
@@ -825,9 +900,9 @@
             headers: {Accept: "application/json"}, credentials: "same-origin", cache: "no-store", signal: controller.signal});
           if (!response.ok) {
             credentialUncertain = response.status === 409 || response.status >= 500;
-            const messages = {400: "密碼或目標電腦格式不符，請確認後再傳送。", 403: "管理密碼或頁面驗證失敗，請確認管理密碼；必要時重新載入頁面。",
-              409: "已有待接收或待驗證的請求，請重新整理進度，無須重複傳送。"};
-            credentialFeedback.textContent = messages[response.status] || "無法確認傳送結果，請先重新整理進度，再決定是否重送。";
+            const messages = {400: "請確認密碼與目標電腦。", 403: "管理密碼或頁面驗證錯誤。",
+              409: "已有待處理請求，請更新進度。"};
+            credentialFeedback.textContent = messages[response.status] || "結果待確認，請先更新進度。";
             return;
           }
           const result = await response.json();
@@ -835,10 +910,10 @@
           credentialForm.elements.password.value = "";
           credentialForm.elements.admin_token.value = "";
           refreshNoticeCredentials(result.notice_credentials);
-          credentialFeedback.textContent = "已送至 NAS，請查看上方接收與驗證進度。";
+          credentialFeedback.textContent = "已送出，等待電腦接收。";
         } catch (_) {
           credentialUncertain = true;
-          credentialFeedback.textContent = "連線中斷或等候逾時，尚無法確認傳送結果。請先重新整理進度，避免重複傳送。";
+          credentialFeedback.textContent = "連線失敗，請先更新進度。";
         } finally {
           clearTimeout(timeout);
           credentialSubmitting = false;
@@ -849,7 +924,7 @@
         }
       });
       if (credentialRefresh) credentialRefresh.addEventListener("click", () => {
-        credentialFeedback.textContent = "正在取得最新接收與驗證進度…";
+        credentialFeedback.textContent = "更新中…";
         refreshHealth();
       });
       function refreshNotice(view) {
@@ -888,13 +963,20 @@
           url.searchParams.set("notice_workstation", view.workstation || "");
           url.hash = "notice-section";
           link.className = "button day-link" + (day === view.date ? " active" : "");
-          link.textContent = day;
+          link.textContent = day.slice(5).replace("-", "/");
+          link.title = day;
+          link.setAttribute("aria-label", day);
           link.href = url.href;
           if (day === view.date) link.setAttribute("aria-current", "date");
           calendarLinks.append(link);
         });
         const calendarNav = document.getElementById("notice-day-nav");
-        if (!calendarNav.contains(document.activeElement)) calendarNav.replaceChildren(calendarLinks);
+        if (!calendarNav.contains(document.activeElement)) {
+          const selectionChanged = calendarNav.dataset.selectedDay !== view.date;
+          calendarNav.replaceChildren(calendarLinks);
+          if (selectionChanged) revealNoticeDay(calendarNav);
+          calendarNav.dataset.selectedDay = view.date;
+        }
         const sheetUrl = new URL(view.spreadsheet_url, window.location.origin);
         if (sheetUrl.origin !== window.location.origin || sheetUrl.pathname !== "/admin/sinposmart/notices/spreadsheet"
             || sheetUrl.searchParams.get("notice_day") !== view.date || sheetUrl.username || sheetUrl.password || sheetUrl.hash) {
@@ -925,9 +1007,8 @@
         document.getElementById("notice-records").replaceChildren(rows);
         setText("notice-record-count", view.records.length);
         const problemEntries = view.history.filter(entry => !["success", "running"].includes(entry.state));
-        const latestProblem = problemEntries[0];
         document.getElementById("notice-problem-history").hidden = !problemEntries.length;
-        setText("notice-problem-summary", latestProblem ? "最近異常：" + stamp(latestProblem.reported_at) + " · " + latestProblem.status_label + (latestProblem.error ? "：" + latestProblem.error : "") + "（共 " + problemEntries.length + " 筆）" : "");
+        setText("notice-problem-summary", problemEntries.length ? "異常紀錄（" + problemEntries.length + " 筆）" : "");
         const problems = document.createDocumentFragment();
         problemEntries.forEach(entry => {
           const item = document.createElement("p");
@@ -963,11 +1044,11 @@
           if (revision === credentialRevision && !credentialSubmitting) {
             credentialUncertain = false;
             refreshNoticeCredentials(health.notice_credentials);
-            if (credentialFeedback && credentialFeedback.textContent === "正在取得最新接收與驗證進度…") credentialFeedback.textContent = "進度已更新。";
+            if (credentialFeedback && credentialFeedback.textContent === "更新中…") credentialFeedback.textContent = "已更新。";
           }
           refreshNotice(health.notice_collection);
         } catch (_) {
-          if (credentialFeedback) credentialFeedback.textContent = "暫時無法取得最新進度，以上為最後回報；請稍後重新整理。";
+          if (credentialFeedback) credentialFeedback.textContent = "連線中斷，顯示最後狀態。";
           if (notice) {
             const status = document.getElementById("notice-status");
             status.textContent = "通報狀態待確認／重新連線中";

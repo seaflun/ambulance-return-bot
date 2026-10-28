@@ -96,10 +96,14 @@ class WebAppTests(unittest.TestCase):
         with mock.patch.object(app_module, "duty_gui_health_view", return_value=view):
             body = self.client.get("/admin/sinposmart").get_data(as_text=True)
         self.assertIn('id="notice-credentials-progress"', body)
-        self.assertIn("等待公務電腦接收；尚未儲存或完成驗證", body)
+        self.assertIn("待電腦接收", body)
+        self.assertEqual(body.count('id="notice-remote-credentials"'), 1)
+        combined = body.split('id="notice-section"', 1)[1].split('</section>', 1)[0]
+        self.assertIn('id="notice-remote-credentials"', combined)
+        self.assertNotRegex(body, r'<details\b[^>]*id="notice-remote-credentials"[^>]*\sopen[ >]')
         self.assertIn(command["request_id"], body)
         self.assertRegex(body, r'<form\b[^>]*id="notice-credentials-form"[^>]* hidden')
-        self.assertRegex(body, r'<button\b[^>]*id="notice-credentials-refresh"[^>]*type="button"[^>]*>重新整理進度</button>')
+        self.assertRegex(body, r'<button\b[^>]*id="notice-credentials-refresh"[^>]*type="button"[^>]*>更新進度</button>')
         self.assertNotIn("fixture-render-password", body)
 
     def test_notice_password_browser_feedback_refresh_errors_and_duplicate_clicks(self):
@@ -140,21 +144,21 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   queue.push(new Promise(resolve => {resolvePost = resolve;}));
   const sending = submit();
   assert(send.disabled); assert.strictEqual(send.textContent, '傳送中…');
-  assert(feedback.textContent.includes('正在安全傳送'));
+  assert(feedback.textContent.includes('傳送中'));
   await submit(); assert.strictEqual(calls.length, 1, 'duplicate click sent another command');
   resolvePost(response(200, {ok: true, notice_credentials: view('pending')})); await sending;
   assert(form.hidden); assert(send.disabled); assert.strictEqual(form.elements.password.value, '');
   assert.strictEqual(form.elements.admin_token.value, '');
   assert.strictEqual(calls[0].options.headers.Accept, 'application/json');
   queue.push(health('stored')); nodes['notice-credentials-refresh'].handlers.click(); await flush();
-  assert(nodes['notice-credentials-progress'].textContent.includes('已加密儲存')); assert(form.hidden);
+  assert(nodes['notice-credentials-progress'].textContent.includes('已儲存')); assert(form.hidden);
   queue.push(health('verified')); await intervals[0]();
-  assert.strictEqual(nodes['notice-credentials-progress'].textContent, '登入驗證成功'); assert(!form.hidden); assert(!send.disabled);
+  assert.strictEqual(nodes['notice-credentials-progress'].textContent, '驗證成功'); assert(!form.hidden); assert(!send.disabled);
   queue.push(response(403)); await submit(); assert(feedback.textContent.includes('管理密碼')); assert(!send.disabled);
   queue.push(new Error('fixture offline')); await submit();
-  assert(feedback.textContent.includes('尚無法確認傳送結果')); assert(form.hidden); assert(send.disabled);
+  assert(feedback.textContent.includes('連線失敗')); assert(form.hidden); assert(send.disabled);
   queue.push(health('')); nodes['notice-credentials-refresh'].handlers.click(); await flush(); assert(!form.hidden); assert(!send.disabled);
-  queue.push(response(409)); await submit(); assert(feedback.textContent.includes('無須重複傳送')); assert(form.hidden);
+  queue.push(response(409)); await submit(); assert(feedback.textContent.includes('已有待處理請求')); assert(form.hidden);
   queue.push(health('')); await intervals[0](); assert(!form.hidden);
   let resolveHealth;
   queue.push(new Promise(resolve => {resolveHealth = resolve;})); const stale = intervals[0]();
@@ -6551,7 +6555,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn("<script>alert(1)</script>", body)
         self.assertIn('id="notice-history"', body)
         self.assertNotIn('id="notice-history" open', body)
-        section = re.search(r'<details\b([^>]*)id="notice-section"([^>]*)>\s*<summary class="section-head">(.*?)</summary>', body, re.S)
+        section = re.search(r'<section\b([^>]*)id="notice-section"([^>]*)>\s*<div class="notice-header">(.*?)</div>', body, re.S)
         self.assertIsNotNone(section)
         self.assertNotRegex(section.group(1) + section.group(2), r'\bopen\b')
         self.assertIn('id="notice-counts"', section.group(3))
@@ -6622,9 +6626,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
                             details.group("content"), re.S)
         self.assertIsNotNone(summary)
         summary_text = " ".join(html.unescape(re.sub(r"<[^>]*>", "", summary.group(1))).split())
-        self.assertEqual(summary_text,
-                         "最近異常：2026-10-22 15:50:00 · 收取失敗 <b>notice-status-xss</b>："
-                         "連線 <script>notice-history-xss()</script>（共 5 筆）")
+        self.assertEqual(summary_text, "異常紀錄（5 筆）")
         rows = re.search(r'<div\b[^>]*\bid="notice-problems"[^>]*>(.*?)</div>',
                          details.group("content"), re.S)
         self.assertIsNotNone(rows)
@@ -6731,13 +6733,15 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             self.assertEqual(parse_qs(url.query), {"fire_day": ["2026-10-20"], "notice_day": [day],
                                                  "notice_workstation": ["PC-B"]})
             self.assertEqual(url.fragment, "notice-section")
-            self.assertIn(day, text)
+            self.assertEqual(text, day[5:].replace("-", "/"))
+            self.assertIn(f'aria-label="{day}"', attributes)
+            self.assertIn(f'title="{day}"', attributes)
             classes = re.search(r'class="([^"]+)"', attributes).group(1).split()
             self.assertIn("button", classes)
             self.assertIn("day-link", classes)
             self.assertEqual("active" in classes, day == view["date"])
             self.assertEqual('aria-current="date"' in attributes, day == view["date"])
-        notice_section = re.search(r'<details\b[^>]*id="notice-section"[^>]*>(.*?)</details>', body, re.S)
+        notice_section = re.search(r'<section\b[^>]*id="notice-section"[^>]*>(.*?)</section>', body, re.S)
         self.assertIsNotNone(notice_section)
         notice_markup = notice_section.group(1)
         self.assertNotIn('class="notice-filter-panel"', notice_markup)
