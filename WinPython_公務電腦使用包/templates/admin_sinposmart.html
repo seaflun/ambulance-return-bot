@@ -368,6 +368,23 @@
       </nav>
     {% endif %}
 
+    <details class="section" id="notice-remote-credentials" aria-label="遠端修改通報密碼">
+      <summary class="section-head"><h2 class="section-title">通報密碼</h2><span class="section-note" data-health-field="notice_credentials.status_label">{{ notice_remote_credentials.status_label }}</span></summary>
+      <div class="event-card">
+        <div class="event-detail">目標電腦：{{ notice_remote_credentials.workstation or '尚未收到電腦回報' }}</div>
+        <p>輸入新密碼後，值班台會加密儲存並驗證登入。驗證成功後，自動恢復通報收取。</p>
+        {% if notice_remote_credentials.updated_at %}<div class="event-detail">最後更新：{{ event_datetime_label(notice_remote_credentials.updated_at) }}</div>{% endif %}
+        <form method="post" action="{{ url_for('admin_sinposmart_notice_credentials') }}" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
+          <input type="hidden" name="workstation" value="{{ notice_remote_credentials.workstation }}">
+          <label>新通報密碼 <input type="password" name="password" autocomplete="new-password" maxlength="256" required></label>
+          <label>管理密碼 <input type="password" name="admin_token" autocomplete="off" required></label>
+          <button class="button" type="submit"{% if not duty_gui_remote_update_enabled or not notice_remote_credentials.workstation or notice_remote_credentials.status in ['pending', 'stored'] %} disabled{% endif %}>傳送並驗證</button>
+        </form>
+        <div class="event-detail">密碼不會回顯；電腦確認儲存後清除待送內容。24 小時未完成會自動過期；驗證失敗時維持登入保護。</div>
+      </div>
+    </details>
+
     {% if diagnostic_reports %}
       <details class="section" id="diagnostic-reports">
         <summary class="section-head"><h2 class="section-title">問題包</h2><span class="section-note">已保存至 NAS · 保留 14 天 · {{ diagnostic_reports | length }} 份</span></summary>

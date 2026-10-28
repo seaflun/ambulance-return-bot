@@ -67,6 +67,94 @@ class FakeDesktopRunner:
 
 
 class WebAppTests(unittest.TestCase):
+    def test_notice_password_requires_admin_csrf_origin_and_does_not_overwrite_active_request(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "fixture-worker-envelope-key-32-characters"
+        endpoint = "/admin/sinposmart/notice-credentials"
+        form = {"workstation": "TEST-DUTY-PC", "password": "fixture-first-password",
+                "csrf_token": app_module.remote_update_csrf_token(), "admin_token": "test-admin-token"}
+        for changes in ({"admin_token": "wrong"}, {"csrf_token": "wrong"}):
+            self.assertEqual(self.client.post(endpoint, data={**form, **changes}).status_code, 403)
+        self.assertEqual(self.client.post(endpoint, data=form, headers={"Origin": "https://foreign.invalid"}).status_code, 403)
+        for changes in ({"workstation": "../outside"}, {"password": ""}, {"password": "x\ny"}):
+            response = self.client.post(endpoint, data={**form, **changes})
+            self.assertEqual(response.status_code, 400)
+            self.assertNotIn(form["password"], response.get_data(as_text=True))
+        self.assertEqual(self.client.post(endpoint, data=form).status_code, 302)
+        path = app_module.notice_credentials_command_path("TEST-DUTY-PC")
+        original = path.read_bytes()
+        self.assertEqual(self.client.post(endpoint, data={**form, "password": "fixture-second-password"}).status_code, 409)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_notice_password_expiry_clears_sealed_data_and_ack_cannot_skip_or_change_request(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "fixture-worker-envelope-key-32-characters"
+        command = app_module.create_notice_credentials_command("TEST-DUTY-PC", "fixture-password")
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        endpoint = "/api/sinposmart/notice-credentials/TEST-DUTY-PC"
+        for changes in ({"status": "verified"}, {"status": []}, {"result_code": []}, {"request_id": "other"}):
+            result = self.client.post(endpoint + "/ack", headers=headers,
+                json={"request_id": command["request_id"], "status": "stored", **changes})
+            self.assertIn(result.status_code, (400, 409))
+        path = app_module.notice_credentials_command_path("TEST-DUTY-PC")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["created_at"] = (datetime.now().astimezone() - timedelta(hours=24, seconds=1)).isoformat()
+        path.write_text(json.dumps(record), encoding="utf-8")
+        app_module.cleanup_notice_credentials_commands()
+        expired = self.client.get(endpoint, headers=headers).get_json()["request"]
+        self.assertEqual(expired["status"], "expired")
+        self.assertNotIn("password", expired)
+        self.assertNotIn("sealed_payload", json.loads(path.read_text(encoding="utf-8")))
+
+    def test_notice_password_failure_clears_payload_and_unconfigured_sealing_stores_nothing(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "fixture-worker-envelope-key-32-characters"
+        command = app_module.create_notice_credentials_command("TEST-DUTY-PC", "fixture-password")
+        result = self.client.post("/api/sinposmart/notice-credentials/TEST-DUTY-PC/ack",
+            headers={"X-Credential-Sync-Token": "sync-token"},
+            json={"request_id": command["request_id"], "status": "failed", "result_code": "storage_failed"})
+        self.assertEqual(result.status_code, 200)
+        record = json.loads(app_module.notice_credentials_command_path("TEST-DUTY-PC").read_text(encoding="utf-8"))
+        self.assertEqual(record["status"], "failed")
+        self.assertNotIn("sealed_payload", record)
+        os.environ["WORKER_TOKEN"] = "short"
+        form = {"workstation": "OTHER-PC", "password": "fixture-should-not-persist",
+                "csrf_token": app_module.remote_update_csrf_token(), "admin_token": "test-admin-token"}
+        response = self.client.post("/admin/sinposmart/notice-credentials", data=form)
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(app_module.notice_credentials_command_path("OTHER-PC").exists())
+
+    def test_notice_password_remote_command_is_sealed_targeted_and_acknowledged(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "fixture-worker-envelope-key-32-characters"
+        password = "fixture-notice-remote-password"
+        response = self.client.post("/admin/sinposmart/notice-credentials", data={
+            "workstation": "TEST-DUTY-PC", "password": password,
+            "csrf_token": app_module.remote_update_csrf_token(), "admin_token": "test-admin-token"})
+        self.assertEqual(response.status_code, 302)
+        path = app_module.artifacts_dir / "sinposmart/notice_credentials/TEST-DUTY-PC.json"
+        self.assertNotIn(password, path.read_text(encoding="utf-8"))
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        endpoint = "/api/sinposmart/notice-credentials/TEST-DUTY-PC"
+        self.assertEqual(self.client.get(endpoint).status_code, 403)
+        payload = self.client.get(endpoint, headers=headers)
+        self.assertEqual(payload.headers["Cache-Control"], "no-store")
+        command = payload.get_json()["request"]
+        self.assertEqual(command["password"], password)
+        self.assertEqual(command["account"], "tyfd01214")
+        other = self.client.get(endpoint.replace("TEST-DUTY-PC", "OTHER-PC"), headers=headers)
+        self.assertIsNone(other.get_json()["request"])
+        ack = {"request_id": command["request_id"], "status": "stored"}
+        stored = self.client.post(endpoint + "/ack", json=ack, headers=headers)
+        self.assertEqual(stored.status_code, 200)
+        self.assertNotIn("sealed_payload", json.loads(path.read_text(encoding="utf-8")))
+        self.assertNotIn("password", self.client.get(endpoint, headers=headers).get_json()["request"])
+        ack["status"] = "verified"
+        self.assertEqual(self.client.post(endpoint + "/ack", json=ack, headers=headers).status_code, 200)
+        self.assertEqual(self.client.post(endpoint + "/ack", json=ack, headers=headers).status_code, 200)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["status"], "verified")
+        self.assertNotIn(password, self.client.get("/admin/sinposmart").get_data(as_text=True))
+
     @staticmethod
     def _diagnostic_package(extra_name=None, manifest_changes=None):
         buffer = io.BytesIO()

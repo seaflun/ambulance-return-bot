@@ -59,6 +59,7 @@ from ambulance_bot.consumables import consumable_inventory_options
 from ambulance_bot.credential_envelope import (
     CredentialEnvelopeError,
     MAX_CREDENTIAL_PAYLOAD_BYTES,
+    open_credential_payload,
     seal_credential_payload,
 )
 from ambulance_bot.desktop_fast_runner import DesktopFastRunner
@@ -416,7 +417,7 @@ def reject_cross_site_browser_mutations():
         "complete_site", "abort_task", "save_disaster_vehicle_option",
         "delete_disaster_vehicle_option", "request_disaster_vehicle_mileage_query",
         "save_disaster_action_package_options", "admin_public_pc_remote_update",
-        "admin_sinposmart_cancel_unreturned", "admin_sinposmart_remote_update",
+        "admin_sinposmart_cancel_unreturned", "admin_sinposmart_remote_update", "admin_sinposmart_notice_credentials",
         "create_vehicle_option", "delete_vehicle_option", "request_vehicle_mileage_query",
         "save_civilpower_preferences", "request_civilpower_roster_query",
         "delete_pending_vehicle_settings_command",
@@ -1392,9 +1393,62 @@ def sinposmart_heartbeat():
 def sinposmart_health():
     # The public admin page has the same read-only policy; no browser-side secret.
     health = duty_gui_health_view()
-    response = jsonify({"ok": True, **health, "notice_collection": sinposmart_notice_view(health)})
+    response = jsonify({"ok": True, **health, "notice_collection": sinposmart_notice_view(health),
+                        "notice_credentials": notice_credentials_admin_view(str((health.get("gui") or {}).get("workstation") or ""))})
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.get("/api/sinposmart/notice-credentials/<workstation>")
+def sinposmart_notice_credentials(workstation: str):
+    if not credential_sync_authorized():
+        abort(403)
+    try:
+        with _credential_sync_relay_lock:
+            record = read_notice_credentials_command(workstation)
+            command = notice_credentials_public_record(record) if record else None
+            if record.get("status") == "pending":
+                payload = open_credential_payload(record["sealed_payload"], credential_envelope_secret())
+                if any(payload.get(key) != record.get(key) for key in ("request_id", "workstation", "account")):
+                    raise ValueError("invalid_notice_credentials")
+                command["password"] = payload["password"]
+        return notice_credentials_response({"request": command})
+    except (OSError, ValueError, KeyError, TypeError):
+        return jsonify({"ok": False, "error": "notice_credentials_unavailable"}), 503
+
+
+@app.post("/api/sinposmart/notice-credentials/<workstation>/ack")
+def sinposmart_notice_credentials_ack(workstation: str):
+    if not credential_sync_authorized():
+        abort(403)
+    if request.content_length is not None and request.content_length > 4096:
+        abort(413)
+    data = request.get_json(silent=True)
+    if (not isinstance(data, dict) or not isinstance(data.get("status"), str)
+            or data["status"] not in {"stored", "verified", "failed"}):
+        abort(400)
+    code = data.get("result_code", "")
+    if not isinstance(code, str) or code not in {"", "storage_failed", "receipt_failed", "verification_failed", "verification_interrupted"}:
+        abort(400)
+    try:
+        with _credential_sync_relay_lock:
+            record = read_notice_credentials_command(workstation)
+            if not record or record.get("request_id") != data.get("request_id"):
+                abort(409)
+            status, wanted = record["status"], data["status"]
+            allowed = ((status == "pending" and wanted in {"stored", "failed"})
+                       or (status == "stored" and wanted in {"stored", "verified", "failed"})
+                       or status == wanted or (status in {"verified", "failed"} and wanted == "stored"))
+            if not allowed:
+                abort(409)
+            if status not in {"verified", "failed"}:
+                record.update(status=wanted, result_code=code,
+                              updated_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+                record.pop("sealed_payload", None)
+                write_json_atomic(notice_credentials_command_path(workstation), record)
+        return notice_credentials_response({"request": notice_credentials_public_record(record)}, acknowledged=True)
+    except (OSError, ValueError, TypeError):
+        return jsonify({"ok": False, "error": "notice_credentials_unavailable"}), 503
 
 
 @app.get("/admin/vehicles")
@@ -1801,6 +1855,7 @@ def admin_sinposmart():
         duty_gui_health=gui_health,
         notice_view=sinposmart_notice_view(gui_health),
         credential_sync_status=credential_sync_admin_view(days),
+        notice_remote_credentials=notice_credentials_admin_view(str((gui_health.get("gui") or {}).get("workstation") or "")),
         duty_gui_remote_update=(
             remote_update_admin_view("duty_gui") if duty_gui_remote_update_enabled else {}
         ),
@@ -1938,6 +1993,25 @@ def admin_sinposmart_remote_update():
     if selected_fire_day:
         return redirect(url_for("admin_sinposmart", fire_day=selected_fire_day))
     return redirect(url_for("admin_sinposmart"))
+
+
+@app.post("/admin/sinposmart/notice-credentials")
+def admin_sinposmart_notice_credentials():
+    if request.content_length is not None and request.content_length > 4096:
+        abort(413)
+    _require_remote_update_admin_auth()
+    try:
+        create_notice_credentials_command(str(request.form.get("workstation") or ""),
+                                          str(request.form.get("password") or ""))
+    except FileExistsError:
+        return "已有待接收或待驗證的通報密碼，請等待目前請求完成。", 409
+    except CredentialEnvelopeError:
+        return "通報密碼加密服務尚未就緒，未保存待送密碼。", 503
+    except (ValueError, TypeError):
+        return "通報密碼或目標電腦格式不符，未變更原有設定。", 400
+    except OSError:
+        return "通報密碼無法安全排入待送，請稍後重試。", 503
+    return redirect(url_for("admin_sinposmart", _anchor="notice-remote-credentials"))
 
 
 @app.post("/admin/vehicles")
@@ -3008,6 +3082,93 @@ def duty_gui_health_view(now: datetime | None = None) -> dict[str, object]:
                        "last_seen_at": worker["last_seen_at"] or "尚未收到", "age_label": "",
                        "last_known_label": "以下為最後回報" if worker["last_seen_at"] and worker["status_label"] != "在線" else "",
                        "app_version": worker_version, "state_label": worker_state}}
+
+
+def notice_credentials_command_path(workstation: str) -> Path:
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", workstation) is None:
+        raise ValueError("invalid_notice_workstation")
+    return artifacts_dir / "sinposmart" / "notice_credentials" / f"{workstation}.json"
+
+
+def read_notice_credentials_command(workstation: str) -> dict:
+    path = notice_credentials_command_path(workstation)
+    if not path.exists():
+        return {}
+    if path.stat().st_size > 16384:
+        raise ValueError("invalid_notice_credentials")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(record, dict) or record.get("workstation") != workstation
+            or record.get("account") != "tyfd01214" or not isinstance(record.get("request_id"), str)
+            or re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", record["request_id"]) is None
+            or not isinstance(record.get("created_at"), str)
+            or record.get("status") not in {"pending", "stored", "verified", "failed", "expired"}
+            or "password" in record):
+        raise ValueError("invalid_notice_credentials")
+    created = datetime.fromisoformat(record["created_at"])
+    if created.utcoffset() is None:
+        raise ValueError("invalid_notice_credentials")
+    if record["status"] in {"pending", "stored"} and datetime.now().astimezone() >= created + timedelta(hours=24):
+        record.update(status="expired", updated_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+        record.pop("sealed_payload", None)
+        write_json_atomic(path, record)
+    return record
+
+
+def create_notice_credentials_command(workstation: str, password: str) -> dict:
+    path = notice_credentials_command_path(workstation)
+    if not isinstance(password, str) or not password.strip() or len(password) > 256 or any(c in password for c in "\r\n\x00"):
+        raise ValueError("invalid_notice_password")
+    with _credential_sync_relay_lock:
+        current = read_notice_credentials_command(workstation)
+        if current.get("status") in {"pending", "stored"}:
+            raise FileExistsError("notice_credentials_pending")
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        record = {"request_id": str(uuid4()), "workstation": workstation, "account": "tyfd01214",
+                  "status": "pending", "created_at": now, "updated_at": now, "result_code": ""}
+        record["sealed_payload"] = seal_credential_payload({**record, "password": password}, credential_envelope_secret())
+        write_json_atomic(path, record)
+        return notice_credentials_public_record(record)
+
+
+def notice_credentials_public_record(record: dict) -> dict:
+    return {key: record.get(key, "") for key in
+            ("request_id", "workstation", "account", "status", "created_at", "updated_at", "result_code")}
+
+
+def cleanup_notice_credentials_commands() -> None:
+    root = artifacts_dir / "sinposmart" / "notice_credentials"
+    with _credential_sync_relay_lock:
+        for path in root.glob("*.json"):
+            try:
+                read_notice_credentials_command(path.stem)
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+
+
+def notice_credentials_admin_view(workstation: str) -> dict:
+    labels = {"pending": "待公務電腦接收", "stored": "電腦已加密儲存，等待登入驗證",
+              "verified": "登入驗證成功", "failed": "儲存或登入驗證失敗，請重新確認密碼",
+              "expired": "待送已逾期，請重新設定"}
+    if not workstation:
+        return {"workstation": "", "status_label": "尚無目標電腦", "request_id": "", "updated_at": ""}
+    try:
+        with _credential_sync_relay_lock:
+            record = read_notice_credentials_command(workstation)
+        return {**notice_credentials_public_record(record), "workstation": workstation,
+                "status_label": labels.get(record.get("status"), "尚未送出遠端修改")}
+    except (OSError, ValueError, TypeError, KeyError):
+        return {"workstation": workstation, "status_label": "同步狀態無法確認", "request_id": "", "updated_at": ""}
+
+
+def notice_credentials_response(values: dict, *, acknowledged: bool = False):
+    with _public_pc_report_lock:
+        server = _worker_server_identity_unlocked()
+    body = {"ok": True, "server": server, **values}
+    if acknowledged:
+        body["received_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    response = jsonify(body)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def credential_sync_token() -> str:
@@ -8787,6 +8948,7 @@ def start_task_auto_start_scheduler() -> tuple[threading.Event, threading.Thread
                 next_diagnostic_cleanup = current + 3600
                 try:
                     sinposmart_store(create=False).cleanup_diagnostics()
+                    cleanup_notice_credentials_commands()
                 except Exception as exc:
                     print(f"[sinposmart-diagnostics] cleanup deferred error={type(exc).__name__}", flush=True)
 

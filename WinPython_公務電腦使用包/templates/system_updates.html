@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.28.1314">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.28.1314') }}</p>
+          <h2 class="update-card__title">後台遠端修改通報密碼</h2>
+        </div>
+        <span class="update-card__versions">2026.10.28.1314</span>
+      </header>
+      <ul class="update-card__items">
+        <li>值班後台新增通報密碼修改入口，傳送到指定電腦，分別顯示待接收、已儲存與登入驗證結果。</li>
+        <li>待送密碼加密保存，電腦確認儲存後清除；24 小時未完成自動過期，管理操作沿用既有驗證與跨站保護。</li>
+        <li>值班台使用 Windows DPAPI 儲存後驗證一次登入，成功才恢復收取；不變更一般值班帳密與歷史通報紀錄。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.28.1152">
       <header class="update-card__heading">
         <div>

@@ -21,6 +21,14 @@ Root `app.py`, `worker.py`, `worker_gui.py`, `consumables_login.py`, `disinfect.
 
 這項功能需另外更新 SinpoSmart 值班 GUI。NAS 只接收診斷，不執行公務網站登打，也不修改正式勤務或通報紀錄。
 
+## 後台遠端修改通報密碼
+
+`/admin/sinposmart` 的「通報密碼」入口固定更新通報專用帳號，目標為目前回報的值班電腦。沿用管理密碼、CSRF 與跨站防護，不回顯新密碼。待送資料以既有 credential envelope 加密，存於 `artifacts/sinposmart/notice_credentials/<workstation>.json`。
+
+值班 GUI 每 60 秒經既有同步 token 與 NAS instance 驗證領取指定電腦的命令，DPAPI 儲存後回覆 `stored`，NAS 即清除待送密文；GUI 再驗證一次登入並回覆 `verified` / `failed`。已啟用登入保護的帳號只在明確的新密碼請求下驗證，失敗不重送登入。同一 request 不重複套用；進行中的請求不被覆蓋。
+
+未完成請求 24 小時後不可再領取，讀取及每小時背景掃描會清除過期待送密文。`GET /api/sinposmart/notice-credentials/<workstation>` 與同路徑 `/ack` 僅供授權 GUI；所有密碼回應禁止快取。讀取後台與 health API 僅回傳進度，不回傳密碼或密文。此通道與救護 Worker 既有帳密同步分開，需 GUI 2026.10.28.1314 以上。
+
 ## Verify
 
 ```powershell
