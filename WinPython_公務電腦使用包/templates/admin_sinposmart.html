@@ -10,11 +10,11 @@
     <summary class="section-head">
       <h2 class="section-title">已收通報</h2>
       <div class="section-note notice-overview">
+        <span class="notice-shift" id="notice-shift">{{ (view.shift_label or '待取得') | replace('–', '-') }}</span>
         <span class="notice-counts" id="notice-counts">{% if view.count_known and view.shift_count is not none %}當班已收 {{ view.shift_count }} 則{% elif view.shift_label %}當班已收待確認{% else %}當班時段待取得{% endif %}｜{% if view.count_known and view.today_count is not none %}今日累積 {{ view.today_count }} 則{% else %}今日累積待確認{% endif %}｜手動收取 {{ view.manual_count | default(0) }} 則</span>
         <span id="notice-status" class="status {{ view.status_class }}">{{ view.status_label }}</span>
       </div>
     </summary>
-    <div class="section-note notice-meta">曆日 <span id="notice-date">{{ view.date }}</span> · 當班 <span id="notice-shift">{{ view.shift_label or '待取得' }}</span></div>
     <p id="notice-verification" class="section-note"{% if not view.verification_checked_at %} hidden{% endif %}>{% if view.verification_checked_at %}本次人工查核：已讀核實 {{ view.verified_read_count }} 則，原件未找到 {{ view.original_not_found_count }} 則。查核時間：{{ notice_time(view.verification_checked_at) }}。{{ view.verification_note }}{% endif %}</p>
     <div class="notice-check-row">
       <div class="notice-times">
@@ -41,9 +41,9 @@
       </table></div>
     {% set notice_credentials_active = notice_remote_credentials.status in ['pending', 'stored'] %}
     {% set credential_labels = {'pending': '待接收', 'stored': '驗證中', 'verified': '驗證成功', 'failed': '修改失敗', 'expired': '已逾期'} %}
-    <details class="notice-password" id="notice-remote-credentials" aria-label="通報密碼" data-enabled="{{ 'true' if duty_gui_remote_update_enabled else 'false' }}" data-status="{{ notice_remote_credentials.status or '' }}" data-workstation="{{ notice_remote_credentials.workstation }}">
+    <details class="notice-password notice-detail-card" id="notice-remote-credentials" aria-label="通報密碼" data-enabled="{{ 'true' if duty_gui_remote_update_enabled else 'false' }}" data-status="{{ notice_remote_credentials.status or '' }}" data-workstation="{{ notice_remote_credentials.workstation }}">
       <summary>密碼設定 <span class="section-note" id="notice-credentials-label">{{ credential_labels.get(notice_remote_credentials.status, '尚無變更' if notice_remote_credentials.workstation else '等待電腦') }}</span></summary>
-      <div class="notice-password-content">
+      <div class="notice-password-content notice-detail-content">
         <div class="notice-password-status">
           <span id="notice-credentials-progress" role="status" aria-live="polite">{% if notice_remote_credentials.status == 'pending' %}待電腦接收{% elif notice_remote_credentials.status == 'stored' %}已儲存，驗證中{% else %}{{ credential_labels.get(notice_remote_credentials.status, '設定後自動驗證') }}{% endif %}</span>
           <button class="button secondary" id="notice-credentials-refresh" type="button">更新進度</button>
@@ -62,22 +62,25 @@
         <noscript><p>請重新整理查看進度。</p></noscript>
       </div>
     </details>
-    <details class="notice-status-details">
-      <summary class="section-note">收取狀態</summary>
-      <p class="section-note">來源：<span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span></p>
-      <p class="section-note">登入驗證：<span id="notice-authentication">{{ view.authentication_label | default('尚無登入驗證回報') }}</span><span id="notice-authentication-time">{% if view.scan_verified_at %} · {{ notice_time(view.scan_verified_at) }}{% endif %}</span></p>
-      <p class="section-note" id="notice-coverage">{{ view.coverage_label | default('尚未取得公布日期補查回報') }}</p>
-      <p class="section-note" id="notice-manual-note"{% if not view.manual_count %} hidden{% endif %}>手動收取表示網站已讀且無自動入表收據，是否入表請以試算表為準。</p>
-      <p class="section-note">最後成功：<span id="notice-last-success">{{ notice_time(view.last_success_at, '尚未取得成功回報') }}</span></p>
-      <div class="section-note">電腦：{{ notice_remote_credentials.workstation or '待連線' }}</div>
-      <div id="notice-credentials-request">{% if notice_remote_credentials.request_id %}請求：{{ notice_remote_credentials.request_id }}{% endif %}</div>
-      <div id="notice-credentials-updated">{% if notice_remote_credentials.updated_at %}更新：{{ event_datetime_label(notice_remote_credentials.updated_at) }}{% endif %}</div>
-      <div class="section-note">待送密碼加密保存，24 小時後失效。</div>
+    <details class="notice-status-details notice-detail-card">
+      <summary>收取狀態</summary>
+      <div class="notice-detail-content">
+        <p>資料日期：<span id="notice-date">{{ view.date }}</span></p>
+        <p>來源：<span id="notice-source-name">{{ view.workstation or '尚未辨識' }}</span></p>
+        <p>登入驗證：<span id="notice-authentication">{{ view.authentication_label | default('尚無登入驗證回報') }}</span><span id="notice-authentication-time">{% if view.scan_verified_at %} · {{ notice_time(view.scan_verified_at) }}{% endif %}</span></p>
+        <p id="notice-coverage">{{ view.coverage_label | default('尚未取得公布日期補查回報') }}</p>
+        <p id="notice-manual-note"{% if not view.manual_count %} hidden{% endif %}>手動收取表示網站已讀且無自動入表收據，是否入表請以試算表為準。</p>
+        <p>最後成功：<span id="notice-last-success">{{ notice_time(view.last_success_at, '尚未取得成功回報') }}</span></p>
+        <div>電腦：{{ notice_remote_credentials.workstation or '待連線' }}</div>
+        <div id="notice-credentials-request">{% if notice_remote_credentials.request_id %}請求：{{ notice_remote_credentials.request_id }}{% endif %}</div>
+        <div id="notice-credentials-updated">{% if notice_remote_credentials.updated_at %}更新：{{ event_datetime_label(notice_remote_credentials.updated_at) }}{% endif %}</div>
+        <div>待送密碼加密保存，24 小時後失效。</div>
+      </div>
     </details>
       {% set problems = view.history | rejectattr('state', 'in', ['success', 'running']) | list %}
-      <details id="notice-problem-history" class="notice-problem-history"{% if not problems %} hidden{% endif %}>
-        <summary class="section-note" id="notice-problem-summary">{% if problems %}異常紀錄（{{ problems | length }} 筆）{% endif %}</summary>
-        <div id="notice-problems" class="notice-problems">{% for entry in problems %}<p>{{ notice_time(entry.reported_at) }} · {{ entry.status_label }}{% if entry.error %}：{{ entry.error }}{% endif %}</p>{% endfor %}</div>
+      <details id="notice-problem-history" class="notice-problem-history notice-detail-card"{% if not problems %} hidden{% endif %}>
+        <summary id="notice-problem-summary">{% if problems %}異常紀錄（{{ problems | length }} 筆）{% endif %}</summary>
+        <div id="notice-problems" class="notice-problems notice-detail-content">{% for entry in problems %}<p>{{ notice_time(entry.reported_at) }} · {{ entry.status_label }}{% if entry.error %}：{{ entry.error }}{% endif %}</p>{% endfor %}</div>
       </details>
     </div>
   </details>
@@ -208,13 +211,9 @@
     .notice-overview { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
     .notice-overview .status { flex-shrink: 0; white-space: normal; }
     .notice-counts { overflow-wrap: anywhere; }
-    .notice-meta { margin-bottom: 10px; overflow-wrap: anywhere; }
-    .notice-meta span { white-space: nowrap; }
     .notice-check-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
     .notice-times { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); }
     .notice-times > span { white-space: nowrap; }
-    .notice-status-details { margin-top: 8px; }
-    .notice-status-details > p { margin-top: 6px; }
     #notice-sheet-link { margin-inline-start: auto; }
     .notice-times span, .notice-error { overflow-wrap: anywhere; }
     .notice-error { margin: 10px 0; color: var(--attention); }
@@ -326,9 +325,14 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='sinposmart-workspace.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='admin-system-status.css') }}">
   <style>
-    .notice-password { margin-top: .75rem; padding: .25rem; border: 1px solid var(--line); border-radius: var(--duty-row-radius); background: var(--duty-card-surface); }
+    .notice-shift { color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    body.workspace-page--duty .notice-detail-card { margin-top: .75rem; padding: .25rem; border: 1px solid var(--line); border-radius: var(--duty-row-radius); background: var(--duty-card-surface); }
+    body.workspace-page--duty .notice-detail-card > summary { background: var(--accent-soft); color: var(--accent); font-size: var(--type-small); font-weight: var(--weight-heading); }
+    body.workspace-page--duty .notice-detail-card[open] > summary { margin-bottom: 0; }
+    body.workspace-page--duty .notice-detail-card > .notice-detail-content { padding: .75rem; color: var(--muted); font-size: var(--type-small); font-weight: var(--weight-body); line-height: var(--leading-body); }
+    .notice-status-details .notice-detail-content > p { margin: 0 0 .5rem; }
     .notice-password > summary .section-note { margin-inline-start: auto; }
-    .notice-password-content { display: grid; gap: .75rem; padding: .75rem; }
+    .notice-password-content { display: grid; gap: .75rem; }
     .notice-password-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; }
     .notice-password-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
     .notice-password-fields label { display: grid; gap: .375rem; min-width: 0; }
@@ -891,7 +895,7 @@
         setText("notice-last-received", view.last_received_at ? checkStamp(view.last_received_at, view.date) + (view.last_received_count ? "，" + view.last_received_count + " 則" : "") : "尚無新增");
         setText("notice-next-check", checkStamp(view.next_check_at, view.date) || "待回報");
         setText("notice-last-success", stamp(view.last_success_at) || "尚未取得成功回報");
-        setText("notice-shift", view.shift_label || "待取得");
+        setText("notice-shift", (view.shift_label || "待取得").replace(/–/g, "-"));
         const verification = document.getElementById("notice-verification");
         verification.hidden = !view.verification_checked_at;
         verification.textContent = view.verification_checked_at ? "本次人工查核：已讀核實 " + view.verified_read_count + " 則，原件未找到 " + view.original_not_found_count + " 則。查核時間：" + stamp(view.verification_checked_at) + "。" + (view.verification_note || "") : "";

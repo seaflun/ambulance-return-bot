@@ -1,6 +1,8 @@
 import base64
+from collections import Counter
 import copy
 import json
+import os
 import struct
 import tempfile
 import unittest
@@ -25,6 +27,52 @@ from ambulance_bot.sinposmart_backend import (
 
 
 class NoticeCollectionBackendTests(unittest.TestCase):
+    def test_notice_reuses_parsing_across_instances_but_recomputes_time_and_isolates_results(self):
+        record = self.record()
+        self.put(self.event(records=[record], next_check_at="2026-10-22T09:04:00+08:00"))
+        with patch.object(backend, "normalize_notice_collection_report", wraps=backend.normalize_notice_collection_report) as parse:
+            first = self.view()
+            first["records"][0]["subject"] = "caller mutation"
+            first["history"][0]["records"][0]["subject"] = "history mutation"
+            other = SinpoSmartBackendStore(self.store.root_dir, create=False)
+            later = other.notice_view("2026-10-22", now=datetime(2026, 10, 22, 9, 10, tzinfo=backend.TAIPEI_TIMEZONE))
+            self.assertIn("超過預定", later["status_label"])
+            self.assertEqual(later["records"][0]["subject"], record["subject"])
+            self.assertEqual(later["history"][0]["records"][0]["subject"], record["subject"])
+            self.assertEqual(parse.call_count, 1)
+
+    def test_notice_parsing_cache_observes_atomic_same_size_replacement_and_removal(self):
+        self.put(self.event(records=[{**self.record(), "subject": "原主旨"}]))
+        self.assertEqual(self.view()["records"][0]["subject"], "原主旨")
+        path = self.store.path_for_day("2026-10-22")
+        original = path.read_bytes()
+        stamp = path.stat()
+        replacement = path.with_suffix(".replacement")
+        replacement.write_bytes(original.replace("原主旨".encode(), "新主旨".encode()))
+        self.assertEqual(replacement.stat().st_size, stamp.st_size)
+        os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        replacement.replace(path)
+        self.assertEqual(self.view()["records"][0]["subject"], "新主旨")
+        path.unlink()
+        view = self.view()
+        self.assertEqual(view["records"], [])
+        self.assertFalse(view["count_known"])
+
+    def test_notice_parsing_cache_keeps_verifications_and_workstation_selection_fresh(self):
+        record = self.record(read_state="unknown")
+        self.put(self.event(records=[record]))
+        self.put(self.event(run=2, station="OTHER-PC", records=[self.record(2)]))
+        with patch.object(backend, "normalize_notice_collection_report", wraps=backend.normalize_notice_collection_report) as parse:
+            self.assertEqual(self.view(workstation="PUBLIC-PC")["verified_read_count"], 0)
+            self.save_verifications([self.verification(record)])
+            verified = self.view(workstation="PUBLIC-PC")
+            other = self.view(workstation="OTHER-PC")
+            self.assertEqual(verified["verified_read_count"], 1)
+            self.assertEqual(verified["records"][0]["read_state"], "confirmed")
+            self.assertEqual(other["records"][0]["key"], self.record(2)["key"])
+            self.assertEqual(other["verified_read_count"], 0)
+            self.assertEqual(parse.call_count, 2)
+
     def test_signing_receipt_is_visible_and_unconfirmed_signing_is_not_invented(self):
         record = {**self.record(), "signing_state": "confirmed", "signed_by": "莊小"}
         self.put(self.event(records=[record]))
@@ -1167,6 +1215,38 @@ class PersonnelTitleSnapshotTests(unittest.TestCase):
 
 
 class SinpoSmartBackendStoreTests(unittest.TestCase):
+    def test_list_days_reads_each_day_once_and_keeps_cross_day_results_without_writes(self):
+        now = datetime(2026, 10, 22, 9, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = SinpoSmartBackendStore(root)
+            base = {"actor_no": "17", "trigger_type": "due", "item_kind": "出入", "item_title": "到勤",
+                    "target": "16番", "target_time": "07:55",
+                    "snapshot": {"completion_key": "entry:2026-10-22:755:in:16:到勤"}}
+            for suffix, kind, at, status in (
+                ("queue", "action_queued", "2026-10-22T07:59:09", "pending_write_automation"),
+                ("result", "action_result", "2026-10-22T08:01:27", "submitted"),
+            ):
+                store.upsert_event({**base, "event_id": suffix, "record_type": kind,
+                                    "occurred_at": at, "status": status}, now=now)
+            store.upsert_event({"event_id": "older", "record_type": "logout", "occurred_at": "2026-10-20T09:00:00"}, now=now)
+            original = {p: p.read_bytes() for p in root.glob("*.json")}
+            reads = Counter()
+            read_text = Path.read_text
+
+            def counted(path, *args, **kwargs):
+                if path in original:
+                    reads[path.name] += 1
+                return read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", counted):
+                days = store.list_days(now=now)
+            self.assertEqual(dict(reads), {p.name: 1 for p in original})
+            prior = next(day for day in days if day["fire_day"] == "2026-10-21")
+            self.assertEqual(prior["admin_view"]["summary"]["submitted"], 1)
+            self.assertEqual(prior["admin_view"], store.read_day("2026-10-21", now=now)["admin_view"])
+            self.assertEqual({p: p.read_bytes() for p in original}, original)
+
     def test_cleanup_keeps_fourteen_diagnostic_fire_days_and_seven_event_days(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1651,11 +1651,19 @@ def admin_ems():
 
 
 def admin_task_reports() -> list[dict]:
+    if has_request_context():
+        g._admin_public_pc_task_snapshots = None
     reports = reconcile_public_pc_report_retries(public_pc_reports())
     if public_pc_reporting_enabled():
         return reports
     known_ids = {str(item.get("task_id") or dict(item.get("task") or {}).get("task_id") or "") for item in reports}
-    snapshots = _recent_public_pc_reports(store.list_recent_read_only(limit=None), datetime.now())
+    task_snapshots = store.list_recent_read_only(limit=None)
+    if has_request_context():
+        g._admin_public_pc_task_snapshots = {
+            str(payload["task"].get("task_id") or ""): payload
+            for payload in task_snapshots if isinstance(payload.get("task"), dict)
+        }
+    snapshots = _recent_public_pc_reports(task_snapshots, datetime.now())
     for payload in snapshots:
         task = payload.get("task")
         if not isinstance(task, dict) or not isinstance(payload.get("site_statuses"), dict):
@@ -1675,6 +1683,16 @@ def admin_task_reports() -> list[dict]:
         })
         known_ids.add(task_id)
     return sorted(reports, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+
+
+def _admin_render_task_snapshot(task_id: str) -> dict:
+    snapshots = getattr(g, "_admin_public_pc_task_snapshots", None) if has_request_context() else None
+    if snapshots is None:
+        return store.get(task_id)
+    # These snapshots were read after reconciliation; only this render reuses them.
+    if task_id not in snapshots:
+        raise FileNotFoundError(task_id)
+    return snapshots[task_id]
 
 
 def task_site_login_accounts(payload: Mapping[str, object]) -> dict[str, str]:
@@ -1732,6 +1750,8 @@ def task_site_login_accounts(payload: Mapping[str, object]) -> dict[str, str]:
 
 def render_admin_public_pc(*, locked_service: str = ""):
     reports = admin_task_reports()
+    # Reconciliation above may update reports. Share only this render's final views.
+    g._admin_public_pc_event_views = {}
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()
     worker_health_enabled = not public_pc_reporting_enabled()
@@ -1764,6 +1784,7 @@ def render_admin_public_pc(*, locked_service: str = ""):
     )
     retry_sites_by_task = {}
     active_task_ids = set()
+    lock_snapshot = manual_task_lock_snapshot(artifacts_dir) if visible_reports else {}
     for item in visible_reports:
         task = item.get("task") if isinstance(item.get("task"), dict) else {}
         task_id = str(task.get("task_id") or item.get("task_id") or "").strip()
@@ -1771,10 +1792,10 @@ def render_admin_public_pc(*, locked_service: str = ""):
             retry_payload = item
             if item.get("report_origin") != "nas":
                 try:
-                    retry_payload = store.get(task_id)
+                    retry_payload = _admin_render_task_snapshot(task_id)
                 except FileNotFoundError:
                     pass
-            if task_payload_is_active(retry_payload):
+            if task_payload_is_active(retry_payload, lock_snapshot=lock_snapshot):
                 active_task_ids.add(task_id)
                 retry_sites_by_task[task_id] = []
                 continue
@@ -7205,11 +7226,12 @@ def active_task_status(payload: dict) -> str:
     return effective_task_status(payload)
 
 
-def task_payload_is_active(payload: dict) -> bool:
+def task_payload_is_active(payload: dict, *, lock_snapshot: dict[str, object] | None = None) -> bool:
     queue_state = worker_queue_state(payload)
     if queue_state.get("status") == "queued" or worker_claim_lease_is_active(payload):
         return True
-    lock_snapshot = manual_task_lock_snapshot(artifacts_dir)
+    if lock_snapshot is None:
+        lock_snapshot = manual_task_lock_snapshot(artifacts_dir)
     if lock_snapshot.get("guard_busy") or task_execution_lease_owner(payload, lock_snapshot):
         return True
     return status_class(effective_task_status(payload)) == "running"
@@ -8294,7 +8316,22 @@ def public_pc_event_for_action(payload: dict, action: str) -> dict:
     return event
 
 
-def public_pc_report_display_events(report: dict) -> list[dict]:
+def public_pc_report_display_events(report: dict, *, chronological: bool = False) -> list[dict]:
+    cache = getattr(g, "_admin_public_pc_event_views", None) if has_request_context() else None
+    if cache is None:
+        events = _public_pc_report_display_events(report)
+        return sorted(events, key=_public_pc_event_time) if chronological else events
+    key = id(report)
+    if key not in cache:
+        # Retain the report so object IDs cannot be reused during this request.
+        cache[key] = {"report": report, "events": _public_pc_report_display_events(report)}
+    view = cache[key]
+    if chronological and "chronological" not in view:
+        view["chronological"] = sorted(view["events"], key=_public_pc_event_time)
+    return [dict(event) for event in view["chronological" if chronological else "events"]]
+
+
+def _public_pc_report_display_events(report: dict) -> list[dict]:
     events = [dict(event) for event in report.get("events") or [] if isinstance(event, dict)]
     candidates = [event for event in events if str(event.get("event_id") or "").startswith("retry-status:")
                   and event.get("status") == "failed" and event.get("failure_sites") == {}
@@ -8303,7 +8340,7 @@ def public_pc_report_display_events(report: dict) -> list[dict]:
     if not candidates or not task_id:
         return events
     try:
-        payload = store.get(task_id)
+        payload = _admin_render_task_snapshot(task_id)
     except (OSError, ValueError):
         return events
     if not isinstance(payload, Mapping) or not public_pc_report_retry_task(payload):
@@ -8436,8 +8473,7 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
     seen: set[tuple[str, str]] = set()
     seen_ids: set[str] = set()
     started_since_failure = False
-    events = public_pc_report_display_events(report)
-    events.sort(key=_public_pc_event_time)
+    events = public_pc_report_display_events(report, chronological=True)
 
     def add(source: dict, timestamp: str, *, legacy: bool = False) -> None:
         source = {**source, "key": site_key}

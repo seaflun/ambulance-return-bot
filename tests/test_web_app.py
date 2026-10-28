@@ -6575,6 +6575,50 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn("今日累積 0 則", body)
         self.assertIn("尚未取得檢查回報", body)
 
+    def test_sinposmart_notice_summary_keeps_shift_before_counts_and_date_in_details(self):
+        store = app_module.sinposmart_store()
+        view = self._notice_view_fixture(shift_label="18:00–20:00", shift_count=1, today_count=12)
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=view):
+            body = self.client.get("/admin/sinposmart").get_data(as_text=True)
+        section = re.search(r'<details\b([^>]*\bid="notice-section"[^>]*)>\s*'
+                            r'<summary class="section-head">(.*?)</summary>', body, re.S)
+        self.assertIsNotNone(section)
+        self.assertNotRegex(section.group(1), r'\bopen\b')
+        summary = section.group(2)
+        self.assertLess(summary.index("已收通報"), summary.index('id="notice-shift"'))
+        self.assertLess(summary.index('id="notice-shift"'), summary.index('id="notice-counts"'))
+        self.assertIn('id="notice-shift">18:00-20:00</span>', summary)
+        self.assertIn("當班已收 1 則", summary)
+        self.assertIn("今日累積 12 則", summary)
+        self.assertIn('id="notice-status"', summary)
+        self.assertNotIn('class="section-note notice-meta"', body)
+        self.assertEqual(body.count('id="notice-date"'), 1)
+        status = re.search(r'<details\b[^>]*class="[^"]*notice-status-details[^>]*>(.*?)</details>', body, re.S)
+        self.assertIsNotNone(status)
+        self.assertIn('id="notice-date"', status.group(1))
+
+    def test_sinposmart_notice_inner_cards_share_disclosure_structure(self):
+        store = app_module.sinposmart_store()
+        view = self._notice_view_fixture(history=[{
+            "state": "failed", "reported_at": "2026-10-22T15:50:00+08:00",
+            "status_label": "收取失敗", "error": "連線中斷",
+        }])
+        with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
+                mock.patch.object(store, "notice_view", return_value=view):
+            body = self.client.get("/admin/sinposmart").get_data(as_text=True)
+        for card_class, title in (("notice-password", "密碼設定"),
+                                  ("notice-status-details", "收取狀態"),
+                                  ("notice-problem-history", "異常紀錄")):
+            with self.subTest(card=card_class):
+                card = re.search(r'<details\b(?P<attrs>[^>]*class="[^"]*\b' + card_class
+                                 + r'\b[^>]*?)>(?P<content>.*?)</details>', body, re.S)
+                self.assertIsNotNone(card)
+                self.assertIn("notice-detail-card", card.group("attrs"))
+                self.assertNotRegex(card.group("attrs"), r'\b(?:open|hidden)\b')
+                self.assertRegex(card.group("content"), r'<summary\b[^>]*>.*?' + title)
+                self.assertRegex(card.group("content"), r'<div\b[^>]*class="[^"]*notice-detail-content')
+
     def test_notice_manual_collection_displays_publication_time_and_separate_login_check(self):
         store = app_module.sinposmart_store()
         view = self._notice_view_fixture(manual_count=1, authentication_label="本輪列表身分已驗證",

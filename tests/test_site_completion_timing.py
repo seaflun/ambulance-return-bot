@@ -249,6 +249,98 @@ class SiteCompletionTimingTests(unittest.TestCase):
                 self.assertEqual(dict.fromkeys(app_module.SITE_RUN_ORDER),
                                  app_module.task_site_completion_seconds(report))
 
+    def render_reports(self, reports, renderer, lock_snapshot, *, prepare=None):
+        with patch.object(app_module, "admin_task_reports", return_value=reports, side_effect=prepare), \
+                patch.object(app_module, "remote_update_csrf_token", return_value=""), \
+                patch.object(app_module, "remote_update_admin_token", return_value=""), \
+                patch.object(app_module, "worker_admin_version_info", return_value={}), \
+                patch.object(app_module, "worker_heartbeat_admin_view", return_value={}), \
+                patch.object(app_module, "manual_task_lock_snapshot", return_value=lock_snapshot) as locks, \
+                patch.object(app_module, "render_template", side_effect=renderer), \
+                app_module.app.test_request_context("/admin/ems"):
+            result = app_module.render_admin_public_pc(locked_service="ems")
+        return result, locks.call_count
+
+    def test_admin_render_shares_legacy_event_recovery_without_reordering_history(self):
+        report = self.report([
+            self.event("vehicle_mileage", "2026-10-20T08:00:29", "failed",
+                       event_id="retry-status:fixture", failure_sites={},
+                       action=f"公務電腦回報{app_module.site_display_name('vehicle_mileage')}"),
+            self.event("vehicle_mileage", "2026-10-20T08:00:00"),
+        ])
+        report.update(task_id="fixture", task={"task_id": "fixture"}, report_origin="nas")
+        report["events"][0]["status"] = "failed"
+        source = {"task_source": app_module.PUBLIC_PC_REPORT_RETRY_SOURCE,
+                  "events": [self.event("vehicle_mileage", "2026-10-20T08:00:29", "saved")]}
+        before = copy.deepcopy(report)
+
+        def render(_template, **context):
+            item = context["reports"][0]
+            initial = app_module.public_pc_report_display_events(item)
+            app_module.public_pc_site_failure_history(item, "vehicle_mileage")
+            app_module.public_pc_site_failure_history(item, "consumables")
+            app_module.task_site_completion_seconds(item)
+            app_module.public_pc_event_rows(item)
+            self.assertEqual(initial, app_module.public_pc_report_display_events(item))
+            self.assertEqual("vehicle_mileage_saved", initial[0]["status"])
+            return "rendered"
+
+        with patch.object(app_module.store, "get", return_value=source) as reads:
+            self.assertEqual("rendered", self.render_reports([report], render, {})[0])
+        self.assertEqual(1, reads.call_count)
+        self.assertEqual(before, report)
+
+    def test_admin_render_refreshes_events_and_lock_snapshot_on_next_request(self):
+        reports = [self.report([]), self.report([])]
+        for index, report in enumerate(reports):
+            report.update(task_id=str(index), task={"task_id": str(index)}, report_origin="nas")
+
+        def render(_template, **context):
+            return (context["active_task_ids"],
+                    [app_module.public_pc_report_display_events(item) for item in context["reports"]],
+                    [item["site_statuses"]["vehicle_mileage"]["status"] for item in context["reports"]])
+
+        first, reads = self.render_reports(reports, render, {})
+        self.assertEqual((set(), [[], []], ["vehicle_mileage_saved"] * 2), first)
+        self.assertEqual(1, reads)
+        reports[0]["events"].append(self.event("vehicle_mileage", "2026-10-21T00:00:29", "saved"))
+        reports[1]["site_statuses"]["vehicle_mileage"]["status"] = "completed_by_user"
+        reports.append(dict(self.report([]), task_id="2", task={"task_id": "2"}, report_origin="nas"))
+        second, reads = self.render_reports(reports, render, {"guard_busy": True})
+        self.assertEqual({"0", "1", "2"}, second[0])
+        self.assertEqual(1, len(second[1][0]))
+        self.assertEqual("completed_by_user", second[2][1])
+        self.assertEqual(1, reads)
+
+    def test_admin_render_reuses_post_reconciliation_tasks_and_refreshes_next_request(self):
+        report = self.report([])
+        report.update(task_id="fixture", task={"task_id": "fixture"})
+        missing = dict(report, task_id="missing", task={"task_id": "missing"})
+        queued = dict(report, worker_queue={"status": "queued"})
+        completed = copy.deepcopy(report)
+        completed["site_statuses"]["vehicle_mileage"]["status"] = "completed_by_user"
+        current = [queued]
+        original = app_module.admin_task_reports
+
+        def reconcile(reports):
+            current[0] = completed
+            return reports
+
+        def render(_template, **context):
+            return context["active_task_ids"], len(context["reports"])
+
+        with patch.object(app_module, "public_pc_reports", return_value=[report, missing]), \
+                patch.object(app_module, "public_pc_reporting_enabled", return_value=False), \
+                patch.object(app_module, "reconcile_public_pc_report_retries", side_effect=reconcile), \
+                patch.object(app_module.store, "list_recent_read_only", side_effect=lambda **kwargs: list(current)), \
+                patch.object(app_module.store, "get", side_effect=AssertionError("task JSON reread")):
+            first, _ = self.render_reports(None, render, {}, prepare=original)
+            self.assertEqual((set(), 2), first)
+            with patch.object(app_module, "reconcile_public_pc_report_retries", side_effect=lambda reports: reports):
+                current[0] = queued
+                second, _ = self.render_reports(None, render, {}, prepare=original)
+            self.assertEqual(({"fixture"}, 2), second)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.28.1823">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.28.1823') }}</p>
+          <h2 class="update-card__title">三後台讀取優化與通報摘要整理</h2>
+        </div>
+        <span class="update-card__versions">2026.10.28.1823</span>
+      </header>
+      <ul class="update-card__items">
+        <li>值班跨日比對共用單次讀檔結果；通報解析依來源變更更新，時間、逾時狀態與人工核對仍即時重建。</li>
+        <li>救護與救災頁面共用本次請求的任務快照、操作鎖與事件整理結果，下次讀取仍取得新狀態。</li>
+        <li>通報的密碼設定、收取狀態與異常紀錄統一卡片樣式；班別移到標題後方，移除重複日期列。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.28.1744">
       <header class="update-card__heading">
         <div>
