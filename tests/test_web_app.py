@@ -1,5 +1,6 @@
 import base64
 import html
+import hashlib
 import http.client
 import contextlib
 import io
@@ -15,6 +16,7 @@ import time
 import unittest
 import urllib.error
 import zlib
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,6 +67,78 @@ class FakeDesktopRunner:
 
 
 class WebAppTests(unittest.TestCase):
+    @staticmethod
+    def _diagnostic_package(extra_name=None, manifest_changes=None):
+        buffer = io.BytesIO()
+        manifest = {"schema_version": 1, "sanitized": True,
+                    "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "workstation": "TEST-DUTY-PC", "target_date": "1151028", "session_actor": "21",
+                    "action_key": "handoff:0800", "action_kind": "handoff_preflight",
+                    "error_code": "unknown_error", "duty_status": "交接預檢失敗", "result_ref": "failure.json"}
+        manifest.update(manifest_changes or {})
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
+            archive.writestr("runtime_outputs/form_tests/failure.json",
+                             '{"stage":"failed","exception":{"type":"ValueError","message":"driver disconnected"}}')
+            if extra_name:
+                archive.writestr(extra_name, "not allowed")
+        return buffer.getvalue()
+
+    def test_sinposmart_diagnostics_are_authenticated_idempotent_and_downloadable(self):
+        raw = self._diagnostic_package()
+        digest = hashlib.sha256(raw).hexdigest()
+        endpoint = "/api/sinposmart/diagnostics/" + digest
+        self.assertEqual(self.client.post(endpoint, data=raw, content_type="application/zip").status_code, 404)
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        self.assertEqual(self.client.post(endpoint, data=raw, content_type="application/zip").status_code, 403)
+        previous_day = (datetime.now() - timedelta(days=1)).date().isoformat()
+        app_module.sinposmart_store().upsert_event({"event_id": "previous-day-only", "record_type": "login",
+            "fire_day": previous_day, "occurred_at": previous_day + "T10:00:00", "status": "ok"})
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        result = self.client.post(endpoint, data=raw, content_type="application/zip", headers=headers)
+        self.assertEqual(result.status_code, 200)
+        receipt = result.get_json()
+        self.assertEqual(receipt["ack_id"], digest)
+        second = self.client.post(endpoint, data=raw, content_type="application/zip", headers=headers)
+        self.assertEqual(second.get_json()["ack_id"], digest)
+        saved = list((app_module.artifacts_dir / "sinposmart" / "diagnostics").rglob("*.zip"))
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].read_bytes(), raw)
+        page = self.client.get("/admin/sinposmart?fire_day=" + receipt["fire_day"]).get_data(as_text=True)
+        self.assertIn("下載問題包", page)
+        self.assertIn("交接預檢失敗", page)
+        self.assertIn("TEST-DUTY-PC", page)
+        url = f'/admin/sinposmart/diagnostics/{receipt["fire_day"]}/{digest}.zip'
+        self.assertIn(url, page)
+        self.assertIn(url, self.client.get("/admin/sinposmart").get_data(as_text=True))
+        downloaded = self.client.get(url)
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertEqual(downloaded.data, raw)
+        self.assertIn("attachment", downloaded.headers["Content-Disposition"])
+        self.assertEqual(downloaded.headers["Cache-Control"], "no-store")
+        downloaded.close()
+        self.assertEqual(self.client.get(url.replace(digest, "0" * 64)).status_code, 404)
+
+    def test_sinposmart_diagnostics_reject_unsafe_or_unconfirmed_contents(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        headers = {"X-Credential-Sync-Token": "sync-token"}
+        for raw in (b"not a ZIP", self._diagnostic_package("../outside.txt"),
+                    self._diagnostic_package(".env"), self._diagnostic_package(manifest_changes={"sanitized": False}),
+                    self._diagnostic_package(manifest_changes={"password": "never-store"})):
+            with self.subTest(size=len(raw)):
+                digest = hashlib.sha256(raw).hexdigest()
+                response = self.client.post("/api/sinposmart/diagnostics/" + digest,
+                    data=raw, content_type="application/zip", headers=headers)
+                self.assertEqual(response.status_code, 400)
+        valid = self._diagnostic_package()
+        mismatch = self.client.post("/api/sinposmart/diagnostics/" + "0" * 64,
+            data=valid, content_type="application/zip", headers=headers)
+        self.assertEqual(mismatch.status_code, 400)
+        oversized = self.client.post("/api/sinposmart/diagnostics/" + "0" * 64,
+            data=b"x" * (8 * 1024 * 1024 + 1), content_type="application/zip", headers=headers)
+        self.assertEqual(oversized.status_code, 413)
+        self.assertFalse(list((app_module.artifacts_dir / "sinposmart").rglob("*.zip")))
+
     def test_admin_overlap_manual_confirmation_requires_ack_token_and_syncs_exact_vehicle(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
         task = app_module.AmbulanceReturnRequest.from_dict({

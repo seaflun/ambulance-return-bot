@@ -1308,6 +1308,44 @@ def sinposmart_events():
     return jsonify({"ok": True, "ack_id": event["event_id"], "fire_day": event["fire_day"]})
 
 
+@app.post("/api/sinposmart/diagnostics/<digest>")
+def sinposmart_diagnostic_upload(digest: str):
+    if not credential_sync_receiver_enabled():
+        abort(404)
+    if not credential_sync_authorized():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    limit = 8 * 1024 * 1024
+    if request.content_length is not None and request.content_length > limit:
+        return jsonify({"ok": False, "error": "diagnostic_too_large"}), 413
+    if request.mimetype != "application/zip":
+        return jsonify({"ok": False, "error": "invalid_diagnostic"}), 400
+    body = request.stream.read(limit + 1)
+    if len(body) > limit:
+        return jsonify({"ok": False, "error": "diagnostic_too_large"}), 413
+    try:
+        metadata = sinposmart_store().save_diagnostic(body, digest)
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid_diagnostic"}), 400
+    except OSError:
+        return jsonify({"ok": False, "error": "diagnostic_unavailable"}), 503
+    return jsonify({"ok": True, "ack_id": metadata["sha256"], "fire_day": metadata["fire_day"]})
+
+
+@app.get("/admin/sinposmart/diagnostics/<fire_day>/<digest>.zip")
+def sinposmart_diagnostic_download(fire_day: str, digest: str):
+    try:
+        path = sinposmart_store(create=False).diagnostic_path(fire_day, digest)
+    except ValueError:
+        abort(404)
+    if not path.is_file():
+        abort(404)
+    response = send_from_directory(path.parent, path.name, as_attachment=True,
+                                   download_name=f"issue_report_{digest[:16]}.zip", mimetype="application/zip")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 @app.get("/api/sinposmart/identity")
 def sinposmart_identity():
     if not credential_sync_authorized():
@@ -1757,6 +1795,7 @@ def admin_sinposmart():
         days=days,
         selected_day=selected_day,
         selected_fire_day=selected_fire_day,
+        diagnostic_reports=sinposmart_store(create=False).list_diagnostics(selected_fire_day or sinposmart_fire_day_for()),
         version_info=sinposmart_admin_version_info(selected_day),
         nas_version=package_version(),
         duty_gui_health=gui_health,

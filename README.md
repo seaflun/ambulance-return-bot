@@ -11,6 +11,14 @@ SinpoSmart - 救災救護Worker is maintained as a Windows public-duty worker pl
 
 Root `app.py`, `worker.py`, `worker_gui.py`, `consumables_login.py`, `disinfect.py`, and `civilpower.py` are compatibility launchers that load runtime code from `WinPython_公務電腦使用包`.
 
+## 值班 GUI 問題包
+
+`POST /api/sinposmart/diagnostics/<sha256>` 沿用勤務事件的同步 token 驗證，接收已遮蔽的 ZIP 問題包。驗證雜湊、manifest、允許檔名、檔案數與容量後，原子保存至 `artifacts/sinposmart/diagnostics/<消防日>/`；相同 ZIP 重試只保留同一份，保存成功後才回覆相同雜湊。
+
+值班後台的「問題包」區塊提供發生時間、來源電腦、番號、任務及下載連結。下載沿用既有管理頁唯讀範圍，以附件回傳並禁止快取。ZIP 上限 8 MiB、最多 80 個允許檔案、解壓總大小上限 16 MiB，不解壓到伺服器檔案系統。未遮蔽的舊包、憑證欄位、路徑穿越、加密 ZIP 或不符雜湊不予保存；本功能不自動刪除歷史問題包。
+
+這項功能需另外更新 SinpoSmart 值班 GUI。NAS 只接收診斷，不執行公務網站登打，也不修改正式勤務或通報紀錄。
+
 ## Verify
 
 ```powershell

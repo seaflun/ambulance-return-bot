@@ -4,10 +4,12 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import io
 import json
 import re
 import struct
 import zlib
+import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock, RLock
@@ -89,6 +91,7 @@ DAILY_VEHICLE_REASONS = {
 }
 TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
 SINPOSMART_RESULT_ADVISORY_SECONDS = 15 * 60
+MAX_DIAGNOSTIC_ARCHIVE_BYTES = 8 * 1024 * 1024
 _STORE_LOCKS_GUARD = Lock()
 _STORE_LOCKS: dict[str, RLock] = {}
 
@@ -2285,6 +2288,62 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
     return view
 
 
+def validate_diagnostic_archive(body: bytes, digest: str) -> dict[str, Any]:
+    if (re.fullmatch(r"[0-9a-f]{64}", digest) is None or not body
+            or len(body) > MAX_DIAGNOSTIC_ARCHIVE_BYTES or hashlib.sha256(body).hexdigest() != digest):
+        raise ValueError("invalid_diagnostic")
+    allowed = re.compile(
+        r"manifest\.json|VERSION\.txt|requirements\.txt|docs/(?:CODE_MAP|HANDOFF)\.md|duty_trigger_log\.jsonl|"
+        r"runtime_outputs/sinposmart_operational_sync_status\.json|"
+        r"(?:duty_sheet_legacy/)?runtime_outputs/(?:schedule/schedule_output_\d{7}\.json|comparison/comparison_output_\d{7}\.json)|"
+        r"runtime_outputs/(?:form_tests/[A-Za-z0-9_.-]+\.json|snapshots/[A-Za-z0-9_.-]+\.(?:json|txt)|browser/[A-Za-z0-9_.-]+\.(?:json|jsonl))"
+    )
+    manifest = None
+    try:
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            files = archive.infolist()
+            if (not 1 <= len(files) <= 80 or len({item.filename for item in files}) != len(files)
+                    or sum(item.file_size for item in files) > 16 * 1024 * 1024):
+                raise ValueError("invalid_diagnostic_size")
+            for item in files:
+                if (allowed.fullmatch(item.filename) is None or item.is_dir() or item.flag_bits & 1
+                        or item.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+                        or item.file_size > (65536 if item.filename == "manifest.json" else 2 * 1024 * 1024)
+                        or (item.external_attr >> 16) & 0o170000 == 0o120000):
+                    raise ValueError("invalid_diagnostic_file")
+                text = archive.read(item).decode("utf-8-sig")
+                values = ([json.loads(text)] if item.filename.endswith(".json") else
+                          [json.loads(line) for line in text.splitlines() if line.strip()] if item.filename.endswith(".jsonl") else [])
+                stack = list(values)
+                while stack:
+                    value = stack.pop()
+                    if isinstance(value, dict):
+                        if any(SENSITIVE_KEY_PATTERN.search(key) or re.search(
+                            r"html|page_source|screenshot|(?:^|_)image(?:_|$)|username|user_id|account|csrf|^sid$|(?:api|sync)[_-]?key", key, re.I
+                        ) for key in value):
+                            raise ValueError("unsafe_diagnostic_fields")
+                        stack.extend(value.values())
+                    elif isinstance(value, list):
+                        stack.extend(value)
+                if item.filename == "manifest.json":
+                    manifest = values[0]
+    except (zipfile.BadZipFile, KeyError, UnicodeError, RuntimeError, NotImplementedError) as exc:
+        raise ValueError("invalid_diagnostic_archive") from exc
+    if (not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int
+            or manifest["schema_version"] != 1 or manifest.get("sanitized") is not True):
+        raise ValueError("unconfirmed_diagnostic")
+    try:
+        created_at = datetime.fromisoformat(manifest["created_at"])
+        if created_at.utcoffset() is None:
+            raise ValueError("naive_diagnostic_time")
+    except (KeyError, TypeError) as exc:
+        raise ValueError("invalid_diagnostic_time") from exc
+    return {"sha256": digest, "size": len(body), "created_at": created_at.isoformat(timespec="seconds"),
+            "fire_day": sinposmart_fire_day_for(taipei_local_datetime(created_at)),
+            **{key: sanitize_scalar(manifest.get(key), 240) for key in (
+                "workstation", "session_actor", "target_date", "action_key", "action_kind", "trigger_type", "error_code", "duty_status", "result_ref")}}
+
+
 class SinpoSmartBackendStore:
     def __init__(self, root_dir: Path, retention_days: int = 7, *, create: bool = True) -> None:
         self.root_dir = root_dir
@@ -2292,6 +2351,50 @@ class SinpoSmartBackendStore:
         if create:
             self.root_dir.mkdir(parents=True, exist_ok=True)
         self._lock = shared_store_lock(self.root_dir)
+
+    def diagnostic_path(self, fire_day: str, digest: str) -> Path:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", fire_day) is None or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("invalid_diagnostic_path")
+        date.fromisoformat(fire_day)
+        root = (self.root_dir / "diagnostics").resolve()
+        path = (root / fire_day / f"{digest}.zip").resolve()
+        if not path.is_relative_to(root) or path.parent != root / fire_day:
+            raise ValueError("invalid_diagnostic_path")
+        return path
+
+    def save_diagnostic(self, body: bytes, digest: str) -> dict[str, Any]:
+        metadata = validate_diagnostic_archive(body, digest)
+        with self._lock:
+            path = self.diagnostic_path(metadata["fire_day"], digest)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                temporary = path.with_suffix(f".{uuid4().hex}.tmp")
+                try:
+                    temporary.write_bytes(body)
+                    temporary.replace(path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            write_json_atomic(path.with_suffix(".json"), metadata)
+        return metadata
+
+    def list_diagnostics(self, fire_day: str) -> list[dict[str, Any]]:
+        try:
+            folder = self.diagnostic_path(fire_day, "0" * 64).parent
+        except ValueError:
+            return []
+        records = []
+        with self._lock:
+            for path in folder.glob("*.json"):
+                try:
+                    metadata = json.loads(path.read_text(encoding="utf-8"))
+                    digest = metadata.get("sha256") if isinstance(metadata, dict) else None
+                    if (not isinstance(digest, str) or path.stem != digest
+                            or not self.diagnostic_path(fire_day, digest).is_file()):
+                        continue
+                    records.append(metadata)
+                except (OSError, ValueError):
+                    continue
+        return sorted(records, key=lambda item: str(item.get("created_at") or ""), reverse=True)[:50]
 
     def upsert_event(self, raw_event: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
         with self._lock:
@@ -2367,7 +2470,11 @@ class SinpoSmartBackendStore:
                         payload["events"], now=now, related_results=self._related_submission_results(payload["events"])
                     )
                     days.append(payload)
-            return days[:limit]
+            known_days = {str(day.get("fire_day") or "") for day in days}
+            for folder in sorted((self.root_dir / "diagnostics").glob("????-??-??"), reverse=True)[:limit]:
+                if folder.name not in known_days and self.list_diagnostics(folder.name):
+                    days.append(self.read_day(folder.name, now=now))
+            return sorted(days, key=lambda day: str(day.get("fire_day") or ""), reverse=True)[:limit]
 
     def read_day(self, fire_day: str, now: datetime | None = None) -> dict[str, Any]:
         with self._lock:

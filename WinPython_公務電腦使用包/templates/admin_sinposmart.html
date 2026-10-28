@@ -368,6 +368,21 @@
       </nav>
     {% endif %}
 
+    {% if diagnostic_reports %}
+      <details class="section" id="diagnostic-reports">
+        <summary class="section-head"><h2 class="section-title">問題包</h2><span class="section-note">已保存至 NAS · {{ diagnostic_reports | length }} 份</span></summary>
+        <div class="event-list">
+        {% for report in diagnostic_reports %}
+          <article class="event-card">
+            <div class="event-detail">{{ event_datetime_label(report.created_at) }} · {{ report.workstation }}{% if report.session_actor %} · {{ report.session_actor }}番{% endif %}</div>
+            <div class="event-detail">{{ report.duty_status or '手動匯出問題包' }}{% if report.action_kind %} · {{ report.action_kind }}{% endif %}{% if report.error_code %} · {{ report.error_code }}{% endif %}</div>
+            {% if report.action_key %}<div class="event-detail">任務：{{ report.action_key }}</div>{% endif %}
+            <a class="button" href="{{ url_for('sinposmart_diagnostic_download', fire_day=report.fire_day, digest=report.sha256) }}">下載問題包</a>
+          </article>
+        {% endfor %}
+        </div>
+      </details>
+    {% endif %}
     {% if selected_day %}
       {% set admin_view = selected_day.admin_view or {} %}
       {% set summary = admin_view.summary or {} %}

@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.28.1049">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.28.1049') }}</p>
+          <h2 class="update-card__title">值班問題包接收與失敗原因診斷</h2>
+        </div>
+        <span class="update-card__versions">2026.10.28.1049</span>
+      </header>
+      <ul class="update-card__items">
+        <li>NAS 接收值班台已遮蔽的診斷問題包，依消防日、來源電腦、番號及任務提供下載，保留交接預檢與通報異常的詳細原因。</li>
+        <li>驗證檔案雜湊、容量與允許內容，相同問題包重試只保存一份；新消防日只有問題包時也顯示下載入口。</li>
+        <li>同步值班台問題包背景上傳與斷線重試的更新說明，不改動正式勤務、通報簽收及已讀紀錄。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.27.1210">
       <header class="update-card__heading">
         <div>
