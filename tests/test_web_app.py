@@ -67,6 +67,108 @@ class FakeDesktopRunner:
 
 
 class WebAppTests(unittest.TestCase):
+    def test_notice_password_ajax_reports_safe_progress_and_keeps_existing_request(self):
+        os.environ["WORKER_TOKEN"] = "fixture-worker-envelope-key-32-characters"
+        endpoint = "/admin/sinposmart/notice-credentials"
+        form = {"workstation": "TEST-DUTY-PC", "password": "fixture-ajax-password",
+                "csrf_token": app_module.remote_update_csrf_token(), "admin_token": "test-admin-token"}
+        headers = {"Accept": "application/json"}
+        response = self.client.post(endpoint, data=form, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        payload = response.get_json()
+        self.assertIs(payload["ok"], True)
+        self.assertEqual(payload["notice_credentials"]["status"], "pending")
+        self.assertEqual(payload["notice_credentials"]["workstation"], "TEST-DUTY-PC")
+        self.assertNotIn("password", response.get_data(as_text=True))
+        self.assertNotIn("sealed_payload", response.get_data(as_text=True))
+        path = app_module.notice_credentials_command_path("TEST-DUTY-PC")
+        original = path.read_bytes()
+        self.assertEqual(self.client.post(endpoint, data=form, headers=headers).status_code, 409)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(self.client.post(endpoint, data={**form, "admin_token": "wrong"}, headers=headers).status_code, 403)
+
+    def test_notice_password_pending_page_explains_wait_and_offers_refresh_without_password(self):
+        os.environ["WORKER_TOKEN"] = "fixture-worker-envelope-key-32-characters"
+        command = app_module.create_notice_credentials_command("TEST-DUTY-PC", "fixture-render-password")
+        view = app_module.duty_gui_health_view()
+        view["gui"]["workstation"] = "TEST-DUTY-PC"
+        with mock.patch.object(app_module, "duty_gui_health_view", return_value=view):
+            body = self.client.get("/admin/sinposmart").get_data(as_text=True)
+        self.assertIn('id="notice-credentials-progress"', body)
+        self.assertIn("等待公務電腦接收；尚未儲存或完成驗證", body)
+        self.assertIn(command["request_id"], body)
+        self.assertRegex(body, r'<form\b[^>]*id="notice-credentials-form"[^>]* hidden')
+        self.assertRegex(body, r'<button\b[^>]*id="notice-credentials-refresh"[^>]*type="button"[^>]*>重新整理進度</button>')
+        self.assertNotIn("fixture-render-password", body)
+
+    def test_notice_password_browser_feedback_refresh_errors_and_duplicate_clicks(self):
+        if not shutil.which("node"):
+            self.skipTest("Node.js required for notice password interaction tests")
+        template = Path(__file__).resolve().parents[1] / "WinPython_公務電腦使用包/templates/admin_sinposmart.html"
+        source = re.search(r"(?s)<script>\s*(\(\(\) => \{.*?let inFlight.*?</script>)", template.read_text(encoding="utf-8"))
+        self.assertIsNotNone(source)
+        script = r"""
+const source = JSON.parse(require('fs').readFileSync(0, 'utf8')), assert = require('assert');
+const nodes = {}, intervals = [], queue = [], calls = [];
+for (const id of ['notice-remote-credentials', 'notice-credentials-form', 'notice-credentials-submit',
+  'notice-credentials-refresh', 'notice-credentials-feedback', 'notice-credentials-label',
+  'notice-credentials-progress', 'notice-credentials-request', 'notice-credentials-updated']) {
+  nodes[id] = {dataset: {}, hidden: false, disabled: false, textContent: '', handlers: {},
+    addEventListener(type, callback) {this.handlers[type] = callback;}};
+}
+const panel = nodes['notice-remote-credentials'], form = nodes['notice-credentials-form'];
+const send = nodes['notice-credentials-submit'], feedback = nodes['notice-credentials-feedback'];
+panel.dataset = {enabled: 'true', workstation: 'TEST-DUTY-PC', status: ''};
+form.action = '/admin/sinposmart/notice-credentials';
+form.elements = {workstation: {value: 'TEST-DUTY-PC'}, password: {value: 'fixture-password'}, admin_token: {value: 'fixture-admin'}};
+const view = status => ({workstation: 'TEST-DUTY-PC', status, request_id: status ? 'request-one' : '',
+  updated_at: '2026-10-28T16:30:00+08:00', status_label: status === 'verified' ? '登入驗證成功' : status || '尚未送出遠端修改'});
+const response = (status, data) => ({ok: status === 200, status, json: async () => data});
+const health = status => response(200, {ok: true, gui: {}, installer: {}, installation: {}, notice_credentials: view(status)});
+const context = {document: {getElementById: id => nodes[id] || null, querySelectorAll: () => []},
+  window: {location: {search: ''}}, URLSearchParams, URL, AbortController,
+  FormData: class {constructor(target) {assert.strictEqual(target, form);}},
+  setInterval: callback => intervals.push(callback), setTimeout: () => 1, clearTimeout() {},
+  fetch: async (url, options) => {calls.push({url, options}); const next = queue.shift();
+    if (next instanceof Error) throw next; assert(next, 'unexpected request'); return await next;}};
+require('vm').runInNewContext(source, context);
+const submit = () => form.handlers.submit({preventDefault() {}});
+const flush = () => new Promise(resolve => setImmediate(resolve));
+(async () => {
+  let resolvePost;
+  queue.push(new Promise(resolve => {resolvePost = resolve;}));
+  const sending = submit();
+  assert(send.disabled); assert.strictEqual(send.textContent, '傳送中…');
+  assert(feedback.textContent.includes('正在安全傳送'));
+  await submit(); assert.strictEqual(calls.length, 1, 'duplicate click sent another command');
+  resolvePost(response(200, {ok: true, notice_credentials: view('pending')})); await sending;
+  assert(form.hidden); assert(send.disabled); assert.strictEqual(form.elements.password.value, '');
+  assert.strictEqual(form.elements.admin_token.value, '');
+  assert.strictEqual(calls[0].options.headers.Accept, 'application/json');
+  queue.push(health('stored')); nodes['notice-credentials-refresh'].handlers.click(); await flush();
+  assert(nodes['notice-credentials-progress'].textContent.includes('已加密儲存')); assert(form.hidden);
+  queue.push(health('verified')); await intervals[0]();
+  assert.strictEqual(nodes['notice-credentials-progress'].textContent, '登入驗證成功'); assert(!form.hidden); assert(!send.disabled);
+  queue.push(response(403)); await submit(); assert(feedback.textContent.includes('管理密碼')); assert(!send.disabled);
+  queue.push(new Error('fixture offline')); await submit();
+  assert(feedback.textContent.includes('尚無法確認傳送結果')); assert(form.hidden); assert(send.disabled);
+  queue.push(health('')); nodes['notice-credentials-refresh'].handlers.click(); await flush(); assert(!form.hidden); assert(!send.disabled);
+  queue.push(response(409)); await submit(); assert(feedback.textContent.includes('無須重複傳送')); assert(form.hidden);
+  queue.push(health('')); await intervals[0](); assert(!form.hidden);
+  let resolveHealth;
+  queue.push(new Promise(resolve => {resolveHealth = resolve;})); const stale = intervals[0]();
+  queue.push(response(200, {ok: true, notice_credentials: view('pending')})); await submit();
+  resolveHealth(health('')); await stale; assert(form.hidden, 'older health response undid a successful send');
+  process.stdout.write(JSON.stringify({scenarios: 8, safe: true}));
+})().catch(error => {process.stderr.write(error.stack); process.exitCode = 1;});
+"""
+        result = subprocess.run([shutil.which("node"), "-e", script],
+                                input=json.dumps(source.group(1).removesuffix("</script>")),
+                                text=True, encoding="utf-8", capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"scenarios": 8, "safe": True})
+
     def test_notice_password_requires_admin_csrf_origin_and_does_not_overwrite_active_request(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         os.environ["WORKER_TOKEN"] = "fixture-worker-envelope-key-32-characters"

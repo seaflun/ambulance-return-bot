@@ -2001,8 +2001,8 @@ def admin_sinposmart_notice_credentials():
         abort(413)
     _require_remote_update_admin_auth()
     try:
-        create_notice_credentials_command(str(request.form.get("workstation") or ""),
-                                          str(request.form.get("password") or ""))
+        command = create_notice_credentials_command(str(request.form.get("workstation") or ""),
+                                                    str(request.form.get("password") or ""))
     except FileExistsError:
         return "已有待接收或待驗證的通報密碼，請等待目前請求完成。", 409
     except CredentialEnvelopeError:
@@ -2011,6 +2011,10 @@ def admin_sinposmart_notice_credentials():
         return "通報密碼或目標電腦格式不符，未變更原有設定。", 400
     except OSError:
         return "通報密碼無法安全排入待送，請稍後重試。", 503
+    if request.accept_mimetypes.best == "application/json":
+        response = jsonify(ok=True, notice_credentials=notice_credentials_admin_view(command["workstation"]))
+        response.headers["Cache-Control"] = "no-store"
+        return response
     return redirect(url_for("admin_sinposmart", _anchor="notice-remote-credentials"))
 
 

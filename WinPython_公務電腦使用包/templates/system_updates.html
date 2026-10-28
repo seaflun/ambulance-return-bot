@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.28.1610">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.28.1610') }}</p>
+          <h2 class="update-card__title">通報密碼傳送回饋與進度更新</h2>
+        </div>
+        <span class="update-card__versions">2026.10.28.1610</span>
+      </header>
+      <ul class="update-card__items">
+        <li>按下傳送立即顯示傳送中、成功或錯誤提示，避免操作後沒有任何回應。</li>
+        <li>已有待接收或待驗證的密碼時，顯示原請求編號、最後更新與重新整理進度；完成後自動恢復修改入口。</li>
+        <li>連線逾時先查詢進度，保留既有加密請求並防止重複傳送；同步收錄值班台 1610 的內網傳輸修正說明。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.28.1314">
       <header class="update-card__heading">
         <div>

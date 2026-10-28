@@ -368,19 +368,26 @@
       </nav>
     {% endif %}
 
-    <details class="section" id="notice-remote-credentials" aria-label="遠端修改通報密碼">
-      <summary class="section-head"><h2 class="section-title">通報密碼</h2><span class="section-note" data-health-field="notice_credentials.status_label">{{ notice_remote_credentials.status_label }}</span></summary>
+    {% set notice_credentials_active = notice_remote_credentials.status in ['pending', 'stored'] %}
+    <details class="section" id="notice-remote-credentials" aria-label="遠端修改通報密碼" data-enabled="{{ 'true' if duty_gui_remote_update_enabled else 'false' }}" data-status="{{ notice_remote_credentials.status or '' }}" data-workstation="{{ notice_remote_credentials.workstation }}"{% if notice_remote_credentials.request_id %} open{% endif %}>
+      <summary class="section-head"><h2 class="section-title">通報密碼</h2><span class="section-note" id="notice-credentials-label">{{ notice_remote_credentials.status_label }}</span></summary>
       <div class="event-card">
         <div class="event-detail">目標電腦：{{ notice_remote_credentials.workstation or '尚未收到電腦回報' }}</div>
         <p>輸入新密碼後，值班台會加密儲存並驗證登入。驗證成功後，自動恢復通報收取。</p>
-        {% if notice_remote_credentials.updated_at %}<div class="event-detail">最後更新：{{ event_datetime_label(notice_remote_credentials.updated_at) }}</div>{% endif %}
-        <form method="post" action="{{ url_for('admin_sinposmart_notice_credentials') }}" autocomplete="off">
+        <p id="notice-credentials-progress" role="status" aria-live="polite">{% if notice_remote_credentials.status == 'pending' %}新密碼已排入待送，等待公務電腦接收；尚未儲存或完成驗證。{% elif notice_remote_credentials.status == 'stored' %}公務電腦已加密儲存，等待登入驗證；請勿重複傳送。{% else %}{{ notice_remote_credentials.status_label }}{% endif %}</p>
+        <div class="event-detail" id="notice-credentials-request">{% if notice_remote_credentials.request_id %}請求編號：{{ notice_remote_credentials.request_id }}{% endif %}</div>
+        <div class="event-detail" id="notice-credentials-updated">{% if notice_remote_credentials.updated_at %}最後更新：{{ event_datetime_label(notice_remote_credentials.updated_at) }}{% endif %}</div>
+        <button class="button" id="notice-credentials-refresh" type="button">重新整理進度</button>
+        <p id="notice-credentials-feedback" role="status" aria-live="polite"></p>
+        <form id="notice-credentials-form" method="post" action="{{ url_for('admin_sinposmart_notice_credentials') }}" autocomplete="off"{% if notice_credentials_active %} hidden{% endif %}>
           <input type="hidden" name="csrf_token" value="{{ remote_update_csrf_token }}">
           <input type="hidden" name="workstation" value="{{ notice_remote_credentials.workstation }}">
           <label>新通報密碼 <input type="password" name="password" autocomplete="new-password" maxlength="256" required></label>
           <label>管理密碼 <input type="password" name="admin_token" autocomplete="off" required></label>
-          <button class="button" type="submit"{% if not duty_gui_remote_update_enabled or not notice_remote_credentials.workstation or notice_remote_credentials.status in ['pending', 'stored'] %} disabled{% endif %}>傳送並驗證</button>
+          <button class="button" id="notice-credentials-submit" type="submit"{% if not duty_gui_remote_update_enabled or not notice_remote_credentials.workstation %} disabled{% endif %}>傳送並驗證</button>
         </form>
+        {% if not duty_gui_remote_update_enabled %}<p>後台管理驗證尚未設定，暫時無法傳送。</p>{% elif not notice_remote_credentials.workstation %}<p>等待公務電腦回報後才能傳送。</p>{% endif %}
+        <noscript><p>已關閉 JavaScript；傳送後會重新載入頁面，請重新整理網頁查看後續進度。</p></noscript>
         <div class="event-detail">密碼不會回顯；電腦確認儲存後清除待送內容。24 小時未完成會自動過期；驗證失敗時維持登入保護。</div>
       </div>
     </details>
@@ -781,6 +788,70 @@
       const stamp = value => value ? String(value).replace("T", " ").replace(/\+08:00$/, "") : "";
       const clock = value => { const text = stamp(value); return text[10] === " " ? text.slice(11, 19) : text; };
       const checkStamp = (value, day) => { const text = stamp(value); return text.startsWith(day + " ") ? clock(value) : text; };
+      const credentials = document.getElementById("notice-remote-credentials");
+      const credentialForm = document.getElementById("notice-credentials-form");
+      const credentialSubmit = document.getElementById("notice-credentials-submit");
+      const credentialRefresh = document.getElementById("notice-credentials-refresh");
+      const credentialFeedback = document.getElementById("notice-credentials-feedback");
+      let credentialSubmitting = false, credentialUncertain = false, credentialRevision = 0;
+      function refreshNoticeCredentials(view) {
+        if (!credentials || !view || typeof view.workstation !== "string" || typeof view.status_label !== "string") return;
+        const active = ["pending", "stored"].includes(view.status);
+        credentials.dataset.status = view.status || "";
+        credentials.dataset.workstation = view.workstation;
+        credentialForm.elements.workstation.value = view.workstation;
+        document.getElementById("notice-credentials-label").textContent = view.status_label;
+        document.getElementById("notice-credentials-progress").textContent = view.status === "pending"
+          ? "新密碼已排入待送，等待公務電腦接收；尚未儲存或完成驗證。"
+          : view.status === "stored" ? "公務電腦已加密儲存，等待登入驗證；請勿重複傳送。" : view.status_label;
+        document.getElementById("notice-credentials-request").textContent = view.request_id ? "請求編號：" + view.request_id : "";
+        document.getElementById("notice-credentials-updated").textContent = view.updated_at ? "最後更新：" + stamp(view.updated_at) : "";
+        credentialForm.hidden = active || credentialUncertain;
+        credentialSubmit.disabled = credentialSubmitting || active || credentialUncertain || credentials.dataset.enabled !== "true" || !view.workstation;
+        if (active) credentials.open = true;
+      }
+      if (credentialForm) credentialForm.addEventListener("submit", async event => {
+        event.preventDefault();
+        if (credentialSubmitting || credentialSubmit.disabled) return;
+        credentialSubmitting = true;
+        credentialRevision += 1;
+        credentialSubmit.disabled = true;
+        credentialSubmit.textContent = "傳送中…";
+        credentialFeedback.textContent = "正在安全傳送，請稍候…";
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        try {
+          const response = await fetch(credentialForm.action, {method: "POST", body: new FormData(credentialForm),
+            headers: {Accept: "application/json"}, credentials: "same-origin", cache: "no-store", signal: controller.signal});
+          if (!response.ok) {
+            credentialUncertain = response.status === 409 || response.status >= 500;
+            const messages = {400: "密碼或目標電腦格式不符，請確認後再傳送。", 403: "管理密碼或頁面驗證失敗，請確認管理密碼；必要時重新載入頁面。",
+              409: "已有待接收或待驗證的請求，請重新整理進度，無須重複傳送。"};
+            credentialFeedback.textContent = messages[response.status] || "無法確認傳送結果，請先重新整理進度，再決定是否重送。";
+            return;
+          }
+          const result = await response.json();
+          if (result.ok !== true || !result.notice_credentials || !result.notice_credentials.request_id) throw new Error("invalid_receipt");
+          credentialForm.elements.password.value = "";
+          credentialForm.elements.admin_token.value = "";
+          refreshNoticeCredentials(result.notice_credentials);
+          credentialFeedback.textContent = "已送至 NAS，請查看上方接收與驗證進度。";
+        } catch (_) {
+          credentialUncertain = true;
+          credentialFeedback.textContent = "連線中斷或等候逾時，尚無法確認傳送結果。請先重新整理進度，避免重複傳送。";
+        } finally {
+          clearTimeout(timeout);
+          credentialSubmitting = false;
+          credentialSubmit.textContent = "傳送並驗證";
+          const active = ["pending", "stored"].includes(credentials.dataset.status);
+          credentialForm.hidden = active || credentialUncertain;
+          credentialSubmit.disabled = active || credentialUncertain || credentials.dataset.enabled !== "true" || !credentials.dataset.workstation;
+        }
+      });
+      if (credentialRefresh) credentialRefresh.addEventListener("click", () => {
+        credentialFeedback.textContent = "正在取得最新接收與驗證進度…";
+        refreshHealth();
+      });
       function refreshNotice(view) {
         if (!notice) return;
         if (!view || !Array.isArray(view.records) || !Array.isArray(view.history)) throw new Error("invalid_notice");
@@ -868,6 +939,8 @@
       async function refreshHealth() {
         if (inFlight) return;
         inFlight = true;
+        const revision = credentialRevision;
+        if (credentialRefresh) credentialRefresh.disabled = true;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
         try {
@@ -887,8 +960,14 @@
             const value = health[node.dataset.healthStatus].status_class;
             node.className = "status " + (["complete", "failed", "running", "attention"].includes(value) ? value : "");
           });
+          if (revision === credentialRevision && !credentialSubmitting) {
+            credentialUncertain = false;
+            refreshNoticeCredentials(health.notice_credentials);
+            if (credentialFeedback && credentialFeedback.textContent === "正在取得最新接收與驗證進度…") credentialFeedback.textContent = "進度已更新。";
+          }
           refreshNotice(health.notice_collection);
         } catch (_) {
+          if (credentialFeedback) credentialFeedback.textContent = "暫時無法取得最新進度，以上為最後回報；請稍後重新整理。";
           if (notice) {
             const status = document.getElementById("notice-status");
             status.textContent = "通報狀態待確認／重新連線中";
@@ -908,6 +987,7 @@
         } finally {
           clearTimeout(timeout);
           inFlight = false;
+          if (credentialRefresh) credentialRefresh.disabled = false;
         }
       }
       setInterval(refreshHealth, 10000);
