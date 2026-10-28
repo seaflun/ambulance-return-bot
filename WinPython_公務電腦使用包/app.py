@@ -300,7 +300,7 @@ SITE_DISPLAY_NAMES = {
     "fuel_record": "加油",
     "consumables": "耗材",
     "disinfection": "消毒",
-    "volunteer_assist": "民力系統",
+    "volunteer_assist": "民力",
 }
 SITE_UPDATE_BUTTON_LABELS = {
     "duty_work_log": "更新工作",

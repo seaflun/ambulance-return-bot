@@ -11074,7 +11074,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         task = self.store.get(task_id)["task"]
         self.assertTrue(task["volunteer_assist"])
         self.assertEqual("測試義消", task["volunteer_assist_member_name"])
-        self.assertEqual("民力系統", app_module.SITE_DISPLAY_NAMES["volunteer_assist"])
+        self.assertEqual("民力", app_module.SITE_DISPLAY_NAMES["volunteer_assist"])
         self.assertEqual("民力系統", app_module.event_site_name({"status": "volunteer_assist_saved"}))
         detail_body = html.unescape(self.client.get(f"/tasks/{task_id}").data.decode("utf-8"))
         self.assertIn("<h3>民力系統</h3>", detail_body)

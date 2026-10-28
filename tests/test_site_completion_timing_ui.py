@@ -82,7 +82,7 @@ class SiteCompletionTimingUiTests(unittest.TestCase):
         cards, _ = self.render(dict(duty_work_log=29, vehicle_mileage=33, consumables=32,
                                     disinfection=34, fuel_record=12, volunteer_assist=70), include_optional=True)
         self.assertEqual("完成耗時 約 12 秒", cards["加油完成耗時"])
-        self.assertEqual("完成耗時 約 70 秒", cards["民力系統完成耗時"])
+        self.assertEqual("完成耗時 約 70 秒", cards["民力完成耗時"])
 
     def test_missing_history_is_unrecorded_and_zero_seconds_remains_visible(self):
         cards, _ = self.render(dict(duty_work_log=0, vehicle_mileage=None, consumables=None, disinfection=None))
