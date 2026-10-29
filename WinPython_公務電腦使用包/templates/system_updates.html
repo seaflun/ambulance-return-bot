@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.29.1919">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.29.1919') }}</p>
+          <h2 class="update-card__title">勤務表當次附記與驗證狀態</h2>
+        </div>
+        <span class="update-card__versions">2026.10.29.1919</span>
+      </header>
+      <ul class="update-card__items">
+        <li>值班後台於同一次勤務表登打紀錄內顯示附記，保留原有摺疊版面。</li>
+        <li>附記分別標示已驗證或待確認；後續編組失敗不會抹掉已完成的附記驗證。</li>
+        <li>只顯示該次回報且日期相符的資料；舊紀錄與畸形資料不推補，值班台更新歷程同步更新。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.29.0853">
       <header class="update-card__heading">
         <div>

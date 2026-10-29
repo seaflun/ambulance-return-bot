@@ -6977,6 +6977,117 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
                 event = next(event for event in stored["events"] if event["event_id"] == f"duty-context-{index}")
                 self.assertEqual(event["snapshot"].get("target_date"), context.get("target_date"))
 
+    def test_sinposmart_duty_annotation_roundtrip_is_complete_escaped_and_run_scoped(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        day = datetime.now().date().isoformat()
+        text = '02帶隊官，20、22TP訓 <script>alert("annotation")</script>，' + "長附記" * 450
+        report = {"text": text, "verification": "verified", "target_date": "2026/10/30", "deduction_count": 1}
+        for index, (run_id, annotation) in enumerate((("annotation-run", report), ("legacy-run", None))):
+            snapshot = {"tool_name": "duty_sheet", "run_id": run_id, "target_date": "2026/10/30"}
+            if annotation is not None:
+                snapshot["duty_annotation"] = annotation
+            response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                "event_id": f"annotation-roundtrip-{index}", "occurred_at": f"{day}T17:45:00",
+                "record_type": "tool_action_finished", "status": "failed", "error": "後續任務編組失敗",
+                "snapshot": snapshot})
+            self.assertEqual(response.status_code, 200)
+        stored = app_module.sinposmart_store().read_day(day)
+        event = next(event for event in stored["events"] if event["event_id"] == "annotation-roundtrip-0")
+        self.assertEqual(event["snapshot"]["duty_annotation"], report)
+        cards = {card["event_id"]: card for card in stored["admin_view"]["tool_events"]}
+        self.assertEqual(cards["annotation-roundtrip-0"]["duty_sheet_summary"]["annotation"]["text"], text)
+        self.assertEqual(cards["annotation-roundtrip-0"]["status_class"], "failed")
+        self.assertNotIn("annotation", cards["annotation-roundtrip-1"]["duty_sheet_summary"])
+        body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn(text, html.unescape(body))
+        self.assertIn("&lt;script&gt;", body)
+        self.assertNotIn('<script>alert("annotation")</script>', body)
+        self.assertIn("附記已驗證", body)
+        self.assertIn('<details class="section" aria-label="使用工具">', body)
+        self.assertNotIn('<details class="section" aria-label="使用工具" open>', body)
+
+    def test_sinposmart_duty_annotation_prepared_remains_unverified(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        day = datetime.now().date().isoformat()
+        response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+            "event_id": "annotation-prepared", "occurred_at": f"{day}T17:45:00",
+            "record_type": "tool_action_finished", "status": "failed", "error": "附記讀回不一致",
+            "snapshot": {"tool_name": "duty_sheet", "run_id": "prepared-run", "target_date": "2026/10/30",
+                         "duty_annotation": {"text": "02帶隊官，20、22TP訓", "verification": "prepared",
+                                             "target_date": "2026/10/30", "deduction_count": 1}}})
+        self.assertEqual(response.status_code, 200)
+        body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertIn("02帶隊官，20、22TP訓", body)
+        self.assertIn("附記待確認", body)
+        self.assertNotIn("附記已驗證", body)
+
+    def test_sinposmart_duty_annotation_rejects_malformed_or_mismatched_reports(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        day = datetime.now().date().isoformat()
+        valid = {"text": "不應顯示的附記", "verification": "verified", "target_date": "2026/10/30", "deduction_count": 1}
+        cases = [None, "not-a-report", {**valid, "text": []}, {**valid, "text": "字" * 8001},
+                 {**valid, "verification": "success"}, {**valid, "verification": []}, {**valid, "deduction_count": True},
+                 {**valid, "deduction_count": -1}, {**valid, "target_date": "2026/10/31"},
+                 {**valid, "target_date": "bad-date"}]
+        for index, report in enumerate(cases):
+            with self.subTest(report=report if index != 3 else "oversize"):
+                response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                    "event_id": f"invalid-annotation-{index}", "occurred_at": f"{day}T17:45:00",
+                    "record_type": "tool_action_finished", "status": "completed",
+                    "snapshot": {"tool_name": "duty_sheet", "run_id": f"invalid-run-{index}", "target_date": "2026/10/30",
+                                 "duty_annotation": report}})
+                self.assertEqual(response.status_code, 200)
+                stored = app_module.sinposmart_store().read_day(day)
+                event = next(event for event in stored["events"] if event["event_id"] == f"invalid-annotation-{index}")
+                self.assertEqual(event["snapshot"]["duty_annotation"], {})
+        body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertNotIn("不應顯示的附記", body)
+        self.assertNotIn("附記已驗證", body)
+
+    def test_sinposmart_duty_annotation_rechecks_size_after_full_redaction(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        day = datetime.now().date().isoformat()
+        for index, (suffix_length, accepted) in enumerate(((7990, True), (7992, False))):
+            with self.subTest(suffix_length=suffix_length):
+                text = "token=x " + "Z" * suffix_length
+                response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                    "event_id": f"redacted-annotation-{index}", "occurred_at": f"{day}T17:45:00",
+                    "record_type": "tool_action_finished", "status": "completed", "snapshot": {
+                        "tool_name": "duty_sheet", "run_id": f"redacted-run-{index}", "target_date": "2026/10/30",
+                        "duty_annotation": {"text": text, "verification": "verified", "target_date": "2026/10/30",
+                                            "deduction_count": 1}}})
+                self.assertEqual(response.status_code, 200)
+                stored = app_module.sinposmart_store().read_day(day)
+                event = next(event for event in stored["events"] if event["event_id"] == f"redacted-annotation-{index}")
+                report = event["snapshot"]["duty_annotation"]
+                if accepted:
+                    self.assertEqual(report["text"], "token=*** " + "Z" * suffix_length)
+                    self.assertEqual(len(report["text"]), 8000)
+                    self.assertEqual(report["verification"], "verified")
+                else:
+                    self.assertEqual(report, {})
+
+    def test_sinposmart_duty_annotation_requires_its_terminal_duty_run(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        day = datetime.now().date().isoformat()
+        report = {"text": "不應顯示的附記", "verification": "verified", "target_date": "2026/10/30", "deduction_count": 1}
+        for index, (record_type, context) in enumerate((
+            ("tool_action_started", {"tool_name": "duty_sheet", "run_id": "started-run"}),
+            ("tool_action_finished", {"tool_name": "duty_sheet", "run_id": ""}),
+            ("tool_action_finished", {"tool_name": "daily_vehicle", "run_id": "other-tool"}),
+            ("tool_action_finished", {"tool_name": "duty_sheet", "run_id": "missing-date", "target_date": ""}),
+        )):
+            with self.subTest(record_type=record_type, context=context):
+                response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+                    "event_id": f"unscoped-annotation-{index}", "occurred_at": f"{day}T17:45:00", "record_type": record_type,
+                    "status": "completed", "snapshot": {"target_date": "2026/10/30", "duty_annotation": report, **context}})
+                self.assertEqual(response.status_code, 200)
+                stored = app_module.sinposmart_store().read_day(day)
+                event = next(event for event in stored["events"] if event["event_id"] == f"unscoped-annotation-{index}")
+                self.assertEqual(event["snapshot"]["duty_annotation"], {})
+        body = self.client.get("/admin/sinposmart").data.decode("utf-8")
+        self.assertNotIn("不應顯示的附記", body)
+
     def test_sinposmart_daily_vehicle_api_persists_and_renders_verified_rows(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         day = datetime.now().date().isoformat()

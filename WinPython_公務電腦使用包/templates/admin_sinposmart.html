@@ -604,6 +604,10 @@
             {% endif %}
             {% if event.duty_sheet_summary %}
               <div class="event-detail">檔案：{{ event.duty_sheet_summary.workbook_name }}｜登打日期：{{ event.duty_sheet_summary.target_date }}｜執行模式：{{ event.duty_sheet_summary.mode_label }}</div>
+              {% if event.duty_sheet_summary.annotation %}
+                {% set annotation = event.duty_sheet_summary.annotation %}
+                <div class="event-detail duty-annotation"><span class="status {{ annotation.status_class }}">{{ annotation.verification_label }}</span> 附記：{{ annotation.text or '無' }}</div>
+              {% endif %}
             {% endif %}
             {% if event.preflight_checks %}
               <details class="event-detail rescue-video-checks">

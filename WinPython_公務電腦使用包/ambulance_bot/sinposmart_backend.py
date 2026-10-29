@@ -909,7 +909,26 @@ def sinposmart_elapsed_label(seconds: int) -> str:
     return f"{minutes} 分鐘"
 
 
-def sinposmart_duty_sheet_summary(event: dict[str, Any]) -> dict[str, str]:
+def sanitize_duty_annotation(value: Any, *, expected_date: str | None = None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    text, verification = value.get("text"), value.get("verification")
+    count, raw_date = value.get("deduction_count"), value.get("target_date")
+    target_date = parse_sinposmart_snapshot_date(raw_date.replace("/", "-")) if isinstance(raw_date, str) else None
+    if (not isinstance(text, str) or len(text) > 8000 or not isinstance(verification, str)
+            or verification not in {"prepared", "verified"}
+            or type(count) is not int or count < 0 or target_date is None):
+        return {}
+    if expected_date is not None and target_date != parse_sinposmart_snapshot_date(expected_date.replace("/", "-")):
+        return {}
+    text = SENSITIVE_TEXT_PATTERN.sub(r"\1=***", text.replace("\x00", "").strip())
+    if len(text) > 8000:
+        return {}
+    return {"text": text, "verification": verification,
+            "target_date": target_date.strftime("%Y/%m/%d"), "deduction_count": count}
+
+
+def sinposmart_duty_sheet_summary(event: dict[str, Any]) -> dict[str, Any]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
     if sanitize_scalar(snapshot.get("tool_name"), 120) != "duty_sheet":
         return {}
@@ -917,11 +936,19 @@ def sinposmart_duty_sheet_summary(event: dict[str, Any]) -> dict[str, str]:
     raw_date = sanitize_scalar(snapshot.get("target_date"), 40)
     target_date = parse_sinposmart_snapshot_date(raw_date.replace("/", "-"))
     mode_label = {"manual": "手動", "automatic": "自動"}.get(sanitize_scalar(snapshot.get("execution_mode"), 40), "未知")
-    return {
+    summary = {
         "workbook_name": workbook_name or "未知",
         "target_date": target_date.strftime("%Y/%m/%d") if target_date else "未知",
         "mode_label": mode_label,
     }
+    annotation = sanitize_duty_annotation(snapshot.get("duty_annotation"), expected_date=raw_date)
+    if event.get("record_type") == "tool_action_finished" and snapshot.get("run_id") and annotation:
+        summary["annotation"] = {
+            **annotation,
+            "verification_label": "附記已驗證" if annotation["verification"] == "verified" else "附記待確認",
+            "status_class": "complete" if annotation["verification"] == "verified" else "attention",
+        }
+    return summary
 
 
 def sinposmart_rescue_video_state(event: dict[str, Any]) -> dict[str, str]:
@@ -2753,6 +2780,12 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
         event["snapshot"]["daily_vehicle_report"] = sanitize_daily_vehicle_report(
             raw_snapshot["daily_vehicle_report"], expected_date=sinposmart_daily_vehicle_target_date(event)
         )
+    if isinstance(raw_snapshot, dict) and "duty_annotation" in raw_snapshot:
+        eligible = (record_type == "tool_action_finished" and snapshot.get("tool_name") == "duty_sheet"
+                    and isinstance(raw_snapshot.get("run_id"), str) and bool(raw_snapshot["run_id"].strip()))
+        event["snapshot"]["duty_annotation"] = sanitize_duty_annotation(
+            raw_snapshot["duty_annotation"], expected_date=sanitize_scalar(snapshot.get("target_date"), 40)
+        ) if eligible else {}
     if record_type == "login_failed" or (record_type == "error" and event["trigger_type"] == "login"):
         event["content"] = sanitize_login_text(raw_event.get("content"), 1200)
         event["error"] = sanitize_login_text(raw_event.get("error"), 1200)
@@ -3149,6 +3182,8 @@ def sanitize_value(value: Any, depth: int = 0) -> Any:
                 clean[key_text] = sanitize_login_diagnostic(item)
             elif key_text == "daily_vehicle_report":
                 clean[key_text] = sanitize_daily_vehicle_report(item)
+            elif key_text == "duty_annotation":
+                clean[key_text] = sanitize_duty_annotation(item)
             else:
                 clean[key_text[:80]] = sanitize_value(item, depth + 1)
         return clean
