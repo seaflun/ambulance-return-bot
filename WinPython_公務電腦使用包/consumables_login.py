@@ -32,6 +32,7 @@ from ambulance_bot.login_audit import CONSUMABLES_LOGIN_PRIORITY_LABEL, credenti
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm, vehicle_ppe_names
 from ambulance_bot.profile_paths import runtime_profile_dir
+from ambulance_bot.site_diagnostics import track_site_execution
 from ambulance_bot.task_cancellation import TaskCancellationError
 from ambulance_bot.update_safety import ManualUpdateRequiredError, manual_update_reason
 from ambulance_bot.vehicle_reconciliation import VehicleCandidateLookupError
@@ -79,6 +80,7 @@ def _distribute_consumables(consumables: dict[str, int], page_count: int) -> lis
     return allocations
 
 
+@track_site_execution("consumables")
 def login_acs_and_get_driver(
     profile_name: str = "consumables_profile",
     debugger_port: int | None = None,
@@ -124,6 +126,7 @@ def login_acs_and_get_driver(
         raise RuntimeError(augment_failure_detail(str(exc), evidence)) from exc
 
 
+@track_site_execution("consumables")
 def open_consumable_record_for_task(
     driver: webdriver.Chrome,
     task: dict[str, object] | AmbulanceReturnRequest,

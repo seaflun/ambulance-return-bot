@@ -33,7 +33,7 @@ class MileageStageDisplayTests(unittest.TestCase):
 
     def test_unrecognized_historical_progress_does_not_borrow_latest_success(self):
         row = web.public_pc_event_rows(self.report("公務電腦 worker 車輛里程：尚無可識別的步驟"))[0]
-        self.assertEqual("里程｜階段未判定｜執行中", row["action"])
+        self.assertEqual("里程｜執行中", row["action"])
         self.assertEqual("vehicle_mileage_running", row["status"])
 
     def test_desktop_emits_mileage_group_transitions_for_the_actual_progress_messages(self):

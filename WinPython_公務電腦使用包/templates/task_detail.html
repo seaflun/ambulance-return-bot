@@ -734,6 +734,7 @@
       <div class="stage-grid">
         {% for site_key, title in task_site_display_pairs(payload.task, payload.site_statuses) %}
           {% set stage_rows = site_stage_rows(payload.site_statuses, site_key) %}
+          {% if stage_rows %}
           <article class="stage-card{% if site_key == 'volunteer_assist' %} civilpower-stage-card{% else %} compact-stage-card{% endif %}">
             <h3>{{ title }}</h3>
             {% if site_key == 'volunteer_assist' %}
@@ -778,6 +779,7 @@
               </details>
             {% endif %}
           </article>
+          {% endif %}
         {% endfor %}
       </div>
     </section>

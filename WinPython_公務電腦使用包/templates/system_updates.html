@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.29.2104">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.29.2104') }}</p>
+          <h2 class="update-card__title">執行端直接保留實際斷點</h2>
+        </div>
+        <span class="update-card__versions">2026.10.29.2104</span>
+      </header>
+      <ul class="update-card__items">
+        <li>工作、里程、耗材、消毒與民力由執行端直接保留實際步驟，進度傳送失敗時仍能回報真正斷點。</li>
+        <li>歷史紀錄缺少步驟資料時省略階段列，保留錯誤原因，不再顯示占位文字或推測後續步驟。</li>
+        <li>設定檢查、平行執行與取消均保留原有行為；網路錯誤仍依實際 Chrome 錯誤碼分類。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.29.2022">
       <header class="update-card__heading">
         <div>

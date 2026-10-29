@@ -20,6 +20,7 @@ from ambulance_bot.duty_credentials import DutyCredential, load_duty_credential,
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest
 from ambulance_bot.profile_paths import runtime_profile_dir
+from ambulance_bot.site_diagnostics import track_site_execution
 from ambulance_bot.task_cancellation import TaskCancellationError
 from ambulance_bot.window_layout import apply_tile
 
@@ -53,6 +54,7 @@ def wait_until_logged_in(driver: webdriver.Chrome, timeout: int = 15) -> None:
     wait.until(login_completed)
 
 
+@track_site_execution("disinfection")
 def login_and_get_driver(
     request: AmbulanceReturnRequest | None = None,
     profile_name: str = "disinfection_profile",

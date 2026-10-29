@@ -145,6 +145,7 @@ from ambulance_bot.site_diagnostics import (
     UNKNOWN_FAILURE_STAGE,
     BROWSER_STAGE_CATEGORIES,
     browser_failure_stage_from_events,
+    execution_stage_from_detail,
     civilpower_stage_from_detail,
     merge_diagnostic_fields,
     site_stage_from_detail,
@@ -7086,11 +7087,16 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
     diagnostic = site_diagnostic(site)
     focus_stage = diagnostic.get("failure_stage") or ""
     stages = SITE_STAGE_DEFINITIONS.get(site_key, [])
-    if site_key == "volunteer_assist":
+    runtime_stage = execution_stage_from_detail(site_key, str(site.get("detail") or ""))
+    if runtime_stage:
+        focus_stage = runtime_stage
+    elif site_key == "volunteer_assist":
         focus_stage = civilpower_stage_from_detail(str(site.get("detail") or "")) or focus_stage
     else:
         focus_stage = site_stage_from_detail(site_key, str(site.get("detail") or "")) or focus_stage
     focus_index = stages.index(focus_stage) if focus_stage in stages else -1
+    if current_class == "failed" and focus_index < 0:
+        return [{"name": focus_stage, "state": "失敗點", "class": "failed"}] if focus_stage else []
     rows: list[dict[str, str]] = []
     for index, stage in enumerate(stages):
         if current_class == "complete":
@@ -7130,8 +7136,6 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
             state = "未執行"
             state_class = "idle"
         rows.append({"name": stage, "state": state, "class": state_class})
-    if current_class == "failed" and focus_stage == UNKNOWN_FAILURE_STAGE:
-        rows.insert(0, {"name": UNKNOWN_FAILURE_STAGE, "state": "失敗點", "class": "failed"})
     return rows
 
 
@@ -7142,8 +7146,12 @@ def site_stage_summary_rows(site_statuses: dict, site_key: str) -> list[dict[str
         for stage in site_stage_rows(site_statuses, site_key)
     }
     summaries: list[dict[str, str]] = []
-    if site_class == "failed" and UNKNOWN_FAILURE_STAGE in rows_by_name:
-        summaries.append({"name": UNKNOWN_FAILURE_STAGE, "detail": "", "state": "失敗點", "class": "failed"})
+    if not rows_by_name:
+        return []
+    standalone = next((row for row in rows_by_name.values()
+                       if row["class"] == "failed" and row["name"] not in SITE_STAGE_DEFINITIONS.get(site_key, ())), None)
+    if standalone:
+        return [dict(standalone, detail="")]
     for group_name, group_stage_names in SITE_STAGE_GROUPS.get(site_key, ()):
         group_rows = [
             rows_by_name[stage_name]
@@ -8366,6 +8374,9 @@ def public_pc_report_display_events(report: dict, *, chronological: bool = False
 
 def _public_pc_report_display_events(report: dict) -> list[dict]:
     events = [dict(event) for event in report.get("events") or [] if isinstance(event, dict)]
+    for event in events:
+        if event.get("failure_stage") == "階段未判定":
+            event["failure_stage"] = ""
     history: list[dict] = []
     for event in sorted(events, key=_public_pc_event_time):
         status = str(event.get("status") or "")
@@ -8375,7 +8386,7 @@ def _public_pc_report_display_events(report: dict) -> list[dict]:
                 site_key, status, str(event.get("detail") or ""), history,
                 vehicle_key=str(event.get("vehicle_key") or ""),
             )
-            if stage:
+            if stage or site_diagnostic({"key": site_key, "status": status, "detail": str(event.get("detail") or "")}).get("exception_type") in BROWSER_STAGE_CATEGORIES:
                 event["failure_stage"] = stage
                 snapshots = event.get("failure_sites")
                 if isinstance(snapshots, Mapping) and isinstance(snapshots.get(site_key), Mapping):
@@ -8547,9 +8558,9 @@ def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
         source = {**source, "key": site_key}
         diagnostic = site_diagnostic(source)
         stage = site_active_stage_summary({site_key: source}, site_key)
-        stage_text = stage.get("detail") or diagnostic.get("failure_stage") or "未判定"
+        stage_text = stage.get("detail") or diagnostic.get("failure_stage") or ""
         if site_is_complete(source.get("status")):
-            stage_text = diagnostic.get("failure_stage") or "未記錄"
+            stage_text = diagnostic.get("failure_stage") or ""
         rows.append({
             "number": None if legacy else len(rows) + 1,
             "time": timestamp, "diagnostic": diagnostic,
@@ -8758,7 +8769,7 @@ def public_pc_event_rows(report: dict) -> list[dict]:
             if status == "desktop_fast_completed" and ("結果" in action or "成功" in action):
                 status = f"{site_key}_saved"
                 detail = f"{site_display_name(site_key)}登打完成。"
-            stage = (
+            stage = execution_stage_from_detail(site_key, detail) or (
                 civilpower_stage_from_detail(detail) if site_key == "volunteer_assist"
                 else site_stage_from_detail(site_key, detail)
             ) or str(event.get("failure_stage") or "")
@@ -8772,11 +8783,11 @@ def public_pc_event_rows(report: dict) -> list[dict]:
             elif not group:
                 diagnostic = site_diagnostic({"key": site_key, "status": status, "detail": detail})
                 stage = str(diagnostic.get("failure_stage") or "")
-                group = next((name for name, stages in groups if stage in stages), "階段未判定")
+                group = next((name for name, stages in groups if stage in stages), stage)
             state = lifecycle_state or {"complete": "已完成", "failed": "失敗", "waiting": "待確認", "running": "執行中"}.get(state_class, status_label(status))
             if "略過" in action:
                 state = "略過（已完成）" if state_class == "complete" else "略過"
-            event.update(action=f"{SITE_SHORT_NAMES[site_key]}｜{group}｜{state}", stage_group=group)
+            event.update(action="｜".join(part for part in (SITE_SHORT_NAMES[site_key], group, state) if part), stage_group=group)
             if any(word in action for word in ("單站", "重試", "手動")) and action not in detail:
                 detail = f"{action}。{detail}"
         elif status in task_stages:
@@ -8837,7 +8848,7 @@ def site_error_guidance(site_statuses: dict) -> list[dict[str, str]]:
                     "site_key": site_key,
                     "site_name": site_name,
                     "state": "失敗",
-                    "stage": active_stage.get("detail") or diagnostic.get("failure_stage") or "未判定",
+                    "stage": active_stage.get("detail") or diagnostic.get("failure_stage") or "",
                     "reason": diagnostic.get("failure_reason") or "程式回報此站未完成。",
                     "detail": site_display_detail(site),
                     "action": diagnostic.get("next_action") or site_next_action(site_key, status, detail),

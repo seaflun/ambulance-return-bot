@@ -309,7 +309,7 @@ class SiteDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["exception_type"], "web_renderer_timeout")
-        self.assertEqual(payload["failure_stage"], "階段未判定")
+        self.assertEqual(payload["failure_stage"], "")
         self.assertIn("網頁", payload["failure_reason"])
         self.assertNotIn("ChromeDriver 工作階段", payload["failure_reason"])
 
@@ -325,7 +325,7 @@ class SiteDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["exception_type"], "renderer_timeout_unverified")
-        self.assertEqual(payload["failure_stage"], "階段未判定")
+        self.assertEqual(payload["failure_stage"], "")
         self.assertIn("舊紀錄", payload["failure_reason"])
         self.assertIn("無法確定", payload["failure_reason"])
 
@@ -632,7 +632,7 @@ class SiteDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["exception_type"], "network_connection")
-        self.assertEqual(payload["failure_stage"], "階段未判定")
+        self.assertEqual(payload["failure_stage"], "")
         self.assertIn("連線", payload["failure_reason"])
 
     def test_fuel_card_not_found_is_not_classified_as_login_failure(self):

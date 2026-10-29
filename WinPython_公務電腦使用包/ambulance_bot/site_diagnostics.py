@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import re
+import inspect
 from dataclasses import is_dataclass, replace
+from functools import wraps
 from typing import Any
 
-from .adapters import SiteAutomationResult
+from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .failure_evidence import browser_network_error_code
+from .task_cancellation import TaskCancellationError
 
 
 DIAGNOSTIC_FIELDS = ("failure_stage", "failure_reason", "next_action", "exception_type")
-UNKNOWN_FAILURE_STAGE = "階段未判定"
+UNKNOWN_FAILURE_STAGE = ""
 BROWSER_STAGE_CATEGORIES = frozenset({
     "network_connection", "web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified",
 })
@@ -313,6 +316,8 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     }
 
     def value_for(field: str) -> str:
+        if field == "failure_stage" and site.get(field) == "階段未判定":
+            return str(computed[field])
         if (field == "failure_stage" and computed["exception_type"] in BROWSER_STAGE_CATEGORIES
                 and computed["failure_stage"] == UNKNOWN_FAILURE_STAGE):
             reported = str(site.get(field) or "")
@@ -329,12 +334,63 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     return merged if merged["failure_reason"] else {field: "" for field in DIAGNOSTIC_FIELDS}
 
 
+def execution_stage_from_detail(site_key: str, detail: str) -> str:
+    stages = set(re.findall(r"\[execution_stage:" + re.escape(site_key) + r":([^\]\r\n]{1,100})\]", detail))
+    return next(iter(stages)) if len(stages) == 1 else ""
+
+
+def _with_execution_stage(site_key: str, stage: str, detail: str) -> str:
+    detail = re.sub(r"\[execution_stage:" + re.escape(site_key) + r":[^\]\r\n]*\]", "", detail).rstrip()
+    return f"{detail} [execution_stage:{site_key}:{stage}]"
+
+
+def track_site_execution(site_key: str):
+    """Retain the executing step locally even when a progress delivery fails."""
+    def decorate(function):
+        signature = inspect.signature(function)
+        name = next(site.name for site in SITE_DEFINITIONS if site.key == site_key)
+
+        @wraps(function)
+        def tracked(*args, **kwargs):
+            arguments = signature.bind(*args, **kwargs)
+            callback = arguments.arguments.get("progress")
+            current_stage = "檢查執行設定"
+
+            def progress(stage):
+                nonlocal current_stage
+                current_stage = (civilpower_stage_from_detail(stage) if site_key == "volunteer_assist" else
+                                 site_stage_from_detail(site_key, f"本機快速 {name}：{stage}")) or str(stage).strip() or current_stage
+                if callback is not None:
+                    callback(stage)
+
+            arguments.arguments["progress"] = progress
+            try:
+                result = function(*arguments.args, **arguments.kwargs)
+            except TaskCancellationError:
+                raise
+            except Exception as exc:
+                exc._site_execution_key = site_key
+                exc._site_execution_stage = current_stage
+                raise
+            status = str(getattr(result, "status", ""))
+            if is_dataclass(result) and ("failed" in status or "error" in status):
+                result = replace(result, detail=_with_execution_stage(site_key, current_stage, result.detail))
+                if isinstance(result, SiteAutomationResult):
+                    result = replace(result, failure_stage=current_stage)
+            return result
+        return tracked
+    return decorate
+
+
 def browser_failure_stage_from_events(
     site_key: str, status: str, detail: str, events: list, *, vehicle_key: str = "",
 ) -> str:
     diagnosis = diagnostic_payload(site_key, status, detail)
     if diagnosis["exception_type"] not in BROWSER_STAGE_CATEGORIES:
         return ""
+    runtime_stage = execution_stage_from_detail(site_key, detail)
+    if runtime_stage:
+        return runtime_stage
     parse = (lambda text: civilpower_stage_from_detail(text)) if site_key == "volunteer_assist" else (
         lambda text: site_stage_from_detail(site_key, text))
     reported = parse(detail)
@@ -365,6 +421,11 @@ def result_with_diagnostics(
         field: str(getattr(result, field, "") or computed[field])
         for field in DIAGNOSTIC_FIELDS
     }
+    runtime_stage = execution_stage_from_detail(result.key, result.detail)
+    if runtime_stage:
+        values["failure_stage"] = runtime_stage
+    elif values["failure_stage"] == "階段未判定":
+        values["failure_stage"] = computed["failure_stage"]
     if not is_dataclass(result):
         for field, value in values.items():
             setattr(result, field, value)
@@ -382,6 +443,8 @@ def make_site_result(
     vehicle_candidates: tuple[dict[str, str], ...] = (),
     reconciliation_vehicle_key: str = "",
 ) -> SiteAutomationResult:
+    if getattr(exception, "_site_execution_key", "") == site_key:
+        detail = _with_execution_stage(site_key, exception._site_execution_stage, detail)
     return result_with_diagnostics(
         SiteAutomationResult(
             site_key,
@@ -557,6 +620,9 @@ def _is_invalid_argument_oserror(exception: BaseException | None, text: str) -> 
 
 
 def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
+    runtime_stage = execution_stage_from_detail(site_key, detail)
+    if runtime_stage:
+        return runtime_stage
     if site_key == "duty_work_log" and ("勤務紀錄已存在" in detail or "既有勤務內容未吻合任務" in detail):
         return "核對既有工作紀錄"
     if site_key == "duty_work_log" and "勤務紀錄新增前無法確認" in detail:

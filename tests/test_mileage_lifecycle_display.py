@@ -55,7 +55,7 @@ class MileageLifecycleDisplayTests(unittest.TestCase):
                 self.assertNotIn("準備登打", row["action"])
                 self.assertNotIn("已完成", row["action"])
         row = self.row(detail="未知里程步驟")
-        self.assertEqual("里程｜階段未判定｜執行中", row["action"])
+        self.assertEqual("里程｜執行中", row["action"])
 
     def test_real_captcha_and_nearby_queue_text_are_not_reclassified(self):
         queued = "後台重新送出車輛里程，已排入公務電腦處理。"

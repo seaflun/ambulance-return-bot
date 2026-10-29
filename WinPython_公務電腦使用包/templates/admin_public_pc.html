@@ -493,7 +493,7 @@
                           {% if failure.diagnostic.failure_reason %}
                             <div class="site-diagnostic" data-current-error="{{ 'true' if failure.current else 'false' }}">
                               <div class="site-diagnostic-title">{{ '錯誤指引' if failure.current else '當時錯誤' }}</div>
-                              <div><strong>{{ '未完成點' if failure.current else '失敗階段' }}</strong> {{ failure.stage }}</div>
+                              {% if failure.stage %}<div><strong>{{ '未完成點' if failure.current else '失敗階段' }}</strong> {{ failure.stage }}</div>{% endif %}
                               <div><strong>原因</strong> {{ failure.diagnostic.failure_reason }}</div>
                               {% if failure.current %}<div class="action"><strong>下一步</strong> {{ failure.diagnostic.next_action }}</div>{% endif %}
                             </div>

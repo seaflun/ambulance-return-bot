@@ -13,7 +13,7 @@ from ambulance_bot.task_store import JsonTaskStore
 
 class BrowserFailureStageTests(unittest.TestCase):
     def test_malformed_legacy_events_do_not_break_failure_reporting(self):
-        self.assertEqual("階段未判定", browser_failure_stage_from_events(
+        self.assertEqual("", browser_failure_stage_from_events(
             "vehicle_mileage", "vehicle_mileage_failed", "[browser_failure:network_connection]", [None, "old"]))
 
     def test_historical_failures_use_their_own_round_without_changing_stored_events(self):
@@ -40,14 +40,14 @@ class BrowserFailureStageTests(unittest.TestCase):
         original = deepcopy(report)
         projected = app_module.public_pc_report_display_events(report, chronological=True)
         failures = [event for event in projected if event.get("status") == "vehicle_mileage_failed"]
-        self.assertEqual(["登入 PPE", "儲存", "階段未判定"], [event["failure_stage"] for event in failures])
+        self.assertEqual(["登入 PPE", "儲存", ""], [event["failure_stage"] for event in failures])
         self.assertEqual("登入 PPE", failures[0]["failure_sites"]["vehicle_mileage"]["failure_stage"])
         report["site_statuses"] = {"vehicle_mileage": {
             "key": "vehicle_mileage", "status": "vehicle_mileage_failed", "detail": events[-1]["detail"],
             "failure_stage": "開啟車輛里程",
         }}
         view = app_module.task_failure_stage_view(report)
-        self.assertEqual("階段未判定", view["site_statuses"]["vehicle_mileage"]["failure_stage"])
+        self.assertEqual("", view["site_statuses"]["vehicle_mileage"]["failure_stage"])
         self.assertEqual("開啟車輛里程", report["site_statuses"]["vehicle_mileage"]["failure_stage"])
         self.assertEqual(original["events"], report["events"])
 
@@ -61,7 +61,7 @@ class BrowserFailureStageTests(unittest.TestCase):
             store.queue_for_worker(request.task_id)
             payload = store.update_site_result(request.task_id, SiteAutomationResult(
                 "vehicle_mileage", "車輛里程", "vehicle_mileage_failed", "[browser_failure:network_connection]"))
-            self.assertEqual("階段未判定", payload["site_statuses"]["vehicle_mileage"]["failure_stage"])
+            self.assertEqual("", payload["site_statuses"]["vehicle_mileage"]["failure_stage"])
 
     def test_a_vehicle_failure_uses_only_that_vehicles_progress(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -117,9 +117,9 @@ class BrowserFailureStageTests(unittest.TestCase):
         key = "consumables"
         site = {"key": key, "status": "consumables_failed",
                 "detail": "網路中斷 [browser_failure:network_connection]"}
-        self.assertEqual("階段未判定", merge_diagnostic_fields(site)["failure_stage"])
+        self.assertEqual("", merge_diagnostic_fields(site)["failure_stage"])
         rows = app_module.site_stage_rows({key: site}, key)
         self.assertFalse(any(row["class"] == "complete" for row in rows))
-        self.assertEqual(["階段未判定"], [row["name"] for row in rows if row["class"] == "failed"])
+        self.assertEqual([], rows)
         active = app_module.site_active_stage_summary({key: site}, key)
-        self.assertEqual("階段未判定", active["name"])
+        self.assertEqual({}, active)

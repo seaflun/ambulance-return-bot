@@ -91,7 +91,9 @@ class SiteEventStageDisplayTests(unittest.TestCase):
         for site in web.SITE_DEFINITIONS:
             with self.subTest(site=site.key):
                 row = self.row(site.key, "未提供可辨識的進度內容")
-                self.assertEqual("階段未判定", row["stage_group"])
+                self.assertEqual("", row["stage_group"])
+                self.assertTrue(row["action"].endswith("｜執行中"))
+                self.assertEqual("未提供可辨識的進度內容", row["detail"])
                 self.assertNotIn("已完成", row["action"])
 
     def test_actual_query_retry_and_civilpower_startup_have_stage_groups(self):

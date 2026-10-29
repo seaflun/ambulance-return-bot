@@ -45,7 +45,7 @@ from ambulance_bot.duty_credentials import LOGIN_POLICY_CIVILPOWER, load_duty_cr
 from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm
 from ambulance_bot.profile_paths import runtime_profile_dir
-from ambulance_bot.site_diagnostics import CIVILPOWER_STAGE_LABELS
+from ambulance_bot.site_diagnostics import CIVILPOWER_STAGE_LABELS, track_site_execution
 from ambulance_bot.task_cancellation import TaskCancellationError
 from ambulance_bot.window_layout import apply_tile
 
@@ -392,6 +392,7 @@ def login_civilpower_and_get_driver(
         raise
 
 
+@track_site_execution("volunteer_assist")
 def run_civilpower_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,

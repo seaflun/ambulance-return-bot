@@ -13,7 +13,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .failure_evidence import store_task_failure_evidence
 from .models import AmbulanceReturnRequest
-from .site_diagnostics import DIAGNOSTIC_FIELDS, browser_failure_stage_from_events, diagnostic_payload, result_with_diagnostics
+from .site_diagnostics import BROWSER_STAGE_CATEGORIES, DIAGNOSTIC_FIELDS, browser_failure_stage_from_events, diagnostic_payload, result_with_diagnostics
 from .vehicle_reconciliation import (
     normalize_vehicle_candidates,
     pending_reconciliation_targets,
@@ -1169,7 +1169,7 @@ class JsonTaskStore:
             reported_stage = browser_failure_stage_from_events(
                 result.key, result.status, result.detail, payload.get("events") or [], vehicle_key=vehicle_key,
             )
-            if reported_stage:
+            if reported_stage or diagnostic_payload(result.key, result.status, result.detail)["exception_type"] in BROWSER_STAGE_CATEGORIES:
                 result = replace(result, failure_stage=reported_stage)
             vehicle_candidates = normalize_vehicle_candidates(
                 getattr(result, "vehicle_candidates", ())

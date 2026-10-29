@@ -26,6 +26,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .adapters import SITE_DEFINITION_BY_KEY, SITE_DEFINITIONS
+from .site_diagnostics import track_site_execution
 from .chrome_startup import (
     ChromeStartTimeoutError,
     _worker_user_data_paths,
@@ -237,6 +238,7 @@ def _assert_automation_write_allowed() -> None:
         raise WebDriverException("不儲存測試模式禁止送出正式資料。")
 
 
+@track_site_execution("duty_work_log")
 def run_local_selenium_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
@@ -343,6 +345,7 @@ def run_local_selenium_task(
             _release_selenium_session(f"task {request.task_id}")
 
 
+@track_site_execution("vehicle_mileage")
 def run_vehicle_mileage_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
@@ -686,6 +689,7 @@ def _extract_latest_vehicle_mileage_record(driver: webdriver.Chrome) -> dict[str
     }
 
 
+@track_site_execution("fuel_record")
 def run_fuel_record_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,
@@ -791,6 +795,7 @@ def run_fuel_record_task(
             _release_selenium_session(f"fuel_record {request.task_id}")
 
 
+@track_site_execution("disinfection")
 def run_disinfection_task(
     request: AmbulanceReturnRequest,
     artifacts_dir: Path,

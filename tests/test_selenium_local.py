@@ -1615,7 +1615,7 @@ class SeleniumLocalTests(unittest.TestCase):
         )
         opened: dict[str, object] = {}
 
-        def fake_open(driver, opened_request, output_dir, update_context=None):
+        def fake_open(driver, opened_request, output_dir, update_context=None, progress=None):
             opened["request"] = opened_request
             return "mileage ok"
 
