@@ -1925,6 +1925,7 @@ NOTICE_ERROR_MESSAGES = {
     "oa_login_form_timeout": "通報登入表單載入逾時，未完成登入。",
     "oa_login_verification_timeout": "通報登入送出後驗證逾時，尚未確認登入成功。",
     "recipient_unconfirmed": "通報簽收責任尚未確認，請人工核對。",
+    "spreadsheet_check_timeout": "試算表既有通報比對逾時，尚未確認本批是否已入表。",
     "browser_start_failed": "通報專用瀏覽器無法啟動，請確認 Chrome 狀態。",
     "browser_startup_waiting": "前一次專用瀏覽器啟動作業尚未結束，這次尚未啟動；請稍候。",
     "browser_driver_resolution_timeout": "專用瀏覽器的驅動準備逾時，尚未進入網站登入。",

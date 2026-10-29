@@ -27,6 +27,26 @@ from ambulance_bot.sinposmart_backend import (
 
 
 class NoticeCollectionBackendTests(unittest.TestCase):
+    def test_spreadsheet_precheck_timeout_keeps_fixed_cause_and_durable_pending_counts(self):
+        expected = "試算表既有通報比對逾時，尚未確認本批是否已入表。"
+        for index, (state, pending) in enumerate((("failed", 0), ("partial", 0), ("uncertain", 2)), 1):
+            with self.subTest(state=state, pending=pending):
+                station = f"SHEET-CHECK-{index}"
+                raw = self.event(run=index, station=station, state=state, error_stage="write",
+                    error_code="spreadsheet_check_timeout", unread_count=2, new_count=0,
+                    marked_read_count=0, pending_write_count=pending, pending_read_count=0,
+                    message="token=private-response with unknown write outcome")
+                stored = self.put(raw)
+                report = stored["snapshot"]["notice_collection"]
+                self.assertEqual(report["error_code"], "spreadsheet_check_timeout")
+                self.assertEqual(report["message"], expected)
+                self.assertEqual(report["pending_write_count"], pending)
+                self.assertNotIn("private-response", json.dumps(stored))
+                view = self.view(workstation=station)
+                self.assertEqual(view["error"], expected)
+                self.assertEqual(view["history"][0]["error"], expected)
+                self.assertEqual(view["state"], state)
+
     def test_stale_report_does_not_claim_password_or_authentication_expiry(self):
         self.put(self.event(state="waiting", error_stage="busy"))
         view = self.view(now=datetime(2026, 10, 22, 9, 30, tzinfo=backend.TAIPEI_TIMEZONE))
