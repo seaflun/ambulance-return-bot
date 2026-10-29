@@ -142,6 +142,9 @@ from ambulance_bot.site_diagnostics import (
     DIAGNOSTIC_FIELDS,
     SITE_STAGE_GROUPS,
     SITE_STAGE_DEFINITIONS,
+    UNKNOWN_FAILURE_STAGE,
+    BROWSER_STAGE_CATEGORIES,
+    browser_failure_stage_from_events,
     civilpower_stage_from_detail,
     merge_diagnostic_fields,
     site_stage_from_detail,
@@ -932,7 +935,7 @@ def task_detail(task_id: str):
             abort(404)
     payload = sync_local_public_pc_task_from_nas(task_id, payload)
     payload = refresh_stale_running_task(payload)
-    return render_template("task_detail.html", payload=payload, site_can_run_individually=site_can_run_individually)
+    return render_template("task_detail.html", payload=task_failure_stage_view(payload), site_can_run_individually=site_can_run_individually)
 
 
 @app.post("/tasks/<task_id>/confirm-case-closed")
@@ -7107,7 +7110,7 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
             if focus_index >= 0 and index < focus_index:
                 state = "已通過"
                 state_class = "complete"
-            elif (focus_index < 0 and index == 0) or index == focus_index:
+            elif (focus_index < 0 and index == 0 and focus_stage != UNKNOWN_FAILURE_STAGE) or index == focus_index:
                 state = "失敗點"
                 state_class = "failed"
             else:
@@ -7127,6 +7130,8 @@ def site_stage_rows(site_statuses: dict, site_key: str) -> list[dict[str, str]]:
             state = "未執行"
             state_class = "idle"
         rows.append({"name": stage, "state": state, "class": state_class})
+    if current_class == "failed" and focus_stage == UNKNOWN_FAILURE_STAGE:
+        rows.insert(0, {"name": UNKNOWN_FAILURE_STAGE, "state": "失敗點", "class": "failed"})
     return rows
 
 
@@ -7137,6 +7142,8 @@ def site_stage_summary_rows(site_statuses: dict, site_key: str) -> list[dict[str
         for stage in site_stage_rows(site_statuses, site_key)
     }
     summaries: list[dict[str, str]] = []
+    if site_class == "failed" and UNKNOWN_FAILURE_STAGE in rows_by_name:
+        summaries.append({"name": UNKNOWN_FAILURE_STAGE, "detail": "", "state": "失敗點", "class": "failed"})
     for group_name, group_stage_names in SITE_STAGE_GROUPS.get(site_key, ()):
         group_rows = [
             rows_by_name[stage_name]
@@ -8359,6 +8366,22 @@ def public_pc_report_display_events(report: dict, *, chronological: bool = False
 
 def _public_pc_report_display_events(report: dict) -> list[dict]:
     events = [dict(event) for event in report.get("events") or [] if isinstance(event, dict)]
+    history: list[dict] = []
+    for event in sorted(events, key=_public_pc_event_time):
+        status = str(event.get("status") or "")
+        site_key = next((key for key in SITE_STAGE_DEFINITIONS if status.startswith(key + "_")), "")
+        if site_key:
+            stage = browser_failure_stage_from_events(
+                site_key, status, str(event.get("detail") or ""), history,
+                vehicle_key=str(event.get("vehicle_key") or ""),
+            )
+            if stage:
+                event["failure_stage"] = stage
+                snapshots = event.get("failure_sites")
+                if isinstance(snapshots, Mapping) and isinstance(snapshots.get(site_key), Mapping):
+                    event["failure_sites"] = dict(snapshots)
+                    event["failure_sites"][site_key] = dict(snapshots[site_key], failure_stage=stage)
+        history.append(event)
     candidates = [event for event in events if str(event.get("event_id") or "").startswith("retry-status:")
                   and event.get("status") == "failed" and event.get("failure_sites") == {}
                   and not any(event.get(field) for field in DIAGNOSTIC_FIELDS)]
@@ -8390,6 +8413,25 @@ def _public_pc_report_display_events(report: dict) -> list[dict]:
             continue
         event.update(status=sources[0]["status"], detail=str(sources[0].get("detail") or ""))
     return events
+
+
+def task_failure_stage_view(payload: dict) -> dict:
+    view = dict(payload)
+    statuses = dict(payload.get("site_statuses") or {})
+    events = public_pc_report_display_events(payload, chronological=True)
+    for key, site in statuses.items():
+        if not isinstance(site, Mapping) or site_diagnostic(dict(site)).get("exception_type") not in BROWSER_STAGE_CATEGORIES:
+            continue
+        stage = UNKNOWN_FAILURE_STAGE
+        for event in reversed(events):
+            status = str(event.get("status") or "")
+            if status.startswith(key + "_"):
+                if status == site.get("status"):
+                    stage = str(event.get("failure_stage") or UNKNOWN_FAILURE_STAGE)
+                break
+        statuses[key] = dict(site, failure_stage=stage)
+    view["site_statuses"] = statuses
+    return view
 
 
 def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int | None]:

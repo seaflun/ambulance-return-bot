@@ -9,6 +9,7 @@ import re
 import time
 from contextlib import contextmanager
 from datetime import datetime
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -128,7 +129,7 @@ def probe_browser_runtime(driver: Any) -> dict[str, Any]:
     }
 
 
-def _network_error_code(text: object) -> str:
+def browser_network_error_code(text: object) -> str:
     match = re.search(
         r"\bERR_(?:CONNECTION_TIMED_OUT|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED|"
         r"NAME_NOT_RESOLVED|ADDRESS_UNREACHABLE|CONNECTION_RESET|CONNECTION_REFUSED)\b",
@@ -137,11 +138,71 @@ def _network_error_code(text: object) -> str:
     return match.group(0).upper() if match else ""
 
 
+class _BrowserErrorCodeParser(HTMLParser):
+    _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"})
+
+    def __init__(self):
+        super().__init__()
+        self.depth = 0
+        self.ignored = False
+        self.text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._VOID_TAGS:
+            return
+        attributes = dict(attrs)
+        if self.depth:
+            self.depth += 1
+        elif (attributes.get("id") == "error-code"
+              or "error-code" in str(attributes.get("class") or "").split()):
+            self.depth = 1
+        if self.depth and tag in {"script", "style"}:
+            self.ignored = True
+
+    def handle_endtag(self, tag):
+        if tag in self._VOID_TAGS:
+            return
+        if tag in {"script", "style"}:
+            self.ignored = False
+        if self.depth:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self.depth and not self.ignored:
+            self.text.append(data)
+
+
+def _page_network_error_code(page_source: str) -> str:
+    parser = _BrowserErrorCodeParser()
+    parser.feed(page_source)
+    return browser_network_error_code(" ".join(parser.text))
+
+
+def _live_network_error_code(driver: Any) -> str:
+    response = driver.execute_cdp_cmd("Runtime.evaluate", {
+        "expression": """(() => {
+            const roots = [document];
+            for (let index = 0; index < roots.length && index < 12; index++) {
+                const root = roots[index];
+                const code = root.querySelector('.error-code, #error-code');
+                if (code && code.getClientRects().length) return code.textContent || '';
+                for (const element of root.querySelectorAll('*')) {
+                    if (element.shadowRoot) roots.push(element.shadowRoot);
+                }
+            }
+            return '';
+        })()""",
+        "returnByValue": True,
+        "timeout": 1000,
+    })
+    return browser_network_error_code((response.get("result") or {}).get("value"))
+
+
 def classify_browser_failure(exception: BaseException | None, probe: dict[str, Any]) -> dict[str, str]:
     text = str(exception or "").lower()
     chromedriver_alive = probe.get("chromedriver_alive")
     devtools_reachable = probe.get("devtools_reachable")
-    network_error = _network_error_code(exception) or _network_error_code(probe.get("network_error"))
+    network_error = browser_network_error_code(exception) or browser_network_error_code(probe.get("network_error"))
 
     if chromedriver_alive is False:
         category = "chromedriver_ended"
@@ -169,7 +230,7 @@ def classify_browser_failure(exception: BaseException | None, probe: dict[str, A
 
     descriptions = {
         "network_connection": (
-            "網站連線逾時或中斷；請確認分隊網路與該站連線。",
+            "網站連線逾時或中斷" + (f"（{network_error}）" if network_error else "") + "；請確認分隊網路與該站連線。",
             "網路恢復後先重新查詢，確認是否已保存，再單獨重跑；不要直接重複儲存。",
         ),
         "web_renderer_timeout": (
@@ -305,6 +366,7 @@ def capture_failure_artifacts(
         "html_path": "",
         "html_error": "",
         "metadata_path": "",
+        "network_error": browser_network_error_code(exception),
     }
 
     with _bounded_failure_evidence_driver_commands(driver):
@@ -337,16 +399,22 @@ def capture_failure_artifacts(
             page_source = str(driver.page_source or "")
             html_path.write_text(page_source, encoding="utf-8")
             evidence["html_path"] = str(html_path)
-            error_element = re.search(
-                r"""<[^>]+(?:class|id)\s*=\s*["'][^"']*\berror-code\b[^>]*>([^<]*)""",
-                page_source, re.IGNORECASE,
-            )
-            if error_element:
-                evidence["network_error"] = _network_error_code(error_element.group(1))
-                if evidence["network_error"]:
-                    evidence.update(classify_browser_failure(exception, evidence))
+            page_error = _page_network_error_code(page_source)
+            if page_error:
+                evidence["network_error"] = page_error
+                evidence["network_error_source"] = "page_source"
         except Exception as exc:
             evidence["html_error"] = f"{exc.__class__.__name__}: {exc}"
+        if (not evidence["network_error"] and diagnosis["category"] in {"web_renderer_timeout", "web_page_timeout"}
+                and probe.get("devtools_reachable") is True):
+            try:
+                evidence["network_error"] = _live_network_error_code(driver)
+                if evidence["network_error"]:
+                    evidence["network_error_source"] = "live_error_element"
+            except Exception as exc:
+                evidence["network_error_probe_error"] = f"{exc.__class__.__name__}: {exc}"
+        if evidence["network_error"]:
+            evidence.update(classify_browser_failure(exception, evidence))
 
     metadata_path = output_dir / f"{stem}.json"
     evidence["metadata_path"] = str(metadata_path)

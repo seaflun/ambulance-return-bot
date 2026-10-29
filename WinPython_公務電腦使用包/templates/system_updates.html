@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.29.2022">
+      <header class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.29.2022') }}</p>
+          <h2 class="update-card__title">四站實際斷點與網路錯誤分類</h2>
+        </div>
+        <span class="update-card__versions">2026.10.29.2022</span>
+      </header>
+      <ul class="update-card__items">
+        <li>連線中斷或網頁逾時時，保留同一輪、同站及同車的最後實際步驟，不再套用後續預設階段或誤標登入已通過。</li>
+        <li>缺少階段證據時顯示「階段未判定」；歷史失敗畫面依當輪事件還原，保留原始任務及成功紀錄。</li>
+        <li>連線重設、DNS、網路切換等錯誤優先歸類為網路問題，原因顯示實際 Chrome 錯誤碼。</li>
+        <li>加強錯誤頁子元素與 HTML 讀取逾時時的取證；取證失敗時保留不確定性，不改動登入、重試或正式儲存規則。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.29.2018">
       <header class="update-card__heading">
         <div>

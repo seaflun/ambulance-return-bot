@@ -5,9 +5,14 @@ from dataclasses import is_dataclass, replace
 from typing import Any
 
 from .adapters import SiteAutomationResult
+from .failure_evidence import browser_network_error_code
 
 
 DIAGNOSTIC_FIELDS = ("failure_stage", "failure_reason", "next_action", "exception_type")
+UNKNOWN_FAILURE_STAGE = "階段未判定"
+BROWSER_STAGE_CATEGORIES = frozenset({
+    "network_connection", "web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified",
+})
 
 CIVILPOWER_STAGE_LABELS = {
     "chrome": "啟動 Chrome",
@@ -308,6 +313,11 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
     }
 
     def value_for(field: str) -> str:
+        if (field == "failure_stage" and computed["exception_type"] in BROWSER_STAGE_CATEGORIES
+                and computed["failure_stage"] == UNKNOWN_FAILURE_STAGE):
+            reported = str(site.get(field) or "")
+            if reported in SITE_STAGE_DEFINITIONS.get(site_key, ()) or reported == UNKNOWN_FAILURE_STAGE:
+                return reported
         if prefer_computed:
             return str(computed[field])
         return str(site.get(field) or computed[field])
@@ -317,6 +327,33 @@ def merge_diagnostic_fields(site: dict[str, Any]) -> dict[str, str]:
         for field in DIAGNOSTIC_FIELDS
     }
     return merged if merged["failure_reason"] else {field: "" for field in DIAGNOSTIC_FIELDS}
+
+
+def browser_failure_stage_from_events(
+    site_key: str, status: str, detail: str, events: list, *, vehicle_key: str = "",
+) -> str:
+    diagnosis = diagnostic_payload(site_key, status, detail)
+    if diagnosis["exception_type"] not in BROWSER_STAGE_CATEGORIES:
+        return ""
+    parse = (lambda text: civilpower_stage_from_detail(text)) if site_key == "volunteer_assist" else (
+        lambda text: site_stage_from_detail(site_key, text))
+    reported = parse(detail)
+    if reported:
+        return reported
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        event_status = str(event.get("status") or "")
+        if event_status in {"queued_for_worker", "claimed_by_worker", "task_run_requested"}:
+            break
+        if not event_status.startswith(site_key + "_"):
+            continue
+        if str(event.get("vehicle_key") or "") != vehicle_key:
+            continue
+        if event_status == site_key + "_running":
+            return parse(str(event.get("detail") or "")) or UNKNOWN_FAILURE_STAGE
+        break
+    return diagnosis["failure_stage"] or UNKNOWN_FAILURE_STAGE
 
 
 def result_with_diagnostics(
@@ -373,6 +410,11 @@ def _diagnostic_category(
         return ""
     if "vehicle_candidate" in status:
         return "vehicle_candidate"
+    for ended_category in ("chromedriver_ended", "chrome_unresponsive"):
+        if f"[browser_failure:{ended_category}]" in text:
+            return ended_category
+    if browser_network_error_code(analysis_detail):
+        return "network_connection"
     for browser_category in (
         "network_connection",
         "web_renderer_timeout",
@@ -539,11 +581,7 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
     if category in {"chrome_session", "chrome_unresponsive", "chromedriver_ended"}:
         return "啟動 Chrome"
     if category in {"network_connection", "web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified"}:
-        return (
-            CIVILPOWER_STAGE_LABELS["io_add"]
-            if site_key == "volunteer_assist"
-            else SITE_DEFAULT_FAILURE_STAGE.get(site_key, "執行流程")
-        )
+        return site_stage_from_detail(site_key, detail) or UNKNOWN_FAILURE_STAGE
     if category == "worker_api":
         return "讀取任務"
     if category == "multi_patient_consumables":
@@ -656,6 +694,9 @@ def _field_stage(site_key: str, detail: str) -> str:
 
 
 def _reason_for(category: str, status: str, detail: str) -> str:
+    network_code = browser_network_error_code(detail) if category == "network_connection" else ""
+    if network_code:
+        return f"網站連線逾時或中斷（{network_code}）；請確認分隊網路與該站連線。"
     return {
         "duty_prequery": "新增前無法確認既有工作紀錄的勤務項目或車輛，尚未新增或儲存。",
         "duty_existing_verify": "官網已有工作紀錄，但尚未確認唯一的同案件、同勤務項目與車輛紀錄；未新增或儲存。",

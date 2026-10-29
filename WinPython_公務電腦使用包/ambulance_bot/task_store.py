@@ -4,6 +4,7 @@ import json
 import re
 import threading
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from .adapters import SITE_DEFINITIONS, SiteAutomationResult
 from .failure_evidence import store_task_failure_evidence
 from .models import AmbulanceReturnRequest
-from .site_diagnostics import DIAGNOSTIC_FIELDS, diagnostic_payload, result_with_diagnostics
+from .site_diagnostics import DIAGNOSTIC_FIELDS, browser_failure_stage_from_events, diagnostic_payload, result_with_diagnostics
 from .vehicle_reconciliation import (
     normalize_vehicle_candidates,
     pending_reconciliation_targets,
@@ -1165,6 +1166,11 @@ class JsonTaskStore:
                     self.save_payload(task_id, payload)
                 return payload
             vehicle_key = str(vehicle_key or "").strip()
+            reported_stage = browser_failure_stage_from_events(
+                result.key, result.status, result.detail, payload.get("events") or [], vehicle_key=vehicle_key,
+            )
+            if reported_stage:
+                result = replace(result, failure_stage=reported_stage)
             vehicle_candidates = normalize_vehicle_candidates(
                 getattr(result, "vehicle_candidates", ())
             )
