@@ -1899,6 +1899,11 @@ NOTICE_ERROR_MESSAGES = {
     "oa_login_verification_timeout": "通報登入送出後驗證逾時，尚未確認登入成功。",
     "recipient_unconfirmed": "通報簽收責任尚未確認，請人工核對。",
     "browser_start_failed": "通報專用瀏覽器無法啟動，請確認 Chrome 狀態。",
+    "browser_startup_waiting": "前一次專用瀏覽器啟動作業尚未結束，這次尚未啟動；請稍候。",
+    "browser_driver_resolution_timeout": "專用瀏覽器的驅動準備逾時，尚未進入網站登入。",
+    "browser_driver_service_timeout": "專用瀏覽器的驅動服務啟動逾時，尚未進入網站登入。",
+    "browser_session_create_timeout": "專用瀏覽器工作階段建立逾時，尚未進入網站登入。",
+    "browser_startup_timeout": "專用瀏覽器啟動逾時，尚未進入網站登入。",
     "browser_window_closed": "通報專用視窗已關閉，下輪將重新開啟。",
     "snapshot_failed": "通報頁未正常回應，請確認通報專用瀏覽器。",
     "snapshot_invalid": "通報頁資料格式無法確認。",
@@ -1921,6 +1926,10 @@ NOTICE_ERROR_MESSAGES = {
     "cancelled": "通報收取已停止。",
 }
 NOTICE_COUNT_FIELDS = ("unread_count", "new_count", "marked_read_count", "pending_write_count", "pending_read_count")
+NOTICE_BROWSER_STARTUP_CODES = {
+    "browser_startup_waiting", "browser_driver_resolution_timeout", "browser_driver_service_timeout",
+    "browser_session_create_timeout", "browser_startup_timeout",
+}
 NOTICE_VERIFICATION_FILENAME = "notice_verifications.json"
 NOTICE_VERIFICATION_NOTES = {
     "read_confirmed": "已核對試算表及網站已讀清單。",
@@ -2036,7 +2045,8 @@ def normalize_notice_collection_report(value: Any) -> dict[str, Any]:
         return {}
     clean.update(error_stage=stage, message=NOTICE_REASONS.get(stage, ""))
     code = value.get("error_code")
-    if (value["state"] in {"failed", "partial", "uncertain"}
+    if ((value["state"] in {"failed", "partial", "uncertain"}
+         or value["state"] == "waiting" and code == "browser_startup_waiting")
             and isinstance(code, str) and code in NOTICE_ERROR_MESSAGES):
         clean.update(error_code=code, message=NOTICE_ERROR_MESSAGES[code])
     records, new_keys = value.get("records"), value.get("new_keys")
@@ -2118,7 +2128,7 @@ def normalize_notice_collection_report(value: Any) -> dict[str, Any]:
                 or clean["error_stage"] != ("busy" if clean["state"] == "waiting" else "login")):
             return {}
         clean["verification_only"] = True
-        if clean["state"] == "waiting":
+        if clean["state"] == "waiting" and clean.get("error_code") != "browser_startup_waiting":
             clean["message"] = "通報登入驗證尚未開始，等待公務作業完成。"
         elif "error_code" not in clean:
             clean["message"] = "驗證未完成，原因待確認。"
@@ -2203,7 +2213,8 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
                          "last_reported_at": next((group["at"].astimezone(TAIPEI_TIMEZONE).isoformat(timespec="seconds")
                                                    for group in reversed(daily) if group["workstation"] == source), "")}
                         for source in sorted(sources)]}
-    collections = [group for group in today if not group["report"].get("verification_only")]
+    collections = [group for group in today if not group["report"].get("verification_only")
+                   and group["report"].get("error_code") != "browser_startup_waiting"]
     latest = collections[-1] if collections else (today[-1] if today else None)
     report = latest["report"] if latest else {}
     state = report.get("state", "invalid")
@@ -2240,11 +2251,14 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
             continue
         if new_rows:
             received_count = len(new_rows)
-        if new_rows or row_report["state"] in {"partial", "uncertain", "failed", "missing_credentials"}:
-            history.append({"run_id": row_report["run_id"], "reported_at": row_report["reported_at"], "state": row_report["state"],
-                            "status_label": "登入驗證失敗" if row_report.get("verification_only") else NOTICE_STATUS[row_report["state"]][0],
-                            "status_class": NOTICE_STATUS[row_report["state"]][1],
-                            "new_count": None if row_report.get("verification_only") else len(new_rows),
+        startup_waiting = row_report.get("error_code") == "browser_startup_waiting"
+        if new_rows or startup_waiting or row_report["state"] in {"partial", "uncertain", "failed", "missing_credentials"}:
+            history.append({"run_id": row_report["run_id"], "reported_at": row_report["reported_at"],
+                            "state": "waiting" if startup_waiting else row_report["state"],
+                            "status_label": "等待瀏覽器啟動" if startup_waiting else
+                                            "登入驗證失敗" if row_report.get("verification_only") else NOTICE_STATUS[row_report["state"]][0],
+                            "status_class": "running" if startup_waiting else NOTICE_STATUS[row_report["state"]][1],
+                            "new_count": None if startup_waiting or row_report.get("verification_only") else len(new_rows),
                             "error": row_report["message"], "records": new_rows})
     for key, row in manual_ledger.items():
         if key in ledger and not ledger[key].get("published_at"):
@@ -2320,19 +2334,24 @@ def build_notice_collection_view(events: list[dict[str, Any]], calendar_day: str
     elif not historical and state == "running":
         view["authentication_label"] = "本輪登入與列表檢查中"
     verification = today[-1]
-    if verification["report"].get("verification_only") and verification["at"] >= latest["at"]:
+    startup_waiting = verification["report"].get("error_code") == "browser_startup_waiting"
+    if (verification["report"].get("verification_only") or startup_waiting) and verification["at"] >= latest["at"]:
         latest, report = verification, verification["report"]
         state = report["state"]
-        view.update(state=state, parts_complete=latest["complete"],
-                    last_reported_at=report["reported_at"], next_check_at=report["next_check_at"] if state == "waiting" else "",
-                    status_label="等待登入驗證" if state == "waiting" else "登入驗證失敗",
-                    status_class="running" if state == "waiting" else "failed", error=report["message"],
-                    authentication_label="尚未嘗試登入（瀏覽器忙碌）" if state == "waiting" else "本輪登入驗證未完成")
+        view.update(state="waiting" if startup_waiting else state, parts_complete=latest["complete"],
+                    last_reported_at=report["reported_at"], next_check_at=report["next_check_at"] if startup_waiting or state == "waiting" else "",
+                    status_label="等待瀏覽器啟動" if startup_waiting else "等待登入驗證" if state == "waiting" else "登入驗證失敗",
+                    status_class="running" if startup_waiting or state == "waiting" else "failed", error=report["message"],
+                    authentication_label="本輪尚未進入網站登入" if startup_waiting else
+                                         "尚未嘗試登入（瀏覽器忙碌）" if state == "waiting" else "本輪登入驗證未完成")
         if not latest["complete"]:
             view.update(state="uncertain", status_label="驗證回報格式待確認", status_class="attention")
+    if latest["complete"] and report.get("error_code") in NOTICE_BROWSER_STARTUP_CODES:
+        view["authentication_label"] = "本輪尚未進入網站登入"
     if latest["at"] > current + timedelta(minutes=5):
         view.update(state="uncertain", status_label="回報時間待確認", status_class="attention")
-        if not report.get("verification_only") or not collections or collections[-1]["at"] > current + timedelta(minutes=5):
+        if (not (report.get("verification_only") or report.get("error_code") == "browser_startup_waiting")
+                or not collections or collections[-1]["at"] > current + timedelta(minutes=5)):
             view.update(count_known=False, today_count=None, shift_count=None)
     elif target == current.astimezone(TAIPEI_TIMEZONE).date() and report.get("next_check_at") and current > _heartbeat_datetime(report["next_check_at"]) + timedelta(minutes=2):
         view.update(state="uncertain", status_label="超過預定檢查時間，狀態待確認", status_class="attention")

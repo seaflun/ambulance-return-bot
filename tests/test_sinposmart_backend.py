@@ -425,6 +425,11 @@ class NoticeCollectionBackendTests(unittest.TestCase):
     def test_notice_failure_codes_store_only_fixed_safe_messages_and_reach_card_view(self):
         messages = {
             "browser_start_failed": "通報專用瀏覽器無法啟動，請確認 Chrome 狀態。",
+            "browser_startup_waiting": "前一次專用瀏覽器啟動作業尚未結束，這次尚未啟動；請稍候。",
+            "browser_driver_resolution_timeout": "專用瀏覽器的驅動準備逾時，尚未進入網站登入。",
+            "browser_driver_service_timeout": "專用瀏覽器的驅動服務啟動逾時，尚未進入網站登入。",
+            "browser_session_create_timeout": "專用瀏覽器工作階段建立逾時，尚未進入網站登入。",
+            "browser_startup_timeout": "專用瀏覽器啟動逾時，尚未進入網站登入。",
             "browser_window_closed": "通報專用視窗已關閉，下輪將重新開啟。",
             "snapshot_failed": "通報頁未正常回應，請確認通報專用瀏覽器。",
             "snapshot_invalid": "通報頁資料格式無法確認。",
@@ -468,6 +473,59 @@ class NoticeCollectionBackendTests(unittest.TestCase):
                     self.assertTrue(view["parts_complete"])
                     self.assertEqual(view["error"], message)
                     self.assertEqual(view["history"][0]["error"], message)
+
+    def test_browser_startup_waiting_preserves_receipts_and_never_claims_login_failure(self):
+        counts = {field: None for field in backend.NOTICE_COUNT_FIELDS}
+        for index, (verification_only, state) in enumerate(
+                ((False, "failed"), (True, "failed"), (False, "waiting"), (True, "waiting"))):
+            with self.subTest(verification_only=verification_only, state=state):
+                station, run = f"QUEUE-{index}", 100 + index * 10
+                shift = {"shift_start": "2026-10-22T08:00:00+08:00", "shift_end": "2026-10-22T10:00:00+08:00"}
+                self.put(self.event(run=run, station=station, records=[self.record()], **shift))
+                extra = {"verification_only": True} if verification_only else {}
+                if verification_only and state == "waiting":
+                    extra["started_at"] = ""
+                self.put(self.event(run=run + 1, station=station, reported="2026-10-22T09:02:00+08:00",
+                    state=state, error_stage="busy" if state == "waiting" else "login",
+                    error_code="browser_startup_waiting", next_check_at="2026-10-22T09:03:00+08:00",
+                    message="password=must-not-retain", **counts, **extra))
+                view = self.view(workstation=station)
+                self.assertEqual((view["state"], view["status_label"], view["status_class"]),
+                                 ("waiting", "等待瀏覽器啟動", "running"))
+                self.assertEqual(view["authentication_label"], "本輪尚未進入網站登入")
+                self.assertEqual(view["error"], "前一次專用瀏覽器啟動作業尚未結束，這次尚未啟動；請稍候。")
+                self.assertEqual((view["today_count"], view["shift_count"], view["shift_label"]), (1, 1, "08:00–10:00"))
+                self.assertEqual(view["records"][0]["key"], self.record()["key"])
+                self.assertEqual((view["history"][0]["state"], view["history"][0]["status_label"],
+                                  view["history"][0]["status_class"]), ("waiting", "等待瀏覽器啟動", "running"))
+                self.assertNotIn("must-not-retain", json.dumps(view))
+                stale = self.view(workstation=station, now=datetime(2026, 10, 22, 9, 8, tzinfo=backend.TAIPEI_TIMEZONE))
+                self.assertEqual(stale["state"], "uncertain")
+                self.assertEqual(stale["status_label"], "超過預定檢查時間，狀態待確認")
+                self.assertEqual(stale["authentication_label"], "尚無近期登入驗證回報")
+                self.assertEqual(stale["today_count"], 1)
+                self.put(self.event(run=run + 2, station=station, reported="2026-10-22T09:09:00+08:00",
+                                    records=[self.record()], **shift))
+                recovered = self.view(workstation=station, now=datetime(2026, 10, 22, 9, 9, tzinfo=backend.TAIPEI_TIMEZONE))
+                self.assertEqual((recovered["state"], recovered["error"]), ("success", ""))
+                self.assertEqual(recovered["authentication_label"], "本輪列表身分已驗證")
+                self.put(self.event(run=run + 3, station=station, reported="2026-10-22T09:30:00+08:00",
+                    state=state, error_stage="busy" if state == "waiting" else "login",
+                    error_code="browser_startup_waiting", **counts, **extra))
+                future = self.view(workstation=station, now=datetime(2026, 10, 22, 9, 10, tzinfo=backend.TAIPEI_TIMEZONE))
+                self.assertEqual((future["state"], future["status_label"]), ("uncertain", "回報時間待確認"))
+                self.assertEqual((future["today_count"], future["shift_count"]), (1, 1))
+
+    def test_browser_startup_timeout_reports_do_not_claim_website_authentication_attempt(self):
+        for index, code in enumerate(("browser_driver_resolution_timeout", "browser_driver_service_timeout",
+                                      "browser_session_create_timeout", "browser_startup_timeout"), 200):
+            with self.subTest(code=code):
+                self.put(self.event(run=index, station=code, state="failed", verification_only=True,
+                    error_stage="login", error_code=code, **{field: None for field in backend.NOTICE_COUNT_FIELDS}))
+                view = self.view(workstation=code)
+                self.assertEqual(view["authentication_label"], "本輪尚未進入網站登入")
+                self.assertIn("尚未進入網站登入", view["error"])
+                self.assertIsNone(view["today_count"])
 
     def test_notice_missing_unknown_or_secret_error_codes_keep_legacy_shape_and_summary(self):
         legacy = self.event(state="failed", error_stage="scan", unread_count=None)
