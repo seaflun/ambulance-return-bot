@@ -64,6 +64,7 @@ from ambulance_bot.selenium_local import (
     run_vehicle_mileage_task,
 )
 from ambulance_bot.site_diagnostics import DIAGNOSTIC_FIELDS, diagnostic_payload, make_site_result, site_stage_from_detail
+from ambulance_bot.site_parallelism import parallel_site_groups
 from ambulance_bot.status_outbox import WorkerStatusOutbox
 from ambulance_bot.task_cancellation import (
     TaskCancellationError,
@@ -85,7 +86,6 @@ load_dotenv()
 
 MANUAL_TASK_ACTIVE = threading.Event()
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
-MAX_PARALLEL_SITE_GROUPS = 2
 MAX_EXECUTION_LEASE_HEARTBEAT_ERRORS = 3
 WORKER_NAS_LAN_URL = "http://10.30.65.30:8080"
 WORKER_NAS_TAILSCALE_URL = "http://100.114.126.58:8080"
@@ -2323,7 +2323,9 @@ def _run_all_sites_task_impl(
     last_result = None
     failed_results = []
     group_results: list[tuple[object | None, list[object]] | None] = [None] * len(site_groups)
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_SITE_GROUPS) as executor:
+    parallel_limit = parallel_site_groups()
+    print(f"[worker] task={request.task_id} parallel_site_groups={parallel_limit}", flush=True)
+    with ThreadPoolExecutor(max_workers=parallel_limit) as executor:
         futures = {
             executor.submit(
                 _run_worker_site_group,

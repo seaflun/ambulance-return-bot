@@ -3607,23 +3607,34 @@ class WorkerTests(unittest.TestCase):
 
         self.assertCountEqual(calls, ["duty_work_log", "vehicle_mileage", "fuel_record", "consumables", "disinfection"])
 
-    def test_auto_claim_run_all_sites_limits_parallel_groups_to_two_and_keeps_mileage_fuel_sequential(self):
-        original_fetch_payload = worker_module.fetch_task_payload
-        original_run_task = worker_module.run_task
-        original_run_vehicle = worker_module.run_vehicle_task
-        original_run_fuel = worker_module.run_fuel_worker_task
-        original_run_disinfection = worker_module.run_disinfection_worker_task
-        original_run_consumables = worker_module.run_consumables_worker_task
-        original_post_status = worker_module.post_status
+    def test_auto_claim_full_run_defaults_to_four_parallel_groups(self):
+        self._assert_worker_parallel_site_limit("", 4)
+
+    def test_auto_claim_full_run_explicit_four_parallel_groups(self):
+        self._assert_worker_parallel_site_limit("4", 4)
+
+    def test_auto_claim_full_run_can_switch_back_to_two_parallel_groups(self):
+        self._assert_worker_parallel_site_limit("2", 2)
+
+    def test_auto_claim_full_run_invalid_parallel_setting_falls_back_to_two(self):
+        self._assert_worker_parallel_site_limit("8", 2)
+
+    def _assert_worker_parallel_site_limit(self, setting, expected):
         task = {
             "task_id": "task-parallel",
             "created_at": "2026-06-09T00:00:00",
             "fuel_record": {"enabled": True, "date": "20260627", "time": "1250", "quantity": "20.5", "unit_price": "30.1"},
+            "volunteer_assist": True,
+            "volunteer_assist_member_id": "civilpower-member",
+            "volunteer_assist_member_name": "測試義消",
+            "volunteer_assist_member_unit": "大園救護分隊",
         }
         active = 0
         peak = 0
         intervals: dict[str, dict[str, float]] = {}
+        completed: dict[str, dict[str, str]] = {}
         lock = threading.Lock()
+        first_wave = threading.Event()
 
         def run_site(site_key: str):
             nonlocal active, peak
@@ -3631,34 +3642,37 @@ class WorkerTests(unittest.TestCase):
                 active += 1
                 peak = max(peak, active)
                 intervals.setdefault(site_key, {})["start"] = time.perf_counter()
-            time.sleep(0.05)
+                if active == expected:
+                    first_wave.set()
+            first_wave.wait(1)
+            time.sleep(0.02)
             with lock:
                 intervals[site_key]["end"] = time.perf_counter()
+                completed[site_key] = {"status": f"{site_key}_saved"}
                 active -= 1
             return SimpleNamespace(ok=True, status=f"{site_key}_saved", detail=f"{site_key} ok")
 
-        try:
-            worker_module.fetch_task_payload = lambda server_url, task_id: {"task": task, "site_statuses": {}}
-            worker_module.run_task = lambda *args, **kwargs: run_site("duty_work_log")
-            worker_module.run_vehicle_task = lambda *args, **kwargs: run_site("vehicle_mileage")
-            worker_module.run_fuel_worker_task = lambda *args, **kwargs: run_site("fuel_record")
-            worker_module.run_consumables_worker_task = lambda *args, **kwargs: run_site("consumables")
-            worker_module.run_disinfection_worker_task = lambda *args, **kwargs: run_site("disinfection")
-            worker_module.post_status = lambda *args, **kwargs: None
+        def fetch_payload(*_args):
+            with lock:
+                return {"task": task, "site_statuses": dict(completed)}
 
+        with mock.patch.dict(os.environ, {"WORKER_PARALLEL_SITE_GROUPS": setting}), \
+             mock.patch.object(worker_module, "fetch_task_payload", side_effect=fetch_payload), \
+             mock.patch.object(worker_module, "run_task", side_effect=lambda *args, **kwargs: run_site("duty_work_log")), \
+             mock.patch.object(worker_module, "run_vehicle_task", side_effect=lambda *args, **kwargs: run_site("vehicle_mileage")), \
+             mock.patch.object(worker_module, "run_fuel_worker_task", side_effect=lambda *args, **kwargs: run_site("fuel_record")), \
+             mock.patch.object(worker_module, "run_volunteer_assist_worker_task", side_effect=lambda *args, **kwargs: run_site("volunteer_assist")), \
+             mock.patch.object(worker_module, "run_consumables_worker_task", side_effect=lambda *args, **kwargs: run_site("consumables")), \
+             mock.patch.object(worker_module, "run_disinfection_worker_task", side_effect=lambda *args, **kwargs: run_site("disinfection")), \
+             mock.patch.object(worker_module, "post_status"), \
+             mock.patch.object(worker_module, "maximize_worker_site_windows"):
             result = worker_module.run_all_sites_task("http://nas", "worker-a", task, Path("artifacts"))
-        finally:
-            worker_module.fetch_task_payload = original_fetch_payload
-            worker_module.run_task = original_run_task
-            worker_module.run_vehicle_task = original_run_vehicle
-            worker_module.run_fuel_worker_task = original_run_fuel
-            worker_module.run_disinfection_worker_task = original_run_disinfection
-            worker_module.run_consumables_worker_task = original_run_consumables
-            worker_module.post_status = original_post_status
 
-        self.assertEqual(peak, 2)
+        self.assertEqual(peak, expected)
+        self.assertEqual(set(intervals), {"duty_work_log", "vehicle_mileage", "fuel_record", "volunteer_assist", "consumables", "disinfection"})
         self.assertLessEqual(intervals["vehicle_mileage"]["end"], intervals["fuel_record"]["start"])
-        self.assertIn(result.status, {"duty_work_log_saved", "fuel_record_saved", "consumables_saved", "disinfection_saved"})
+        self.assertLessEqual(intervals["duty_work_log"]["end"], intervals["volunteer_assist"]["start"])
+        self.assertIn(result.status, {"volunteer_assist_saved", "fuel_record_saved", "consumables_saved", "disinfection_saved"})
 
     def test_auto_claim_run_all_sites_continues_after_site_failure(self):
         original_fetch_payload = worker_module.fetch_task_payload

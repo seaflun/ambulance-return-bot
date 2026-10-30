@@ -26,6 +26,7 @@ from .manual_task_lock import (
 from .record_folders import ensure_ems_record_folders
 from .selenium_local import run_disinfection_task, run_fuel_record_task, run_local_selenium_task, run_vehicle_mileage_task
 from .site_diagnostics import SITE_STAGE_GROUPS, civilpower_stage_from_detail, make_site_result, site_stage_from_detail
+from .site_parallelism import parallel_site_groups
 from .task_cancellation import (
     TaskCancellationError,
     clear_task_cancellation,
@@ -43,16 +44,8 @@ from .window_layout import maximize_worker_site_windows
 
 SITE_NAMES = {site.key: site.name for site in SITE_DEFINITIONS}
 MILEAGE_FUEL_PAIR = ("vehicle_mileage", "fuel_record")
-DEFAULT_PARALLEL_SITE_GROUPS = 4
 MAX_MANUAL_TASK_LOCK_HEARTBEAT_ERRORS = 3
 DEFAULT_RECORD_ROOT = Path(r"W:\救護硬碟\救護密錄器及行車紀錄器")
-
-
-def parallel_site_groups() -> int:
-    value = os.getenv("WORKER_PARALLEL_SITE_GROUPS", "").strip()
-    if not value:
-        return DEFAULT_PARALLEL_SITE_GROUPS
-    return 4 if value == "4" else 2
 
 
 def active_site_runners(request, profile_suffix: str, runner: "DesktopFastRunner") -> list[tuple[str, Callable[[], object]]]:
