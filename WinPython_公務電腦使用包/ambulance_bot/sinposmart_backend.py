@@ -2397,7 +2397,8 @@ def validate_diagnostic_archive(body: bytes, digest: str) -> dict[str, Any]:
         raise ValueError("invalid_diagnostic")
     allowed = re.compile(
         r"manifest\.json|VERSION\.txt|requirements\.txt|docs/(?:CODE_MAP|HANDOFF)\.md|duty_trigger_log\.jsonl|"
-        r"runtime_outputs/sinposmart_operational_sync_status\.json|"
+        r"runtime_outputs/(?:sinposmart_operational_sync_status|duty_annotation_request|"
+        r"duty_personnel_deductions)\.json|"
         r"(?:duty_sheet_legacy/)?runtime_outputs/(?:schedule/schedule_output_\d{7}\.json|comparison/comparison_output_\d{7}\.json)|"
         r"runtime_outputs/(?:form_tests/[A-Za-z0-9_.-]+\.json|snapshots/[A-Za-z0-9_.-]+\.(?:json|txt)|browser/[A-Za-z0-9_.-]+\.(?:json|jsonl))"
     )

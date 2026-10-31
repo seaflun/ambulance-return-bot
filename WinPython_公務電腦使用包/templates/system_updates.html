@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.10.31.1015">
+      <div class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.10.31.1015') }}</p>
+          <h2 class="update-card__title">修復值班台問題包接收相容性</h2>
+        </div>
+        <span class="update-card__versions">2026.10.31.1015</span>
+      </div>
+      <ul class="update-card__items">
+        <li>問題包可接收值班台附記及扣除人力兩個指定診斷檔，修復有設定資料時整包遭拒的問題，既有待傳包可依原佇列重試。</li>
+        <li>保留敏感內容拒收、檔案白名單、容量限制與問題包 14 天保留規則。</li>
+        <li>同步值班台通報失敗恢復與安全診斷的更新說明。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.10.30.0954">
       <header class="update-card__heading">
         <div>

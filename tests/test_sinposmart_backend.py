@@ -1,11 +1,14 @@
 import base64
 from collections import Counter
 import copy
+import hashlib
+import io
 import json
 import os
 import struct
 import tempfile
 import unittest
+import zipfile
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -1365,6 +1368,67 @@ class PersonnelTitleSnapshotTests(unittest.TestCase):
 
 
 class SinpoSmartBackendStoreTests(unittest.TestCase):
+    @staticmethod
+    def _gui_notice_diagnostic_archive(files):
+        # Match the sanitized ZIP contract emitted by Duty GUI DiagnosticsService.
+        manifest = {
+            "schema_version": 1, "sanitized": True, "created_at": "2026-10-31T09:00:00+08:00",
+            "workstation": "GUI-FIXTURE", "mode": "PySide6/QML", "login_status": "",
+            "duty_status": "通報列表重新整理失敗，請確認連線。", "target_date": "1151031",
+            "session_actor": "", "session_verified": False, "action_key": "notice-fixture-run",
+            "action_kind": "notice_collection", "trigger_type": "notice_poll",
+            "error_code": "list_navigation_failed", "result_ref": "", "omitted_files": [],
+        }
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("VERSION.txt", "2026.10.30.1001\n")
+            archive.writestr("runtime_outputs/browser/notice_collection_failure.json", json.dumps({
+                "failures": [{"stage": "collect:scan", "exception": {
+                    "type": "NoticeCollectionError", "message": manifest["duty_status"]},
+                    "context": {"origin_class": "expected", "url_class": "expected",
+                                "blocked_checks": ["navigation"]}}]}, ensure_ascii=False))
+            for name, payload in files.items():
+                archive.writestr(name, json.dumps(payload, ensure_ascii=False))
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
+        body = stream.getvalue()
+        return body, hashlib.sha256(body).hexdigest()
+
+    def test_diagnostic_upload_accepts_gui_annotation_and_deduction_export(self):
+        annotation = "runtime_outputs/duty_annotation_request.json"
+        deductions = "runtime_outputs/duty_personnel_deductions.json"
+        exported = {
+            annotation: {"status": "prepared", "target_date": "1151031", "annotation": "02帶隊官，20、22TP訓"},
+            deductions: {"schema_version": 1, "items": [
+                {"actor_no": "20", "start_date": "2026-10-30", "end_date": "2026-11-02", "reason": "TP訓"}]},
+        }
+        for paths in ((annotation,), (deductions,), (annotation, deductions)):
+            with self.subTest(paths=paths), tempfile.TemporaryDirectory() as tmp:
+                body, digest = self._gui_notice_diagnostic_archive({name: exported[name] for name in paths})
+                store = SinpoSmartBackendStore(Path(tmp))
+                metadata = store.save_diagnostic(body, digest)
+                self.assertEqual(metadata["fire_day"], "2026-10-31")
+                self.assertEqual(metadata["action_kind"], "notice_collection")
+                self.assertEqual(metadata["action_key"], "notice-fixture-run")
+                self.assertEqual(store.diagnostic_path(metadata["fire_day"], digest).read_bytes(), body)
+                self.assertEqual(store.list_diagnostics("2026-10-31")[0]["sha256"], digest)
+
+    def test_annotation_diagnostic_allowlist_does_not_accept_other_runtime_paths(self):
+        for name in ("runtime_outputs/unrecognized.json", "runtime_outputs/duty_annotation_request_new.json",
+                     "runtime_outputs/duty_personnel_deductions.json/other.json",
+                     "runtime_outputs/../duty_annotation_request.json"):
+            with self.subTest(name=name):
+                body, digest = self._gui_notice_diagnostic_archive({name: {"status": "prepared"}})
+                with self.assertRaisesRegex(ValueError, "^invalid_diagnostic_file$"):
+                    backend.validate_diagnostic_archive(body, digest)
+
+    def test_annotation_diagnostic_files_still_reject_sensitive_nested_fields(self):
+        for name in ("runtime_outputs/duty_annotation_request.json", "runtime_outputs/duty_personnel_deductions.json"):
+            for key in ("password", "user_id", "cookie"):
+                with self.subTest(name=name, key=key):
+                    body, digest = self._gui_notice_diagnostic_archive({name: {"items": [{key: "must-not-store"}]}})
+                    with self.assertRaisesRegex(ValueError, "^unsafe_diagnostic_fields$"):
+                        backend.validate_diagnostic_archive(body, digest)
+
     def test_list_days_reads_each_day_once_and_keeps_cross_day_results_without_writes(self):
         now = datetime(2026, 10, 22, 9, 0)
         with tempfile.TemporaryDirectory() as tmp:
