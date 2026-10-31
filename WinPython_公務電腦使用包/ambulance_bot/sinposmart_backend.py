@@ -1489,6 +1489,7 @@ def sinposmart_tool_failure_stage_label(event: dict[str, Any]) -> str:
         "config_load": "工具設定讀取",
         "browser_start": "瀏覽器啟動",
         "login": "網站登入",
+        "civilpower_open": "民力系統入口驗證",
         "duty_form_open": "開啟勤務表頁面",
         "duty_fill": "填寫勤務表",
         "duty_save": "儲存勤務表",

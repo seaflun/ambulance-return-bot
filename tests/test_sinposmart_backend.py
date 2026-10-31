@@ -2729,6 +2729,28 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
                 self.assertEqual(card["status_label"], "失敗")
                 self.assertEqual(event["snapshot"]["failure_stage"], stage)
 
+    def test_civilpower_entry_stage_is_distinct_and_later_success_preserves_failed_runs(self):
+        events = []
+        for index, stage in enumerate(("login", "civilpower_open", "unknown_stage"), 1):
+            events.append(normalize_sinposmart_event({
+                "event_id": f"civilpower-failure-{index}", "occurred_at": f"2026-11-01T09:0{index}:00",
+                "record_type": "tool_action_finished", "status": "failed",
+                "snapshot": {"tool_name": "civilpower", "tool_label": "民力系統",
+                             "run_id": f"civilpower-run-{index}", "failure_stage": stage},
+            }))
+        events.append(normalize_sinposmart_event({
+            "event_id": "civilpower-later-success", "occurred_at": "2026-11-01T09:05:00",
+            "record_type": "tool_action_finished", "status": "completed",
+            "snapshot": {"tool_name": "civilpower", "tool_label": "民力系統", "run_id": "civilpower-run-4"},
+        }))
+        cards = {card["event_id"]: card for card in build_sinposmart_admin_view(events)["tool_events"]}
+        self.assertEqual(cards["civilpower-failure-1"]["failure_stage_label"], "網站登入")
+        self.assertEqual(cards["civilpower-failure-2"]["failure_stage_label"], "民力系統入口驗證")
+        self.assertEqual(cards["civilpower-failure-3"]["failure_stage_label"], "")
+        self.assertTrue(all(cards[f"civilpower-failure-{index}"]["status_label"] == "失敗" for index in (1, 2, 3)))
+        self.assertEqual(cards["civilpower-later-success"]["status_label"], "完成")
+        self.assertEqual(cards["civilpower-later-success"]["failure_stage_label"], "")
+
     def test_admin_view_marks_tool_waiting_as_attention_without_calling_it_failed(self):
         event = normalize_sinposmart_event(
             {
