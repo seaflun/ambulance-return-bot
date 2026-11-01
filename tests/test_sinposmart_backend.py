@@ -1368,6 +1368,83 @@ class PersonnelTitleSnapshotTests(unittest.TestCase):
 
 
 class SinpoSmartBackendStoreTests(unittest.TestCase):
+    def test_comparison_entry_metadata_preserves_typed_quality_through_store_roundtrip(self):
+        metadata = {
+            "schema": "entry-log-v1", "primary_index": 2, "direction_index": 4,
+            "primary_name": "09番 測試", "direction": "出", "category": "火災", "reason": "測試原因",
+            "record_at": "2026-10-31T19:44", "system_written_at": "2026-11-01T02:00",
+            "record_time_valid": True, "system_written_valid": False,
+            "structure_valid": True, "detail_present": False, "detail_status": "empty",
+        }
+        raw = {"event_id": "entry-quality", "record_type": "comparison_snapshot",
+               "occurred_at": "2026-11-01T21:00:00", "snapshot": {"days": [{
+                   "target_date": "1151101", "entry_rows": [["first"], ["second"]],
+                   "entry_metadata": [metadata, {**metadata, "detail_present": True, "detail_status": "present"}],
+               }]}}
+        original = copy.deepcopy(raw)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            event = store.upsert_event(raw, now=datetime(2026, 11, 1, 21))
+            stored = store.read_day("2026-11-01", now=datetime(2026, 11, 1, 21))["events"][0]
+        actual = event["snapshot"]["days"][0]["entry_metadata"]
+        self.assertEqual(actual, raw["snapshot"]["days"][0]["entry_metadata"])
+        self.assertIs(actual[0]["detail_present"], False)
+        self.assertIs(actual[0]["structure_valid"], True)
+        self.assertEqual(stored["snapshot"]["days"][0]["entry_metadata"], actual)
+        self.assertEqual(normalize_sinposmart_event(event)["snapshot"], event["snapshot"])
+        self.assertEqual(raw, original)
+
+    def test_comparison_entry_metadata_marks_invalid_placeholders_and_truncated_reason(self):
+        rows = [{"schema": "entry-log-v1", "_invalid": value, "reason": "測" * 1201}
+                for value in (True, False, "False")]
+        rows.extend([None, {"schema": "other", "structure_valid": True}])
+        event = normalize_sinposmart_event({"record_type": "comparison_snapshot", "snapshot": {"days": [{
+            "entry_rows": [["row"]] * 6, "entry_metadata": rows}]}})
+        actual = event["snapshot"]["days"][0]["entry_metadata"]
+        for index, invalid in enumerate((True, False, None)):
+            self.assertIs(actual[index]["_invalid"], invalid)
+            self.assertEqual(actual[index]["reason"], "測" * 1200)
+            self.assertIs(actual[index]["reason_truncated"], True)
+        self.assertEqual(actual[3:], [{"_invalid": True}] * 3)
+        self.assertEqual(normalize_sinposmart_event(event)["snapshot"], event["snapshot"])
+
+    def test_comparison_entry_metadata_rejects_coerced_quality_and_unknown_fields(self):
+        for invalid in ("False", "True", 0, 1, None, [], {}):
+            with self.subTest(invalid=invalid):
+                metadata = {"schema": "entry-log-v1", "primary_index": True, "direction_index": "4",
+                    "primary_name": ["not-text"], "direction": "請選擇", "category": "測試",
+                    "reason": "password=must-mask", "record_at": "2026-02-30T10:00",
+                    "system_written_at": "2026-11-01T10:00:59", "detail_status": "unknown",
+                    "record_key": "must-drop", "onclick": "must-drop", "handler": "must-drop",
+                    **{key: invalid for key in ("record_time_valid", "system_written_valid", "structure_valid", "detail_present")}}
+                event = normalize_sinposmart_event({"record_type": "comparison_snapshot", "snapshot": {
+                    "days": [{"entry_rows": [["row"]], "entry_metadata": [metadata]}]}})
+                actual = event["snapshot"]["days"][0]["entry_metadata"][0]
+                for key in ("record_time_valid", "system_written_valid", "structure_valid", "detail_present",
+                            "primary_index", "direction_index", "record_at", "system_written_at"):
+                    self.assertIsNone(actual[key], key)
+                self.assertEqual(actual["primary_name"], "")
+                self.assertEqual(actual["detail_status"], "unconfirmed")
+                self.assertNotIn("must-drop", json.dumps(actual))
+                self.assertNotIn("must-mask", json.dumps(actual))
+                self.assertEqual(normalize_sinposmart_event(event)["snapshot"], event["snapshot"])
+
+    def test_comparison_entry_metadata_is_bounded_aligned_and_scoped(self):
+        metadata = {"schema": "entry-log-v1", "detail_present": False, "structure_valid": True}
+        days = [
+            {"entry_rows": [["a"], ["b"]], "entry_metadata": [metadata, {"schema": "unknown", "structure_valid": True}, metadata]},
+            {"entry_rows": [["row"]] * 55, "entry_metadata": [metadata] * 55},
+            {"entry_rows": [], "entry_metadata": [metadata]},
+        ]
+        event = normalize_sinposmart_event({"record_type": "comparison_snapshot", "snapshot": {"days": days}})
+        clean = event["snapshot"]["days"]
+        self.assertEqual(len(clean[0]["entry_metadata"]), 2)
+        self.assertEqual(clean[0]["entry_metadata"][1], {"_invalid": True})
+        self.assertEqual(len(clean[1]["entry_metadata"]), 50)
+        self.assertEqual(clean[2]["entry_metadata"], [])
+        other = normalize_sinposmart_event({"record_type": "login", "snapshot": {"days": days}})
+        self.assertEqual(other["snapshot"]["days"][0]["entry_metadata"][0]["detail_present"], "")
+
     @staticmethod
     def _gui_notice_diagnostic_archive(files):
         # Match the sanitized ZIP contract emitted by Duty GUI DiagnosticsService.

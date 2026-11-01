@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.11.01.2136">
+      <div class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.11.01.2136') }}</p>
+          <h2 class="update-card__title">任務編組與出入紀錄品質維護</h2>
+        </div>
+        <span class="update-card__versions">2026.11.01.2136</span>
+      </div>
+      <ul class="update-card__items">
+        <li>同步修正值班台任務編組頁共用按鈕識別及隱藏備註欄的辨識，保留保存後回查。</li>
+        <li>出入主列與原因明細依正式網站的同筆關聯讀取，分開核對出入時間與首次登打時間。</li>
+        <li>方向未選或資料不足時安全暫停相關人員，保留已知未返隊與跨日重查。</li>
+        <li>值班快照保留逐筆資料品質的原始布林值，協助核對歷史異常。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.11.01.1428">
       <div class="update-card__heading">
         <div>

@@ -2779,6 +2779,18 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
     event["merged_event_ids"] = [event["event_id"]]
     if isinstance(snapshot, dict):
         snapshot.pop("personnel_titles", None)
+        if record_type == "comparison_snapshot" and isinstance(raw_snapshot, dict):
+            raw_days, days = raw_snapshot.get("days"), snapshot.get("days")
+            if isinstance(raw_days, list) and isinstance(days, list):
+                for raw_day, day in zip(raw_days[:200], days):
+                    if not isinstance(raw_day, dict) or not isinstance(day, dict) or "entry_metadata" not in raw_day:
+                        continue
+                    rows, metadata = raw_day.get("entry_rows"), raw_day.get("entry_metadata")
+                    metadata = metadata if isinstance(metadata, list) else []
+                    day["entry_metadata"] = [
+                        _sanitize_entry_quality_metadata(metadata[index] if index < len(metadata) else None)
+                        for index in range(min(len(rows), 50) if isinstance(rows, list) else 0)
+                    ]
         if record_type == "unreturned_return" and isinstance(raw_snapshot, dict):
             raw_handoff = raw_snapshot.get("handoff")
             if isinstance(raw_handoff, dict) and "completion_confirmed" in raw_handoff and isinstance(snapshot.get("handoff"), dict):
@@ -3182,6 +3194,40 @@ def sanitize_daily_vehicle_report(value: Any, *, expected_date: str | None = Non
     elif not verified and reason in {"", *positive}:
         reason = next((row["reason_code"] for row in items if row["status"] == "unconfirmed"), "execution_unconfirmed")
     return {"target_date": target_date, "execution_mode": mode, "verified": bool(verified), "reason_code": reason, "items": items}
+
+
+def _sanitize_entry_quality_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("schema") != "entry-log-v1":
+        return {"_invalid": True}
+    clean: dict[str, Any] = {"schema": "entry-log-v1"}
+    for key, limit in (("primary_name", 160), ("direction", 40), ("category", 80), ("reason", 1200)):
+        raw = value.get(key)
+        clean[key] = sanitize_scalar(raw, limit) if isinstance(raw, str) else ""
+    for key in ("record_time_valid", "system_written_valid", "structure_valid", "detail_present"):
+        raw = value.get(key)
+        clean[key] = raw if type(raw) is bool else None
+    for key in ("_invalid", "reason_truncated"):
+        if key in value:
+            raw = value[key]
+            clean[key] = raw if type(raw) is bool else None
+    if isinstance(value.get("reason"), str) and len(value["reason"]) > 1200:
+        clean["reason_truncated"] = True
+    for key, allowed in (("primary_index", (2, 3)), ("direction_index", (4, 5))):
+        raw = value.get(key)
+        clean[key] = raw if type(raw) is int and raw in allowed else None
+    for key in ("record_at", "system_written_at"):
+        raw = value.get(key)
+        clean[key] = None
+        if isinstance(raw, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", raw):
+            try:
+                datetime.fromisoformat(raw)
+            except ValueError:
+                pass
+            else:
+                clean[key] = raw
+    status = value.get("detail_status")
+    clean["detail_status"] = status if isinstance(status, str) and status in {"present", "empty", "unconfirmed"} else "unconfirmed"
+    return clean
 
 
 def sanitize_value(value: Any, depth: int = 0) -> Any:
