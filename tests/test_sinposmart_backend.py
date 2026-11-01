@@ -3834,6 +3834,70 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(view["action_events"][0]["status_label"], "等待登打")
         self.assertNotIn("queued_for_worker", view["action_events"][0].values())
 
+    def test_unreturned_history_does_not_infer_return_or_actual_handoff_from_planned_people(self):
+        for status in ("pending", "retrying", "resolved"):
+            for actual_people in ([], ["16番 表定接班"]):
+                with self.subTest(status=status, actual_people=actual_people):
+                    event = normalize_sinposmart_event({
+                        "event_id": "legacy-plan", "occurred_at": "2026-11-01T11:05:45",
+                        "record_type": "unreturned_return", "trigger_type": "recovery", "status": status,
+                        "snapshot": {"queue_id": "queue-planned", "last_owner_actor_no": "16",
+                            "blocked_actor_no": "9", "unreturned_entry_at": "2026-11-01T09:35:00",
+                            "known_departures": {"9": "2026-11-01T09:35:00"},
+                            "handoff": {"outgoing_person": "9番 原值退", "scheduled_incoming_person": "16番 表定接班",
+                                "actual_incoming_person": "16番 表定接班", "actual_incoming_people": actual_people}},
+                    })
+                    card = build_sinposmart_admin_view([event])["unreturned_return_history_events"][0]
+                    self.assertEqual(card["status_label"], "處理完成" if status == "resolved" else
+                                     "暫停待確認" if status == "pending" else "重新確認中")
+                    self.assertEqual(card["trigger_label"], "自動重查")
+                    self.assertEqual(card["blocked_actor_no"], "9")
+                    self.assertEqual(card["owner_actor_no"], "16")
+                    self.assertEqual(card["actual_incoming_person"], "")
+                    self.assertNotIn("已確認返隊", json.dumps(card, ensure_ascii=False))
+
+    def test_unreturned_actual_handoff_requires_explicit_boolean_completion_or_legacy_bridge(self):
+        for status in ("pending", "retrying", "resolved"):
+            for confirmation in (True, False, "True"):
+                with self.subTest(status=status, confirmation=confirmation):
+                    event = normalize_sinposmart_event({
+                        "event_id": "completion-evidence", "occurred_at": "2026-11-01T11:05:45",
+                        "record_type": "unreturned_return", "status": status, "snapshot": {
+                            "queue_id": "queue-completion", "handoff": {"completion_confirmed": confirmation,
+                                "actual_incoming_person": "16番 接班", "actual_incoming_people": ["16番 接班"]}},
+                    })
+                    card = build_sinposmart_admin_view([event])["unreturned_return_history_events"][0]
+                    self.assertIs(event["snapshot"]["handoff"]["completion_confirmed"], confirmation is True)
+                    self.assertEqual(card["actual_incoming_person"], "16番 接班" if status == "resolved" and confirmation is True else "")
+
+    def test_unreturned_history_preserves_recreated_queue_ids_and_bridge_completion(self):
+        def event(queue_id, at, status, **handoff):
+            return normalize_sinposmart_event({
+                "event_id": queue_id + at, "occurred_at": "2026-11-01T" + at,
+                "record_type": "unreturned_return", "trigger_type": "recovery", "status": status,
+                "target_time": "10:00", "item_kind": "出入", "item_title": "值退", "target": "9番 原值退",
+                "snapshot": {"queue_id": queue_id, "completion_key": "same-duty", "source_target_date": "1151101",
+                    "origin_actor_no": "9", "handoff": {"original_handoff_time": "10:00",
+                        "outgoing_person": "9番 原值退", "scheduled_incoming_person": "16番 表定接班",
+                        "actual_incoming_person": "16番 表定接班", **handoff}},
+            })
+        events = [event("queue-original", "10:00:02", "pending"), event("queue-original", "11:05:45", "resolved"),
+                  event("queue-recreated", "11:18:10", "pending"),
+                  event("queue-recreated", "12:02:12", "resolved", bridge_at="2026-11-01T12:02:00",
+                        actual_incoming_people=["6番 接班"], skipped_scheduled_people=["16番 表定接班"])]
+        original = copy.deepcopy(events)
+        view = build_sinposmart_admin_view(events)
+        cards = {card["queue_id"]: card for card in view["unreturned_return_history_events"]}
+        self.assertEqual(set(cards), {"queue-original", "queue-recreated"})
+        self.assertEqual(cards["queue-original"]["status_label"], "處理完成")
+        self.assertEqual(cards["queue-original"]["actual_incoming_person"], "")
+        self.assertEqual(cards["queue-recreated"]["status_label"], "跨班接續完成")
+        self.assertEqual(cards["queue-recreated"]["actual_incoming_person"], "6番 接班")
+        self.assertEqual(cards["queue-recreated"]["skipped_scheduled_people"], ["16番 表定接班"])
+        self.assertEqual(cards["queue-recreated"]["transitions"][-1]["status_label"], "跨班接續完成")
+        self.assertEqual(cards["queue-recreated"]["original_handoff_time"], "10:00")
+        self.assertEqual(events, original)
+
     def test_admin_view_keeps_only_active_unreturned_return_records(self):
         def event(event_id, occurred_at, status, queue_id, *, retry_minutes):
             return normalize_sinposmart_event(

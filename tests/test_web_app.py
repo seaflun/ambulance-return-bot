@@ -6222,6 +6222,34 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("人工取消", body)
         self.assertEqual(self.client.post("/admin/sinposmart/unreturned/cancel", data=form).status_code, 409)
 
+    def test_sinposmart_admin_distinguishes_waiting_person_retry_handler_and_planned_handoff(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        os.environ["WORKER_TOKEN"] = "fixture-cancel-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+            "event_id": "unreturned-distinct-handler", "occurred_at": f"{fire_day}T11:18:10",
+            "record_type": "unreturned_return", "trigger_type": "recovery", "status": "retrying",
+            "item_kind": "出入", "item_title": "值退", "target": "9番 待返隊", "target_time": "10:00",
+            "snapshot": {"queue_id": "queue-handler-distinct", "blocked_actor_no": "9", "last_owner_actor_no": "16",
+                "workstation": "TEST-DUTY-PC", "unreturned_entry_at": f"{fire_day}T09:35:00",
+                "known_departures": {"9": f"{fire_day}T09:35:00"}, "handoff": {
+                    "outgoing_person": "9番 待返隊", "scheduled_incoming_person": "16番 表定接班",
+                    "actual_incoming_person": "16番 表定接班"}},
+        })
+        self.assertEqual(response.status_code, 200)
+        stored_path = app_module.sinposmart_store().path_for_day(fire_day)
+        stored_before = stored_path.read_bytes()
+        body = html.unescape(self.client.get("/admin/sinposmart?fire_day=" + fire_day).get_data(as_text=True))
+        self.assertIn("待返隊：9番", body)
+        self.assertIn("處理人：16番", body)
+        self.assertIn("自動重查", body)
+        self.assertIn("最新回報：", body)
+        self.assertNotIn("實際接班：16番 表定接班", body)
+        self.assertNotIn("已確認返隊", body)
+        self.assertNotIn("自動返隊確認", body)
+        self.assertIn('name="queue_id" value="queue-handler-distinct"', body)
+        self.assertEqual(stored_path.read_bytes(), stored_before)
+
     def test_sinposmart_admin_shows_active_unreturned_return_card(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()
@@ -6351,8 +6379,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn("實際接班：16番 實際接班", body)
         self.assertIn("略過的表定接班：8番 表定接班", body)
         self.assertIn("自動偵測未返隊", body)
-        self.assertIn("自動返隊確認", body)
-        self.assertIn("手動確認返隊", body)
+        self.assertIn("自動重查", body)
+        self.assertIn("手動重查", body)
         history = re.search(
             r'<details\b(?P<attributes>[^>]*)>\s*'
             r'<summary[^>]*>完整確認歷程（3 筆）</summary>'
@@ -6366,9 +6394,10 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertIn(f'datetime="{fire_day}T10:00:00"', transitions)
         self.assertIn(f'datetime="{fire_day}T12:41:00"', transitions)
         compact = body.replace(history.group(0), "")
-        self.assertIn("已確認返隊", compact)
-        self.assertIn(f'<time class="event-time" datetime="{fire_day}T12:41:00">{fire_day} 12:41:00</time>', compact)
-        self.assertNotIn("最新回報：", compact)
+        self.assertIn("跨班接續完成", compact)
+        self.assertNotIn("已確認返隊", compact)
+        self.assertIn(f'<time class="event-time" datetime="{fire_day}T12:41:00">最新回報：{fire_day} 12:41:00</time>', compact)
+        self.assertEqual(compact.count("最新回報："), 1)
         self.assertIn(f"首次暫停：{fire_day} 10:00:00", compact)
         self.assertIn(f"最後結果：{fire_day} 12:41:00", compact)
         self.assertNotIn("自動偵測未返隊", compact)

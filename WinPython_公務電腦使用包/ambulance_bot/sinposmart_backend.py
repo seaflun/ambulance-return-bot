@@ -585,11 +585,12 @@ def sinposmart_action_status_rank(value: str, record_type: str = "") -> int:
     return priorities.get(label, 0)
 
 
-def sinposmart_unreturned_return_status_label(value: str) -> str:
+def sinposmart_unreturned_return_status_label(value: str, *, bridge_at: Any = "") -> str:
+    bridged = parse_event_datetime(bridge_at, datetime.min) != datetime.min
     labels = {
         "pending": "暫停待確認",
         "retrying": "重新確認中",
-        "resolved": "已確認返隊",
+        "resolved": "跨班接續完成" if bridged else "處理完成",
         "expired": "逾 18 小時移除",
         "cancelled": "人工取消（停止重查與補登）",
     }
@@ -610,9 +611,9 @@ def sinposmart_unreturned_return_trigger_label(event: dict[str, Any]) -> str:
     if trigger_type == "admin_cancel":
         return "NAS 人工取消"
     if trigger_type == "manual":
-        return "手動確認返隊"
+        return "手動重查"
     if trigger_type == "recovery":
-        return "自動返隊確認"
+        return "自動重查"
     if trigger_type == "due":
         return "自動偵測未返隊"
     return sinposmart_trigger_label(trigger_type)
@@ -1134,9 +1135,10 @@ def sinposmart_admin_event(event: dict[str, Any], status_label: str | None = Non
 
 def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str, Any]:
     snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+    handoff = snapshot.get("handoff") if isinstance(snapshot.get("handoff"), dict) else {}
     card = sinposmart_admin_event(
         event,
-        sinposmart_unreturned_return_status_label(str(event.get("status") or "")),
+        sinposmart_unreturned_return_status_label(str(event.get("status") or ""), bridge_at=handoff.get("bridge_at")),
     )
     card["record_label"] = "因人員未返隊暫停"
     card["status_class"] = sinposmart_unreturned_return_status_class(str(event.get("status") or ""))
@@ -1149,6 +1151,8 @@ def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str,
     card["next_retry_at"] = sanitize_scalar(snapshot.get("next_retry_at"), 80)
     card["expires_at"] = sanitize_scalar(snapshot.get("expires_at"), 80)
     card["owner_actor_no"] = sanitize_scalar(snapshot.get("last_owner_actor_no"), 40)
+    blocked_actor = sanitize_scalar(snapshot.get("blocked_actor_no"), 40)
+    card["blocked_actor_no"] = blocked_actor if re.fullmatch(r"\d{1,3}", blocked_actor) else ""
     try:
         card["retry_interval_minutes"] = max(0, int(snapshot.get("retry_interval_minutes") or 0))
     except (TypeError, ValueError):
@@ -1249,11 +1253,13 @@ def sinposmart_admin_unreturned_return_history_event(
         "scheduled_incoming_person",
         120,
     )
-    card["actual_incoming_person"] = sanitize_scalar(
-        actual_people[-1] if actual_people else latest_handoff.get("actual_incoming_person"),
-        120,
+    completed = str(latest_event.get("status") or "").strip().lower() == "resolved"
+    completion_evidence = latest_handoff.get("completion_confirmed") is True or (
+        "completion_confirmed" not in latest_handoff and bool(actual_people) and card["status_label"] == "跨班接續完成"
     )
-    card["skipped_scheduled_people"] = list(dict.fromkeys(skipped_people))
+    actual_incoming = actual_people[-1] if actual_people else latest_handoff.get("actual_incoming_person")
+    card["actual_incoming_person"] = sanitize_scalar(actual_incoming, 120) if completed and completion_evidence else ""
+    card["skipped_scheduled_people"] = list(dict.fromkeys(skipped_people)) if completed and completion_evidence else []
     card["has_handoff_context"] = any(
         (
             card["original_handoff_time"],
@@ -1272,7 +1278,9 @@ def sinposmart_admin_unreturned_return_history_event(
         {
             "occurred_at": sinposmart_event_time(event),
             "status_label": sinposmart_unreturned_return_status_label(
-                str(event.get("status") or "")
+                str(event.get("status") or ""),
+                bridge_at=((event.get("snapshot") or {}).get("handoff") or {}).get("bridge_at")
+                if isinstance((event.get("snapshot") or {}).get("handoff"), dict) else "",
             ),
             "status_class": sinposmart_unreturned_return_status_class(
                 str(event.get("status") or "")
@@ -2771,6 +2779,10 @@ def normalize_sinposmart_event(raw_event: dict[str, Any], now: datetime | None =
     event["merged_event_ids"] = [event["event_id"]]
     if isinstance(snapshot, dict):
         snapshot.pop("personnel_titles", None)
+        if record_type == "unreturned_return" and isinstance(raw_snapshot, dict):
+            raw_handoff = raw_snapshot.get("handoff")
+            if isinstance(raw_handoff, dict) and "completion_confirmed" in raw_handoff and isinstance(snapshot.get("handoff"), dict):
+                snapshot["handoff"]["completion_confirmed"] = raw_handoff["completion_confirmed"] is True
         if record_type == "schedule_snapshot" and isinstance(raw_snapshot, dict) and "personnel_titles" in raw_snapshot:
             personnel_titles = _personnel_title_snapshot(raw_snapshot["personnel_titles"], allow_incomplete=True)
             if personnel_titles:
