@@ -3975,6 +3975,18 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
         self.assertEqual(cards["queue-recreated"]["original_handoff_time"], "10:00")
         self.assertEqual(events, original)
 
+    def test_unreturned_review_remains_visible_without_advertising_automatic_retry(self):
+        event = {"record_type": "unreturned_return", "status": "review_required", "occurred_at": "2026-11-03T07:59:00",
+                 "snapshot": {"queue_id": "review-fixture", "next_retry_at": "2026-11-03T08:09:00",
+                              "retry_interval_minutes": 10}}
+        view = build_sinposmart_admin_view([event])
+        self.assertEqual(len(view["unreturned_return_events"]), 1)
+        card = view["unreturned_return_history_events"][0]
+        self.assertTrue(card["is_active"])
+        self.assertTrue(card["retry_blocked"])
+        self.assertEqual(card["status_label"], "登打待確認（已停止自動重試）")
+        self.assertEqual(card["next_retry_at"], "")
+
     def test_admin_view_keeps_only_active_unreturned_return_records(self):
         def event(event_id, occurred_at, status, queue_id, *, retry_minutes):
             return normalize_sinposmart_event(

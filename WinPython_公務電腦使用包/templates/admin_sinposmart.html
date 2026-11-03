@@ -472,8 +472,9 @@
             {% if event.is_active %}
               <div class="unreturned-return-meta">
                 最近重查：{{ notice_time(event.last_attempt_at, '尚未重查') }}
-                ｜下次重試：{{ notice_time(event.next_retry_at, '等待登入') }}
-                ｜間隔：{{ event.retry_interval_minutes or 0 }} 分鐘
+                {% if event.retry_blocked %}｜自動重試已停止，請至公務電腦核對後手動重試
+                {% else %}｜下次重試：{{ notice_time(event.next_retry_at, '等待登入') }}
+                ｜間隔：{{ event.retry_interval_minutes or 0 }} 分鐘{% endif %}
                 ｜到期：{{ notice_time(event.expires_at, '未標示') }}
                 {% if event.owner_actor_no %}｜處理人：{{ event.owner_actor_no }}番{% endif %}
               </div>

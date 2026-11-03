@@ -593,6 +593,7 @@ def sinposmart_unreturned_return_status_label(value: str, *, bridge_at: Any = ""
         "resolved": "跨班接續完成" if bridged else "處理完成",
         "expired": "逾 18 小時移除",
         "cancelled": "人工取消（停止重查與補登）",
+        "review_required": "登打待確認（已停止自動重試）",
     }
     return labels.get(str(value or "").strip().lower(), "未返隊暫停")
 
@@ -603,6 +604,8 @@ def sinposmart_unreturned_return_status_class(value: str) -> str:
         return "complete"
     if status == "expired":
         return "failed"
+    if status == "review_required":
+        return "attention"
     return "running"
 
 
@@ -1149,6 +1152,9 @@ def sinposmart_admin_unreturned_return_event(event: dict[str, Any]) -> dict[str,
     card["first_paused_at"] = sanitize_scalar(snapshot.get("first_paused_at"), 80)
     card["last_attempt_at"] = sanitize_scalar(snapshot.get("last_attempt_at"), 80)
     card["next_retry_at"] = sanitize_scalar(snapshot.get("next_retry_at"), 80)
+    card["retry_blocked"] = str(event.get("status") or "").strip().lower() == "review_required"
+    if card["retry_blocked"]:
+        card["next_retry_at"] = ""
     card["expires_at"] = sanitize_scalar(snapshot.get("expires_at"), 80)
     card["owner_actor_no"] = sanitize_scalar(snapshot.get("last_owner_actor_no"), 40)
     blocked_actor = sanitize_scalar(snapshot.get("blocked_actor_no"), 40)
@@ -1273,6 +1279,7 @@ def sinposmart_admin_unreturned_return_history_event(
     card["is_active"] = str(latest_event.get("status") or "").strip().lower() in {
         "pending",
         "retrying",
+        "review_required",
     }
     card["transitions"] = [
         {
@@ -1852,7 +1859,7 @@ def build_sinposmart_admin_view(
     unreturned_return_cards = [
         sinposmart_admin_unreturned_return_event(event)
         for event in unreturned_return_events.values()
-        if str(event.get("status") or "").strip().lower() in {"pending", "retrying"}
+        if str(event.get("status") or "").strip().lower() in {"pending", "retrying", "review_required"}
     ]
     unreturned_return_cards.sort(key=lambda item: str(item.get("next_retry_at") or ""))
     unreturned_return_history_cards = [
