@@ -73,14 +73,14 @@ class DisasterSharedLoginTests(unittest.TestCase):
         self.assertIs(second, open_page.call_args.args[1])
         self.assertIs(first, open_page.call_args.kwargs["login_request"])
 
-    def test_worker_reuses_first_vehicle_login_even_when_primary_vehicle_is_skipped(self):
-        for skip_first in (False, True):
-            with self.subTest(skip_first=skip_first), \
+    def test_worker_uses_first_vehicle_login_even_when_first_vehicle_is_skipped(self):
+        for service_type, skip_first in (("disaster", False), ("disaster", True), ("ems", False), ("ems", True)):
+            with self.subTest(service_type=service_type, skip_first=skip_first), \
                  patch.object(worker, "post_status"), \
                  patch.object(worker, "run_vehicle_mileage_task",
                               return_value=SimpleNamespace(status="vehicle_mileage_saved", detail="已回查")) as run:
                 completed = {"新坡11": {"status": "vehicle_mileage_saved", "detail": "已回查"}} if skip_first else {}
-                worker.run_vehicle_task("http://nas", "worker", request().to_dict(), Path("artifacts"),
+                worker.run_vehicle_task("http://nas", "worker", request(service_type).to_dict(), Path("artifacts"),
                                         vehicle_results=completed, update_overall=False)
             self.assertEqual(["乙"] if skip_first else ["甲", "乙"],
                              [call.args[0].driver for call in run.call_args_list])
@@ -88,20 +88,11 @@ class DisasterSharedLoginTests(unittest.TestCase):
                              [call.kwargs["login_request"].driver for call in run.call_args_list])
             self.assertTrue(run.call_args_list[0].kwargs["force_new_driver"])
 
-    def test_ems_mileage_keeps_each_vehicle_login_without_shared_override(self):
-        with patch.object(worker, "post_status"), \
-             patch.object(worker, "run_vehicle_mileage_task",
-                          return_value=SimpleNamespace(status="vehicle_mileage_saved", detail="已回查")) as run:
-            worker.run_vehicle_task("http://nas", "worker", request("ems").to_dict(), Path("artifacts"),
-                                    update_overall=False)
-        self.assertEqual(["甲", "乙"], [call.args[0].driver for call in run.call_args_list])
-        self.assertTrue(all("login_request" not in call.kwargs for call in run.call_args_list))
-
-    def test_desktop_reuses_first_vehicle_login_even_when_primary_vehicle_is_skipped(self):
-        for skip_first in (False, True):
-            with self.subTest(skip_first=skip_first), tempfile.TemporaryDirectory() as tmp:
+    def test_desktop_uses_first_vehicle_login_even_when_first_vehicle_is_skipped(self):
+        for service_type, skip_first in (("disaster", False), ("disaster", True), ("ems", False), ("ems", True)):
+            with self.subTest(service_type=service_type, skip_first=skip_first), tempfile.TemporaryDirectory() as tmp:
                 store = JsonTaskStore(Path(tmp) / "tasks")
-                task = request()
+                task = request(service_type)
                 store.create(task)
                 if skip_first:
                     payload = store.get(task.task_id)

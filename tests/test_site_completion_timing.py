@@ -173,6 +173,28 @@ class SiteCompletionTimingTests(unittest.TestCase):
         events.append(self.event("vehicle_mileage", "2026-10-20T08:00:50", "saved"))
         self.assertEqual(50, self.seconds(events))
 
+    def test_complete_vehicle_confirmations_exclude_aggregate_reporting_delay(self):
+        events = [self.event("disinfection", "2026-10-20T08:00:00"),
+                  self.event("disinfection", "2026-10-20T08:00:25", "saved", vehicle_key="新坡11"),
+                  self.event("disinfection", "2026-10-20T08:00:43", "saved", vehicle_key="新坡15"),
+                  self.event("disinfection", "2026-10-20T08:01:45", "saved")]
+        report = self.report(events)
+        report["task"] = {"vehicle_entries": [{"vehicle": "新坡11"}, {"vehicle": "新坡15"}]}
+        self.assertEqual([{"seconds": 43, "outcome": "saved"}],
+                         app_module.task_entry_timing(report)["sites"]["disinfection"])
+        events.pop(2)
+        self.assertEqual([{"seconds": 105, "outcome": "saved"}],
+                         app_module.task_entry_timing(report)["sites"]["disinfection"])
+
+    def test_delayed_first_attempt_completion_cannot_end_an_active_retry(self):
+        report = self.report([
+            {"time": "2026-10-20T08:00:00", "status": "desktop_fast_running", "detail": "本機快速執行已啟動。"},
+            {"time": "2026-10-20T08:00:30", "status": "desktop_fast_completed_with_errors"},
+            {"time": "2026-10-20T08:01:00", "status": "queued_for_worker"},
+            {"time": "2026-10-20T08:00:30", "status": "desktop_fast_completed_with_errors"},
+        ])
+        self.assertIsNone(app_module.task_entry_timing(report)["total_seconds"])
+
     def test_vehicle_progress_cannot_supply_a_missing_whole_site_start(self):
         events = [self.event("vehicle_mileage", "2026-10-20T08:00:10", vehicle_key="新坡11"),
                   self.event("vehicle_mileage", "2026-10-20T08:00:29", "saved")]

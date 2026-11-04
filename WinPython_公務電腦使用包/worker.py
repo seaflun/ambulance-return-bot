@@ -2803,7 +2803,7 @@ def run_vehicle_task(
         vehicle_results = site_vehicle_results_from_embedded_task(task, "vehicle_mileage")
     request = AmbulanceReturnRequest.from_dict(task)
     vehicle_requests = request.vehicle_requests()
-    login_request = vehicle_requests[0] if request.service_type == "disaster" else None
+    login_request = vehicle_requests[0] if request.service_type == "disaster" or len(vehicle_requests) > 1 else None
     login_audit = login_audit_for_site("vehicle_mileage", login_request or request)
     print(f"[worker] vehicle mileage task {request.task_id}", flush=True)
     post_status(

@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.11.04.1317">
+      <div class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.11.04.1317') }}</p>
+          <h2 class="update-card__title">雙車救護共用里程登入與登打耗時明細</h2>
+        </div>
+        <span class="update-card__versions">2026.11.04.1317</span>
+      </div>
+      <ul class="update-card__items">
+        <li>雙車救護登打里程時使用第一車司機的登入選擇，兩台車各自保留原車號、司機、返隊時間與里程。單獨重試第二車也沿用同一選擇。</li>
+        <li>救護後台在各站分開顯示首次登打與每次重試，在任務卡顯示整筆耗時。缺少起訖回報的紀錄會標示未記錄。</li>
+        <li>雙車各自回報完成時，站別以最後一車完成的時間計算，整筆耗時仍計入等待與重試。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.11.04.1216">
       <div class="update-card__heading">
         <div>

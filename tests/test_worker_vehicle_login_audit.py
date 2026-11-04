@@ -50,7 +50,7 @@ class WorkerVehicleLoginAuditTests(unittest.TestCase):
     def check_vehicle_accounts(self, site_key, *, service_type="disaster"):
         result, actions, posts = self.run_site(site_key, service_type=service_type)
         self.assertEqual(["新坡11", "新坡15"], actions)
-        shared_mileage = site_key == "vehicle_mileage" and service_type == "disaster"
+        shared_mileage = site_key == "vehicle_mileage"
         for vehicle, driver in (("新坡11", "甲"), ("新坡15", "甲" if shared_mileage else "乙")):
             with self.subTest(vehicle=vehicle):
                 vehicle_posts = [call for call in posts if call.kwargs.get("vehicle_key") == vehicle
@@ -73,7 +73,7 @@ class WorkerVehicleLoginAuditTests(unittest.TestCase):
     def test_disaster_mileage_reports_primary_driver_for_all_vehicles(self):
         self.check_vehicle_accounts("vehicle_mileage")
 
-    def test_ems_mileage_reports_each_vehicle_driver_in_progress_and_result(self):
+    def test_ems_mileage_reports_first_vehicle_driver_in_progress_and_result(self):
         self.check_vehicle_accounts("vehicle_mileage", service_type="ems")
 
     def test_fuel_reports_each_vehicle_driver_in_progress_and_result(self):

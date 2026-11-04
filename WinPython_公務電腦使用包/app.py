@@ -8445,21 +8445,36 @@ def task_failure_stage_view(payload: dict) -> dict:
     return view
 
 
-def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int | None]:
-    """Estimate the latest successful site run from its reported lifecycle events."""
+def _entry_elapsed_seconds(start: datetime | None, end: datetime | None) -> int | None:
+    if start is None or end is None or end < start:
+        return None
+    return int((end - start).total_seconds() + 0.5)
+
+
+def task_entry_timing(report: Mapping[str, object]) -> dict:
+    """Pair each station's attempts and the task's overall execution window."""
+    attempts = {key: [] for key in SITE_RUN_ORDER}
     seconds: dict[str, int | None] = dict.fromkeys(SITE_RUN_ORDER)
+    timing = {"sites": attempts, "total_seconds": None, "latest_success": seconds}
     site_statuses = report.get("site_statuses")
     if not isinstance(site_statuses, Mapping):
-        return seconds
-    completed = {key for key in SITE_RUN_ORDER
-                 if isinstance(site_statuses.get(key), Mapping)
-                 and site_statuses[key].get("status") == f"{key}_saved"}
+        return timing
     starts: dict[str, datetime | None] = {}
     latest_times: dict[str, datetime] = {}
-    completions: dict[str, tuple[datetime | None, str]] = {}
+    results: dict[str, tuple[datetime | None, str, str]] = {}
+    vehicle_saves: dict[str, dict[str, datetime]] = {}
     task = report.get("task") if isinstance(report.get("task"), Mapping) else {}
     entries = task.get("vehicle_entries")
     entries = entries if isinstance(entries, list) else []
+    vehicle_labels = {
+        key: {str(entry.get("vehicle") or f"{index}車")
+              for index, entry in enumerate(entries, 1)
+              if isinstance(entry, Mapping) and (key != "fuel_record"
+                  or (isinstance(entry.get("fuel_record"), Mapping)
+                      and form_flag_enabled(entry["fuel_record"].get("enabled"))))}
+        for key in ("vehicle_mileage", "fuel_record", "consumables", "disinfection")
+    } if len(entries) > 1 else {}
+    task_started_at = task_ended_at = task_boundary_at = last_site_result_at = None
 
     def event_time(event: Mapping[str, object]) -> datetime | None:
         try:
@@ -8475,15 +8490,48 @@ def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int 
         status = str(event.get("status") or "")
         action = str(event.get("action") or "")
         detail = str(event.get("detail") or "")
-        if (action == PUBLIC_PC_LEGACY_RECONCILE_ACTION
-                or str(event.get("event_id") or "").startswith("retry-reconcile:")):
+        event_id = str(event.get("event_id") or "")
+        if (action in {PUBLIC_PC_LEGACY_RECONCILE_ACTION, PUBLIC_PC_SUCCESS_RECONCILE_ACTION}
+                or event_id.startswith(("retry-reconcile:", "success-reconcile:"))):
             continue
+        timestamp = event_time(event)
+        if status == "desktop_fast_running" and (
+            "登打已啟動" in detail or detail.startswith(("本機快速執行已啟動", "本機快速執行中："))
+        ):
+            if timestamp is not None:
+                task_started_at = min(task_started_at, timestamp) if task_started_at else timestamp
+                if task_boundary_at is None or timestamp > task_boundary_at:
+                    task_boundary_at = timestamp
+                    task_ended_at = None
+        elif status in {"desktop_fast_completed", "desktop_fast_completed_with_errors", "site_run_completed", "cancelled"}:
+            if timestamp is not None and task_boundary_at is not None and timestamp >= task_boundary_at:
+                task_ended_at = max(task_ended_at, timestamp) if task_ended_at else timestamp
+            if status in {"desktop_fast_completed_with_errors", "cancelled"}:
+                for key in tuple(starts):
+                    if timestamp is not None and starts[key] is not None and timestamp >= starts[key]:
+                        attempts[key][-1]["outcome"] = "unreported"
+                        starts.pop(key)
+                        seconds[key] = None
+        elif (status in {"queued_for_worker", "claimed_by_worker"} and timestamp is not None
+              and (task_boundary_at is None or timestamp > task_boundary_at)):
+            task_boundary_at = timestamp
+            if task_ended_at is not None and timestamp > task_ended_at:
+                task_ended_at = None
         worker_start = status == "worker_running" and "公務電腦 worker 執行中：" in detail
         site_key = ("duty_work_log" if worker_start else
                     next((key for key in SITE_RUN_ORDER if status.startswith(key + "_")), ""))
-        if site_key not in completed or event.get("vehicle_key"):
+        if site_key not in attempts:
             continue
-        timestamp = event_time(event)
+        vehicle = str(event.get("vehicle_key") or "")
+        if vehicle:
+            if (site_key in starts and vehicle in vehicle_labels.get(site_key, ()) and timestamp is not None
+                    and starts[site_key] is not None and timestamp >= starts[site_key]):
+                saves = vehicle_saves[site_key]
+                if status == f"{site_key}_saved":
+                    saves[vehicle] = min(saves.get(vehicle, timestamp), timestamp)
+                elif status_class(status) in {"failed", "waiting"}:
+                    saves.pop(vehicle, None)
+            continue
         # Delayed outbox events must not replace a newer attempt's lifecycle.
         if timestamp is not None:
             if site_key in latest_times and timestamp < latest_times[site_key]:
@@ -8495,12 +8543,9 @@ def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int 
         parts = [part.strip() for part in aggregate_detail.split(" | ") if part.strip()]
         # Old NAS retry reports dropped vehicle_key. A multi-car terminal must
         # explicitly cover every target; a partial or truncated report is unknown.
-        if (len(entries) > 1 and site_key in {"vehicle_mileage", "fuel_record", "consumables", "disinfection"}
-                and "vehicle_key" not in event and str(event.get("event_id") or "").startswith("retry-status:")
+        labels = vehicle_labels.get(site_key)
+        if (labels is not None and "vehicle_key" not in event and event_id.startswith("retry-status:")
                 and (status == f"{site_key}_saved" or status_class(status) in {"failed", "waiting"})):
-            labels = [str(entry.get("vehicle") or f"{index}車") for index, entry in enumerate(entries, 1)
-                      if isinstance(entry, Mapping) and (site_key != "fuel_record"
-                          or form_flag_enabled(dict(entry.get("fuel_record") or {}).get("enabled")))]
             if not labels or sorted(part.split(": ", 1)[0] for part in parts) != sorted(labels):
                 seconds[site_key] = None
                 continue
@@ -8512,7 +8557,9 @@ def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int 
             or "NAS 已顯示此站完成，略過重試" in part for part in parts
         ))
         if skipped:
-            starts.pop(site_key, None)
+            if site_key in starts:
+                starts.pop(site_key)
+                attempts[site_key].pop()
             continue
         if status == f"{site_key}_running" or worker_start:
             explicit_start = (worker_start or "開始" in action or "重試" in action
@@ -8525,24 +8572,57 @@ def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int 
                               else site_stage_from_detail(site_key, detail))
             if site_key not in starts and not explicit_start and progress_stage:
                 continue
-            if site_key not in starts or explicit_start:
-                starts[site_key] = timestamp
-        elif status == f"{site_key}_saved":
-            completion = (timestamp, detail)
             if site_key in starts:
-                start = starts.pop(site_key)
-                elapsed = (timestamp - start).total_seconds() if start is not None and timestamp is not None else -1
-                seconds[site_key] = int(elapsed + 0.5) if elapsed >= 0 else None
-                completions[site_key] = completion
-            elif timestamp is None or completions.get(site_key) != completion:
-                seconds[site_key] = None
-        elif (status_class(status) in {"failed", "waiting"}
-              or site_waits_for_confirmation(status) or status.endswith("_vehicle_candidate_available")):
-            starts.pop(site_key, None)
-            seconds[site_key] = None
-    for site_key in starts:
-        seconds[site_key] = None
-    return seconds
+                if not explicit_start or starts[site_key] == timestamp:
+                    continue
+                attempts[site_key][-1]["outcome"] = "unreported"
+            starts[site_key] = timestamp
+            attempts[site_key].append({"seconds": None, "outcome": "running"})
+            vehicle_saves[site_key] = {}
+            continue
+
+        if status == f"{site_key}_saved":
+            outcome = "saved"
+        elif status_class(status) == "failed":
+            outcome = "failed"
+        elif status_class(status) == "waiting" or site_waits_for_confirmation(status):
+            outcome = "waiting"
+        else:
+            continue
+        result = (timestamp, detail, outcome)
+        if site_key not in starts and results.get(site_key) == result:
+            continue
+        results[site_key] = result
+        duration = None
+        if site_key in starts:
+            finish = timestamp
+            saves = vehicle_saves[site_key]
+            if outcome == "saved" and labels and saves.keys() == labels and timestamp is not None:
+                # Each vehicle already confirmed the save before the aggregate report.
+                finish = min(timestamp, max(saves.values()))
+            duration = _entry_elapsed_seconds(starts.pop(site_key), finish)
+            attempts[site_key][-1].update(seconds=duration, outcome=outcome)
+            if duration is not None and timestamp is not None:
+                last_site_result_at = max(last_site_result_at, timestamp) if last_site_result_at else timestamp
+        elif not attempts[site_key]:
+            # A result alone establishes no later attempt boundary.
+            attempts[site_key].append({"seconds": None, "outcome": outcome})
+        seconds[site_key] = duration if outcome == "saved" else None
+
+    for key, site in site_statuses.items():
+        if key in starts and isinstance(site, Mapping) and status_class(site.get("status")) != "running":
+            attempts[key][-1]["outcome"] = "unreported"
+        if key in seconds and (key in starts or not isinstance(site, Mapping) or site.get("status") != f"{key}_saved"):
+            seconds[key] = None
+    if task_ended_at is not None:
+        # A site's result can arrive just after the overall completion event.
+        task_ended_at = max(task_ended_at, last_site_result_at) if last_site_result_at else task_ended_at
+        timing["total_seconds"] = _entry_elapsed_seconds(task_started_at, task_ended_at)
+    return timing
+
+
+def task_site_completion_seconds(report: Mapping[str, object]) -> dict[str, int | None]:
+    return task_entry_timing(report)["latest_success"]
 
 
 def public_pc_site_failure_history(report: dict, site_key: str) -> list[dict]:
@@ -8955,6 +9035,7 @@ def template_helpers() -> dict:
         "compact_login_account_summary": compact_login_account_summary,
         "task_site_login_accounts": task_site_login_accounts,
         "task_site_completion_seconds": task_site_completion_seconds,
+        "task_entry_timing": task_entry_timing,
         "public_pc_event_display_detail": public_pc_event_display_detail,
         "public_pc_event_rows": public_pc_event_rows,
         "public_pc_site_failure_history": public_pc_site_failure_history,

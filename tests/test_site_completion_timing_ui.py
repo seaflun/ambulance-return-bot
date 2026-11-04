@@ -37,7 +37,7 @@ class SiteCompletionTimingUiTests(unittest.TestCase):
     setUp = fixture.LanLoginVisibilityTests.setUp
     task = fixture.LanLoginVisibilityTests.task
 
-    def render(self, durations, *, states=None, include_optional=False, service="ems"):
+    def render(self, durations, *, states=None, include_optional=False, service="ems", timeline=()):
         self.renders = getattr(self, "renders", 0) + 1
         started = datetime.now().replace(microsecond=0) - timedelta(minutes=15)
         task = self.task(task_id=f"timing-ui-{self.renders}", created_at=started - timedelta(seconds=10),
@@ -52,6 +52,9 @@ class SiteCompletionTimingUiTests(unittest.TestCase):
                                    status=f"{key}_running"))
                 events.append(dict(time=(started + timedelta(seconds=seconds)).isoformat(),
                                    action=f"{web.site_display_name(key)} 結果", status=status))
+        events.extend(dict(time=(started + timedelta(seconds=offset)).isoformat(), status=status, detail=detail)
+                      for offset, status, detail in timeline)
+        events.sort(key=lambda event: event["time"])
         report = dict(task_id=task.task_id, task=task.to_dict(), title="各站耗時測試",
                       updated_at=datetime.now().isoformat(), site_statuses=sites, events=events)
         path = web.public_pc_report_file()
@@ -69,32 +72,57 @@ class SiteCompletionTimingUiTests(unittest.TestCase):
     def test_each_ems_station_card_shows_its_own_completion_seconds(self):
         cards, body = self.render(dict(duty_work_log=29, vehicle_mileage=33, consumables=632, disinfection=34))
         for label, seconds in (("工作", 29), ("里程", 33), ("耗材", 632), ("消毒", 34)):
-            self.assertEqual(f"完成耗時 約 {seconds} 秒", cards[f"{label}完成耗時"])
-        self.assertIn("依該站開始與完成回報時間估算", body)
+            self.assertEqual(f"首次登打 約 {seconds} 秒 重試 —", cards[f"{label}登打耗時"])
+        self.assertIn("各次登打依本站開始與結果回報估算", body)
 
     def test_disaster_and_optional_station_cards_also_show_completion_seconds(self):
         cards, _ = self.render(dict(duty_work_log=29, vehicle_mileage=33), service="disaster")
-        self.assertEqual("完成耗時 約 33 秒", cards["里程完成耗時"])
+        self.assertEqual("首次登打 約 33 秒 重試 —", cards["里程登打耗時"])
         cards, _ = self.render(dict(duty_work_log=29, vehicle_mileage=33, fuel_record=12),
                                service="disaster", include_optional=True)
         self.assertEqual(3, len(cards))
-        self.assertEqual("完成耗時 約 12 秒", cards["加油完成耗時"])
+        self.assertEqual("首次登打 約 12 秒 重試 —", cards["加油登打耗時"])
         cards, _ = self.render(dict(duty_work_log=29, vehicle_mileage=33, consumables=32,
                                     disinfection=34, fuel_record=12, volunteer_assist=70), include_optional=True)
-        self.assertEqual("完成耗時 約 12 秒", cards["加油完成耗時"])
-        self.assertEqual("完成耗時 約 70 秒", cards["民力完成耗時"])
+        self.assertEqual("首次登打 約 12 秒 重試 —", cards["加油登打耗時"])
+        self.assertEqual("首次登打 約 70 秒 重試 —", cards["民力登打耗時"])
 
     def test_missing_history_is_unrecorded_and_zero_seconds_remains_visible(self):
         cards, _ = self.render(dict(duty_work_log=0, vehicle_mileage=None, consumables=None, disinfection=None))
-        self.assertEqual("完成耗時 約 0 秒", cards["工作完成耗時"])
-        self.assertEqual("完成耗時 未記錄", cards["里程完成耗時"])
+        self.assertEqual("首次登打 約 0 秒 重試 —", cards["工作登打耗時"])
+        self.assertEqual("首次登打 未記錄 重試 —", cards["里程登打耗時"])
 
     def test_unfinished_stations_do_not_show_a_completed_duration(self):
-        cards, _ = self.render(dict(duty_work_log=30, vehicle_mileage=40, consumables=50, disinfection=60), states={
+        cards, _ = self.render(dict(duty_work_log=30, vehicle_mileage=40, consumables=50, disinfection=None), states={
             "duty_work_log": "duty_work_log_running", "vehicle_mileage": "vehicle_mileage_failed",
             "consumables": "consumables_waiting_confirmation", "disinfection": "not_started"})
         self.assertEqual(4, len(cards))
-        self.assertTrue(all(text == "完成耗時 —" for text in cards.values()))
+        self.assertEqual("首次登打 進行中 重試 —", cards["工作登打耗時"])
+        self.assertEqual("首次登打 約 40 秒（失敗） 重試 —", cards["里程登打耗時"])
+        self.assertEqual("首次登打 約 50 秒（待確認） 重試 —", cards["耗材登打耗時"])
+        self.assertEqual("首次登打 — 重試 —", cards["消毒登打耗時"])
+
+
+    def test_first_retry_and_total_use_separate_intervals(self):
+        cards, body = self.render({"duty_work_log": 26, "vehicle_mileage": None}, timeline=[
+            (-8, "queued_for_worker", "排隊"),
+            (0, "desktop_fast_running", "公務電腦 worker 四站登打已啟動。"),
+            (1, "vehicle_mileage_running", "公務電腦 worker 執行車輛里程：pc"),
+            (31, "vehicle_mileage_failed", "查詢失敗"),
+            (32, "desktop_fast_completed_with_errors", "有站失敗"),
+            (110, "queued_for_worker", "排隊"),
+            (120, "desktop_fast_running", "公務電腦 worker 車輛里程登打已啟動。"),
+            (121, "vehicle_mileage_running", "公務電腦 worker 執行車輛里程：pc"),
+            (130, "vehicle_mileage_failed", "再次失敗"),
+            (131, "desktop_fast_completed_with_errors", "有站失敗"),
+            (180, "desktop_fast_running", "公務電腦 worker 車輛里程登打已啟動。"),
+            (181, "vehicle_mileage_running", "公務電腦 worker 執行車輛里程：pc"),
+            (193, "desktop_fast_completed", "任務完成"),
+            (194, "vehicle_mileage_saved", "回查通過"),
+        ])
+        self.assertEqual("首次登打 約 30 秒（失敗） 重試 #1 約 9 秒（失敗） #2 約 13 秒", cards["里程登打耗時"])
+        self.assertEqual("首次登打 約 26 秒 重試 —", cards["工作登打耗時"])
+        self.assertRegex(body, r'整筆耗時\s*</span>\s*<strong[^>]*>約 194 秒')
 
 
 if __name__ == "__main__":

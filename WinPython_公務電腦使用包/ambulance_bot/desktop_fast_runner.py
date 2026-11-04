@@ -855,7 +855,7 @@ class DesktopFastRunner:
 
     def _run_vehicle_mileage(self, request, profile_suffix: str) -> SiteAutomationResult:
         vehicle_requests = request.vehicle_requests()
-        login_request = vehicle_requests[0] if request.service_type == "disaster" else None
+        login_request = vehicle_requests[0] if request.service_type == "disaster" or len(vehicle_requests) > 1 else None
         if len(vehicle_requests) <= 1:
             mileage_request = vehicle_requests[0] if vehicle_requests else request
             return run_vehicle_mileage_task(
