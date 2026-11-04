@@ -148,6 +148,21 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.11.04.0906">
+      <div class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.11.04.0906') }}</p>
+          <h2 class="update-card__title">一站通憑證與雙車登打完成回報修正</h2>
+        </div>
+        <span class="update-card__versions">2026.11.04.0906</span>
+      </div>
+      <ul class="update-card__items">
+        <li>一站通缺少正確中繼憑證時，自動補上已核對的公開中繼憑證並重新驗證；仍有憑證警告就停止登入。</li>
+        <li>車輛里程的新建與重接瀏覽器補上逾時保護，縮短核對完成後的截圖等待，避免雙車收尾長時間未回報。</li>
+        <li>耗材儲存核對完成後直接回報結果，雙車進度標示車號，重試保留已完成車輛的成功紀錄。</li>
+        <li>後台明確區分憑證驗證失敗與一般網頁逾時，保留既有案號、車輛及儲存回查檢查。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.11.04.0011">
       <div class="update-card__heading">
         <div>

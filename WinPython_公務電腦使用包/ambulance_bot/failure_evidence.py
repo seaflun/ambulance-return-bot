@@ -132,7 +132,7 @@ def probe_browser_runtime(driver: Any) -> dict[str, Any]:
 def browser_network_error_code(text: object) -> str:
     match = re.search(
         r"\bERR_(?:CONNECTION_TIMED_OUT|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED|"
-        r"NAME_NOT_RESOLVED|ADDRESS_UNREACHABLE|CONNECTION_RESET|CONNECTION_REFUSED)\b",
+        r"NAME_NOT_RESOLVED|ADDRESS_UNREACHABLE|CONNECTION_RESET|CONNECTION_REFUSED|CERT_[A-Z_]+)\b",
         str(text or ""), re.IGNORECASE,
     )
     return match.group(0).upper() if match else ""
@@ -206,6 +206,8 @@ def classify_browser_failure(exception: BaseException | None, probe: dict[str, A
 
     if chromedriver_alive is False:
         category = "chromedriver_ended"
+    elif network_error.startswith("ERR_CERT_"):
+        category = "certificate_error"
     elif network_error:
         category = "network_connection"
     elif (
@@ -229,6 +231,10 @@ def classify_browser_failure(exception: BaseException | None, probe: dict[str, A
         category = ""
 
     descriptions = {
+        "certificate_error": (
+            f"網站 TLS 憑證驗證失敗（{network_error}）；登入頁被憑證警告阻擋。",
+            "確認網站已安裝與新憑證相符的中繼憑證鏈；不要略過憑證檢查或重送帳密。",
+        ),
         "network_connection": (
             "網站連線逾時或中斷" + (f"（{network_error}）" if network_error else "") + "；請確認分隊網路與該站連線。",
             "網路恢復後先重新查詢，確認是否已保存，再單獨重跑；不要直接重複儲存。",
@@ -302,7 +308,7 @@ def _failure_evidence_command_timeout_seconds() -> float:
 
 
 @contextmanager
-def _bounded_failure_evidence_driver_commands(driver: Any):
+def bounded_evidence_driver_commands(driver: Any):
     timeout = _failure_evidence_command_timeout_seconds()
     command_executor = getattr(driver, "command_executor", None)
     client_config = getattr(command_executor, "_client_config", None)
@@ -369,7 +375,7 @@ def capture_failure_artifacts(
         "network_error": browser_network_error_code(exception),
     }
 
-    with _bounded_failure_evidence_driver_commands(driver):
+    with bounded_evidence_driver_commands(driver):
         screenshot_path = output_dir / f"{stem}.png"
         try:
             captured_full_page = False

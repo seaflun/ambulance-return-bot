@@ -14,7 +14,7 @@ from uuid import uuid4
 import ddddocr
 from PIL import Image
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import InsecureCertificateException, TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -23,13 +23,14 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from ambulance_bot.chrome_startup import add_worker_chrome_options, create_chrome_driver_with_retry, mark_driver_operation_active
 from ambulance_bot.consumables import consumable_inventory_options
+from ambulance_bot.consumables_certificate import repair_consumables_certificate_chain
 from ambulance_bot.duty_credentials import (
     LOGIN_POLICY_CONSUMABLES,
     load_synced_worker_credential,
     task_login_credential_attempts,
 )
 from ambulance_bot.login_audit import CONSUMABLES_LOGIN_PRIORITY_LABEL, credential_public_label, with_login_audit
-from ambulance_bot.failure_evidence import augment_failure_detail, capture_failure_artifacts
+from ambulance_bot.failure_evidence import augment_failure_detail, browser_network_error_code, capture_failure_artifacts
 from ambulance_bot.models import AmbulanceReturnRequest, clean_case_address, normalize_hhmm, vehicle_ppe_names
 from ambulance_bot.profile_paths import runtime_profile_dir
 from ambulance_bot.site_diagnostics import track_site_execution
@@ -238,7 +239,9 @@ def _open_consumable_record_for_task(
         if _allocation_needs_supplement(request.consumables, len(hrefs), index):
             supplements.append(f"{suffix}原分配為空，已補手套×1以完成確認。")
     if len(hrefs) == 1:
-        return f"已開啟耗材內容頁：{driver.current_url}{_consumable_vehicle_notice(driver, request)}{single_detail}"
+        # The case, vehicle and saved contents have already been verified. Do not
+        # let another renderer read prevent reporting that verified result.
+        return f"已開啟耗材內容頁：{urljoin(ACS_URL, hrefs[0])}{single_detail}"
     page_label = {2: "兩頁", 3: "三頁", 4: "四頁"}.get(len(hrefs), f"{len(hrefs)}頁")
     if _consumables_dry_run_enabled():
         return f"辨識{request.vehicle}同案{len(hrefs)}位患者；{page_label}均已唯讀核對耗材，未修改或儲存。"
@@ -328,6 +331,26 @@ def _acs_login_account(credential) -> str:
     )
 
 
+def _open_sso_login_page(driver: webdriver.Chrome) -> None:
+    for attempt in range(2):
+        navigation_error = None
+        try:
+            driver.get(SSO_URL)
+        except (InsecureCertificateException, TimeoutException) as exc:
+            navigation_error = exc
+        error_text = driver.execute_script(
+            "return document.querySelector('#error-code, .error-code')?.textContent || '';"
+        )
+        code = browser_network_error_code(error_text) if isinstance(error_text, str) else ""
+        if not code.startswith("ERR_CERT_"):
+            if navigation_error is not None:
+                raise navigation_error
+            return
+        if code == "ERR_CERT_AUTHORITY_INVALID" and attempt == 0 and repair_consumables_certificate_chain():
+            continue
+        raise RuntimeError(f"一站通網站憑證驗證失敗（{code}）；請確認網站中繼憑證鏈，尚未送出帳密。")
+
+
 def _login_sso(
     driver: webdriver.Chrome,
     account_text: str,
@@ -351,7 +374,7 @@ def _login_sso(
         if progress is not None:
             progress(with_login_audit("登入一站通", audit))
         for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
-            driver.get(SSO_URL)
+            _open_sso_login_page(driver)
             wait = WebDriverWait(driver, 15)
             _fill_login_form(driver, wait, account, password, attempt)
             _wait_until_sso_login_finished(driver, wait)

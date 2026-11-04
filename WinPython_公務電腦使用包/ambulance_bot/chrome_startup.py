@@ -108,7 +108,9 @@ def create_webdriver_chrome_with_timeout(
     chrome_factory = factory or webdriver.Chrome
     if timeout <= 0:
         with _CHROME_START_LOCK:
-            return chrome_factory(options=options)
+            driver = chrome_factory(options=options)
+        set_driver_command_timeout(driver)
+        return driver
 
     result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
     timed_out = threading.Event()
@@ -137,6 +139,7 @@ def create_webdriver_chrome_with_timeout(
     kind, value = result_queue.get_nowait()
     if kind == "error":
         raise value
+    set_driver_command_timeout(value)
     return value
 
 

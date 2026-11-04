@@ -50,7 +50,7 @@ from .duty_credentials import (
     task_login_credential_attempts,
     update_saved_credential_id_number,
 )
-from .failure_evidence import augment_failure_detail, capture_failure_artifacts, compact_failure_text, is_browser_session_recovery_error
+from .failure_evidence import augment_failure_detail, bounded_evidence_driver_commands, capture_failure_artifacts, compact_failure_text, is_browser_session_recovery_error
 from .mileage_address import disaster_mileage_addresses_match
 from .models import DEFAULT_DISINFECTION_ITEMS, AmbulanceReturnRequest, clean_case_address, vehicle_ppe_names
 from .profile_paths import cleanup_runtime_profiles_for_startup_failure, cleanup_stale_runtime_profiles, runtime_profile_dir, runtime_profile_root
@@ -1294,6 +1294,9 @@ def _create_driver(
     if attach_existing and debugger_port and not headless:
         existing = _connect_existing_chrome(debugger_port)
         if existing:
+            page_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT_SECONDS", "45"))
+            existing.set_page_load_timeout(page_timeout)
+            existing.set_script_timeout(page_timeout)
             return existing
 
     options = Options()
@@ -1464,8 +1467,8 @@ def _connect_existing_chrome(debugger_port: int) -> webdriver.Chrome | None:
     options = Options()
     options.add_experimental_option("debuggerAddress", f"127.0.0.1:{debugger_port}")
     try:
-        return webdriver.Chrome(options=options)
-    except WebDriverException:
+        return create_webdriver_chrome_with_timeout(options, factory=webdriver.Chrome)
+    except (ChromeStartTimeoutError, WebDriverException):
         return None
 
 
@@ -6049,15 +6052,16 @@ def _detail_with_failure_evidence(
 
 
 def _save_artifacts(driver: webdriver.Chrome, output_dir: Path, task_id: str, site_key: str) -> None:
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        driver.save_screenshot(str(output_dir / f"{task_id}-{site_key}.png"))
-    except Exception:
-        pass
-    try:
-        (output_dir / f"{task_id}-{site_key}.html").write_text(driver.page_source, encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    with bounded_evidence_driver_commands(driver):
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            driver.save_screenshot(str(output_dir / f"{task_id}-{site_key}.png"))
+        except Exception:
+            pass
+        try:
+            (output_dir / f"{task_id}-{site_key}.html").write_text(driver.page_source, encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def _task_text(request: AmbulanceReturnRequest) -> str:

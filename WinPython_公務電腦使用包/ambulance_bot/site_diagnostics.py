@@ -14,7 +14,7 @@ from .task_cancellation import TaskCancellationError
 DIAGNOSTIC_FIELDS = ("failure_stage", "failure_reason", "next_action", "exception_type")
 UNKNOWN_FAILURE_STAGE = ""
 BROWSER_STAGE_CATEGORIES = frozenset({
-    "network_connection", "web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified",
+    "network_connection", "certificate_error", "web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified",
 })
 
 CIVILPOWER_STAGE_LABELS = {
@@ -476,9 +476,12 @@ def _diagnostic_category(
     for ended_category in ("chromedriver_ended", "chrome_unresponsive"):
         if f"[browser_failure:{ended_category}]" in text:
             return ended_category
+    if browser_network_error_code(analysis_detail).startswith("ERR_CERT_"):
+        return "certificate_error"
     if browser_network_error_code(analysis_detail):
         return "network_connection"
     for browser_category in (
+        "certificate_error",
         "network_connection",
         "web_renderer_timeout",
         "web_page_timeout",
@@ -646,7 +649,7 @@ def _stage_for(site_key: str, status: str, detail: str, category: str) -> str:
         return stage
     if category in {"chrome_session", "chrome_unresponsive", "chromedriver_ended"}:
         return "啟動 Chrome"
-    if category in {"network_connection", "web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified"}:
+    if category in {"network_connection", "certificate_error", "web_renderer_timeout", "web_page_timeout", "renderer_timeout_unverified"}:
         return site_stage_from_detail(site_key, detail) or UNKNOWN_FAILURE_STAGE
     if category == "worker_api":
         return "讀取任務"
@@ -760,6 +763,9 @@ def _field_stage(site_key: str, detail: str) -> str:
 
 
 def _reason_for(category: str, status: str, detail: str) -> str:
+    if category == "certificate_error":
+        code = browser_network_error_code(detail)
+        return f"網站 TLS 憑證驗證失敗（{code}）；登入頁被憑證警告阻擋。" if code else "網站 TLS 憑證驗證失敗。"
     network_code = browser_network_error_code(detail) if category == "network_connection" else ""
     if network_code:
         return f"網站連線逾時或中斷（{network_code}）；請確認分隊網路與該站連線。"
@@ -818,6 +824,8 @@ def _next_action_for(site_key: str, category: str) -> str:
         return "關閉殘留 Chrome/ChromeDriver，重啟 worker，再重新登打。"
     if category == "network_connection":
         return "網路恢復後先重新查詢，確認是否已保存，再單獨重跑；不要直接重複儲存。"
+    if category == "certificate_error":
+        return "確認網站已安裝與新憑證相符的中繼憑證鏈；不要略過憑證檢查或重送帳密。"
     if category == "web_renderer_timeout":
         return f"保留截圖，重新整理{site_name}頁面後單獨重跑；若持續發生再重啟 Chrome。"
     if category == "web_page_timeout":

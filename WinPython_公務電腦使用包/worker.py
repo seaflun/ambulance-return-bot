@@ -3311,7 +3311,9 @@ def run_consumables_worker_task(
         site_name="一站通耗材",
     )
 
-    def report_progress(stage: str) -> None:
+    def report_progress(
+        stage: str, vehicle_request: AmbulanceReturnRequest | None = None, vehicle_index: int = 1,
+    ) -> None:
         _report_worker_site_progress(
             server_url,
             request.task_id,
@@ -3319,6 +3321,8 @@ def run_consumables_worker_task(
             "一站通耗材",
             stage,
             login_audit,
+            **({"vehicle_key": _vehicle_result_key(vehicle_request, vehicle_index),
+                "vehicle_label": str(vehicle_request.vehicle or "").strip()} if vehicle_request is not None else {}),
         )
 
     try:
@@ -3357,7 +3361,7 @@ def run_consumables_worker_task(
                         ),
                         **({"cancel_check": cancel_check} if cancel_check is not None else {}),
                         artifacts_dir=artifacts_dir,
-                        progress=report_progress,
+                        progress=lambda stage: report_progress(stage, vehicle_request, vehicle_index),
                     ),
                     reconciliation_vehicle_key=selected_vehicle_target_key(
                         vehicle_reconciliation,

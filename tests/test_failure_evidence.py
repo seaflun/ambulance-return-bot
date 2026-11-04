@@ -88,6 +88,19 @@ class FailureEvidenceTests(unittest.TestCase):
         ):
             self.assertEqual(browser_session_recovery_attempts(), 0)
 
+    def test_certificate_interstitial_overrides_generic_login_timeout(self):
+        driver = _FakeDriver(page_source='<div id="error-code">NET::ERR_CERT_AUTHORITY_INVALID</div>')
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            failure_evidence_module, "probe_browser_runtime",
+            return_value={"chromedriver_alive": True, "devtools_reachable": True},
+        ):
+            evidence = capture_failure_artifacts(
+                driver, Path(tmp), "synthetic-certificate", "consumables", exception=TimeoutException(),
+            )
+        self.assertEqual(evidence["category"], "certificate_error")
+        self.assertEqual(evidence["network_error"], "ERR_CERT_AUTHORITY_INVALID")
+        self.assertIn("憑證", evidence["reason"])
+
     def test_browser_session_recovery_error_is_detected_without_matching_page_timeout(self):
         self.assertTrue(is_browser_session_recovery_error(RuntimeError("Message: invalid session id")))
         self.assertTrue(
@@ -139,7 +152,7 @@ class FailureEvidenceTests(unittest.TestCase):
             {"SELENIUM_FAILURE_EVIDENCE_COMMAND_TIMEOUT_SECONDS": "4"},
             clear=False,
         ):
-            with failure_evidence_module._bounded_failure_evidence_driver_commands(driver):
+            with failure_evidence_module.bounded_evidence_driver_commands(driver):
                 self.assertEqual(4.0, driver.command_executor._client_config.timeout)
 
         self.assertEqual(61.0, driver.command_executor._client_config.timeout)
