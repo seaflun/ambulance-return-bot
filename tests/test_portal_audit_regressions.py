@@ -64,6 +64,7 @@ class PortalAuditRecordTests(unittest.TestCase):
 class PortalAuditPaginationTests(unittest.TestCase):
     first = "20261024000100001"
     second = "20261024000200001"
+    first_page = [f"202610240001{index:05d}" for index in range(1, 11)]
 
     def waits(self, seconds=0.8):
         real_wait = runtime.WebDriverWait
@@ -71,7 +72,7 @@ class PortalAuditPaginationTests(unittest.TestCase):
                             real_wait(d, seconds, poll_frequency=0.001))
 
     def test_slow_page_is_read_only_after_its_document_reloads(self):
-        driver = _CasePageDriver({1: [self.first], 2: [self.second]})
+        driver = _CasePageDriver({1: self.first_page, 2: [self.second]})
         reads = []
 
         def read(current):
@@ -81,12 +82,12 @@ class PortalAuditPaginationTests(unittest.TestCase):
         with self.waits(), patch.object(runtime, "_extract_emergency_cases", side_effect=read), \
              patch.object(runtime.time, "sleep"):
             result = runtime._extract_all_emergency_cases(driver)
-        self.assertEqual([self.first, self.second], [case["case_id"] for case in result])
+        self.assertEqual(self.first_page + [self.second], [case["case_id"] for case in result])
         self.assertEqual([(1, False), (2, False)], reads)
         self.assertEqual([2], driver.navigation)
 
     def test_missing_next_page_cannot_return_partial_success(self):
-        driver = _CasePageDriver({1: [self.first], 2: [self.second]})
+        driver = _CasePageDriver({1: self.first_page, 2: [self.second]})
         with self.waits(), patch.object(runtime, "_extract_emergency_cases", return_value=[{"case_id": self.first}]), \
              patch.object(runtime, "_click_next_page_if_present", return_value=False), \
              self.assertRaises(runtime.WebDriverException):
@@ -127,7 +128,7 @@ class PortalAuditPaginationTests(unittest.TestCase):
                 runtime._extract_all_emergency_cases(driver)
 
     def test_reloaded_document_with_wrong_page_cannot_return_partial_success(self):
-        driver = _CasePageDriver({1: [self.first], 2: [self.second]})
+        driver = _CasePageDriver({1: self.first_page, 2: [self.second]})
 
         def wrong_page(current):
             current.pending_page = 1
@@ -140,7 +141,7 @@ class PortalAuditPaginationTests(unittest.TestCase):
             runtime._extract_all_emergency_cases(driver)
 
     def test_result_count_changing_between_pages_cannot_return_partial_success(self):
-        driver = _CasePageDriver({1: [self.first], 2: [self.second]})
+        driver = _CasePageDriver({1: self.first_page, 2: [self.second]})
         execute = driver.execute_script
 
         def changing_count(script, *args):

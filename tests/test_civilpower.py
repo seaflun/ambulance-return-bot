@@ -689,6 +689,44 @@ class CivilpowerPlanTests(unittest.TestCase):
         driver.get.assert_called_once_with(FIREMAN_URL)
         self.assertEqual(["可選人員"], [member["name"] for member in members])
 
+    def test_roster_selects_third_brigade_before_the_rescue_unit_options_load(self):
+        from types import SimpleNamespace
+        from civilpower import WebDriverWait, query_civilpower_roster
+
+        driver = mock.Mock()
+        driver.find_element.side_effect = lambda _by, selector: selector
+        selected = {}
+        child_loads = 0
+
+        def select(selector):
+            nonlocal child_loads
+            labels = {"#ddl_Prop": ["救護"], "#ddl_LV1Unit": ["第三大隊"]}
+            if selector == "#ddl_Type3Unit":
+                child_loads += 1
+                labels[selector] = (["大園救護分隊"]
+                                    if selected.get("#ddl_LV1Unit") == "第三大隊" and child_loads >= 2
+                                    else ["請選擇"])
+            return SimpleNamespace(
+                options=[SimpleNamespace(text=label) for label in labels[selector]],
+                is_multiple=False,
+                select_by_visible_text=lambda label: selected.__setitem__(selector, label),
+            )
+
+        def query(_wait, selector):
+            self.assertEqual("#btn_Query", selector)
+            self.assertEqual("第三大隊", selected.get("#ddl_LV1Unit"))
+            self.assertEqual("大園救護分隊", selected.get("#ddl_Type3Unit"))
+
+        with mock.patch("civilpower.WebDriverWait", side_effect=lambda d, t: WebDriverWait(d, 0.1, poll_frequency=0.001)), \
+             mock.patch("civilpower._wait_for_civilpower_page"), mock.patch("civilpower.Select", side_effect=select), \
+             mock.patch("civilpower._click", side_effect=query) as click, mock.patch("civilpower._wait_for_rows"), \
+             mock.patch("civilpower._read_civilpower_roster_page",
+                        return_value=[{"unit": "大園救護分隊", "title": "隊員", "name": "名冊測試"}]), \
+             mock.patch("civilpower._open_next_civilpower_roster_page", return_value=False):
+            result = query_civilpower_roster(driver)
+        self.assertEqual(["名冊測試"], [row["name"] for row in result])
+        click.assert_called_once()
+
     def test_roster_query_combines_all_pagination_pages_before_filtering(self):
         from civilpower import query_civilpower_roster
 

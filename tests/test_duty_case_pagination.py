@@ -63,10 +63,10 @@ class _CasePageDriver:
             disabled: false, getAttribute: () => '', click: () => clicked.push(caseId)};
           const cells = [caseId, '115/10/24 08:37', '115/10/24 09:28', '其他-受困', '測試地點']
             .map(innerText => ({tagName: 'TD', innerText}));
-          return {children: cells,
+          return {children: cells, cells,
             querySelectorAll: selector => selector === 'td, th' ? cells : [button]};
         });
-        const text = input.response_text ?? ('QUY-000:查詢完成 共 ' + (Object.keys(input.pages).length * 10) + ' 筆');
+        const text = input.response_text ?? ('QUY-000:查詢完成 共 ' + (((Object.keys(input.pages).length - 1) * 10 + input.pages[String(Object.keys(input.pages).length)].length)) + ' 筆');
         global.document = {readyState: input.loading ? 'loading' : 'complete', body: {innerText: text},
           getElementById: id => id === 'pageSelect' ? (input.has_page_select ? (input.duplicate ? label : select) : null) :
             (id === 'selectedPage' ? {value: String(input.hidden_page ?? input.current)} : (id === '_btnQuery' ? {} : null)),
@@ -84,7 +84,9 @@ class _CasePageDriver:
                                                   "duplicate": self.duplicate_page_ids,
                                                   "hidden_page": self.hidden_page,
                                                   "has_page_select": self.has_page_select,
-                                                  "response_text": self.response_text}),
+                                                  "response_text": (self.response_text.get(self.current_page)
+                                                                    if isinstance(self.response_text, dict)
+                                                                    else self.response_text)}),
                                 text=True, capture_output=True, encoding="utf-8", check=True)
         value = json.loads(result.stdout)
         if value["requestedPage"] is not None:
@@ -167,6 +169,25 @@ class DutyCasePaginationTests(unittest.TestCase):
                                  hidden_page="0", has_page_select=False)
         with self.waits(0.05), self.assertRaises(runtime.TimeoutException):
             runtime._extract_all_emergency_cases(driver)
+
+    def test_followup_page_without_initial_query_marker_returns_all_eleven_cases(self):
+        first = [f"202611040000{index:05d}" for index in range(1, 11)]
+        driver = _CasePageDriver({1: first, 2: [self.target]}, hidden_page="0",
+                                 response_text={1: "QUY-000:查詢完成 共 11 筆", 2: "共 11 筆"})
+        with self.waits():
+            cases = runtime._extract_all_emergency_cases(driver)
+        self.assertEqual(first + [self.target], [case["case_id"] for case in cases])
+        self.assertEqual([2], driver.navigation)
+
+    def test_followup_page_must_have_complete_distinct_rows_without_error_status(self):
+        first = [f"202611040000{index:05d}" for index in range(1, 11)]
+        for followup, message in (([], "共 11 筆"), ([first[0]], "共 11 筆"),
+                                  ([self.target], "QUY-500:查詢失敗 共 11 筆")):
+            with self.subTest(followup=followup, message=message), self.waits(0.1):
+                driver = _CasePageDriver({1: first, 2: followup},
+                                         response_text={1: "QUY-000:查詢完成 共 11 筆", 2: message})
+                with self.assertRaises(runtime.WebDriverException):
+                    runtime._extract_all_emergency_cases(driver)
 
     def choose(self, driver, case_id):
         real_wait = runtime.WebDriverWait

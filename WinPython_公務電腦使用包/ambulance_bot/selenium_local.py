@@ -5783,7 +5783,7 @@ def _click_query_if_present(driver: webdriver.Chrome) -> None:
 def _wait_for_case_query_page(
     driver: webdriver.Chrome, expected_page: int,
     previous_query=None,
-) -> dict[str, int]:
+) -> dict[str, int | list[str]]:
     if previous_query is not None:
         WebDriverWait(driver, 12).until(
             EC.staleness_of(previous_query), "案件查詢或翻頁後文件尚未更新。",
@@ -5794,7 +5794,10 @@ def _wait_for_case_query_page(
             if (document.readyState !== 'complete' || !document.getElementById('_btnQuery')) return null;
             const text = document.body ? document.body.innerText : '';
             const noRecords = /QUY-(?:300|500)\s*[:：]\s*查無資料/.test(text);
-            if (!/QUY-000/.test(text) && !noRecords) return null;
+            const expectedPage = arguments[0];
+            // The portal returns QUY-000 on the initial query only.
+            if (expectedPage === 1 && !/QUY-000/.test(text) && !noRecords) return null;
+            if (expectedPage > 1 && /QUY-(?!000)\d{3}/.test(text)) return null;
             const match = text.match(/共\s*([0-9][0-9,]*)\s*筆/);
             const total = match ? Number(match[1].replace(/,/g, '')) : (noRecords ? 0 : NaN);
             if (!Number.isSafeInteger(total) || total < 0 || (noRecords && total !== 0)) return null;
@@ -5803,8 +5806,11 @@ def _wait_for_case_query_page(
             const hidden = document.getElementById('selectedPage');
             const page = !select && totalPages === 1 && hidden?.value === '0' ? 1
               : Number(select?.value || hidden?.value || (totalPages === 1 ? 1 : NaN));
-            if (!Number.isInteger(page) || page < 1 || page > totalPages || page !== arguments[0]) return null;
-            return {page: page, total_pages: totalPages, total: total};
+            if (!Number.isInteger(page) || page < 1 || page > totalPages || page !== expectedPage) return null;
+            const caseIds = Array.from(document.querySelectorAll('tr'))
+              .map(row => (row.cells[0]?.innerText || '').trim())
+              .filter(value => /^\d{17}$/.test(value));
+            return {page: page, total_pages: totalPages, total: total, case_ids: caseIds};
             """, expected_page,
         ),
         f"案件查詢第 {expected_page} 頁尚未取得完整正式回覆。",
@@ -5954,22 +5960,24 @@ def _extract_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
 def _extract_all_emergency_cases(driver: webdriver.Chrome) -> list[dict[str, str]]:
     seen: set[str] = set()
     results: list[dict[str, str]] = []
-    initial = _wait_for_case_query_page(driver, expected_page=1)
-    total_pages = initial["total_pages"]
+    current = _wait_for_case_query_page(driver, expected_page=1)
+    total, total_pages = current["total"], current["total_pages"]
     for page_number in range(1, total_pages + 1):
-        for item in _extract_emergency_cases(driver):
-            case_id = item.get("case_id", "")
-            if case_id and case_id not in seen:
-                seen.add(case_id)
-                results.append(item)
+        if current["total_pages"] != total_pages or current["total"] != total:
+            raise WebDriverException("案件清單翻頁期間總筆數已變動，請重新查詢。")
+        # Count all official case IDs before the rescue/disaster category filter.
+        case_ids = current["case_ids"]
+        expected_count = min(10, total - (page_number - 1) * 10)
+        if len(case_ids) != expected_count or len(set(case_ids)) != expected_count or seen.intersection(case_ids):
+            raise WebDriverException(f"案件清單第 {page_number} 頁筆數不完整或出現重複案件，請重新查詢。")
+        results.extend(_extract_emergency_cases(driver))
+        seen.update(case_ids)
         if page_number == total_pages:
             break
         previous_query = driver.find_element(By.ID, "_btnQuery")
         if not _click_next_page_if_present(driver):
             raise WebDriverException(f"案件清單無法前往第 {page_number + 1} 頁，尚未完成全部查詢。")
         current = _wait_for_case_query_page(driver, expected_page=page_number + 1, previous_query=previous_query)
-        if current["total_pages"] != total_pages or current["total"] != initial["total"]:
-            raise WebDriverException("案件清單翻頁期間總筆數已變動，請重新查詢。")
     return results
 
 

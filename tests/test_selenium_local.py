@@ -2907,7 +2907,8 @@ class SeleniumLocalTests(unittest.TestCase):
         self.assertIn("totalPages", driver.script)
 
     def test_extract_all_emergency_cases_continues_past_five_pages(self):
-        pages = [[{"case_id": f"case-{index}"}] for index in range(1, 7)]
+        pages = [[{"case_id": f"case-{index}"} for index in range(start, start + 10)]
+                 for start in range(1, 61, 10)]
         state = {"page": 0}
 
         class FakeDriver:
@@ -2927,10 +2928,11 @@ class SeleniumLocalTests(unittest.TestCase):
         with patch.object(selenium_local_module, "_extract_emergency_cases", side_effect=extract_page):
             with patch.object(selenium_local_module, "_click_next_page_if_present", side_effect=click_next_page):
                 with patch.object(selenium_local_module, "_wait_for_case_query_page", side_effect=lambda driver, expected_page, **kwargs:
-                                  {"page": expected_page, "total_pages": 6, "total": 60}):
+                                  {"page": expected_page, "total_pages": 6, "total": 60,
+                                   "case_ids": [case["case_id"] for case in pages[expected_page - 1]]}):
                     cases = selenium_local_module._extract_all_emergency_cases(FakeDriver())
 
-        self.assertEqual([f"case-{index}" for index in range(1, 7)], [case["case_id"] for case in cases])
+        self.assertEqual([f"case-{index}" for index in range(1, 61)], [case["case_id"] for case in cases])
 
     def test_click_save_control_uses_script_result(self):
         class FakeDriver:

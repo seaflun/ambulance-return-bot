@@ -267,7 +267,8 @@ def query_civilpower_roster(driver) -> list[dict[str, str]]:
     wait = WebDriverWait(driver, DEFAULT_WAIT_SECONDS)
     _wait_for_civilpower_page(driver, wait)
     _select_option_containing(wait, "#ddl_Prop", "救護", clear_others=True)
-    _select_option_containing(wait, "#ddl_Type3Unit", HOME_RESCUE_UNIT)
+    _select_option_containing(wait, "#ddl_LV1Unit", "第三大隊")
+    _select_option_containing(wait, "#ddl_Type3Unit", HOME_RESCUE_UNIT, wait_for_options=True)
     _click(wait, "#btn_Query")
     _wait_for_rows(driver, wait)
     raw_members = _read_civilpower_roster_page(driver)
@@ -2485,15 +2486,36 @@ def _selected_option_text(driver, selector: str) -> str:
         return ""
 
 
-def _select_option_containing(wait: WebDriverWait, selector: str, text: str, *, clear_others: bool = False) -> None:
-    element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
-    select = Select(element)
-    if clear_others and select.is_multiple:
-        select.deselect_all()
-    matches = [option for option in select.options if _token_matches(_clean_text(option.text), text)]
-    if len(matches) != 1:
-        raise RuntimeError(f"下拉選單找不到唯一選項：{selector}={text}")
-    select.select_by_visible_text(matches[0].text)
+def _select_option_containing(
+    wait: WebDriverWait, selector: str, text: str, *, clear_others: bool = False,
+    wait_for_options: bool = False,
+) -> None:
+    locator = (By.CSS_SELECTOR, selector)
+
+    def select_matching(element) -> bool:
+        select = Select(element)
+        if clear_others and select.is_multiple:
+            select.deselect_all()
+        matches = [option for option in select.options if _token_matches(_clean_text(option.text), text)]
+        if len(matches) != 1:
+            return False
+        select.select_by_visible_text(matches[0].text)
+        return True
+
+    detail = f"下拉選單找不到唯一選項：{selector}={text}"
+    if wait_for_options:
+        def ready(driver):
+            try:
+                return select_matching(driver.find_element(*locator))
+            except StaleElementReferenceException:
+                return False
+
+        try:
+            wait.until(ready)
+        except TimeoutException as exc:
+            raise RuntimeError(detail) from exc
+    elif not select_matching(wait.until(EC.presence_of_element_located(locator))):
+        raise RuntimeError(detail)
 
 
 def _select_option_containing_if_present(driver, wait: WebDriverWait, selector: str, text: str) -> None:
