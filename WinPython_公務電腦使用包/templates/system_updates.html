@@ -148,6 +148,19 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.11.04.1216">
+      <div class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.11.04.1216') }}</p>
+          <h2 class="update-card__title">修正跨月前案的里程銜接</h2>
+        </div>
+        <span class="update-card__versions">2026.11.04.1216</span>
+      </div>
+      <ul class="update-card__items">
+        <li>前案在同一時間結束且結束里程一致時，採用共同里程作為本案開始里程，支援上月出勤、本月返隊的前案。</li>
+        <li>同時核對提供起始里程的前案資料。前案里程互相矛盾，或需修改的後一筆無法唯一定位時，停止登打並顯示原因。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.11.04.0906">
       <div class="update-card__heading">
         <div>

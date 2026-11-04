@@ -151,7 +151,7 @@ class MileageBackfillTests(unittest.TestCase):
             case_date="2026/09/07", case_time="1000",
             return_date="2026/09/07", return_time="1100", mileage="10020")
 
-    def run_entry(self, rows, save=True):
+    def run_entry(self, rows, save=True, request=None):
         with patch.object(runtime, "_extract_latest_end_mileage", return_value="10050"), \
              patch.object(runtime, "_add_vehicle_mileage_row"), \
              patch.object(runtime, "_fill_vehicle_grid_values"), \
@@ -163,7 +163,7 @@ class MileageBackfillTests(unittest.TestCase):
              patch.object(runtime, "_verify_vehicle_mileage_backfill", create=True), \
              patch.object(runtime, "_save_vehicle_mileage_enabled", return_value=save), \
              patch.object(runtime, "_save_vehicle_mileage_form", return_value="saved") as persist:
-            detail = runtime._add_vehicle_mileage_record(object(), self.request())
+            detail = runtime._add_vehicle_mileage_record(object(), request or self.request())
             return detail, write.call_args_list, persist.call_count
 
     def test_insert_uses_previous_end_and_repairs_next_start(self):
@@ -190,7 +190,9 @@ class MileageBackfillTests(unittest.TestCase):
             [record(1, "0800", "1100", 9980, 10000)],
             [record(1, "0800", "0900", 9980, 10030)],
             [record(1, "0800", "0900", 9980, 10000), record(2, "1200", "1300", 10000, 10010)],
-            [record(1, "0800", "0900", 9980, 10000), record(2, "0800", "0900", 9980, 10000)],
+            [record(1, "0800", "0900", 9980, 10000), record(2, "0800", "0900", 9980, 10001)],
+            [record(1, "0800", "0900", 9980, 10000), record(2, "1200", "1300", 10000, 10050),
+             record(3, "1200", "1310", 10000, 10055)],
         ]
         for rows in cases:
             with self.subTest(rows=rows), self.assertRaises(runtime.WebDriverException):
@@ -260,6 +262,25 @@ class MileageBackfillTests(unittest.TestCase):
         self.assertEqual(2, saves)
         self.assertFalse(writes[0].kwargs["include_following"])
         self.assertTrue(writes[1].kwargs["following_only"])
+
+    def test_cross_month_predecessors_with_matching_end_mileage_allow_new_case(self):
+        request = self.request()
+        request.service_type = "disaster"
+        request.case_date = request.return_date = "2026/11/04"
+        request.case_time, request.return_time, request.mileage = "1130", "1203", "25547"
+        before = record(1, "1913", "1920", 25516, 25544, "2026/10")
+        before.update(StartDay="20261031", EndDay="20261103")
+        duplicate = dict(before, Id=2, StartMileage=25513, Mileage=31, DriverName="")
+
+        detail, writes, saves = self.run_entry([before, duplicate], request=request)
+
+        self.assertEqual(1, saves)
+        self.assertEqual(1, len(writes))
+        plan = writes[0].args[2]
+        self.assertEqual(("25544", "25547"), (plan["start_mileage"], plan["end_mileage"]))
+        self.assertFalse(writes[0].kwargs["include_following"])
+        self.assertIn("已依案件時間銜接", detail)
+        self.assertEqual(plan, runtime._vehicle_mileage_backfill_plan(request, [duplicate, before]))
 
     def test_cross_month_without_save_does_not_leave_partial_edits(self):
         after = record(2, "1200", "1300", 10000, 10050, "2026/10")
@@ -506,6 +527,16 @@ class MileageGridScriptTests(unittest.TestCase):
         driver = ScriptDriver([before, dict(after, EndMileage=10060)])
         with patch.object(runtime, "_add_vehicle_mileage_row") as add, self.assertRaises(runtime.WebDriverException):
             runtime._write_vehicle_mileage_backfill(driver, request, plan, include_following=True)
+        add.assert_not_called()
+
+    def test_equal_predecessor_snapshot_change_stops_before_new_row(self):
+        request = MileageBackfillTests().request()
+        before = record(1, "0800", "0900", 9980, 10000)
+        peer = record(2, "0800", "0900", 9985, 10000)
+        plan = runtime._vehicle_mileage_backfill_plan(request, [before, peer])
+        driver = ScriptDriver([dict(before, EndMileage=10001), peer])
+        with patch.object(runtime, "_add_vehicle_mileage_row") as add, self.assertRaises(runtime.WebDriverException):
+            runtime._write_vehicle_mileage_backfill(driver, request, plan, include_following=False)
         add.assert_not_called()
 
     def test_matcher_accepts_ppe_slash_dates(self):

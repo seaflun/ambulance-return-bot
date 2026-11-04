@@ -3540,14 +3540,19 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
                 f"{start:%Y/%m/%d %H:%M} 至 {end:%Y/%m/%d %H:%M}；"
                 f"衝突紀錄 {row['Id']}：{first:%Y/%m/%d %H:%M} 至 {last:%Y/%m/%d %H:%M}。"
             )
-    before.sort(key=lambda row: _mileage_record_datetime(row, "End"), reverse=True)
+    before.sort(key=lambda row: (_mileage_record_datetime(row, "End"), str(row["Id"])), reverse=True)
     after.sort(key=lambda row: _mileage_record_datetime(row, "Start"))
     if not before:
         raise WebDriverException("查無案件之前的結束里程，停止補登。")
-    for candidates, prefix in ((before, "End"), (after, "Start")):
-        if len(candidates) > 1 and _mileage_record_datetime(candidates[0], prefix) == _mileage_record_datetime(candidates[1], prefix):
-            raise WebDriverException("前後里程紀錄時間重複，無法唯一定位。")
+    # Earlier records only supply a starting mileage. Keep every tied snapshot
+    # when they agree, and require one identifiable row for a following edit.
+    previous_end = _mileage_record_datetime(before[0], "End")
+    previous_peers = [row for row in before[1:] if _mileage_record_datetime(row, "End") == previous_end]
     first = str(before[0]["EndMileage"])
+    if any(int(row["EndMileage"]) != int(first) for row in previous_peers):
+        raise WebDriverException("相同結束時間的前案里程不一致，無法確認本案開始里程。")
+    if len(after) > 1 and _mileage_record_datetime(after[0], "Start") == _mileage_record_datetime(after[1], "Start"):
+        raise WebDriverException("後一筆里程紀錄開始時間重複，無法唯一定位。")
     last = _resolve_end_mileage(first, request.mileage)
     if not re.fullmatch(r"\d+", last) or int(last) < int(first):
         previous_at = _mileage_record_datetime(before[0], "End").strftime("%Y/%m/%d %H:%M")
@@ -3590,7 +3595,7 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
                 f"紀錄 {existing['Id']}（{start:%Y/%m/%d %H:%M}）；{'；'.join(differences)}。"
             )
     return dict(start_at=start, start_mileage=first, end_mileage=last, previous=before[0],
-                following=following, existing=existing)
+                previous_peers=previous_peers, following=following, existing=existing)
 
 
 def _load_vehicle_mileage_month(
@@ -3707,7 +3712,8 @@ def _write_vehicle_mileage_backfill(
     # Re-find by persisted Id and compare the snapshot before touching any fields.
     targets = []
     if not following_only:
-        targets.extend(row for row in (plan["previous"], plan["existing"])
+        references = [plan["previous"], *plan.get("previous_peers", ()), plan["existing"]]
+        targets.extend(row for row in references
                        if row and row["month"] == plan["start_at"].strftime("%Y/%m"))
     if include_following and plan["following"]:
         targets.append(plan["following"])
