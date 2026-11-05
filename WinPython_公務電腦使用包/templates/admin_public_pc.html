@@ -356,14 +356,6 @@
       <a class="button result-filter{% if result_filter == 'failed' %} active{% endif %}" href="{{ admin_base_url }}?{% if not service_filter_locked and service_filter != 'all' %}service={{ service_filter }}&amp;{% endif %}result=failed">失敗案件 {{ report_counts['failed'] }}</a>
     </nav>
 
-    {% macro attempt_duration(attempt) -%}
-      {%- if attempt.seconds is not none -%}約 {{ attempt.seconds }} 秒
-      {%- elif attempt.outcome == 'running' -%}進行中
-      {%- else -%}未記錄{%- endif -%}
-      {%- if attempt.outcome == 'failed' -%}（失敗）
-      {%- elif attempt.outcome == 'waiting' -%}（待確認）
-      {%- elif attempt.outcome == 'unreported' -%}（未回報）{%- endif -%}
-    {%- endmacro %}
     {% if reports %}
       <section class="task-list" aria-label="公務電腦任務">
         {% for item in reports %}
@@ -431,22 +423,8 @@
                       <div class="site-name">{{ title }}</div>
                       <span class="status {{ status_class(site.status) }}">{{ status_label(site.status or 'not_started') }}</span>
                     </div>
-                    {% set attempts = timing.sites.get(site_key, []) %}
-                    <div class="site-duration" aria-label="{{ title }}登打耗時" title="各次登打依本站開始與結果回報估算。雙車各自已回報完成時，取最後一車的時間。">
-                      <div class="site-duration-row">
-                        <span>首次登打</span>
-                        <strong class="site-duration-value">{% if attempts %}{{ attempt_duration(attempts[0]) }}{% elif status_class(site.status) == 'complete' %}未記錄{% else %}—{% endif %}</strong>
-                      </div>
-                      <div class="site-duration-row">
-                        <span>重試</span>
-                        {% if attempts|length > 1 %}
-                          {% for attempt in attempts[1:] %}
-                            <strong class="site-duration-value">#{{ loop.index }} {{ attempt_duration(attempt) }}</strong>
-                          {% endfor %}
-                        {% else %}
-                          <strong class="site-duration-value">—</strong>
-                        {% endif %}
-                      </div>
+                    <div class="site-duration" aria-label="{{ title }}完成耗時" title="依該站開始與完成回報時間估算，不含前置排隊；回報延遲可能影響秒數。">
+                      <strong class="site-duration-value">{% if timing.latest_success.get(site_key) is not none %}約 {{ timing.latest_success[site_key] }} 秒{% elif status_class(site.status) == 'complete' %}未記錄{% else %}—{% endif %}</strong>
                     </div>
                   </div>
                   <div class="site-login-account" aria-label="{{ title }}登入帳號">

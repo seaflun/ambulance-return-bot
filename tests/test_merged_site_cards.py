@@ -126,7 +126,7 @@ class MergedSiteCardsTests(unittest.TestCase):
                     title = web.SITE_DISPLAY_NAMES[key]
                     self.assertEqual(title, card.find("site-name")[0].text)
                     self.assertEqual(web.status_label(f"{key}_saved"), card.find("status")[0].text)
-                    self.assertEqual(f"首次登打 約 {20 + index} 秒 重試 —", card.find("site-duration")[0].text)
+                    self.assertEqual(f"約 {20 + index} 秒", card.find("site-duration")[0].text)
                     box = self.account_box(card, title)
                     self.assertEqual(accounts[key].split("（")[0], box.find("login-account-value")[0].text)
                     self.assertEqual("任務司機", box.find("site-account-source")[0].text)
