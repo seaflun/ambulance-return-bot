@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.11.05.2112">
+      <div class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.11.05.2112') }}</p>
+          <h2 class="update-card__title">區分網站登入失效與帳密錯誤，補齊查核診斷</h2>
+        </div>
+        <span class="update-card__versions">2026.11.05.2112</span>
+      </div>
+      <ul class="update-card__items">
+        <li>值班台的網站登入失效與帳密被拒分開顯示，保留登入前後的安全診斷摘要。</li>
+        <li>背景舊工作階段最多重新登入一次；仍失敗時停止作業並回到登入畫面，GUI 保持開啟。</li>
+        <li>同步值班台更新日誌；返隊查核問題包補上當次範圍、異常列與判定原因。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.11.05.0819">
       <div class="update-card__heading">
         <div>

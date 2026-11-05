@@ -7777,6 +7777,36 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertNotIn("完成結果來源：", body)
         self.assertNotIn("26番", body)
 
+    def test_sinposmart_session_expiry_keeps_distinct_status_and_safe_login_response(self):
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        fire_day = datetime.now().date().isoformat()
+        response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
+            "event_id": "missing-token-session", "fire_day": fire_day, "occurred_at": f"{fire_day}T16:21:58",
+            "record_type": "login_failed", "trigger_type": "login", "status": "failed",
+            "error": "勤務網站登入狀態已失效，請重新登入網站。",
+            "snapshot": {"login_diagnostic": {
+                "reason_code": "session_expired", "stage": "post_login", "reason": "需要重新登入網站",
+                "page_title": "不好意思,您已經被登出系統,請關掉視窗重新登入(沒有token)",
+                "login_response": {
+                    "page_url": "https://example.test/login?token=fixture-token#private-fragment",
+                    "page_title": "登入回應", "page_text": "尚待驗證 token=fixture-token",
+                    "captured_at": f"{fire_day}T08:21:40+00:00",
+                    "form_values": {"password": "fixture-password"}, "cookie": "fixture-cookie",
+                },
+            }},
+        })
+        self.assertEqual(response.status_code, 200)
+        day = app_module.sinposmart_store().read_day(fire_day)
+        diagnostic = next(e for e in day["events"] if e["event_id"] == "missing-token-session")["snapshot"]["login_diagnostic"]
+        self.assertEqual(diagnostic["reason_code"], "session_expired")
+        self.assertEqual(diagnostic["login_response"]["page_url"], "https://example.test/login")
+        self.assertEqual(diagnostic["login_response"]["page_title"], "登入回應")
+        for value in ("fixture-token", "fixture-password", "fixture-cookie", "private-fragment", "form_values"):
+            self.assertNotIn(value, json.dumps(diagnostic, ensure_ascii=False))
+        page = self.client.get(f"/admin/sinposmart?fire_day={fire_day}").get_data(as_text=True)
+        self.assertIn("登入失效", page)
+        self.assertIn("需要重新登入網站", page)
+
     def test_sinposmart_login_failure_api_stores_safe_page_and_renders_password_update_evidence(self):
         os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
         fire_day = datetime.now().date().isoformat()

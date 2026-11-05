@@ -1649,6 +1649,8 @@ def sinposmart_login_status_label(event: dict[str, Any]) -> str:
         diagnostic = snapshot.get("login_diagnostic") if isinstance(snapshot.get("login_diagnostic"), dict) else {}
         if diagnostic.get("reason_code") == "password_change_required":
             return "密碼須更新"
+        if diagnostic.get("reason_code") == "session_expired":
+            return "登入失效"
         return "登入失敗"
     if record_type == "login_expired":
         return "登入失效"
@@ -3099,7 +3101,8 @@ def sanitize_login_png(value: Any, redacted: Any) -> tuple[str, str]:
 def sanitize_login_diagnostic(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not value:
         return {}
-    codes = {"password_change_required", "invalid_credentials", "login_failed", "browser_start_failed", "login_timeout"}
+    codes = {"password_change_required", "invalid_credentials", "login_failed", "browser_start_failed", "login_timeout",
+             "session_expired", "authentication_unverified"}
     reason_code = value.get("reason_code")
     clean = {
         "reason_code": reason_code if isinstance(reason_code, str) and reason_code in codes else "login_failed",
@@ -3111,6 +3114,14 @@ def sanitize_login_diagnostic(value: Any) -> dict[str, Any]:
         "captured_at": sanitize_login_text(value.get("captured_at"), 40),
         "image_redacted": value.get("image_redacted") is True,
     }
+    response = value.get("login_response")
+    if isinstance(response, dict):
+        clean["login_response"] = {
+            "page_url": sanitize_login_url(response.get("page_url")),
+            "page_title": sanitize_login_text(response.get("page_title"), 160),
+            "page_text": sanitize_login_text(response.get("page_text"), 4000),
+            "captured_at": sanitize_login_text(response.get("captured_at"), 40),
+        }
     raw_image = value.get("image_png")
     capture_status, image = sanitize_login_png(raw_image, value.get("image_redacted"))
     clean["capture_status"] = capture_status
