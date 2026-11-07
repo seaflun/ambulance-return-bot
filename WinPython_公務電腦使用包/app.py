@@ -1884,7 +1884,7 @@ def admin_public_pc_remote_update():
 
 @app.get("/admin/sinposmart")
 def admin_sinposmart():
-    days = sinposmart_store().list_days(limit=14)
+    days = sinposmart_store().list_days(limit=7)
     gui_health = duty_gui_health_view()
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()

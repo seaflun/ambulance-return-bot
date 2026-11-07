@@ -371,23 +371,38 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
         saved = app_module.sinposmart_store().diagnostic_path(response.get_json()["fire_day"], digest)
         self.assertEqual(saved.read_bytes(), raw)
 
-    def test_admin_lists_all_fourteen_retained_diagnostic_days(self):
-        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
-        days = []
-        for age in range(14):
-            created_at = (datetime.now().astimezone() - timedelta(days=age)).isoformat(timespec="seconds")
-            raw = self._diagnostic_package(manifest_changes={"created_at": created_at})
-            digest = hashlib.sha256(raw).hexdigest()
-            result = self.client.post("/api/sinposmart/diagnostics/" + digest,
-                data=raw, content_type="application/zip", headers={"X-Credential-Sync-Token": "sync-token"})
-            self.assertEqual(result.status_code, 200)
-            days.append(result.get_json()["fire_day"])
+    def test_admin_shows_seven_duty_days_and_preserves_older_diagnostics(self):
+        from ambulance_bot import sinposmart_backend
 
-        page = self.client.get("/admin/sinposmart").get_data(as_text=True)
+        os.environ["CREDENTIAL_SYNC_TOKEN"] = "sync-token"
+        now = datetime(2026, 11, 8, 9, tzinfo=sinposmart_backend.TAIPEI_TIMEZONE)
+        fire_day_for = sinposmart_backend.sinposmart_fire_day_for
+        reports = []
+        with mock.patch.object(sinposmart_backend, "sinposmart_fire_day_for",
+                               side_effect=lambda value=None: fire_day_for(value or now)):
+            for age in range(14):
+                created_at = (now - timedelta(days=age)).isoformat(timespec="seconds")
+                raw = self._diagnostic_package(manifest_changes={"created_at": created_at})
+                digest = hashlib.sha256(raw).hexdigest()
+                result = self.client.post("/api/sinposmart/diagnostics/" + digest,
+                    data=raw, content_type="application/zip", headers={"X-Credential-Sync-Token": "sync-token"})
+                self.assertEqual(result.status_code, 200)
+                fire_day = result.get_json()["fire_day"]
+                reports.append((fire_day, digest))
+                if age < 7:
+                    app_module.sinposmart_store().upsert_event({
+                        "event_id": "login-" + fire_day, "record_type": "login", "occurred_at": created_at,
+                    }, now=now)
+
+            page = self.client.get("/admin/sinposmart").get_data(as_text=True)
+            oldest_day, oldest_digest = reports[-1]
+            with self.client.get(f"/admin/sinposmart/diagnostics/{oldest_day}/{oldest_digest}.zip") as download:
+                self.assertEqual(download.status_code, 200)
+                self.assertEqual(hashlib.sha256(download.data).hexdigest(), oldest_digest)
 
         self.assertIn("保留 14 天", page)
-        for fire_day in days:
-            self.assertIn("/admin/sinposmart?fire_day=" + fire_day, page)
+        day_links = re.findall(r'href="/admin/sinposmart\?fire_day=(\d{4}-\d{2}-\d{2})"', page)
+        self.assertEqual(day_links, [fire_day for fire_day, _digest in reports[:7]])
 
     def test_admin_overlap_manual_confirmation_requires_ack_token_and_syncs_exact_vehicle(self):
         os.environ["WORKER_TOKEN"] = "0123456789abcdef0123456789abcdef"
