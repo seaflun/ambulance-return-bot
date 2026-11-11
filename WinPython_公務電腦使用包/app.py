@@ -189,6 +189,7 @@ from ambulance_bot.task_store import (
     worker_queue_state,
 )
 from ambulance_bot.vehicle_reconciliation import (
+    VEHICLE_RECORD_SKIPPED,
     reconciliation_targets,
     site_vehicle_reconciliation_ready_to_retry,
 )
@@ -6509,6 +6510,8 @@ def site_update_contexts_for_task_edit(previous_task: dict, current_task: dict, 
 def status_label(status: str, detail: str = "") -> str:
     value = str(status or "")
     detail_value = str(detail or "")
+    if value == VEHICLE_RECORD_SKIPPED:
+        return "無同案紀錄，已略過"
     if "vehicle_candidate_available" in value:
         return "待選車輛"
     if "vehicle_candidate_selected" in value:
@@ -6544,6 +6547,8 @@ def status_label(status: str, detail: str = "") -> str:
 
 def status_class(status: str) -> str:
     value = str(status or "")
+    if value == VEHICLE_RECORD_SKIPPED:
+        return "complete"
     if "vehicle_candidate" in value:
         return "waiting"
     if site_waits_for_confirmation(value):

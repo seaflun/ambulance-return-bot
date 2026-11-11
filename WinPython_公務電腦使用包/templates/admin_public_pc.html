@@ -1,4 +1,5 @@
 {% extends "sinposmart_base.html" %}
+{% from "_vehicle_site_results.html" import vehicle_site_results with context %}
 {% from "_admin_system_status.html" import system_overview, version_card, health_card, remote_update_card %}
 {% set page_accent = service_filter if service_filter in ('disaster', 'ems') else 'brand' %}
 {% block page_title %}{{ admin_page_title }}{% endblock %}
@@ -437,6 +438,7 @@
                       </div>
                     {% endfor %}
                   </div>
+                  {{ vehicle_site_results(task, site_key, site) }}
                   {% for row in site_vehicle_candidate_rows(site) if row.state in ['available', 'selected'] %}
                     <section class="site-vehicle-choices" aria-label="{{ row.original_vehicle }}查找車輛">
                       <div>系統車輛：{{ row.original_vehicle }}</div>

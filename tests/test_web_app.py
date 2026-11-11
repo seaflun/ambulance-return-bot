@@ -5764,6 +5764,31 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         self.assertLess(body.index("總金額 617"), body.index("協勤人員 張贊鏡"))
         self.assertLess(body.index("協勤人員 張贊鏡"), body.index("桃-口罩(片) x2"))
 
+    def test_dual_vehicle_pages_show_independent_saved_and_skipped_status(self):
+        task = app_module.request_from_form({
+            "two_vehicle": "1", "vehicle": "新坡95", "vehicle_2": "新坡92",
+            "case_time": "0854", "return_time": "1108", "return_time_2": "1108",
+        })
+        task.task_id = "dual-vehicle-results"
+        app_module.store.create(task)
+        payload = app_module.store.get(task.task_id)
+        for site_key in ("consumables", "disinfection"):
+            payload["site_statuses"][site_key].update(
+                status=f"{site_key}_saved",
+                vehicle_results={
+                    "新坡95": {"status": f"{site_key}_saved"},
+                    "新坡92": {"status": "vehicle_record_skipped"},
+                },
+            )
+        app_module.store.save_payload(task.task_id, payload)
+        for url in ("/admin/public-pc", f"/tasks/{task.task_id}"):
+            with self.subTest(url=url):
+                page = self.client.get(url)
+                self.assertEqual(page.status_code, 200)
+                body = page.get_data(as_text=True)
+                self.assertRegex(body, r'data-vehicle-result="新坡95"[\s\S]*?完成')
+                self.assertRegex(body, r'data-vehicle-result="新坡92"[\s\S]*?無同案紀錄，已略過')
+
     def test_admin_public_pc_shows_two_vehicle_task_entries(self):
         os.environ["WORKER_TOKEN"] = "test-token"
         worker_headers = {"X-Worker-Token": "test-token"}

@@ -15,6 +15,7 @@ from .failure_evidence import store_task_failure_evidence
 from .models import AmbulanceReturnRequest
 from .site_diagnostics import BROWSER_STAGE_CATEGORIES, DIAGNOSTIC_FIELDS, browser_failure_stage_from_events, diagnostic_payload, result_with_diagnostics
 from .vehicle_reconciliation import (
+    VEHICLE_RECORD_SKIPPED,
     normalize_vehicle_candidates,
     pending_reconciliation_targets,
     task_has_pending_vehicle_reconciliation,
@@ -80,6 +81,7 @@ def pending_legacy_silent_save_report_event_id(payload: dict[str, Any]) -> str:
 
 
 SUCCESS_SITE_STATUSES = {
+    VEHICLE_RECORD_SKIPPED,
     "completed_by_user",
     "duty_work_log_saved",
     "vehicle_mileage_saved",

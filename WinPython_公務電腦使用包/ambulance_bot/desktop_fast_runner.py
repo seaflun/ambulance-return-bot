@@ -35,7 +35,9 @@ from .task_cancellation import (
 from .task_store import JsonTaskStore, now_text
 from .update_safety import ManualUpdateRequiredError, require_safe_automated_update
 from .vehicle_reconciliation import (
+    VEHICLE_RECORD_SKIPPED,
     VehicleCandidateLookupError,
+    missing_dual_vehicle_record_detail,
     request_with_selected_lookup_vehicle,
     selected_vehicle_target_key,
 )
@@ -1118,15 +1120,19 @@ class DesktopFastRunner:
                 raise
             except VehicleCandidateLookupError as exc:
                 self._raise_if_cancelled(request.task_id)
-                result = make_site_result(
-                    site_key,
-                    site_name,
-                    f"{site_key}_vehicle_candidate_available",
-                    str(exc),
-                    exc,
-                    vehicle_candidates=exc.candidates,
-                    reconciliation_vehicle_key=exc.expected_vehicle or vehicle_key,
-                )
+                skipped_detail = missing_dual_vehicle_record_detail(request, vehicle_key, exc)
+                if skipped_detail:
+                    result = SiteAutomationResult(site_key, site_name, VEHICLE_RECORD_SKIPPED, skipped_detail)
+                else:
+                    result = make_site_result(
+                        site_key,
+                        site_name,
+                        f"{site_key}_vehicle_candidate_available",
+                        str(exc),
+                        exc,
+                        vehicle_candidates=exc.candidates,
+                        reconciliation_vehicle_key=exc.expected_vehicle or vehicle_key,
+                    )
             except ManualUpdateRequiredError as exc:
                 self._raise_if_cancelled(request.task_id)
                 result = make_site_result(
@@ -1270,7 +1276,7 @@ def _result_with_login_audit(result, audit: str):
 
 def _site_is_complete(status: str) -> bool:
     value = str(status or "")
-    return value == "completed_by_user" or value.endswith("_saved")
+    return value in {"completed_by_user", VEHICLE_RECORD_SKIPPED} or value.endswith("_saved")
 
 
 def _single_site_sequence(request, site_key: str) -> list[str]:

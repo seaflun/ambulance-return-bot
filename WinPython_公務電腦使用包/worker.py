@@ -74,7 +74,9 @@ from ambulance_bot.task_cancellation import (
 from ambulance_bot.task_store import task_completion_snapshot
 from ambulance_bot.update_safety import ManualUpdateRequiredError, require_safe_automated_update
 from ambulance_bot.vehicle_reconciliation import (
+    VEHICLE_RECORD_SKIPPED,
     VehicleCandidateLookupError,
+    missing_dual_vehicle_record_detail,
     request_with_selected_lookup_vehicle,
     selected_vehicle_target_key,
 )
@@ -2742,15 +2744,19 @@ def _run_worker_per_vehicle_site(
         except TaskCancellationError:
             raise
         except VehicleCandidateLookupError as exc:
-            vehicle_result = make_site_result(
-                site_key,
-                site_name,
-                f"{site_key}_vehicle_candidate_available",
-                str(exc),
-                exc,
-                vehicle_candidates=exc.candidates,
-                reconciliation_vehicle_key=exc.expected_vehicle or vehicle_key,
-            )
+            skipped_detail = missing_dual_vehicle_record_detail(request, vehicle_key, exc)
+            if skipped_detail:
+                vehicle_result = SiteAutomationResult(site_key, site_name, VEHICLE_RECORD_SKIPPED, skipped_detail)
+            else:
+                vehicle_result = make_site_result(
+                    site_key,
+                    site_name,
+                    f"{site_key}_vehicle_candidate_available",
+                    str(exc),
+                    exc,
+                    vehicle_candidates=exc.candidates,
+                    reconciliation_vehicle_key=exc.expected_vehicle or vehicle_key,
+                )
         except ManualUpdateRequiredError as exc:
             vehicle_result = make_site_result(
                 site_key,
@@ -3963,7 +3969,7 @@ def _result_blocks_progress(result: object) -> bool:
 
 def _site_is_complete(status: str) -> bool:
     value = str(status or "")
-    return value == "completed_by_user" or value.endswith("_saved")
+    return value in {"completed_by_user", VEHICLE_RECORD_SKIPPED} or value.endswith("_saved")
 
 
 def load_last_case_hash(artifacts_dir: Path) -> str:

@@ -1,0 +1,15 @@
+{% macro vehicle_site_results(task, site_key, site) -%}
+  {% set entries = task_vehicle_display_entries(task) %}
+  {% if entries|length > 1 and site_key in ['vehicle_mileage', 'fuel_record', 'consumables', 'disinfection'] %}
+    <ul class="line-list" aria-label="分車登打結果">
+      {% for entry in entries if site_key != 'fuel_record' or entry.fuel_enabled %}
+        {% set vehicle_key = entry.vehicle or entry.label %}
+        {% set result = (site.get('vehicle_results') or {}).get(vehicle_key, {}) %}
+        <li data-vehicle-result="{{ vehicle_key }}">
+          <span class="label">{{ vehicle_key }}</span>
+          <span class="status {{ status_class(result.status or 'not_started') }}">{{ status_label(result.status, result.detail) if result.status else '尚未回報' }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+{%- endmacro %}

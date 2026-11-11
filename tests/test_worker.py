@@ -3133,6 +3133,28 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(any(p.get("vehicle_key") == "新坡93" and p.get("reconciliation_vehicle_key") == "新坡93" for p in posts))
         self.assertFalse(any(p.get("vehicle_key") == "新坡92" for p in posts))
 
+    def test_dual_vehicle_sites_skip_missing_vehicle_when_sibling_is_verified(self):
+        request = worker_module.AmbulanceReturnRequest.from_dict(self._two_vehicle_task())
+        for site in ("consumables", "disinfection"):
+            with self.subTest(site=site), mock.patch.object(worker_module, "post_status") as post:
+                def lookup(vehicle, index):
+                    if index == 1:
+                        return SimpleNamespace(status=f"{site}_saved", detail="verified")
+                    raise worker_module.VehicleCandidateLookupError(
+                        site, vehicle.vehicle, [{"vehicle": request.vehicle}],
+                    )
+
+                result = worker_module._run_worker_per_vehicle_site(
+                    "http://nas", request, site, site, lookup,
+                )
+
+                self.assertEqual(result.status, f"{site}_saved")
+                self.assertEqual(
+                    [(call.kwargs["vehicle_key"], call.args[2]) for call in post.call_args_list],
+                    [(request.vehicle, f"{site}_saved"), ("新坡93", "vehicle_record_skipped")],
+                )
+                self.assertFalse(post.call_args.kwargs.get("vehicle_candidates"))
+
     def test_run_consumables_reports_detected_candidate_to_nas(self):
         task = {
             "task_id": "task-detected-candidate",

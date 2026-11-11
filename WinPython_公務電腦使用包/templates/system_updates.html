@@ -148,6 +148,20 @@
   </div>
 
   <section class="update-timeline" data-history-system="ambulance" aria-label="救護台更新歷程">
+    <article class="update-card" data-release-version="2026.11.11.1842">
+      <div class="update-card__heading">
+        <div>
+          <p class="update-card__period">{{ update_release_datetime('2026.11.11.1842') }}</p>
+          <h2 class="update-card__title">修正消毒出動時間比對與雙車登打結果</h2>
+        </div>
+        <span class="update-card__versions">2026.11.11.1842</span>
+      </div>
+      <ul class="update-card__items">
+        <li>消毒找不到受理時間對應列時，再用出動時間比對，只選取同日、同車、同分鐘的唯一紀錄。</li>
+        <li>雙車耗材與消毒只查到同案的另一台出勤車時，個別略過缺少紀錄的車輛。</li>
+        <li>救護後台與登打明細分車顯示里程、加油、耗材及消毒結果。</li>
+      </ul>
+    </article>
     <article class="update-card" data-release-version="2026.11.08.0107">
       <div class="update-card__heading">
         <div>

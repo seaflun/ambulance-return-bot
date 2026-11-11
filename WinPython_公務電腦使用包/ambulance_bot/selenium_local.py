@@ -3893,11 +3893,20 @@ def _prepare_disinfection_record(
     _report_progress(progress, "開啟消毒紀錄")
     case_at = _disinfection_case_at(request)
     case_time = case_at.strftime("%H%M") if case_at else request.case_time
-    if not _open_disinfection_detail_for_case(driver, case_time, request.vehicle, case_at=case_at):
+    if not _open_disinfection_detail_for_case(
+        driver, case_time, request.vehicle, case_at=case_at, dispatch_time=request.case_time,
+    ):
         rows = _disinfection_detail_rows(driver)
-        candidates = _disinfection_vehicle_candidates(rows, request)
-        if candidates:
-            raise VehicleCandidateLookupError("disinfection", request.vehicle, candidates)
+        has_same_vehicle_row = any(
+            _select_disinfection_detail_row(
+                [row], case_time, request.vehicle, case_at=case_at, dispatch_time=request.case_time,
+            ) is not None
+            for row in rows
+        )
+        if not has_same_vehicle_row:
+            candidates = _disinfection_vehicle_candidates(rows, request)
+            if candidates:
+                raise VehicleCandidateLookupError("disinfection", request.vehicle, candidates)
         raise WebDriverException(f"missing disinfection detail for case time {case_time or 'empty'}")
     _wait_for_disinfection_detail_ready(driver)
     _save_disinfection_progress_artifacts(driver, output_dir, request.task_id, "disinfection_detail")
@@ -4080,10 +4089,13 @@ def _disinfection_query_date(request: AmbulanceReturnRequest) -> str:
 
 
 def _open_disinfection_detail_for_case(
-    driver: webdriver.Chrome, case_time: str, vehicle: str = "", *, case_at: datetime | None = None,
+    driver: webdriver.Chrome, case_time: str, vehicle: str = "", *,
+    case_at: datetime | None = None, dispatch_time: str = "",
 ) -> bool:
     rows = _disinfection_detail_rows(driver)
-    row_index = _select_disinfection_detail_row(rows, case_time, vehicle, case_at=case_at)
+    row_index = _select_disinfection_detail_row(
+        rows, case_time, vehicle, case_at=case_at, dispatch_time=dispatch_time,
+    )
     if row_index is None:
         return False
     return _open_disinfection_detail_row(driver, row_index)
@@ -4124,6 +4136,7 @@ def _open_disinfection_detail_row(driver: webdriver.Chrome, row_index: int) -> b
 
 def _select_disinfection_detail_row(
     rows: object, case_time: str, vehicle: str = "", *, case_at: datetime | None = None,
+    dispatch_time: str = "",
 ) -> int | None:
     if not isinstance(rows, list):
         return None
@@ -4131,6 +4144,11 @@ def _select_disinfection_detail_row(
     variants = [digits, f"{digits[:2]}:{digits[2:]}"] if len(digits) == 4 else []
     matches: list[int] = []
     near_matches: list[int] = []
+    dispatch_matches: list[int] = []
+    dispatch_at = None
+    dispatch_hhmm = normalize_hhmm_local(dispatch_time)
+    if case_at and vehicle and re.fullmatch(r"(?:[01][0-9]|2[0-3])[0-5][0-9]", dispatch_hhmm):
+        dispatch_at = case_at.replace(hour=int(dispatch_hhmm[:2]), minute=int(dispatch_hhmm[2:]), second=0)
     for fallback_index, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
@@ -4143,6 +4161,8 @@ def _select_disinfection_detail_row(
             row_index = int(row.get("index"))
         except (TypeError, ValueError):
             row_index = fallback_index
+        if dispatch_at and _disinfection_text_matches_case_at(text, dispatch_at, match_minute=True):
+            dispatch_matches.append(row_index)
         if case_at:
             if not _disinfection_text_matches_case_at(text, case_at, match_seconds=False):
                 continue
@@ -4152,15 +4172,23 @@ def _select_disinfection_detail_row(
         matches.append(row_index)
     if matches:
         return matches[0] if len(matches) == 1 else None
-    return near_matches[0] if case_at and vehicle and len(near_matches) == 1 else None
+    if near_matches:
+        return near_matches[0] if vehicle and len(near_matches) == 1 else None
+    return dispatch_matches[0] if len(dispatch_matches) == 1 else None
 
 
-def _disinfection_text_matches_case_at(text: str, case_at: datetime, *, match_seconds: bool = True) -> bool:
+def _disinfection_text_matches_case_at(
+    text: str, case_at: datetime, *, match_seconds: bool = True, match_minute: bool = False,
+) -> bool:
     timestamps = re.findall(r"\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}", text)
     for value in timestamps:
         try:
             actual = datetime.strptime(" ".join(value.replace("-", "/").split()), "%Y/%m/%d %H:%M:%S")
         except ValueError:
+            continue
+        if match_minute:
+            if actual.replace(second=0) == case_at:
+                return True
             continue
         if actual == case_at or (not match_seconds and actual.date() == case_at.date()
                                  and abs((actual - case_at).total_seconds()) < 60):
@@ -4172,8 +4200,8 @@ def _disinfection_text_matches_vehicle(text: str, vehicle: str) -> bool:
     needle = re.sub(r"\s+", "", str(vehicle or ""))
     if not needle:
         return False
-    haystack = re.sub(r"\s+", "", str(text or ""))
-    return needle in haystack
+    callsign = r"\s*".join(re.escape(char) for char in needle)
+    return bool(re.search(rf"(?<![0-9]){callsign}(?![0-9])", str(text or "")))
 
 
 def _disinfection_vehicle_candidates(
@@ -4272,7 +4300,9 @@ def _verify_saved_disinfection_record(
     _wait_for_disinfection_query_completed(driver)
     case_at = _disinfection_case_at(request)
     case_time = case_at.strftime("%H%M") if case_at else request.case_time
-    if not _open_disinfection_detail_for_case(driver, case_time, request.vehicle, case_at=case_at):
+    if not _open_disinfection_detail_for_case(
+        driver, case_time, request.vehicle, case_at=case_at, dispatch_time=request.case_time,
+    ):
         raise WebDriverException("消毒回查找不到唯一的同案同車紀錄。")
     _wait_for_disinfection_detail_ready(driver)
     _assert_disinfection_not_login(driver, "readback detail")

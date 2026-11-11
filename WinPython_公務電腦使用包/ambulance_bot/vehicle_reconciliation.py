@@ -6,6 +6,7 @@ from typing import Any, Mapping
 from .models import AmbulanceReturnRequest
 
 
+VEHICLE_RECORD_SKIPPED = "vehicle_record_skipped"
 RECONCILIATION_SITE_KEYS = frozenset({"consumables", "disinfection"})
 _CANDIDATE_FIELDS = ("vehicle", "source", "record_id", "case_id", "case_time")
 
@@ -30,6 +31,20 @@ class VehicleCandidateLookupError(RuntimeError):
             f"同案件不同車輛：系統車輛={self.expected_vehicle or '未填'}；"
             f"候選車輛={candidate_labels}。"
         )
+
+
+def missing_dual_vehicle_record_detail(
+    request: AmbulanceReturnRequest, vehicle_key: str, error: VehicleCandidateLookupError,
+) -> str:
+    if request.service_type == "disaster" or error.site_key not in RECONCILIATION_SITE_KEYS:
+        return ""
+    vehicles = {entry.vehicle for entry in request.vehicle_requests() if entry.vehicle}
+    if len(vehicles) != 2 or vehicle_key not in vehicles or error.expected_vehicle != vehicle_key:
+        return ""
+    siblings = vehicles - {vehicle_key}
+    if {candidate["vehicle"] for candidate in error.candidates} != siblings:
+        return ""
+    return f"未找到 {vehicle_key} 的同案紀錄，已略過此車；查到同案車輛 {'、'.join(sorted(siblings))}。"
 
 
 def normalize_vehicle_candidates(values: object) -> tuple[dict[str, str], ...]:

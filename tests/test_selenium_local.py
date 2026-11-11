@@ -1953,6 +1953,25 @@ class SeleniumLocalTests(unittest.TestCase):
         ))
         self.assertEqual(driver.execute_script.call_args.args[1], 3)
 
+    def test_disinfection_dispatch_fallback_replays_november_11_failure(self):
+        select = selenium_local_module._select_disinfection_detail_row
+        case_at = datetime(2026, 11, 11, 7, 49)
+        row = {"index": 1, "text": "1 2026/11/11 07:50:36 新坡分隊 新坡95 明細"}
+        options = {"case_at": case_at, "dispatch_time": "0750"}
+        self.assertEqual(select([row], "0749", "新坡95", **options), 1)
+        self.assertIsNone(select([row], "0749", "新坡92", **options))
+        self.assertIsNone(select([row], "0749", "", **options))
+        self.assertIsNone(select([row, {**row, "index": 2}], "0749", "新坡95", **options))
+        self.assertIsNone(select(
+            [{**row, "text": row["text"].replace("11/11", "11/12")}],
+            "0749", "新坡95", **options,
+        ))
+        primary = {**row, "index": 3, "text": row["text"].replace("07:50:36", "07:49:00")}
+        self.assertEqual(select([row, primary], "0749", "新坡95", **options), 3)
+        self.assertIsNone(select(
+            [row, primary, {**primary, "index": 4}], "0749", "新坡95", **options,
+        ))
+
     def test_disinfection_near_time_match_requires_unique_same_day_vehicle(self):
         case_at = datetime(2026, 10, 3, 7, 7, 54)
         row = {"index": 3, "text": "2026/10/03 07:08:03 新坡92 明細"}
