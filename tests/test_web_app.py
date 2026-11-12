@@ -3472,6 +3472,33 @@ process.stdout.write(JSON.stringify(states));
         self.assertEqual(409, edit_post.status_code)
         self.assertIn("救災案件不使用救護編輯頁", edit_get.get_data(as_text=True))
 
+    def test_disaster_mileage_hides_success_detail_and_keeps_failure_reason(self):
+        task = AmbulanceReturnRequest(
+            task_id="disaster-mileage-display", created_at=datetime.now(), raw_text="",
+            service_type="disaster",
+            vehicle_entries=[{"vehicle": "新坡11"}, {"vehicle": "新坡15"}],
+        )
+        self.store.create(task)
+        payload = self.store.get(task.task_id)
+        payload["site_statuses"]["vehicle_mileage"].update(
+            status="vehicle_mileage_failed",
+            vehicle_results={
+                "新坡11": {
+                    "status": "vehicle_mileage_saved",
+                    "detail": "登入帳號：里程=任務司機。里程已重新查詢並核對儲存內容。",
+                },
+                "新坡15": {"status": "vehicle_mileage_failed", "detail": "里程紀錄時間重複"},
+            },
+        )
+        self.store.save_payload(task.task_id, payload)
+
+        page = self.client.get(f"/tasks/{task.task_id}")
+        self.assertEqual(page.status_code, 200)
+        body = page.get_data(as_text=True)
+        self.assertNotIn("里程已重新查詢並核對儲存內容", body)
+        self.assertIn('<span class="status complete">完成</span>', body)
+        self.assertIn("里程紀錄時間重複", body)
+
     def test_ems_form_shows_folder_preview_and_live_fuel_total_without_changing_entry_route(self):
         self.import_case_for_form(
             {

@@ -666,7 +666,7 @@
                     {% if payload.task.service_type == 'disaster' %}
                       {% set vehicle_mileage_result = mileage_vehicle_results.get(entry.vehicle, {}) if mileage_vehicle_results is mapping else {} %}
                       <br><span class="status {{ status_class(vehicle_mileage_result.status or 'not_started') }}">{{ status_label(vehicle_mileage_result.status, vehicle_mileage_result.detail) if vehicle_mileage_result.status else '尚未回報' }}</span>
-                      {% if vehicle_mileage_result.detail %}<br>{{ vehicle_mileage_result.detail }}{% endif %}
+                      {% if vehicle_mileage_result.detail and not (status_class(vehicle_mileage_result.status) == 'complete' and '里程已重新查詢並核對儲存內容' in vehicle_mileage_result.detail) %}<br>{{ vehicle_mileage_result.detail }}{% endif %}
                     {% endif %}
                   </span>
                 </li>
