@@ -775,6 +775,14 @@ class ConsumablesLoginTests(unittest.TestCase):
             ],
         )
 
+    def test_detail_vehicle_reads_custom_callsign_without_local_vehicle_settings(self):
+        class FakeDriver:
+            def execute_script(self, script):
+                return {"hasCallNoField": True, "callNo": "新坡96"}
+
+        with patch.object(consumables_login_module, "vehicle_ppe_names", return_value={"新坡92": "BXB-7593"}):
+            self.assertEqual(_consumable_detail_vehicle_label(FakeDriver()), "新坡96")
+
     def test_detail_vehicle_prefers_selected_control_over_all_body_options(self):
         class FakeElement:
             text = "出勤單位 新坡91 BGV-2310 新坡92 BXB-7593 新坡93 BSL-9230"

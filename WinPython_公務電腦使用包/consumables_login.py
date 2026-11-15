@@ -1428,7 +1428,10 @@ def _consumable_detail_vehicle_label(driver: webdriver.Chrome) -> str:
     if isinstance(state, dict):
         if not state.get("hasCallNoField"):
             return ""
-        page_texts = (str(state.get("callNo") or ""),)
+        callsign = str(state.get("callNo") or "").strip()
+        if re.fullmatch(r"新坡[0-9]+", callsign):
+            return callsign
+        page_texts = (callsign,)
     else:
         page_texts = (_consumable_detail_control_text(driver), _consumable_detail_body_text(driver))
     for page_text in page_texts:
