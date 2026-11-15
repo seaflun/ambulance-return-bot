@@ -5107,13 +5107,33 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         ]
 
         with mock.patch.object(app_module, "effective_disaster_vehicle_records", return_value=vehicle_records):
-            hydrated = app_module.hydrate_disaster_task_mileage_system_names(task_id, payload)
+            hydrated = app_module.hydrate_task_mileage_system_names(task_id, payload)
 
         self.assertEqual(
             ["KEC-2608", "KES-5922"],
             [entry["mileage_system_name"] for entry in hydrated["task"]["vehicle_entries"]],
         )
         self.assertEqual("KEC-2608", hydrated["task"]["mileage_system_name"])
+
+    def test_ems_mileage_retry_supplies_configured_plate_for_legacy_dual_vehicle(self):
+        task_id = "legacy-ems-mileage-96"
+        self.store.create(AmbulanceReturnRequest(
+            task_id=task_id, created_at=datetime.now(), raw_text="", vehicle="新坡92",
+            two_vehicle=True, vehicle_entries=[
+                {"vehicle": "新坡92", "mileage_system_name": "EXISTING-92"},
+                {"vehicle": "新坡96"},
+            ],
+        ))
+        records = [{"label": "新坡92", "ppe_name": "OTHER-92"}, {"label": "新坡96", "ppe_name": "BWC-3151"}]
+        with mock.patch.object(app_module, "effective_ems_vehicle_records", return_value=records), \
+                mock.patch.object(app_module, "effective_task_execution_mode", return_value="desktop_fast"):
+            response = self.client.post(f"/tasks/{task_id}/sites/vehicle_mileage/run")
+        self.assertEqual(302, response.status_code)
+        self.assertEqual([(task_id, "vehicle_mileage")], app_module.desktop_runner.started_sites)
+        task = self.store.get(task_id)["task"]
+        self.assertEqual(["EXISTING-92", "BWC-3151"], [
+            entry.get("mileage_system_name") for entry in task["vehicle_entries"]
+        ])
 
     def test_disaster_mileage_retry_hydrates_legacy_task_before_starting(self):
         task_id = "legacy-disaster-mileage-retry"
@@ -15925,7 +15945,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
             return {"task_id": task_id}
 
         with mock.patch.object(app_module, "public_pc_report_for_task", side_effect=lookup_then_claim), \
-                mock.patch.object(app_module, "hydrate_disaster_task_mileage_system_names") as hydrate, \
+                mock.patch.object(app_module, "hydrate_task_mileage_system_names") as hydrate, \
                 mock.patch.object(app_module, "report_public_pc_task_event") as report:
             response = self.client.post(
                 f"/tasks/{task_id}/sites/consumables/run", data={"return_service": "ems"},
@@ -15963,7 +15983,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
     def test_mileage_name_hydration_preserves_a_new_worker_claim(self):
         task_id = "audit-hydration-race"
         original = self.store.create(AmbulanceReturnRequest(
-            task_id=task_id, created_at=datetime.now(), raw_text="",
+            task_id=task_id, created_at=datetime.now(), raw_text="", service_type="disaster",
         ))
         current = {}
 
@@ -15977,7 +15997,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
 
         with mock.patch.object(app_module, "effective_disaster_vehicle_records", side_effect=records_then_claim), \
                 mock.patch.object(app_module, "apply_disaster_vehicle_mileage_system_names", side_effect=changed_names):
-            result = app_module.hydrate_disaster_task_mileage_system_names(task_id, original)
+            result = app_module.hydrate_task_mileage_system_names(task_id, original)
 
         self.assertEqual(self.store.get(task_id), current)
         self.assertEqual(result, current)

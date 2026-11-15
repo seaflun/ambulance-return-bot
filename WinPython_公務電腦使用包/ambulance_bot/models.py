@@ -787,6 +787,13 @@ def apply_disaster_vehicle_mileage_system_names(
 ) -> bool:
     if request.service_type != "disaster":
         return False
+    return apply_vehicle_mileage_system_names(request, vehicle_records)
+
+
+def apply_vehicle_mileage_system_names(
+    request: AmbulanceReturnRequest,
+    vehicle_records: list[dict[str, str]],
+) -> bool:
     names = {
         str(record.get("label") or "").strip(): str(record.get("ppe_name") or "").strip()
         for record in vehicle_records

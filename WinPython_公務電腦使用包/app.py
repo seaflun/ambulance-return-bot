@@ -113,6 +113,7 @@ from ambulance_bot.models import (
     VEHICLE_TYPE_BUILT_IN,
     VEHICLE_TYPE_CUSTOM,
     apply_disaster_vehicle_mileage_system_names,
+    apply_vehicle_mileage_system_names,
     example_command,
     clean_case_address,
     delete_vehicle_record,
@@ -754,6 +755,7 @@ def create_task():
     if existing:
         existing_task_id = str(dict(existing.get("task") or {}).get("task_id") or "")
         return redirect(url_for("task_detail", task_id=existing_task_id))
+    apply_vehicle_mileage_system_names(task_request, effective_ems_vehicle_records())
     payload = store.create(task_request, auto_start_mode=created_task_auto_start_mode())
     report_public_pc_task_event(payload, "建立任務")
     if should_auto_queue_task_on_create():
@@ -905,6 +907,12 @@ def update_task(task_id: str):
             two_vehicle_available=form_flag_enabled(request.form.get("two_vehicle_available")) or task_request.two_vehicle,
             enforce_mileage_change_limit=False,
         ), 400
+    previous_request = AmbulanceReturnRequest.from_dict(previous_task)
+    apply_vehicle_mileage_system_names(task_request, [
+        {"label": entry.vehicle, "ppe_name": entry.mileage_system_name}
+        for entry in previous_request.effective_vehicle_entries()
+    ])
+    apply_vehicle_mileage_system_names(task_request, effective_ems_vehicle_records())
     current_task = task_request.to_dict()
     edit_impact = analyze_task_edit(previous_task, current_task)
     changed_site_keys_for_edit = changed_site_keys(edit_impact)
@@ -996,7 +1004,7 @@ def run_task(task_id: str):
     reconciliation_detail = vehicle_reconciliation_run_block_detail(payload)
     if reconciliation_detail:
         return reconciliation_detail, 409
-    payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
+    payload = hydrate_task_mileage_system_names(task_id, payload)
     if task_payload_is_active(payload):
         return "任務已排隊或開始執行，請重新載入目前狀態。", 409
     mode = effective_task_execution_mode()
@@ -1054,7 +1062,7 @@ def run_task_site(task_id: str, site_key: str):
         payload = mark_public_pc_report_retry_task(task_id, payload)
         if task_payload_is_active(payload):
             return "任務已排隊或開始執行，請重新載入目前狀態。", 409
-    payload = hydrate_disaster_task_mileage_system_names(task_id, payload)
+    payload = hydrate_task_mileage_system_names(task_id, payload)
     if task_payload_is_active(payload):
         return "任務已排隊或開始執行，請重新載入目前狀態。", 409
     mode = effective_task_execution_mode()
@@ -5678,10 +5686,14 @@ def effective_disaster_vehicle_recorder_codes() -> dict[str, str]:
     }
 
 
-def hydrate_disaster_task_mileage_system_names(task_id: str, payload: dict) -> dict:
+def hydrate_task_mileage_system_names(task_id: str, payload: dict) -> dict:
     expected_payload = deepcopy(payload)
     task_request = AmbulanceReturnRequest.from_dict(dict(payload.get("task") or {}))
-    if not apply_disaster_vehicle_mileage_system_names(task_request, effective_disaster_vehicle_records()):
+    if task_request.service_type == "disaster":
+        changed = apply_disaster_vehicle_mileage_system_names(task_request, effective_disaster_vehicle_records())
+    else:
+        changed = apply_vehicle_mileage_system_names(task_request, effective_ems_vehicle_records())
+    if not changed:
         return payload
     payload["task"] = task_request.to_dict()
     if not store.save_payload_if_unchanged(task_id, expected_payload, payload):
