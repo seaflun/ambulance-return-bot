@@ -629,7 +629,7 @@
               <details class="event-detail daily-vehicle-details">
                 <summary>逐車保養與器材結果（{{ vehicle_report["items"] | length }} 筆）</summary>
                 {% for row in vehicle_report["items"] %}
-                  <div class="daily-vehicle-row">車輛：{{ row.vehicle or '車輛未確認' }}｜項目：{{ row.operation_label }}｜結果：{{ row.status_label }}｜原因：{{ row.reason_label }}</div>
+                  <div class="daily-vehicle-row">車輛：{{ row.vehicle or '車輛未確認' }}｜項目：{{ row.operation_label }}｜登入帳號：{{ row.login_account or '未記錄' }}｜結果：{{ row.status_label }}｜原因：{{ row.reason_label }}</div>
                 {% else %}
                   <div class="event-detail">沒有可供確認的逐車明細。</div>
                 {% endfor %}

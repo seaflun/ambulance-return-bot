@@ -3198,7 +3198,12 @@ def sanitize_daily_vehicle_report(value: Any, *, expected_date: str | None = Non
         if key in seen:
             invalid = True
         seen.add(key)
-        items.append({"vehicle": vehicle, "operation": row["operation"], "status": status, "reason_code": row_reason})
+        clean_row = {"vehicle": vehicle, "operation": row["operation"], "status": status, "reason_code": row_reason}
+        account = row.get("login_account")
+        if (status == "completed" and row_reason == "saved_verified" and isinstance(account, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", account)):
+            clean_row["login_account"] = account
+        items.append(clean_row)
     operations = {row["operation"] for row in items}
     if raw.get("verified") is True and items and (operations != {"maintenance", "equipment"} or reason not in {"", *positive}):
         invalid = True

@@ -7210,6 +7210,7 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         report = {"target_date": day, "execution_mode": "automatic", "verified": True, "reason_code": "",
                   "items": [{"vehicle": "新坡91", "operation": operation, "status": "completed", "reason_code": "saved_verified"}
                             for operation in ("maintenance", "equipment")]}
+        report["items"][0]["login_account"] = "PPE-SAMPLE06"
         response = self.client.post("/api/sinposmart/events", headers={"X-Credential-Sync-Token": "sync-token"}, json={
             "event_id": "vehicle-verified", "occurred_at": f"{day}T10:25:00", "fire_day": day,
             "record_type": "tool_action_finished", "status": "ok", "snapshot": {"tool_name": "daily_vehicle",
@@ -7221,6 +7222,8 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         body = self.client.get(f"/admin/sinposmart?fire_day={day}").get_data(as_text=True)
         for text in ("已驗證全部完成", "車輛保養", "器材清點", "新坡91", "儲存後已回查確認", "自動", day):
             self.assertIn(text, body)
+        self.assertIn("登入帳號：PPE-SAMPLE06", body)
+        self.assertIn("登入帳號：未記錄", body)
         self.assertEqual(app_module.sinposmart_store().path_for_day(day).read_bytes(), before)
 
     def test_sinposmart_daily_vehicle_not_required_api_round_trip_and_neutral_summary(self):
