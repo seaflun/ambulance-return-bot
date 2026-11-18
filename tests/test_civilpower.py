@@ -1360,9 +1360,10 @@ class CivilpowerPlanTests(unittest.TestCase):
                 "option:#ddl_AddIO=出",
                 "input:#txt_AddReason=救護出勤",
                 "verify",
-                "progress:儲存並回查出／入登記",
+                "progress:送出出／入登記",
                 "click:#btn_IOWorkLogAdd",
                 "saved:#jqxAddWindow",
+                "progress:回查出／入登記",
             ],
             steps,
         )

@@ -102,6 +102,14 @@ class _CivilpowerRecordsChanged(RuntimeError):
     pass
 
 
+class _CivilpowerSaveReplyTimeout(RuntimeError):
+    pass
+
+
+class _CivilpowerIOVerificationPending(RuntimeError):
+    pass
+
+
 class _CivilpowerSaveRejected(RuntimeError):
     def __init__(self, message: str):
         super().__init__(message)
@@ -493,7 +501,8 @@ def run_civilpower_task(
         return SiteAutomationResult(
             "volunteer_assist",
             "民力系統",
-            "volunteer_assist_failed",
+            "volunteer_assist_waiting_confirmation" if isinstance(exc, _CivilpowerIOVerificationPending)
+            else "volunteer_assist_failed",
             detail,
             **_civilpower_failure_diagnostics(current_stage, exc, evidence),
         )
@@ -928,7 +937,7 @@ def _ensure_io_record(
     _wait_for_io_record_form_values(driver, wait, plan, status)
     _raise_if_cancelled(cancel_check)
     _require_civilpower_save_enabled("救護出勤出入登記" if status == OUT_STATUS else "救護返隊出入登記")
-    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_save_verify"])
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_save"])
     checkpoint[f"{marker}_save_state"] = "pending_verification"
     if before_save is not None:
         before_save()
@@ -936,12 +945,26 @@ def _ensure_io_record(
         _require_civilpower_save_enabled("出／入登記")
         _raise_if_cancelled(cancel_check)
     _click(wait, "#btn_IOWorkLogAdd")
-    _wait_after_save(driver, wait, "#jqxAddWindow")
+    reply_timed_out = False
+    try:
+        _wait_after_save(driver, wait, "#jqxAddWindow")
+    except (TimeoutException, _CivilpowerSaveReplyTimeout):
+        reply_timed_out = True
     _raise_if_cancelled(cancel_check)
-    if case_window is not None:
-        verified = _case_io_record_exists(driver, plan, status, case_window, lookback_days=lookback_days, wait_for_match=True)
-    else:
-        verified = _find_io_record(driver, plan, status, wait_for_match=True, reload_page=False, **lookup_kwargs)
+    _report_progress(progress, CIVILPOWER_STAGE_LABELS["io_verify"])
+    try:
+        if case_window is not None:
+            verified = _case_io_record_exists(
+                driver, plan, status, case_window, lookback_days=lookback_days, wait_for_match=True,
+            )
+        else:
+            verified = _find_io_record(
+                driver, plan, status, wait_for_match=True, reload_page=reply_timed_out, **lookup_kwargs,
+            )
+    except TimeoutException as exc:
+        raise _CivilpowerIOVerificationPending("出入登記已送出，但回查逾時，待確認。") from exc
+    if not verified and reply_timed_out:
+        raise _CivilpowerIOVerificationPending("出入登記儲存畫面逾時，回查未確認同一筆紀錄，待確認。")
     if not verified:
         raise RuntimeError(f"出入登記簿儲存後回查不到{status}／{plan.out_reason if status == OUT_STATUS else plan.in_reason}紀錄。")
     checkpoint[f"{marker}_verified"] = True
@@ -2103,13 +2126,13 @@ def _wait_after_save(driver, wait: WebDriverWait, modal_selector: str) -> None:
             body_text = _clean_text(driver.find_element(By.TAG_NAME, "body").text)
             if any(token in body_text for token in ("失敗", "錯誤", "請輸入", "必填", "無法", "尚未", "未位於")):
                 raise _CivilpowerSaveRejected("民力網站未接受儲存：" + body_text[-300:]) from exc
-            raise RuntimeError("儲存視窗未關閉且無成功回覆，尚未確認網站接受資料；未繼續送出。") from exc
+            raise _CivilpowerSaveReplyTimeout("儲存視窗未關閉且無成功回覆，尚未確認網站接受資料；未繼續送出。") from exc
     _dismiss_save_success_dialog(driver, wait)
     if _element_displayed(driver, modal_selector):
         try:
             wait.until(lambda current: not _element_displayed(current, modal_selector))
         except TimeoutException as exc:
-            raise RuntimeError("成功提示關閉後儲存視窗仍未關閉，尚未確認完成。") from exc
+            raise _CivilpowerSaveReplyTimeout("成功提示關閉後儲存視窗仍未關閉，尚未確認完成。") from exc
 
 
 def _dismiss_save_success_dialog(driver, wait: WebDriverWait) -> None:

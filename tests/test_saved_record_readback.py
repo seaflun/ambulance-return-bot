@@ -166,13 +166,13 @@ class SavedRecordReadbackTests(unittest.TestCase):
 
     def test_duty_prequery_repeated_timeout_stops_before_insert(self):
         with patch.object(runtime, "_ensure_duty_login", return_value=True), \
-             patch.object(runtime, "_query_duty_work_logs", side_effect=runtime.TimeoutException()) as query, \
-             patch.object(runtime, "_detail_with_failure_evidence", side_effect=lambda detail, *args: detail), \
+             patch.object(runtime, "_query_duty_work_logs", side_effect=runtime.TimeoutException("等待 _btnQuery 更新逾時")) as query, \
+             patch.object(runtime, "_detail_with_failure_evidence", return_value="網頁載入或等待元件逾時"), \
              patch.object(runtime, "_click_by_text_or_id") as click:
             result = runtime._prepare_duty_work_log_form(Mock(), self.request(), Path("."), Path("summary.txt"))
         self.assertEqual("duty_work_log_waiting_confirmation", result.status)
         self.assertEqual(2, query.call_count)
-        self.assertIn("逾時", result.detail)
+        self.assertIn("等待 _btnQuery 更新逾時", result.detail)
         click.assert_not_called()
 
     def test_duty_prequery_unsafe_data_is_not_retried(self):

@@ -29,6 +29,8 @@ CIVILPOWER_STAGE_LABELS = {
     "io_unit": "等待所屬單位重整",
     "io_person": "選取義消人員",
     "io_save_verify": "儲存並回查出／入登記",
+    "io_save": "送出出／入登記",
+    "io_verify": "回查出／入登記",
     "in_time_query": "查詢錯誤入時間",
     "in_edit": "按修改入登記",
     "in_edit_save": "儲存修改入時間",
@@ -47,7 +49,7 @@ CIVILPOWER_STAGE_GROUPS = (
         "登入與出／入登記",
         tuple(
             CIVILPOWER_STAGE_LABELS[key]
-            for key in ("chrome", "login", "roster", "case_window_query", "io_reconcile", "requery_after_reply", "io_query", "io_add", "io_unit", "io_person", "io_save_verify")
+            for key in ("chrome", "login", "roster", "case_window_query", "io_reconcile", "requery_after_reply", "io_query", "io_add", "io_unit", "io_person", "io_save_verify", "io_save", "io_verify")
         ),
     ),
     (

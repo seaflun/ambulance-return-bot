@@ -1560,10 +1560,11 @@ def _prepare_duty_work_log_form(
             try:
                 existing = _query_duty_work_logs(driver, request, cancel_check=cancel_check)
                 break
-            except TimeoutException:
+            except TimeoutException as exc:
                 if attempt:
                     raise
-                _report_progress(progress, "既有工作紀錄查詢逾時，重新查詢一次（尚未新增）")
+                reason = compact_failure_text(exc.msg or "等待勤務查詢頁或結果逾時")
+                _report_progress(progress, f"既有工作紀錄查詢逾時，重新查詢一次（尚未新增）：{reason}")
     except TaskCancellationError:
         raise
     except (WebDriverException, RuntimeError, ValueError) as exc:
@@ -1575,6 +1576,8 @@ def _prepare_duty_work_log_form(
                 _ap_url(DUTY_WORK_LOG_AP), query_started_at,
             )
             driver_failed = driver_failed or is_browser_session_recovery_error(reason)
+            if isinstance(exc, TimeoutException) and exc.msg and exc.msg not in reason:
+                reason = f"{compact_failure_text(exc.msg)}；{reason}"
         return SeleniumRunResult(
             ok=not driver_failed,
             status="duty_work_log_failed" if driver_failed else "duty_work_log_waiting_confirmation",
@@ -1802,9 +1805,12 @@ def _query_duty_work_logs(
             raise ValueError("正式工作紀錄查詢範圍未包含本案日期")
         query_values = (f"{start_day.year - 1911:03d}{start_day:%m%d}",
                         f"{end_day.year - 1911:03d}{end_day:%m%d}")
-    driver.get(_ap_url(DUTY_WORK_LOG_AP))
+    try:
+        driver.get(_ap_url(DUTY_WORK_LOG_AP))
+    except TimeoutException as exc:
+        raise TimeoutException("開啟工作紀錄查詢頁逾時") from exc
     WebDriverWait(driver, 12).until(
-        lambda d: bool(d.find_elements(By.ID, "_btnQuery")), "工作紀錄查詢頁載入逾時",
+        lambda d: bool(d.find_elements(By.ID, "_btnQuery")), "工作紀錄查詢頁載入逾時（等待查詢按鈕 _btnQuery）",
     )
     ready = driver.execute_script(
         """
@@ -1821,8 +1827,11 @@ def _query_duty_work_logs(
     if cancel_check:
         cancel_check()
     query_button = driver.find_element(By.ID, "_btnQuery")
-    _click_by_text_or_id(driver, ["_btnQuery"], ["查詢"])
-    WebDriverWait(driver, 12).until(EC.staleness_of(query_button), "工作紀錄查詢送出後頁面更新逾時")
+    try:
+        _click_by_text_or_id(driver, ["_btnQuery"], ["查詢"])
+    except TimeoutException as exc:
+        raise TimeoutException("送出工作紀錄查詢逾時（點選 _btnQuery）") from exc
+    WebDriverWait(driver, 12).until(EC.staleness_of(query_button), "工作紀錄查詢送出後頁面更新逾時（等待原查詢按鈕 _btnQuery 失效）")
     WebDriverWait(driver, 30).until(lambda d: d.execute_script(
         "return document.readyState === 'complete' && !!document.getElementById('_btnQuery') "
         "&& (/QUY-000/.test(document.body.innerText) || /QUY-(?:300|500)\\s*[:：]\\s*查無資料/.test(document.body.innerText));"

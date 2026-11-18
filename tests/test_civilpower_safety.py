@@ -96,6 +96,27 @@ class CivilpowerSafetyTests(unittest.TestCase):
         with self.query_context(rows):
             self.assertFalse(civilpower._find_io_record(object(), self.plan, civilpower.OUT_STATUS))
 
+    def test_io_save_dialog_timeout_rechecks_without_second_submit(self):
+        for found in (True, False):
+            with self.subTest(found=found), ExitStack() as stack:
+                checkpoint = {}
+                lookup = stack.enter_context(mock.patch("civilpower._find_io_record", side_effect=[False, found]))
+                click = stack.enter_context(mock.patch("civilpower._click"))
+                stack.enter_context(mock.patch("civilpower._wait_after_save", side_effect=civilpower.TimeoutException()))
+                for name in ("_wait_visible", "_select_jqx_combobox", "_wait_for_io_form_dependencies",
+                             "_select_io_person", "_set_input", "_select_option_containing",
+                             "_wait_for_io_record_form_values"):
+                    stack.enter_context(mock.patch("civilpower." + name))
+                if not found:
+                    stack.enter_context(self.assertRaisesRegex(RuntimeError, "待確認"))
+                created = civilpower._ensure_io_record(
+                    object(), self.plan, civilpower.OUT_STATUS, checkpoint, cancel_check=None,
+                )
+                self.assertTrue(created)
+                self.assertEqual("verified", checkpoint["out_save_state"])
+            self.assertEqual(1, sum(call.args[1] == "#btn_IOWorkLogAdd" for call in click.call_args_list))
+            self.assertTrue(lookup.call_args.kwargs["reload_page"])
+
     def test_existing_roc_io_record_prevents_another_add(self):
         row = SimpleNamespace(text="115/08/19 12:32 新坡分隊 大園救護分隊 測試義消 救護出勤")
         checkpoint = {}
