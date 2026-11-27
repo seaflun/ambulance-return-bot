@@ -401,6 +401,8 @@
       {% endif %}
     {% endcall %}
 
+    {{ notice_section(notice_view) }}
+
     {% if days %}
       <nav class="day-nav" aria-label="消防日">
         {% for day in days %}
@@ -437,8 +439,6 @@
           <div class="summary-value">{{ summary.failed or 0 }}</div>
         </div>
       </section>
-
-      {{ notice_section(notice_view) }}
 
       <details class="section" aria-label="未返隊處理歷程"{% if summary.unreturned_returns %} open{% endif %}>
         <summary class="section-head">
@@ -777,7 +777,6 @@
         </div>
       </details>
     {% else %}
-      {{ notice_section(notice_view) }}
       <section class="empty">目前尚未收到 SinpoSmart 值班事件。</section>
     {% endif %}
 

@@ -329,6 +329,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
                 body = response.get_data(as_text=True)
                 diagnostic = re.search(r'<details\b[^>]*id="diagnostic-reports"[^>]*>.*?</details>', body, re.S)
                 self.assertIsNotNone(diagnostic)
+                self.assertEqual(body.count('id="notice-section"'), 1)
                 self.assertLess(body.index('id="notice-section"'), diagnostic.start())
                 self.assertRegex(body[diagnostic.end():], r'^\s*</section>\s*</main>\s*<script>')
                 self.assertIn("下載問題包", diagnostic.group(0))
@@ -6886,7 +6887,10 @@ process.stdout.write(JSON.stringify({initial, note: note.value, personnel: perso
         with mock.patch.object(app_module, "sinposmart_store", return_value=store), \
                 mock.patch.object(store, "notice_view", return_value=view):
             body = self.client.get("/admin/sinposmart?notice_day=2026-10-21&notice_workstation=PC-B").data.decode("utf-8")
-        link = re.search(r'class="button day-link[^\"]*" href="([^\"]+)"', body)
+        nav = re.search(r'<nav\b[^>]*aria-label="消防日"[^>]*>(.*?)</nav>', body, re.S)
+        self.assertIsNotNone(nav)
+        self.assertLess(body.index('id="notice-section"'), nav.start())
+        link = re.search(r'class="button day-link[^\"]*" href="([^\"]+)"', nav.group(1))
         self.assertIsNotNone(link)
         query = parse_qs(urlsplit(html.unescape(link.group(1))).query)
         self.assertEqual(query.get("notice_day"), ["2026-10-21"])
