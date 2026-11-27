@@ -30,6 +30,30 @@ from ambulance_bot.sinposmart_backend import (
 
 
 class NoticeCollectionBackendTests(unittest.TestCase):
+    def test_store_shares_identical_notice_rows_without_losing_poll_history(self):
+        path = self.store.path_for_day("2026-10-22")
+        first = self.event(records=[self.record()])
+        now = datetime.fromisoformat(first["occurred_at"])
+        legacy = normalize_sinposmart_event(first, now=now)
+        backend.write_json_atomic(path, {"fire_day": "2026-10-22", "events": [legacy]})
+        self.assertEqual(self.view()["history"][0]["state"], "success")
+
+        second = self.put(self.event(run=2, records=[self.record()], reported="2026-10-22T09:02:00+08:00"))
+        changed_row = self.record(read_state="pending")
+        third = self.put(self.event(run=3, records=[changed_row], reported="2026-10-22T09:03:00+08:00"))
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(len(stored["notice_record_pool"]), 2)
+        self.assertEqual(path.read_text(encoding="utf-8").count('"subject"'), 2)
+
+        reopened = SinpoSmartBackendStore(path.parent)
+        events = reopened.read_day("2026-10-22", now=now)["events"]
+        self.assertEqual([event["event_id"] for event in events], [legacy["event_id"], second["event_id"], third["event_id"]])
+        self.assertEqual([event["snapshot"] for event in events], [legacy["snapshot"], second["snapshot"], third["snapshot"]])
+        expected = backend.build_notice_collection_view(
+            [legacy, second, third], "2026-10-22", now=now + timedelta(minutes=3)
+        )
+        self.assertEqual(self.view(now=now + timedelta(minutes=3)), expected)
+
     def test_spreadsheet_precheck_timeout_keeps_fixed_cause_and_durable_pending_counts(self):
         expected = "試算表既有通報比對逾時，尚未確認本批是否已入表。"
         for index, (state, pending) in enumerate((("failed", 0), ("partial", 0), ("uncertain", 2)), 1):
@@ -1537,6 +1561,55 @@ class SinpoSmartBackendStoreTests(unittest.TestCase):
             self.assertEqual(prior["admin_view"]["summary"]["submitted"], 1)
             self.assertEqual(prior["admin_view"], store.read_day("2026-10-21", now=now)["admin_view"])
             self.assertEqual({p: p.read_bytes() for p in original}, original)
+
+    def test_page_builds_only_selected_day_and_keeps_other_days_login_and_cross_day_results(self):
+        now = datetime(2026, 10, 22, 9, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SinpoSmartBackendStore(Path(tmp))
+            base = {"actor_no": "17", "trigger_type": "due", "item_kind": "出入", "item_title": "到勤",
+                    "target": "16番", "target_time": "07:55",
+                    "snapshot": {"completion_key": "entry:2026-10-22:755:in:16:到勤"}}
+            with patch.object(backend, "build_sinposmart_admin_view", wraps=build_sinposmart_admin_view) as build:
+                for kind, at, status in (
+                    ("action_queued", "2026-10-22T07:59:09", "pending_write_automation"),
+                    ("action_result", "2026-10-22T08:01:27", "submitted"),
+                    ("login", "2026-10-22T08:02:00", "success"),
+                ):
+                    store.upsert_event({**base, "event_id": kind, "record_type": kind,
+                                        "occurred_at": at, "status": status}, now=now)
+                build.assert_not_called()
+
+                days = store.list_days(now=now, selected_fire_day="2026-10-21")
+                self.assertEqual([day["fire_day"] for day in days], ["2026-10-22", "2026-10-21"])
+                self.assertEqual([event["record_type"] for event in days[0]["events"]], ["login"])
+                self.assertNotIn("admin_view", days[0])
+                self.assertEqual(days[1]["admin_view"]["summary"]["submitted"], 1)
+                build.assert_called_once()
+
+                build.reset_mock()
+                fallback = store.list_days(now=now, selected_fire_day="invalid")
+                self.assertIn("admin_view", fallback[0])
+                self.assertNotIn("admin_view", fallback[1])
+                build.assert_called_once()
+
+            path_read = Path.read_text
+            reads = []
+
+            def read(path, *args, **kwargs):
+                if path.parent == store.root_dir:
+                    reads.append(path.name)
+                return path_read(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", read):
+                store.list_days(now=now, selected_fire_day="2026-10-21")
+            self.assertEqual(reads, ["2026-10-21.json"])
+
+            store.upsert_event({"event_id": "second-login", "record_type": "login",
+                                "actor_no": "20", "occurred_at": "2026-10-22T08:10:00"}, now=now)
+            with patch.object(Path, "read_text", read):
+                refreshed = store.list_days(now=now, selected_fire_day="2026-10-21")
+            self.assertEqual({event["actor_no"] for event in refreshed[0]["events"]}, {"17", "20"})
+            self.assertEqual(reads.count("2026-10-22.json"), 1)
 
     def test_cleanup_keeps_fourteen_diagnostic_fire_days_and_seven_event_days(self):
         with tempfile.TemporaryDirectory() as tmp:

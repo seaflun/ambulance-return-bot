@@ -1893,12 +1893,12 @@ def admin_public_pc_remote_update():
 
 @app.get("/admin/sinposmart")
 def admin_sinposmart():
-    days = sinposmart_store().list_days(limit=7)
+    selected_fire_day = str(request.args.get("fire_day") or "").strip()
+    days = sinposmart_store().list_days(limit=7, selected_fire_day=selected_fire_day)
     gui_health = duty_gui_health_view()
     csrf_token = remote_update_csrf_token()
     admin_token = remote_update_admin_token()
     duty_gui_remote_update_enabled = bool(csrf_token and admin_token)
-    selected_fire_day = str(request.args.get("fire_day") or "").strip()
     selected_day = next((day for day in days if str(day.get("fire_day") or "") == selected_fire_day), None)
     if selected_day is None and days:
         selected_day = days[0]

@@ -100,17 +100,21 @@ _STORE_LOCKS: dict[str, RLock] = {}
 _NOTICE_GROUP_CACHE_LOCK = Lock()
 _NOTICE_GROUP_CACHE: OrderedDict = OrderedDict()
 _NOTICE_GROUP_CACHE_LIMIT = 4
+_ADMIN_DAY_CACHE_LOCK = Lock()
+_ADMIN_DAY_CACHE: OrderedDict[Path, tuple[tuple, dict[str, Any]]] = OrderedDict()
+_ADMIN_DAY_CACHE_LIMIT = 16
+
+
+def _day_file_signature(path: Path) -> tuple:
+    try:
+        stat = path.stat()
+        return (path.name, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    except OSError:
+        return (path.name, None)
 
 
 def _notice_source_signature(paths: list[Path]) -> tuple:
-    signature = []
-    for path in paths:
-        try:
-            stat = path.stat()
-            signature.append((path.name, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
-        except OSError:
-            signature.append((path.name, None))
-    return tuple(signature)
+    return tuple(_day_file_signature(path) for path in paths)
 
 
 def shared_store_lock(root_dir: Path) -> RLock:
@@ -2466,6 +2470,96 @@ def validate_diagnostic_archive(body: bytes, digest: str) -> dict[str, Any]:
                 "workstation", "session_actor", "target_date", "action_key", "action_kind", "trigger_type", "error_code", "duty_status", "result_ref")}}
 
 
+def _day_file_payload(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _admin_day_index(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Return the index and, on a cache miss, the already-read full day."""
+    signature = _day_file_signature(path)
+    with _ADMIN_DAY_CACHE_LOCK:
+        entry = _ADMIN_DAY_CACHE.get(path)
+        if entry is not None and entry[0] == signature:
+            _ADMIN_DAY_CACHE.move_to_end(path)
+            return entry[1], None
+    payload = _day_file_payload(path)
+    if payload is None:
+        return None, None
+    index = {
+        "fire_day": payload.get("fire_day"),
+        "events": [
+            event for event in payload.get("events") or []
+            if isinstance(event, dict) and event.get("record_type") in {"login", "action_result"}
+        ],
+    }
+    with _ADMIN_DAY_CACHE_LOCK:
+        if signature[1] is not None and _day_file_signature(path) == signature:
+            _ADMIN_DAY_CACHE[path] = (signature, index)
+            _ADMIN_DAY_CACHE.move_to_end(path)
+            while len(_ADMIN_DAY_CACHE) > _ADMIN_DAY_CACHE_LIMIT:
+                _ADMIN_DAY_CACHE.popitem(last=False)
+    return index, payload
+
+
+def _event_notice_report(event: Any) -> dict[str, Any]:
+    if not isinstance(event, dict) or event.get("record_type") != "notice_collection":
+        return {}
+    snapshot = event.get("snapshot")
+    report = snapshot.get("notice_collection") if isinstance(snapshot, dict) else None
+    return report if isinstance(report, dict) else {}
+
+
+def _store_day_notice_records(payload: dict[str, Any]) -> None:
+    # Keep every poll and its order. Only byte-equivalent record data is shared within the day.
+    pool = payload.get("notice_record_pool")
+    pool = pool if isinstance(pool, list) else []
+    indices = {
+        json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":")): index
+        for index, row in enumerate(pool) if isinstance(row, dict)
+    }
+    for index, event in enumerate(payload["events"]):
+        report = _event_notice_report(event)
+        changed = {}
+        for field in ("records", "manual_records"):
+            rows = report.get(field)
+            if not isinstance(rows, list) or not any(isinstance(row, dict) for row in rows):
+                continue
+            references = []
+            for row in rows:
+                if isinstance(row, dict):
+                    key = json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                    row_index = indices.setdefault(key, len(pool))
+                    if row_index == len(pool):
+                        pool.append(row)
+                    row = row_index
+                references.append(row)
+            changed[field] = references
+        if changed:
+            snapshot = {**event["snapshot"], "notice_collection": {**report, **changed}}
+            payload["events"][index] = {**event, "snapshot": snapshot}
+    if pool:
+        payload["notice_record_pool"] = pool
+
+
+def _restore_day_notice_records(payload: dict[str, Any]) -> None:
+    pool = payload.pop("notice_record_pool", None)
+    if not isinstance(pool, list):
+        return
+    for event in payload.get("events") or []:
+        report = _event_notice_report(event)
+        for field in ("records", "manual_records"):
+            rows = report.get(field)
+            if isinstance(rows, list):
+                report[field] = [
+                    dict(pool[row]) if type(row) is int and 0 <= row < len(pool) and isinstance(pool[row], dict) else row
+                    for row in rows
+                ]
+
+
 class SinpoSmartBackendStore:
     def __init__(self, root_dir: Path, retention_days: int = 7, *, create: bool = True) -> None:
         self.root_dir = root_dir
@@ -2552,9 +2646,8 @@ class SinpoSmartBackendStore:
             self.cleanup(now)
             event = normalize_sinposmart_event(raw_event, now=now)
             path = self.path_for_day(event["fire_day"])
-            payload = self.read_day(event["fire_day"])
-            payload.pop("admin_view", None)
-            events = compact_sinposmart_events(list(payload.get("events") or []))
+            payload = _day_file_payload(path) or {}
+            events = compact_sinposmart_events(payload.get("events") or [])
             known_ids = {event_id for item in events for event_id in sinposmart_event_ids(item)}
             if event["event_id"] in known_ids:
                 pass
@@ -2571,7 +2664,8 @@ class SinpoSmartBackendStore:
             payload["events"] = sorted(events, key=lambda item: str(item.get("occurred_at") or ""))
             payload["summary"] = summarize_sinposmart_events(payload["events"])
             payload.pop("admin_view", None)
-            write_json_atomic(path, payload)
+            _store_day_notice_records(payload)
+            write_json_atomic(path, payload, compact=True)
         return event
 
     def notice_view(self, calendar_day: str | None = None, *, workstation: str = "", preferred_workstation: str = "",
@@ -2592,28 +2686,23 @@ class SinpoSmartBackendStore:
         cached = None
         read_ok = True
         # Civil days straddle fire-day files; the three-day publication scan may report two days later.
-        with self._lock:
-            try:
-                verifications = json.loads((self.root_dir / NOTICE_VERIFICATION_FILENAME).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                verifications = None
-            signature = _notice_source_signature(paths)
-            with _NOTICE_GROUP_CACHE_LOCK:
-                entry = _NOTICE_GROUP_CACHE.get(cache_key)
-                if entry is not None and entry[0] == signature:
-                    cached = entry[1]
-                    _NOTICE_GROUP_CACHE.move_to_end(cache_key)
-            if cached is None:
-                for path, stamp in zip(paths, signature):
-                    try:
-                        payload = json.loads(path.read_text(encoding="utf-8"))
-                    except (OSError, ValueError):
-                        read_ok = read_ok and stamp[1] is None
-                        continue
-                    rows = payload.get("events") if isinstance(payload, dict) else None
-                    if isinstance(rows, list):
-                        events.extend(row for row in rows if isinstance(row, dict))
+        verifications = _day_file_payload(self.root_dir / NOTICE_VERIFICATION_FILENAME)
+        signature = _notice_source_signature(paths)
+        with _NOTICE_GROUP_CACHE_LOCK:
+            entry = _NOTICE_GROUP_CACHE.get(cache_key)
+            if entry is not None and entry[0] == signature:
+                cached = entry[1]
+                _NOTICE_GROUP_CACHE.move_to_end(cache_key)
         if cached is None:
+            for path, stamp in zip(paths, signature):
+                payload = _day_file_payload(path)
+                if payload is None:
+                    read_ok = read_ok and stamp[1] is None
+                    continue
+                _restore_day_notice_records(payload)
+                rows = payload.get("events")
+                if isinstance(rows, list):
+                    events.extend(row for row in rows if isinstance(row, dict))
             groups = _notice_groups(events)
             # Never cache a mixed snapshot if another process replaces a source during parsing.
             with self._lock:
@@ -2632,54 +2721,70 @@ class SinpoSmartBackendStore:
         # The builder reads groups without modifying them; only the returned history exposes row references.
         return deepcopy(view)
 
-    def list_days(self, limit: int = 7, now: datetime | None = None) -> list[dict[str, Any]]:
-        with self._lock:
-            self.cleanup(now)
-            days: list[dict[str, Any]] = []
-            raw_days: list[tuple[str, dict[str, Any]]] = []
-            for path in self.root_dir.glob("*.json"):
-                if path.name == NOTICE_VERIFICATION_FILENAME:
-                    continue
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict):
-                    raw_days.append((path.name, payload))
-            # Keep the raw glob order for cross-day tie handling, and build days in the original reverse order.
-            related_payloads = [payload for _name, payload in raw_days]
-            for _name, raw_payload in sorted(raw_days, key=lambda item: item[0], reverse=True):
-                payload = dict(raw_payload)
-                payload["events"] = compact_sinposmart_events(payload.get("events") or [])
-                payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
-                payload["admin_view"] = build_sinposmart_admin_view(
-                    payload["events"], now=now,
-                    related_results=self._related_submission_results(payload["events"], payloads=related_payloads)
-                )
-                days.append(payload)
-            known_days = {str(day.get("fire_day") or "") for day in days}
-            for folder in sorted((self.root_dir / "diagnostics").glob("????-??-??"), reverse=True)[:limit]:
-                if folder.name not in known_days and self.list_diagnostics(folder.name):
-                    days.append(self.read_day(folder.name, now=now))
-            return sorted(days, key=lambda day: str(day.get("fire_day") or ""), reverse=True)[:limit]
+    def list_days(self, limit: int = 7, now: datetime | None = None, *,
+                  selected_fire_day: str | None = None) -> list[dict[str, Any]]:
+        self.cleanup(now)
+        day_indices = {}
+        fresh_payloads = {}
+        for path in self.root_dir.resolve().glob("*.json"):
+            if path.name == NOTICE_VERIFICATION_FILENAME:
+                continue
+            if selected_fire_day is None:
+                payload = _day_file_payload(path)
+                if payload is not None:
+                    day_indices[path] = fresh_payloads[path] = payload
+            else:
+                index, payload = _admin_day_index(path)
+                if index is not None:
+                    day_indices[path] = index
+                if payload is not None:
+                    fresh_payloads[path] = payload
+        # Keep the raw glob order for cross-day result ties.
+        related_payloads = list(day_indices.values())
+        candidates = [(path, day_indices[path]) for path in sorted(day_indices, reverse=True)]
+        known_days = {str(day.get("fire_day") or "") for _, day in candidates}
+        for folder in sorted((self.root_dir / "diagnostics").glob("????-??-??"), reverse=True)[:limit]:
+            if folder.name not in known_days and self.list_diagnostics(folder.name):
+                candidates.append((None, {"fire_day": folder.name, "updated_at": "", "summary": {}, "events": []}))
+        candidates.sort(key=lambda candidate: str(candidate[1].get("fire_day") or ""), reverse=True)
+        candidates = candidates[:limit]
+        if selected_fire_day is not None and candidates and selected_fire_day not in {
+            str(day.get("fire_day") or "") for _, day in candidates
+        }:
+            selected_fire_day = str(candidates[0][1].get("fire_day") or "")
+        days = []
+        for path, day in candidates:
+            if selected_fire_day is None or str(day.get("fire_day") or "") == selected_fire_day:
+                payload = fresh_payloads.get(path)
+                if payload is None and path is not None:
+                    payload = _day_file_payload(path)
+                days.append(self._admin_day(payload if payload is not None else day, now=now,
+                                            related_payloads=related_payloads))
+            else:
+                logins = [
+                    event for event in day["events"] if event.get("record_type") == "login"
+                ]
+                days.append({"fire_day": day.get("fire_day"), "events": compact_sinposmart_events(logins)})
+        return days
 
     def read_day(self, fire_day: str, now: datetime | None = None) -> dict[str, Any]:
-        with self._lock:
-            path = self.path_for_day(fire_day)
-            if not path.exists():
-                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([], now=now)}
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([], now=now)}
-            if not isinstance(payload, dict):
-                return {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": [], "admin_view": build_sinposmart_admin_view([], now=now)}
-            payload["events"] = compact_sinposmart_events(payload.get("events") or [])
-            payload["summary"] = summarize_sinposmart_events(payload.get("events") or [])
-            payload["admin_view"] = build_sinposmart_admin_view(
-                payload["events"], now=now, related_results=self._related_submission_results(payload["events"])
-            )
-            return payload
+        payload = _day_file_payload(self.path_for_day(fire_day))
+        if payload is None:
+            payload = {"fire_day": fire_day, "updated_at": "", "summary": {}, "events": []}
+        return self._admin_day(payload, now=now)
+
+    def _admin_day(self, payload: dict[str, Any], *, now: datetime | None = None,
+                   related_payloads: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        _restore_day_notice_records(payload)
+        events = compact_sinposmart_events(payload.get("events") or [])
+        return {
+            **payload,
+            "events": events,
+            "summary": summarize_sinposmart_events(events),
+            "admin_view": build_sinposmart_admin_view(
+                events, now=now, related_results=self._related_submission_results(events, payloads=related_payloads)
+            ),
+        }
 
     def _related_submission_results(self, events: list[dict[str, Any]], *,
                                     payloads: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -2701,11 +2806,8 @@ class SinpoSmartBackendStore:
         if payloads is None:
             payloads = []
             for path in self.root_dir.glob("*.json"):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict):
+                payload = _day_file_payload(path)
+                if payload is not None:
                     payloads.append(payload)
         for payload in payloads:
             if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
@@ -3326,11 +3428,15 @@ def summarize_sinposmart_events(events: list[dict[str, Any]]) -> dict[str, int]:
     return summary
 
 
-def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+def write_json_atomic(path: Path, payload: dict[str, Any], *, compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if compact:
+            content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        else:
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
+        tmp_path.write_text(content, encoding="utf-8")
         tmp_path.replace(path)
     finally:
         try:
