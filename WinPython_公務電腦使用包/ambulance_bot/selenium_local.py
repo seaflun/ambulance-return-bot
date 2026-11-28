@@ -3448,6 +3448,8 @@ def _add_vehicle_mileage_record(
         if WAITING_CONFIRMATION_MARKER in detail:
             return detail
     _report_progress(progress, "本案與後一筆里程已核對")
+    if plan["previous"] is None and (plan["existing"] is None or plan.get("edit_existing")):
+        return f"{detail} 查無前案，開始里程採本次結束里程減 50 公里（{plan['start_mileage']} 公里）。"
     return f"{detail} 已依案件時間銜接前後里程。"
 
 
@@ -3551,20 +3553,32 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
             )
     before.sort(key=lambda row: (_mileage_record_datetime(row, "End"), str(row["Id"])), reverse=True)
     after.sort(key=lambda row: _mileage_record_datetime(row, "Start"))
-    if not before:
-        raise WebDriverException("查無案件之前的結束里程，停止補登。")
-    # Earlier records only supply a starting mileage. Keep every tied snapshot
-    # when they agree, and require one identifiable row for a following edit.
-    previous_end = _mileage_record_datetime(before[0], "End")
-    previous_peers = [row for row in before[1:] if _mileage_record_datetime(row, "End") == previous_end]
-    first = str(before[0]["EndMileage"])
-    if any(int(row["EndMileage"]) != int(first) for row in previous_peers):
-        raise WebDriverException("相同結束時間的前案里程不一致，無法確認本案開始里程。")
+    if len(current) > 1:
+        raise WebDriverException("multiple current mileage rows")
+    existing = current[0] if current else None
+    previous = before[0] if before else None
+    previous_peers = []
+    if previous:
+        # Earlier records only supply a starting mileage. Keep every tied snapshot when they agree.
+        previous_end = _mileage_record_datetime(previous, "End")
+        previous_peers = [row for row in before[1:] if _mileage_record_datetime(row, "End") == previous_end]
+        first = str(previous["EndMileage"])
+        if any(int(row["EndMileage"]) != int(first) for row in previous_peers):
+            raise WebDriverException("相同結束時間的前案里程不一致，無法確認本案開始里程。")
+    elif existing:
+        first = str(existing["StartMileage"])
+    else:
+        end_mileage = str(request.mileage or "").strip()
+        if not re.fullmatch(r"\d+", end_mileage) or int(end_mileage) < 50:
+            raise WebDriverException("查無案件之前的結束里程，須填入至少 50 公里的本次總里程才能推算開始里程。")
+        first = str(int(end_mileage) - 50)
     if len(after) > 1 and _mileage_record_datetime(after[0], "Start") == _mileage_record_datetime(after[1], "Start"):
         raise WebDriverException("後一筆里程紀錄開始時間重複，無法唯一定位。")
     last = _resolve_end_mileage(first, request.mileage)
     if not re.fullmatch(r"\d+", last) or int(last) < int(first):
-        previous_at = _mileage_record_datetime(before[0], "End").strftime("%Y/%m/%d %H:%M")
+        if previous is None:
+            raise WebDriverException("本案結束里程無效或小於既有開始里程。")
+        previous_at = _mileage_record_datetime(previous, "End").strftime("%Y/%m/%d %H:%M")
         raise WebDriverException(
             f"本案結束里程小於前一筆結束里程。{request.vehicle} 本案 "
             f"{requested_start:%Y/%m/%d %H:%M} 至 {end:%Y/%m/%d %H:%M}；"
@@ -3583,9 +3597,6 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
             f"後一筆 {following_start:%Y/%m/%d %H:%M} 至 {following_end:%Y/%m/%d %H:%M}、"
             f"紀錄 {following['Id']}、結束里程 {following['EndMileage']}。"
         )
-    if len(current) > 1:
-        raise WebDriverException("multiple current mileage rows")
-    existing = current[0] if current else None
     if existing:
         comparisons = (
             ("返隊時間", _mileage_record_datetime(existing, "End").strftime("%Y/%m/%d %H:%M"),
@@ -3603,7 +3614,7 @@ def _vehicle_mileage_backfill_plan(request: AmbulanceReturnRequest, rows: list[d
                 f"相同案件時間已有不同內容的里程紀錄，停止補登。{request.vehicle} "
                 f"紀錄 {existing['Id']}（{start:%Y/%m/%d %H:%M}）；{'；'.join(differences)}。"
             )
-    return dict(start_at=start, start_mileage=first, end_mileage=last, previous=before[0],
+    return dict(start_at=start, start_mileage=first, end_mileage=last, previous=previous,
                 previous_peers=previous_peers, following=following, existing=existing)
 
 

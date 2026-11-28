@@ -166,6 +166,33 @@ class MileageBackfillTests(unittest.TestCase):
             detail = runtime._add_vehicle_mileage_record(object(), request or self.request())
             return detail, write.call_args_list, persist.call_count
 
+    def test_insert_without_previous_record_estimates_start_from_end_mileage(self):
+        following = record(2, "1200", "1300", 10000, 10050)
+        for rows in ([], [following]):
+            with self.subTest(rows=rows):
+                detail, writes, saves = self.run_entry(rows)
+                plan = writes[0].args[2]
+                self.assertEqual(("9970", "10020"), (plan["start_mileage"], plan["end_mileage"]))
+                self.assertIsNone(plan["previous"])
+                self.assertEqual(following if rows else None, plan["following"])
+                self.assertEqual(1, saves)
+                self.assertIn("本次結束里程減 50 公里", detail)
+
+    def test_retry_without_previous_record_keeps_existing_start_mileage(self):
+        saved = record(3, "1000", "1100", 9990, 10020)
+        detail, writes, saves = self.run_entry([saved])
+        self.assertIn("里程紀錄已存在", detail)
+        self.assertEqual([], writes)
+        self.assertEqual(0, saves)
+
+    def test_without_previous_record_requires_absolute_end_mileage_of_at_least_50(self):
+        for mileage in ("+20", "49", ""):
+            with self.subTest(mileage=mileage):
+                request = self.request()
+                request.mileage = mileage
+                with self.assertRaisesRegex(runtime.WebDriverException, "查無案件之前的結束里程"):
+                    runtime._vehicle_mileage_backfill_plan(request, [])
+
     def test_insert_uses_previous_end_and_repairs_next_start(self):
         before = record(1, "0800", "0900", 9980, 10000)
         after = record(2, "1200", "1300", 10000, 10050)
@@ -186,7 +213,7 @@ class MileageBackfillTests(unittest.TestCase):
 
     def test_invalid_neighbors_fail_before_writing(self):
         cases = [
-            [record(2, "1200", "1300", 10000, 10050)],
+            [record(2, "1200", "1300", 10000, 10010)],
             [record(1, "0800", "1100", 9980, 10000)],
             [record(1, "0800", "0900", 9980, 10030)],
             [record(1, "0800", "0900", 9980, 10000), record(2, "1200", "1300", 10000, 10010)],
